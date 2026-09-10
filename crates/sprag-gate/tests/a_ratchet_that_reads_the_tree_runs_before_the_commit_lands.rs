@@ -61,9 +61,15 @@ const HOOKS: [&str; 2] = ["pre-commit", "pre-push"];
 /// crates wrote — while `CARGO_MANIFEST_DIR` joined with `".."` is a walk UP, out of the crate and
 /// into the tree. Collapsing the two would pull two of the slowest integration suites in the
 /// workspace into a hook that runs on every commit, for a property they do not have.
-const REACHES: [(&str, Option<&str>); 4] = [
+const REACHES: [(&str, Option<&str>); 5] = [
     // The spelling this crate publishes, and the one a new reader should use.
     ("workspace_root", None),
+    // The other door onto the tree, added with item 1006: a walk of every shell script in it.
+    // ⚠ It is `workspace_root` underneath, but a test that calls it never SPELLS that word, and a
+    // classifier that reads spellings only knows what is spelled. Without this entry item 1006's
+    // ratchet is filed as reading nothing outside its own crate — true of the text, false of the
+    // test — and the lane keeps running it only because `sprag-gate` is in it whole.
+    ("shell_sources", None),
     // The workspace's lockfile, which any crate's dependency edit rewrites.
     ("Cargo.lock", None),
     // Shelling out to cargo, which answers about the workspace graph and not about one crate.

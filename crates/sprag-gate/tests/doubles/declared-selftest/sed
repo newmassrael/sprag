@@ -41,7 +41,7 @@
 # arriving on standard input are not read at all. Those are stated rather than
 # implied; every script this repository's hooks actually spell is an argument.
 
-# Refuse the script in $1, naming the one thing to do about it.
+# Refuse the script in $1 because of the label rule, naming what to do about it.
 say_unportable() {
     printf '%s\n' \
         "sed (the POSIX double): REFUSING a script BSD sed reads differently:" \
@@ -52,6 +52,40 @@ say_unportable() {
         "  this script means something different there and says nothing about it." \
         "  Give each label and branch its own -e fragment, or write the script with" \
         "  no loop at all. Register item 1001." >&2
+    exit 2
+}
+
+# ⛔⛔⛔⛔⛔ AND THE SECOND SPELLING THAT IS SILENT ON THE OTHER PLATFORM --
+# register item 1006. `\|`, `\+` and `\?` are GNU extensions to a BASIC regular
+# expression; a BSD regex(3) reads each as the LITERAL character, matches
+# nothing, and says NOTHING.
+#
+# ⚠⚠ MEASURED 2026-09-10 against a FreeBSD regex(3) built from source beside the
+# sed, and the measurement is what chose these three rather than a longer list:
+#   silent: \| \+ \?          -- a literal, no error, a different answer
+#   loud:   \b \B \w \W \s \S -- BSD refuses the expression outright
+#   SAME:   \< \> \t \n \{ \( -- both read them the same way
+# Only the silent three can be green on Linux and wrong on macOS, which is the
+# whole shape these doubles exist for. The loud six announce themselves and are
+# left out deliberately; guessing would have put \< and \> on the list, and the
+# measurement says they belong on neither.
+#
+# ⚠ THE RESIDUE, STATED: the scan reads the WHOLE script, so a `\|` on the
+# REPLACEMENT side of an `s` command -- where it is not a regular expression at
+# all -- would be refused for a reason that is not true. Nothing in this tree
+# spells one (measured 2026-09-10: the only offender anywhere was
+# `rust-gates.sh`), and separating the two sides needs a parser this cannot be.
+# The remedy if it ever bites is a bracket: `[|]` says the same thing.
+say_gnu_escape() {
+    printf '%s\n' \
+        "sed (the POSIX double): REFUSING a script BSD sed reads differently:" \
+        "  $1" \
+        "  '$2' is a GNU extension to a BASIC regular expression. A BSD regex(3)" \
+        "  reads it as the literal character '$3', so this matches nothing there," \
+        "  exits 0, and the caller acts on an empty answer -- which is how a" \
+        "  refusal ends up naming the wrong cause. Write the POSIX spelling:" \
+        "  \\| as two -e scripts or a bracket, \\+ as X[X]* (X twice), \\? as" \
+        "  \\(X\\)\\{0,1\\}. Register item 1006." >&2
     exit 2
 }
 
@@ -71,7 +105,30 @@ scan_script() {
             :[0-9A-Za-z_-]* | b[0-9A-Za-z_-]* | t[0-9A-Za-z_-]*) say_unportable "$1" ;;
         esac
     done
+    # ⚠ ONLY IN A BASIC REGULAR EXPRESSION. Under `-E` those three characters are
+    # operators unescaped and `\+` is a literal on BOTH platforms, so the rule
+    # would be refusing a spelling that is portable. The flag is read off argv
+    # below rather than assumed.
+    [ "$sed_ere" -eq 0 ] || return 0
+    case "$1" in
+        *'\|'*) say_gnu_escape "$1" '\|' '|' ;;
+    esac
+    case "$1" in
+        *'\+'*) say_gnu_escape "$1" '\+' '+' ;;
+    esac
+    case "$1" in
+        *'\?'*) say_gnu_escape "$1" '\?' '?' ;;
+    esac
 }
+
+# ⚠ TWO PASSES, because `-E` may be spelled AFTER the script it governs and a
+# one-pass scan would judge that script under the wrong grammar.
+sed_ere=0
+for sed_arg in "$@"; do
+    case "$sed_arg" in
+        -E | -r | --regexp-extended) sed_ere=1 ;;
+    esac
+done
 
 # Which arguments are SCRIPTS: every `-e` value, or the first non-option when no
 # `-e` and no `-f` was given. Everything else is an option or an input file.
@@ -113,5 +170,21 @@ for sed_arg in "$@"; do
             ;;
     esac
 done
+
+# ⛔⛔⛔⛔⛔ SCAN-ONLY, so the RULE ABOVE HAS EXACTLY ONE IMPLEMENTATION --
+# register item 1006. The strict sed only ever met the scripts a DECLARED
+# selftest happens to run, and six of this repository's hook scripts declare
+# none, so their sed lines were judged by nothing at all. The gate that closes
+# that walks the tree, hands each command's argv here, and reads this status --
+# which means the population is FILES and the rule is still this file. A second
+# copy of *what is unportable*, written in Rust, is the drift this workspace
+# keeps paying for.
+#
+# ⚠ It exits before `exec` on purpose: the caller wants the VERDICT, not the
+# edit. A script lifted out of source text still carries `${variables}`, and
+# running it would refuse for reasons that have nothing to do with portability.
+if [ "${SPRAG_SED_SCAN_ONLY:-0}" = 1 ]; then
+    exit 0
+fi
 
 exec "${SPRAG_REAL_SED:?the real sed must be named in SPRAG_REAL_SED}" --posix "$@"

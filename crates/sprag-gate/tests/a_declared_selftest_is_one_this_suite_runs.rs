@@ -249,7 +249,7 @@ fn posix_sed_note(sed_is_gnu: bool, shim_built: bool) -> String {
 ///
 /// ⚠ It does not claim to cover BSD. It covers the three differences that have actually cost this
 /// repository a red, it says which it covered, and
-/// [`the_strict_sed_shows_both_differences_it_is_named_for`] measures that the injection changes
+/// [`the_strict_sed_shows_the_differences_it_is_named_for`] measures that the injection changes
 /// the answers rather than only the environment's name.
 fn environments(scratch: &Path) -> (Vec<Environment>, String) {
     let mut envs: Vec<Environment> = vec![("as configured".to_owned(), Vec::new())];
@@ -355,8 +355,10 @@ fn asking_sed(
 /// existed nothing anywhere asked whether that injection changed a single answer, and measured
 /// 2026-09-10 it changed ONE of the two differences it names and not the other:
 ///
-/// * `--posix` turns off GNU's REGULAR EXPRESSION extensions, so `\|` really does stop being
-///   alternation — the reading items 798 and 799 were about, and it works;
+/// * `--posix` turns off GNU's REGULAR EXPRESSION GRAMMAR, so `\|` really does stop being
+///   alternation — the reading items 798 and 799 were about, and it works. ⚠ Since item 1006 the
+///   double also REFUSES `\|`, `\+` and `\?` outright, which is why arm ⑵ probes `--posix` through
+///   `\w` instead: a flag nothing can turn red is a flag nobody is keeping;
 /// * `--posix` does not touch how a script is PARSED INTO COMMANDS. The argument of a label ends at
 ///   a NEWLINE and not at a `;`, so BSD reads `:a` followed by `; …; ta` as one label NAME, warns
 ///   `unused label`, exits 0 and runs none of it. The double read it GNU's way, so for that
@@ -370,38 +372,52 @@ fn asking_sed(
 /// ⚠⚠ **AND A REFUSAL IS NOT FREE**, so the repaired spelling is asked for in the same test: a
 /// double that refused every loop would be a wall rather than a measurement.
 #[test]
-fn the_strict_sed_shows_both_differences_it_is_named_for() {
+fn the_strict_sed_shows_the_differences_it_is_named_for() {
     let (program, vars) = strict_sed();
     let at = program.display().to_string();
 
-    // ⑴ THE REGEX READING. A GNU sed answers `x` here; a strict one matches nothing at all.
+    // ⑴ THE REGEX READING. A GNU sed answers `x` here; a strict one does not, whether because it
+    // refuses the spelling (the double, since item 1006) or because it reads `\|` as a literal `|`
+    // and matches nothing (a machine whose own sed is BSD). Both are the difference being visible.
     //
-    // ⚠ THE STATUS IS READ BEFORE THE ANSWER, and the two are different findings: a strict sed
-    // that REFUSED this would also say nothing, and reporting that as *the alternation went
-    // unmeasured* would hand a reader the wrong act. This script is a plain BRE with no label in
-    // it, so nothing here is a spelling anybody may refuse.
-    let (took, alternation) = asking_sed(
+    // ⚠ THE STATUS IS NOT ASSERTED HERE ANY MORE, and that is a repair rather than a loss: this arm
+    // used to double as the wall check, and when the double grew a REFUSAL for `\|` the wall check
+    // fired on the very spelling the arm exists to catch. The wall is arms ⑸ and ⑹, on scripts
+    // that carry no forbidden spelling at all.
+    let (_, alternation) = asking_sed(
         &program,
         &vars,
         "baseline x",
         &["-n", r"s/^\(baseline\|read\) //p"],
     );
-    assert!(
-        took,
-        "⛔ ITEM 1001: {at} REFUSED a plain BRE that carries no label at all, saying:\n{}\nA strict \
-         sed stands in front of every hook this suite drives; one that refuses an ordinary script \
-         is a wall, not a measurement.",
-        alternation.trim_end(),
-    );
-    assert!(
-        alternation.trim().is_empty(),
-        "⛔ ITEM 799: {at} answered `{}` to a BRE whose `\\|` only means alternation under GNU. \
+    assert_ne!(
+        alternation.trim(),
+        "x",
+        "⛔ ITEM 799: {at} answered `x` to a BRE whose `\\|` only means alternation under GNU. \
          The environment this suite calls *a POSIX sed* is then the same environment as *as \
          configured*, and the marker that went invisible on macOS would go unmeasured here again.",
-        alternation.trim(),
     );
 
-    // ⑵ THE PARSE READING — the one that was NOT covered. A strict sed must not answer `RUN`: it
+    // ⑵ ⛔⛔⛔⛔⛔ AND `--posix` IS STILL THE THING DOING THAT, which arm ⑴ can no longer say on its
+    // own — since item 1006 the double refuses `\|` BEFORE it execs, so dropping `--posix` would
+    // leave arm ⑴ green. `\w` is a GNU extension the double does NOT refuse (it is in the LOUD
+    // class: a BSD regex rejects the expression outright rather than misreading it), so it still
+    // reaches the real program and separates the two: measured 2026-09-10, `1` against `s/\w/X/p`
+    // is `X` under plain GNU, EMPTY under `--posix`, and an error under a BSD regex.
+    //
+    // ⚠ If a later round moves the loud escapes onto the refusal list, this arm goes red and its
+    // remedy is to pick another extension `--posix` still governs — not to delete it.
+    let (_, extension) = asking_sed(&program, &vars, "1", &["-n", r"s/\w/X/p"]);
+    assert_ne!(
+        extension.trim(),
+        "X",
+        "⛔ ITEM 799: {at} read `\\w` as a word character, which is GNU's grammar and not POSIX's. \
+         `--posix` is what turns that off, so this environment is no longer strict about regular \
+         expressions at all — and the refusals added for item 1006 cover three spellings, not a \
+         grammar.",
+    );
+
+    // ⑶ THE PARSE READING — the one that was NOT covered. A strict sed must not answer `RUN`: it
     // either refuses the spelling (the double) or reads the label BSD's way and leaves the keys
     // uncollapsed (a machine whose own sed is BSD). Both are the difference being visible.
     let (_, labelled) = asking_sed(
@@ -419,7 +435,7 @@ fn the_strict_sed_shows_both_differences_it_is_named_for() {
          spelling or answer `RUN RUN`; answering `RUN` is this environment measuring nothing.",
     );
 
-    // ⑶ AND THE REPAIR STILL WORKS. Without this the two above are satisfied by a program that
+    // ⑷ AND THE REPAIR STILL WORKS. Without this the arms above are satisfied by a program that
     // refuses everything, which would stop every hook rather than measure one.
     let (fine, repaired) = asking_sed(
         &program,
@@ -436,9 +452,9 @@ fn the_strict_sed_shows_both_differences_it_is_named_for() {
         repaired.trim(),
     );
 
-    // ⑷ ⛔⛔⛔⛔⛔ AND A `;` IS NOT ITSELF THE DEFECT, which arm ⑶ alone cannot say. Measured while
-    // writing this test: a double mutated to refuse EVERY fragment stayed GREEN through ⑴–⑶,
-    // because the repaired spelling in ⑶ carries no `;` at all and the refusal is only reached by
+    // ⑸ ⛔⛔⛔⛔⛔ AND A `;` IS NOT ITSELF THE DEFECT, which arm ⑷ alone cannot say. Measured while
+    // writing this test: a double mutated to refuse EVERY fragment stayed GREEN through ⑴–⑷,
+    // because the repaired spelling in ⑷ carries no `;` at all and the refusal is only reached by
     // a script that does. `;` between ordinary commands is POSIX and this repository's hooks spell
     // it TEN times (counted 2026-09-10, the shell's own `;` excluded) — a strict sed that refused
     // it would stop `loop_read_keys` and six of `hosted-read.sh`'s lines on the platform this
@@ -668,64 +684,20 @@ fn the_walk_finds_the_declared_ones_and_not_the_ones_that_only_mention_it() {
     );
 }
 
-/// Whether a file this walk reached is a SHELL SCRIPT — the only kind of file a `--selftest` arm
-/// can live in, and the decision the boundary gate below rests on.
-///
-/// ⚠ By NAME or by SHEBANG, and the second is not decoration: `.githooks/` names its hooks
-/// `pre-push`, not `pre-push.sh`, so a stray selftest is most likely to be written in exactly the
-/// style a name-only filter cannot see.
-fn is_shell_script(name: &str, text: &str) -> bool {
-    name.ends_with(".sh")
-        || text
-            .lines()
-            .next()
-            .is_some_and(|first| first.starts_with("#!") && first.contains("sh"))
-}
-
 /// Every shell script IN THE TREE whose code declares a `--selftest`, as repo-relative paths — the
 /// whole population, not the part [`declared_selftests`] runs.
 ///
-/// ⚠ `.git/` and `target/` are not source and are not walked. Nothing else is skipped, which is the
-/// property this function exists for: a walk that can be told where not to look is a walk whose
-/// exemption list is the answer.
+/// ⚠⚠ **The WALK is [`sprag_gate::shell::shell_sources`] and the COMMENT RULE is this file's** —
+/// register item 1006, which needed the same walk for a different question and found the two rules
+/// pull in opposite directions. `code_cut_at_hash` is the one that belongs here, because the prose
+/// explaining `--selftest` says the word too and a scan that saw it would send this suite to run a
+/// hook with an argument it does not understand.
 fn shell_selftests_in_tree() -> Vec<String> {
-    let root = repo_root();
-    let mut stack = vec![root.clone()];
-    let mut found: Vec<String> = Vec::new();
-    while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir)
-            .unwrap_or_else(|why| panic!("{} must be readable: {why}", dir.display()));
-        for entry in entries {
-            let path = entry.expect("a directory entry").path();
-            let name = path
-                .file_name()
-                .expect("a directory entry has a name")
-                .to_string_lossy()
-                .into_owned();
-            if path.is_dir() {
-                if name != ".git" && name != "target" {
-                    stack.push(path);
-                }
-                continue;
-            }
-            // A file with some OTHER extension is not a shell script, and skipping it here is what
-            // keeps this from reading every `.rs` in the workspace to learn that.
-            if path.extension().is_some_and(|ext| ext != "sh") {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            if is_shell_script(&name, &text) && code_of(&text).contains("--selftest") {
-                found.push(
-                    path.strip_prefix(&root)
-                        .unwrap_or(&path)
-                        .to_string_lossy()
-                        .into_owned(),
-                );
-            }
-        }
-    }
+    let mut found: Vec<String> = sprag_gate::shell::shell_sources()
+        .into_iter()
+        .filter(|source| source.code_cut_at_hash().contains("--selftest"))
+        .map(|source| source.file)
+        .collect();
     found.sort();
     found
 }
@@ -770,6 +742,7 @@ fn no_selftest_is_declared_where_the_runner_never_looks() {
 /// twice.
 #[test]
 fn the_script_filter_tells_a_hook_from_a_document() {
+    use sprag_gate::shell::is_shell_script;
     assert!(
         is_shell_script("tidy.sh", "echo hi\n"),
         "a `.sh` name is a shell script whatever its first line says, or a stray with no shebang \

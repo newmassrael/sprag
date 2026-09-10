@@ -91,6 +91,13 @@ pub mod vocabulary;
 /// walk's fiddly parts are where two copies of a rule drift apart.
 pub mod sources;
 
+/// Every SHELL script this workspace carries, and the argv of the commands they spell.
+///
+/// Beside [`sources`] and for its reason, on the other language this repository enforces itself in.
+/// What is shared is the WALK; the comment rule is each caller's own, because the two questions
+/// asked of shell here fail in opposite directions — register item 1006 has the measurement.
+pub mod shell;
+
 /// Which PACKAGE owns a binary, so a refusal can name the command that ENDS it — item 455.
 ///
 /// Here rather than inside [`Unbuilt`] because the question is about the workspace, not about one

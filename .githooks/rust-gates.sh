@@ -81,7 +81,14 @@ rust_gates_bound_this_lane() {
     routed_decl="$root/.claude/remote-build.toml"
     routed_kb=""
     if [ -f "$routed_decl" ]; then
-        routed_kb=$(sed -n 's/^precommit_kb = \([0-9]\+\).*/\1/p' "$routed_decl" | head -1)
+        # ⛔ `[0-9][0-9]*` AND NOT `[0-9]\+` -- register item 1006. `\+` is a GNU
+        # extension to a basic regular expression; BSD reads it as a LITERAL `+`,
+        # so on macOS this matched nothing, `routed_kb` came back empty, and the
+        # branch below announced *no usable precommit_kb in the file* about a
+        # file that says exactly what it should. A refusal naming the wrong cause
+        # is worse than none. Measured 2026-09-10 with a FreeBSD regex(3) built
+        # here: `1234` under GNU, empty under BSD, and `1+` matched instead.
+        routed_kb=$(sed -n 's/^precommit_kb = \([0-9][0-9]*\).*/\1/p' "$routed_decl" | head -1)
     fi
     free_kb=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null || true)
     if [ -n "$routed_kb" ] && [ -n "$free_kb" ] && [ "$routed_kb" -gt 0 ]; then

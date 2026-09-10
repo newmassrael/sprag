@@ -473,7 +473,7 @@ pub fn workspace_root() -> PathBuf {
 /// must build the same thing the walk builds. Two spellings of *what a gate reads* is how a case
 /// passes against a shape the real walk would never hand it — this crate's own subject, one level
 /// down.
-fn code_lines(text: &str) -> Vec<(usize, String)> {
+pub(crate) fn code_lines(text: &str) -> Vec<(usize, String)> {
     text.lines()
         .enumerate()
         .map(|(index, line)| (index + 1, line.trim().to_owned()))
