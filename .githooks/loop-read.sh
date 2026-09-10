@@ -233,23 +233,54 @@ loop_read_scorings() {
     return 0
 }
 
-# What a `key scoring` list `$2` says about the run `$1`.
+# ── THE TWO LISTS JOINED ONCE -- register item 986 ───────────────────────────
 #
-# ⚠ AN EMPTY ANSWER IS AN ANSWER and not a failure — it is the spelling the
-# product gives the arm that means *nothing in this record says*, and it is what
-# a run this hook has no scoring for must be asked about under.
-loop_read_scoring_of() {
-    local key list skey sword
-    key="$1"
-    list="$2"
-    while read -r skey sword; do
-        [ "$skey" = "$key" ] || continue
-        printf '%s' "$sword"
-        return 0
-    done <<SCORINGS
-$list
-SCORINGS
-    return 0
+# `$1` is the `key word` ending list, `$2` the `key scoring` list; the answer is
+# `key word scoring`, one line per ending, in the ending list's order.
+#
+# ⛔⛔⛔⛔⛔ WHY THIS IS ONE PASS AND NOT A LOOKUP PER RUN.
+#
+# What stood here was `loop_read_scoring_of KEY LIST`, called from inside two
+# loops over the endings -- so every run cost a COMMAND SUBSTITUTION (a forked
+# subshell) and a scan of the whole scoring list. That is quadratic in the number
+# of ended runs, and the number of ended runs only grows.
+#
+# ⚠⚠⚠ MEASURED, TWICE, AND THE SECOND MEASUREMENT IS THE ARGUMENT. Register item
+# 986 recorded 0.72s -> 2.48s (3.3x) when this relay was built, at 120 ended runs,
+# and judged the cost acceptable AT THAT n. Re-measured 2026-09-10 at **266** ended
+# runs: **3.03s, 3.16s, 3.39s**. The judgement was about a number that had since
+# moved, which is what that item said would happen and why it stayed open.
+#
+# ⚠⚠ AN EMPTY SCORING IS AN ANSWER and not a failure -- it is the spelling the
+# product gives the arm that means *nothing in this record says*, and an ending
+# with no scoring line is emitted with an empty third field rather than dropped.
+# A run left out here would be handed the CLASS's unhedged sentence, which is the
+# reading register item 968 was filed on.
+#
+# ⚠ The lists travel through the ENVIRONMENT rather than `awk -v`, which processes
+# backslash escapes in the value it is given. Nothing in a run key or a scoring
+# word carries one today; a reader that depends on that being true for ever is a
+# reader with a bug waiting in it.
+loop_read_pair_scorings() {
+    # ⛔⛔⛔⛔⛔ WHAT COUNTS THE COST -- register item 986's ⑴, and the reason it is
+    # a counter in a FILE rather than a variable: the shape this replaced did its
+    # work inside a command substitution, so a variable bumped there died with the
+    # subshell and could not be counted at all. The gate in `loop_read_selftest`
+    # runs the same population at two sizes and refuses a count that grew.
+    #
+    # ⚠ Off unless a caller names the file, so nothing is paid in production.
+    [ -z "${LOOP_READ_SCAN_LOG:-}" ] || printf '.' >> "$LOOP_READ_SCAN_LOG"
+    LOOP_READ_PAIR_SCORED="$2" command awk '
+        BEGIN {
+            n = split(ENVIRON["LOOP_READ_PAIR_SCORED"], lines, "\n")
+            for (i = 1; i <= n; i++) {
+                if (split(lines[i], f, " ") > 0 && f[1] != "") scoring[f[1]] = f[2]
+            }
+        }
+        $1 != "" { print $1, $2, scoring[$1] }
+    ' <<PAIRED
+$1
+PAIRED
 }
 
 # THE PRODUCT'S ROW for one ending and one scoring — register item 982, and the
@@ -478,7 +509,7 @@ loop_read_promotion_moment() {
 # endings -- so this file decides nothing about which answer comes first either.
 loop_read_next_steps() {
     local ended sprag table rows word rest keys ekey eword classified unclassified
-    local scorings scoped probe seen escoring scoring said
+    local scorings scoped probe seen escoring scoring said paired
     ended="$1"
     [ -n "$ended" ] || return 0
     sprag="$(loop_read_sprag)"
@@ -530,17 +561,19 @@ loop_read_next_steps() {
              "question (register item 824). The lines below say what happens" \
              "next without saying whether anybody was ever going to check it."
     fi
+    # ⛔ THE JOIN HAPPENS HERE, ONCE -- register item 986. Both loops below read
+    # `key word scoring` straight out of it, so neither pays a scan per run.
+    paired="$(loop_read_pair_scorings "$ended" "$scorings")"
     while read -r word rest; do
         [ -n "$word" ] || continue
         # ── WHICH SCORINGS THE RUNS UNDER THIS WORD RECORDED, in the log's order
         seen=""
-        while read -r ekey eword; do
+        while read -r ekey eword escoring; do
             [ "$eword" = "$word" ] || continue
-            escoring="$(loop_read_scoring_of "$ekey" "$scorings")"
             case "$seen" in *"[$escoring]"*) continue ;; esac
             seen="${seen}[$escoring]"
         done <<ENDINGS
-$ended
+$paired
 ENDINGS
         [ -n "$seen" ] || continue
         while [ -n "$seen" ]; do
@@ -548,12 +581,12 @@ ENDINGS
             scoring="${scoring%%\]*}"
             seen="${seen#*\]}"
             keys=""
-            while read -r ekey eword; do
+            while read -r ekey eword escoring; do
                 [ "$eword" = "$word" ] || continue
-                [ "$(loop_read_scoring_of "$ekey" "$scorings")" = "$scoring" ] || continue
+                [ "$escoring" = "$scoring" ] || continue
                 keys="$keys $ekey"
             done <<ENDINGS
-$ended
+$paired
 ENDINGS
             [ -n "$keys" ] || continue
             if [ "$scoped" -eq 1 ]; then
@@ -817,7 +850,7 @@ loop_read_gap() {
 # written into this one before it has had the chance.
 loop_read_selftest() {
     local here tmp pass fail said saved_state saved_home rc
-    local scratch_refusal probe_key steps
+    local scratch_refusal probe_key steps small big scan_small scan_big
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     # ⛔⛔⛔⛔⛔ CHECKED IN THE SAME STATEMENT IT IS TAKEN -- register item 792, and
     # this file did NOT do it in its first draft: the check was one line below, and
@@ -1449,6 +1482,82 @@ SCORINGS
     else
         echo "  FAIL  the scoring clause exits ${rc} under set -euo pipefail," \
              "which is a REFUSED PUSH rather than a sentence"
+        fail=$((fail + 1))
+    fi
+
+    # (12x-f) ⛔⛔⛔⛔⛔ AND WHAT THE SPLIT COSTS DOES NOT GROW WITH THE NUMBER OF
+    # RUNS -- register item 986, ⑴ and ⑵ together.
+    #
+    # # What was uncounted, and what it had already cost
+    #
+    # The repair for item 982 looked up each run's scoring by SCANNING the whole
+    # scoring list, from inside two loops over the endings -- so the work was
+    # quadratic in the number of ended runs and **nothing measured it**. Item 986
+    # recorded 0.72s -> 2.48s at 120 ended runs and judged that acceptable AT THAT
+    # n; re-measured 2026-09-10 at 266 runs it was 3.03/3.16/3.39s. A cost nobody
+    # counts is one that is only ever discovered by somebody noticing.
+    #
+    # # ⚠⚠⚠⚠⚠ THE CEILING IS AN EQUALITY AND NOT A NUMBER SOMEBODY CHOSE
+    #
+    # A threshold in seconds would be a clock in a predicate (this file's own
+    # flake rule) and a number nobody could re-derive. So the population is run at
+    # TWO SIZES with the SAME distinct (ending, scoring) pairs, and what is
+    # refused is a cost that GREW. That is a 0/1 boundary about the shape of the
+    # work, it needs no tuning, and it says the thing item 986 actually wanted:
+    # *this must not scale with the number of runs*.
+    #
+    # ⚠⚠ AND THE OUTPUT IS ASSERTED BESIDE IT, or the arm is satisfiable by doing
+    # nothing at all -- a relay that answered no runs would cost the same at both
+    # sizes. The groups have to be the same groups.
+    #
+    # ⚠ THE RESIDUE, STATED: this counts what the pairing site reports. An
+    # implementation that consulted the scorings somewhere else without saying so
+    # would evade it -- the counter is honest, not tamper-proof, and the output
+    # arm is what keeps a silent rewrite from being green.
+    : > "$tmp/scan-small"
+    cat > "$tmp/state/sprag/probe.runs.json" <<'SMALL'
+{"version":1,"runs":[
+  {"id":70,"finished":true,"outcome":"exhausted","checks":{"milestone_scoring":"unauthored"}},
+  {"id":71,"finished":true,"outcome":"exhausted","checks":{"milestone_scoring":"authored"}}]}
+SMALL
+    small="$(LOOP_READ_SCAN_LOG="$tmp/scan-small" LOOP_READ_SPRAG="$tmp/bin/sprag-scoped" \
+        loop_read_gap | command grep " ended '" | command sed 's/probe#[0-9]*/RUN/g; :a; s/RUN RUN/RUN/; ta' \
+        | command sort -u)"
+    : > "$tmp/scan-big"
+    cat > "$tmp/state/sprag/probe.runs.json" <<'BIG'
+{"version":1,"runs":[
+  {"id":70,"finished":true,"outcome":"exhausted","checks":{"milestone_scoring":"unauthored"}},
+  {"id":71,"finished":true,"outcome":"exhausted","checks":{"milestone_scoring":"authored"}},
+  {"id":72,"finished":true,"outcome":"exhausted","checks":{"milestone_scoring":"unauthored"}},
+  {"id":73,"finished":true,"outcome":"exhausted","checks":{"milestone_scoring":"authored"}},
+  {"id":74,"finished":true,"outcome":"exhausted","checks":{"milestone_scoring":"unauthored"}},
+  {"id":75,"finished":true,"outcome":"exhausted","checks":{"milestone_scoring":"authored"}},
+  {"id":76,"finished":true,"outcome":"exhausted","checks":{"milestone_scoring":"unauthored"}},
+  {"id":77,"finished":true,"outcome":"exhausted","checks":{"milestone_scoring":"authored"}}]}
+BIG
+    big="$(LOOP_READ_SCAN_LOG="$tmp/scan-big" LOOP_READ_SPRAG="$tmp/bin/sprag-scoped" \
+        loop_read_gap | command grep " ended '" | command sed 's/probe#[0-9]*/RUN/g; :a; s/RUN RUN/RUN/; ta' \
+        | command sort -u)"
+    scan_small="$(command wc -c < "$tmp/scan-small" | command tr -d ' ')"
+    scan_big="$(command wc -c < "$tmp/scan-big" | command tr -d ' ')"
+    if [ "$scan_small" -gt 0 ] && [ "$scan_big" -le "$scan_small" ]; then
+        echo "  ok    four times the runs cost the same ${scan_big} scoring pass(es)"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL  REGISTER ITEM 986: two runs cost ${scan_small} scoring pass(es)" \
+             "and eight cost ${scan_big} -- the split's cost scales with the number" \
+             "of ended runs, and nothing was counting it"
+        fail=$((fail + 1))
+    fi
+    # ⚠⚠ THE ARM ABOVE CANNOT STAND ALONE: doing nothing costs nothing at both
+    # sizes. The GROUPS must be the same groups -- one line per (ending, scoring),
+    # with the run keys erased so only the grouping is compared.
+    if [ -n "$small" ] && [ "$small" = "$big" ]; then
+        echo "  ok    and the groups are the same groups at both sizes"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL  REGISTER ITEM 986: the cheap answer is not the same answer --" \
+             "two runs said [$small] and eight said [$big]"
         fail=$((fail + 1))
     fi
 
