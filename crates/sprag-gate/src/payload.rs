@@ -993,6 +993,20 @@ impl Rust {
     /// times, two of them taking an event type. Nothing was wrong on the day — the winner could not
     /// carry a payload, the loser never reached a door, and the sites are declined for a third
     /// reason — but three coincidences is not a design.
+    ///
+    /// # ⚠⚠⚠ What is contested TODAY, measured 2026-09-11, and the one that surprised
+    ///
+    /// Sixty-eight names for `ai_loop.scxml`, eleven for `context_review.scxml`, ten for
+    /// `orchestration.scxml`, none for `session.scxml` — so the reader was choosing far more often
+    /// than the one case the register was filed on. The one that mattered was neither: `outer.rs`
+    /// declares `Raise::carrying` (the envelope constructor) and `OuterLoop::carrying` (a method
+    /// that moves counters), and ELEVEN driver raises spell the first.
+    ///
+    /// ⚠⚠⚠⚠ **A QUALIFIED KEY DOES NOT SEPARATE A TRAIT METHOD FROM AN INHERENT ONE** — register
+    /// item 1029, measured here: `AiLoop::walked` holds TWO bodies, because `impl AiLoop` and
+    /// `impl Plugin for AiLoop` both answer `impl_type` with `AiLoop`. That reads STRICTLY, which
+    /// is the safe direction and why nothing is wrong today, but it is not Rust's own rule — an
+    /// inherent method wins over a trait one, and this reader does not know that yet.
     #[must_use]
     pub fn contested(&self) -> BTreeMap<String, usize> {
         self.bodies
@@ -1853,6 +1867,16 @@ fn literal(expr: &str) -> Option<String> {
 /// `Readiness::WIRE_KEY` both, and a function only under its bare name — so `Raise::carrying` and
 /// `OuterLoop::carrying` were one key, and eleven driver sites were read through whichever of them
 /// this reader met first.
+///
+/// # ⚠⚠ The depth this counts is BRACES IN TEXT, and what that was measured against
+///
+/// Comment lines are already gone ([`Source::code`]), but a brace inside a string literal still
+/// counts, so a file that writes `format!("{…}")` unevenly could in principle drift out of its
+/// `impl`. **Measured 2026-09-11 on the worst case this workspace has**: `outer.rs` is over thirty
+/// thousand lines and full of such literals, and the walk still put `carrying` at line 2288 under
+/// `Raise` and `carrying` at line 9003 under `OuterLoop` — which is exactly what
+/// [`Rust::contested`] then reported. So the hazard is stated rather than pretended away, and it is
+/// stated as UNMEASURED-ELSEWHERE rather than as a defect: nothing has been seen to drift.
 fn owners(code: &[(usize, String)]) -> BTreeMap<usize, String> {
     let mut found = BTreeMap::new();
     let mut depth: i32 = 0;
