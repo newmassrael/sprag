@@ -367,6 +367,27 @@ fn main() -> std::process::ExitCode {
 struct Repository;
 
 impl north_star::Commits for Repository {
+    fn descends(&self, ancestor: &str, descendant: &str) -> Result<bool, String> {
+        let asked = std::process::Command::new("git")
+            .args(["merge-base", "--is-ancestor", ancestor, descendant])
+            .output()
+            .map_err(|why| {
+                format!("cannot ask git whether {descendant} descends from {ancestor}: {why}")
+            })?;
+        match asked.status.code() {
+            Some(0) => Ok(true),
+            // ⚠ 1 is *no*, and every other code is *could not ask* — the split
+            // [`north_star::Commits`] states, and the reason a broken environment does not read as
+            // a verdict about the ledger.
+            Some(1) => Ok(false),
+            _ => Err(format!(
+                "git could not be asked whether {descendant} descends from {ancestor} ({}): {}",
+                asked.status,
+                String::from_utf8_lossy(&asked.stderr).trim(),
+            )),
+        }
+    }
+
     fn resolves(&self, id: &str) -> Result<bool, String> {
         let asked = std::process::Command::new("git")
             .args([
@@ -788,14 +809,23 @@ fn cap() -> Result<north_star::Reaim, String> {
 /// Prints and exits 1: the arguments are wrong, the ledger or report will not read, the platform is
 /// not one this build knows, or the report is not a test log.
 fn elsewhere(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::ExitCode {
-    let (Some(ledger), Some(platform), Some(report)) = (args.next(), args.next(), args.next())
-    else {
+    let (Some(ledger), Some(platform), Some(report), Some(run), Some(at)) = (
+        args.next(),
+        args.next(),
+        args.next(),
+        args.next(),
+        args.next(),
+    ) else {
         eprintln!(
-            "north-star: --elsewhere needs the ledger's path, then the platform, then a file \
-             holding that platform's own test log.\n  \
-             gh run view <run-id> --json jobs\n  \
+            "north-star: --elsewhere needs the ledger's path, the platform, a file holding that \
+             platform's own test log, and THE RUN THAT LOG IS FROM — its id and the commit it was \
+             for.\n  \
+             gh run view <run-id> --json jobs,headSha\n  \
              gh api /repos/<owner>/<repo>/actions/jobs/<job-id>/logs > /tmp/macos.log\n  \
-             north-star --elsewhere <debt-open.md> macos /tmp/macos.log\n\
+             north-star --elsewhere <debt-open.md> macos /tmp/macos.log <run-id> <commit>\n\
+             The run is REQUIRED because evidence with no date cannot be compared with the \
+             evidence the ledger already holds — measured 2026-09-10, a log from two runs earlier \
+             judged the same claims and exited 0.\n\
              Not `gh run view --log-failed`: measured on three runs of one workflow, it exits 0 \
              printing nothing at all for some of them — and nothing is the one thing this mode \
              refuses to read as green.",
@@ -803,8 +833,32 @@ fn elsewhere(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process
         return std::process::ExitCode::FAILURE;
     };
     if args.next().is_some() {
-        eprintln!("north-star: --elsewhere takes one ledger, one platform and one report");
+        eprintln!(
+            "north-star: --elsewhere takes one ledger, one platform, one report and the one run \
+             that report is from"
+        );
         return std::process::ExitCode::FAILURE;
+    }
+    let run = run.to_string_lossy().into_owned();
+    let at = at.to_string_lossy().into_owned();
+    // ⛔⛔⛔⛔⛔ A DATE THIS TREE CANNOT RESOLVE IS NO DATE — register item 1000, and register item
+    // 902's rule at the moment the evidence is taken rather than after it is written down. A commit
+    // nobody has cannot be compared with anything, so every answer below would be *unrelated*, and
+    // an author would be told to fix the ledger about a report that was mislabelled.
+    match north_star::Commits::resolves(&Repository, &at) {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!(
+                "north-star: this tree cannot resolve {at}, so the report cannot be dated and its \
+                 judgement cannot be compared with what the ledger already holds. Name the commit \
+                 the run was FOR — `gh run view {run} --json headSha`",
+            );
+            return std::process::ExitCode::FAILURE;
+        }
+        Err(why) => {
+            eprintln!("north-star: {why}");
+            return std::process::ExitCode::FAILURE;
+        }
     }
     let platform = platform.to_string_lossy().into_owned();
     // ⛔ A PLATFORM THIS BUILD DOES NOT KNOW IS A REFUSAL THAT NAMES WHAT THERE IS — rule 6. A run
@@ -934,7 +988,71 @@ fn elsewhere(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process
             );
         }
     }
-    if refuted.is_empty() && unclaimed.failures.is_empty() {
+    // ⛔⛔⛔⛔⛔ **AND WHAT THIS JUDGEMENT LEAVES THE LEDGER OWING** — register item 1000. A claim
+    // this pass CONFIRMED was judged just now, at a run this caller named; if the ledger records an
+    // older run, that record is stale from this moment and the line to write is one this pass can
+    // print in full.
+    //
+    // ⚠ Only the STANDING claims. A refuted one's remedy is to delete its `@red:` line, and the
+    // evidence obligation goes with it — telling an author to record a run for a claim they are
+    // being told to remove would be two instructions pointing opposite ways.
+    let mut unrecorded = 0;
+    for number in &standing {
+        let owed = match reading.recording_of(*number, &at, &Repository) {
+            Ok(owed) => owed,
+            Err(why) => {
+                eprintln!("north-star: {why}");
+                return std::process::ExitCode::FAILURE;
+            }
+        };
+        let line = format!("{} @{platform} {run} {at}", north_star::JUDGED);
+        match owed {
+            north_star::Recording::Current => {}
+            north_star::Recording::Absent => {
+                unrecorded += 1;
+                eprintln!(
+                    "north-star: item {number} is confirmed red by run {run} and records no \
+                     `{}` line at all. Write it, under that item's `{}` line: `{line}`",
+                    north_star::JUDGED,
+                    north_star::RED,
+                );
+            }
+            north_star::Recording::Stale(was) => {
+                unrecorded += 1;
+                eprintln!(
+                    "north-star: item {number} is confirmed red by run {run} at {at}, and still \
+                     records run {} at {}, which that commit descends from. The judgement just \
+                     made is the newer one and nothing has written it down — replace that line \
+                     with: `{line}`",
+                    was.run, was.at,
+                );
+            }
+            // ⚠⚠ NOT COUNTED AS UNRECORDED, and that is the point: the ledger is AHEAD of this
+            // report, so there is nothing to record and recording would move the evidence
+            // backwards. It is said out loud because feeding an old log is a mistake a reader
+            // should hear about, and it is not this ledger's fault.
+            north_star::Recording::Behind(was) => eprintln!(
+                "north-star: item {number} already records run {} at {}, which descends from {at} \
+                 — this report is OLDER than the evidence the ledger holds, so it was not \
+                 recorded. Judging with it would move the record backwards",
+                was.run, was.at,
+            ),
+            north_star::Recording::Unrelated(was) => {
+                unrecorded += 1;
+                eprintln!(
+                    "north-star: item {number} records run {} at {}, and neither that commit nor \
+                     {at} is in the other's history — so which judgement is the later one cannot \
+                     be read here. Name a run this branch contains",
+                    was.run, was.at,
+                );
+            }
+        }
+    }
+    println!(
+        "unrecorded on {platform}: {unrecorded} of {} standing claim(s)",
+        standing.len()
+    );
+    if refuted.is_empty() && unclaimed.failures.is_empty() && unrecorded == 0 {
         std::process::ExitCode::SUCCESS
     } else {
         std::process::ExitCode::FAILURE

@@ -1908,6 +1908,43 @@ impl Reading {
         Ok(found)
     }
 
+    /// ⛔⛔⛔⛔⛔ **WHAT ITEM `number`'s EVIDENCE OWES, GIVEN A RUN JUDGED AT COMMIT `at`** —
+    /// register item 1000. See [`Recording`] for what each answer means and why the boundary is the
+    /// run in hand.
+    ///
+    /// # Errors
+    ///
+    /// A sentence naming why the repository could not be ASKED — [`Reading::paid_commits`]' split,
+    /// for its reason: a failure to ask is its own fault and never a verdict about the ledger.
+    pub fn recording_of(
+        &self,
+        number: u32,
+        at: &str,
+        commits: &dyn Commits,
+    ) -> Result<Recording, String> {
+        let Some(evidence) = self
+            .items
+            .iter()
+            .find(|item| item.number == number)
+            .and_then(|item| item.judged.clone())
+        else {
+            return Ok(Recording::Absent);
+        };
+        // ⚠⚠ ASKED IN BOTH DIRECTIONS, and the pair of answers is what separates the four cases. One
+        // question cannot: `descends(a, b)` false means *b does not contain a*, which is true both
+        // for a newer `a` and for an unrelated one, and those have opposite remedies.
+        let recorded_is_older = commits.descends(&evidence.at, at)?;
+        let recorded_is_newer = commits.descends(at, &evidence.at)?;
+        Ok(match (recorded_is_older, recorded_is_newer) {
+            // ⚠ `git merge-base --is-ancestor` answers true for a commit against itself, so the
+            // equal case arrives here as both — and it is the one where nothing is owed.
+            (true, true) => Recording::Current,
+            (true, false) => Recording::Stale(evidence),
+            (false, true) => Recording::Behind(evidence),
+            (false, false) => Recording::Unrelated(evidence),
+        })
+    }
+
     /// ⛔⛔⛔⛔⛔ **THE FAILURES NO CLAIM IN THIS LEDGER HOLDS** — register item 998, and
     /// [`Reading::standing_reds`]'s population inverted.
     ///
@@ -2625,6 +2662,19 @@ pub trait Commits {
     /// simply is not there is `Ok(false)`, and the difference is the whole of why this returns a
     /// [`Result`]: see [`Reading::paid_commits`].
     fn resolves(&self, id: &str) -> Result<bool, String>;
+
+    /// Whether `descendant` has `ancestor` in its history — the question *which of these two
+    /// commits is the later one* is asked as, and the only one that can date one piece of evidence
+    /// against another. Register item 1000.
+    ///
+    /// ⚠⚠ AN ID EQUAL TO ITSELF DESCENDS FROM ITSELF, which is `git merge-base --is-ancestor`'s own
+    /// answer and the one that makes *the ledger already records this run* readable as *not older*.
+    ///
+    /// # Errors
+    ///
+    /// A sentence naming why the question could not be PUT. Two commits on unrelated histories are
+    /// `Ok(false)` in both directions — a FACT about the pair, and the caller says what it means.
+    fn descends(&self, ancestor: &str, descendant: &str) -> Result<bool, String>;
 }
 
 /// The `<data>` id a loop document declares its re-aim cap under.
@@ -2917,6 +2967,47 @@ pub trait Reported {
     /// cannot place might be the very one holding `failure`, so guessing `false` would invent an
     /// unclaimed red and guessing `true` would excuse one.
     fn accounts_for(&self, argv: &str, failure: &str) -> Result<bool, String>;
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT THE LEDGER STILL OWES ABOUT ONE CLAIM, GIVEN THE RUN IN HAND** — register item
+/// 1000, and the half register item 989 could not reach.
+///
+/// # ⛔⛔⛔ A line written once satisfied 989 for ever
+///
+/// Item 989 made a platform-marked claim name the run that last judged it. That makes *never
+/// checked* and *checked at run N* different — and it says nothing about WHEN N was. **Measured
+/// 2026-09-10**: `--elsewhere` fed a job log from two runs earlier judged the same two claims and
+/// exited 0, because nothing in that mode knew what its own evidence was dated. So the age could
+/// not be gated for the plainest of reasons: the instrument never knew it.
+///
+/// # ⚠⚠⚠⚠⚠ Why the boundary is *the run in hand* and not *the tip*
+///
+/// The obvious freshness rule — *evidence must post-date the last change to the code the claim
+/// selects* — was measured and REJECTED. Of the last 20 commits here, 3 touched `sprag-gate` and 9
+/// touched `sprag-host`, the two crates these claims select; a hosted run takes 19–34 minutes to
+/// speak (1150–2037 s over ten runs). So that rule would stand RED after more than half of all
+/// pushes, for half an hour each, with no local act able to clear it. A gate that is red more often
+/// than green during ordinary work is one somebody turns off, and item 1000's ⑷ asked for exactly
+/// this to be measured before a boundary was chosen.
+///
+/// ⇒ What IS always reachable is this: **when a run has been judged, the ledger must record it.**
+/// The evidence is in the caller's hand at that moment, so the remedy is one line away, every time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Recording {
+    /// The ledger already names this run — nothing is owed.
+    Current,
+    /// The ledger names an OLDER run. The judgement in hand is newer, and unrecorded.
+    Stale(Judged),
+    /// ⚠ The ledger names a NEWER run than the report in hand. Recording would move the evidence
+    /// BACKWARDS, which is item 779's watermark rule in this register's clothes: a reading that can
+    /// regress is one nobody can trust in either direction.
+    Behind(Judged),
+    /// The claim names no evidence at all — [`Fault::UnjudgedRed`]'s case, met from the side that
+    /// can discharge it.
+    Absent,
+    /// ⛔ The two commits are on histories that do not contain one another, so neither is older.
+    /// Rule 6: this is refused rather than guessed at in either direction.
+    Unrelated(Judged),
 }
 
 /// 🎯🎯🎯🎯🎯 **WHAT A PLATFORM REPORTED THAT THE LEDGER DOES NOT ACCOUNT FOR** — register item 998.
@@ -4108,6 +4199,9 @@ mod tests {
             fn resolves(&self, _id: &str) -> Result<bool, String> {
                 self.0.clone()
             }
+            fn descends(&self, _ancestor: &str, _descendant: &str) -> Result<bool, String> {
+                Err("this arm is about resolution and must not be asked about ancestry".to_owned())
+            }
         }
 
         let ledger = LEDGER.replace(
@@ -4617,6 +4711,12 @@ mod tests {
     struct EveryIdResolves;
     impl Commits for EveryIdResolves {
         fn resolves(&self, _id: &str) -> Result<bool, String> {
+            Ok(true)
+        }
+        // ⚠ A CONTROL SAYS *ALREADY RECORDED* AND NOT *STALE*: this shape exists so a test about
+        // something else is never red for a reason it is not about, and an ancestry that answered
+        // *the ledger is behind* would give exactly that.
+        fn descends(&self, _ancestor: &str, _descendant: &str) -> Result<bool, String> {
             Ok(true)
         }
     }
@@ -5795,6 +5895,9 @@ mod tests {
             fn resolves(&self, _id: &str) -> Result<bool, String> {
                 Ok(self.0)
             }
+            fn descends(&self, _ancestor: &str, _descendant: &str) -> Result<bool, String> {
+                Err("this arm is about resolution and must not be asked about ancestry".to_owned())
+            }
         }
         let reading = read(&with_a_macos_red(
             "\n     @judged: @macos 34418336302 dead1234",
@@ -5825,6 +5928,100 @@ mod tests {
             (1, [].as_slice()),
             "⚠⚠ THE CONTROL: a citation this tree CAN resolve passes, so the arm above is about \
              resolution and not about the line existing",
+        );
+    }
+
+    /// A history, as the pairs that hold — [`Answers`]' shape for the question
+    /// [`Reading::recording_of`] puts. ⚠ A commit descends from ITSELF, which is `git merge-base
+    /// --is-ancestor`'s own answer and the case *the ledger already records this run* arrives as.
+    struct Line(Vec<(&'static str, &'static str)>);
+
+    impl Commits for Line {
+        fn resolves(&self, _id: &str) -> Result<bool, String> {
+            Ok(true)
+        }
+        fn descends(&self, ancestor: &str, descendant: &str) -> Result<bool, String> {
+            Ok(ancestor == descendant
+                || self
+                    .0
+                    .iter()
+                    .any(|(older, newer)| *older == ancestor && *newer == descendant))
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A JUDGEMENT THE LEDGER HAS NOT WRITTEN DOWN IS NAMED** — register item 1000, and
+    /// the half register item 989 could not reach.
+    ///
+    /// # ⛔⛔⛔ What a line written once was worth
+    ///
+    /// Item 989 made a platform claim name the run that judged it, which separates *never checked*
+    /// from *checked at run N* and says nothing about when N was. Measured 2026-09-10: `--elsewhere`
+    /// fed a job log from two runs earlier judged the same claims and exited 0 — the mode had no
+    /// idea what its own evidence was dated.
+    ///
+    /// # ⚠⚠⚠⚠⚠ FIVE ANSWERS, and four of them would be wrong as one
+    ///
+    /// *Already recorded*, *the ledger is older*, *the ledger is NEWER*, *nothing recorded* and
+    /// *not on this history* have four different remedies — and folding the third into the second
+    /// would walk the evidence BACKWARDS on a reader who fed an old log, which is item 779's
+    /// watermark rule arriving in this register. So all five are asserted here.
+    #[test]
+    fn a_judgement_the_ledger_does_not_record_is_told_apart_from_one_it_does() {
+        let ledger = with_a_macos_red("\n     @judged: @macos 111 aaa");
+        let reading = read(&ledger);
+        assert_eq!(
+            reading
+                .recording_of(898, "aaa", &Line(Vec::new()))
+                .expect("the history answered"),
+            Recording::Current,
+            "⚠⚠ THE ARM THAT KEEPS THIS FROM BEING A BAN: judging the run the ledger already \
+             records owes nothing, or every pass would demand an edit and the gate would be off \
+             within a round",
+        );
+        assert_eq!(
+            reading
+                .recording_of(898, "bbb", &Line(vec![("aaa", "bbb")]))
+                .expect("the history answered"),
+            Recording::Stale(Judged {
+                on: Platform::Macos,
+                run: "111".to_owned(),
+                at: "aaa".to_owned(),
+            }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1000: a run NEWER than the one recorded has just been judged \
+             and nothing wrote it down — that is the case a line written once used to survive for \
+             ever",
+        );
+        assert_eq!(
+            reading
+                .recording_of(898, "zzz", &Line(vec![("zzz", "aaa")]))
+                .expect("the history answered"),
+            Recording::Behind(Judged {
+                on: Platform::Macos,
+                run: "111".to_owned(),
+                at: "aaa".to_owned(),
+            }),
+            "⛔⛔ AND AN OLDER REPORT IS ITS OWN ANSWER: recording it would move the evidence \
+             backwards, and a reader handed *write this down* about it would do exactly that",
+        );
+        assert_eq!(
+            reading
+                .recording_of(898, "qqq", &Line(Vec::new()))
+                .expect("the history answered"),
+            Recording::Unrelated(Judged {
+                on: Platform::Macos,
+                run: "111".to_owned(),
+                at: "aaa".to_owned(),
+            }),
+            "⛔ RULE 6: two commits neither of which contains the other cannot be ordered, and \
+             guessing either way is a wrong instruction rather than a missing one",
+        );
+        assert_eq!(
+            read(&with_a_macos_red(""))
+                .recording_of(898, "aaa", &Line(Vec::new()))
+                .expect("the history answered"),
+            Recording::Absent,
+            "⚠ and a claim with no evidence at all is not *stale* — its remedy is the same line, \
+             and its fault is already `UnjudgedRed`'s",
         );
     }
 
