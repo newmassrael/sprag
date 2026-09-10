@@ -7296,6 +7296,80 @@ mod tests {
         );
     }
 
+    /// 🎯🎯🎯🎯🎯 **AND THE REMEDY'S OWN TABLE IS RE-MEASURED, NOT REMEMBERED** — register item
+    /// 1032.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What was prose, and why prose is not enough here
+    ///
+    /// [`CLASSIFY_REMEDY`]'s doc carries a four-row table headed *"Every clause measured,
+    /// 2026-09-07"*. Its neighbour above holds the SENTENCE — that the words `@ns:`,
+    /// `@ns-unclassified:`, `@sev:` and *commit id* all appear in it. **Nothing held the
+    /// BEHAVIOUR.** Each row does happen to be exercised somewhere in this file, and that is not
+    /// the same thing: the table could drift from the code and no gate would say so, because
+    /// nothing connects the sentence a round is handed to the outcomes it promises.
+    ///
+    /// This is the only path by which [`Reading::unclassified`] can reach zero, and
+    /// [`Ending::reached`] needs it at zero — so a remedy that quietly stopped being true would
+    /// leave the north star unreachable with every gate green. That is item 1032's real subject,
+    /// arrived at after its own stated premise (*"the loop cannot reach REACHED"*) was measured
+    /// and found FALSE: the path exists, `an_empty_admissible_set_means_finished_and_never_stuck`
+    /// walks it, and what was missing was this.
+    ///
+    /// ⚠⚠ THE ROWS ARE READ FROM THE SAME FIXTURE, one edit apart, so what differs between them is
+    /// exactly the clause the table names and nothing else.
+    #[test]
+    fn following_the_remedy_lands_where_its_table_says() {
+        const UNREAD: &str = "899. A block nobody ever classified\n     no mark of any kind\n";
+        let classified = |mark: &str| {
+            AT_THE_END.replace(
+                UNREAD,
+                &format!("899. A block that was read\n     {mark}\n"),
+            )
+        };
+        let lowered = |text: String| text.replace("@ns-unclassified: 1", "@ns-unclassified: 0");
+
+        // Row 1 — the mark AND the floor: the only row that is meant to be quiet.
+        let faults = read(&lowered(classified("@ns: out — a rendering defect"))).faults;
+        assert!(
+            faults.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1032: a round that did exactly what the remedy says still \
+             went red. This is the ONLY route by which `unclassified` reaches zero, and the ending \
+             needs it at zero — so a remedy that has stopped being true makes the north star \
+             unreachable while every other gate stays green: {faults:?}",
+        );
+
+        // Row 2 — the mark alone, floor left standing.
+        let faults = read(&classified("@ns: out — a rendering defect")).faults;
+        assert!(
+            faults
+                .iter()
+                .any(|fault| matches!(fault, Fault::RatchetSlack { .. })),
+            "⚠⚠ the table says a floor left standing reds as `RatchetSlack`, which is what names \
+             the number to write. If it stopped, the remedy's second clause is unmotivated: \
+             {faults:?}",
+        );
+
+        // Row 3 — `open` with no severity.
+        let faults = read(&lowered(classified("@ns: open"))).faults;
+        assert!(
+            faults
+                .iter()
+                .any(|fault| matches!(fault, Fault::SeverityRatchetGrew { .. })),
+            "⚠⚠ the table says an `open` verdict with no `@sev:` reds, which is the whole reason \
+             the remedy spells that clause: {faults:?}",
+        );
+
+        // Row 4 — `paid` with no commit id on the mark line.
+        let faults = read(&lowered(classified("@ns: paid"))).faults;
+        assert!(
+            faults
+                .iter()
+                .any(|fault| matches!(fault, Fault::PaidRatchetGrew { .. })),
+            "⚠⚠ the table says a `paid` verdict with no commit id reds, which is the remedy's \
+             fourth clause: {faults:?}",
+        );
+    }
+
     /// 🎯🎯🎯🎯🎯 **AN EMPTY ADMISSIBLE SET NOW MEANS *FINISHED* AND NEVER *STUCK*** — register
     /// item 936, and the single statement the whole item buys.
     ///
