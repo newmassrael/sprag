@@ -12479,8 +12479,34 @@ mod tests {
     fn echoing_agent_pane_in(workspace: &Arc<Mutex<Workspace>>, dir: &std::path::Path) -> PaneId {
         let mut command = CommandBuilder::new("/bin/sh");
         command.arg("-c");
+        // ⛔⛔⛔⛔⛔ `-icanon` IS LOAD-BEARING AND IT IS WHY THIS PANE WAS RED ON macOS FOR TWENTY
+        // DAYS — register item 952.
+        //
+        // `read` here takes its input through the tty LINE DISCIPLINE, and in canonical mode that
+        // discipline assembles a line in a buffer of a size the PLATFORM picks. MEASURED on this
+        // Linux box, driving this exact script over a pty and handing it one line of N bytes:
+        //
+        //     N = 4095 -> 4095 bytes come back      N = 4096 -> 4095 come back, the rest is GONE
+        //     N = 5000 -> 4095                      N = 8000 -> 4095
+        //
+        // — `N_TTY`'s 4096-byte canonical buffer, and everything past it is discarded with no error
+        // anywhere. macOS's buffer is smaller, and the marker
+        // `a_loop_started_over_the_wire_prompts_its_agent_with_what_the_caller_briefed` sends is
+        // **2,013 characters on one line**: under Linux's limit and over that one's. That is the
+        // whole of the platform difference — measured 15 macOS runs, 15 red, the same test green
+        // here every time.
+        //
+        // ⚠⚠ With `-icanon min 1 time 0` the same script returns 2,013 / 4,096 / 8,000 / 20,000
+        // bytes whole (measured, same harness). `read` still stops at the newline — it is the SHELL
+        // that finds it — so *"this stand-in paints only whole lines"*, which `shows_prompt: false`
+        // rests on, is unchanged. `-echo` is unchanged too: the peer still echoes by printing.
+        //
+        // ⚠ A real agent CLI reads its keys in raw mode, so a canonical stand-in was never the
+        // representative one; what a canonical peer's limit does to a long prompt is a hazard of
+        // the PRODUCT's own write path and is registered separately.
         command.arg(
-            "stty -echo; printf 'AGENT-READY\\n'; while read l; do printf '%s\\n' \"$l\"; done",
+            "stty -echo -icanon min 1 time 0; printf 'AGENT-READY\\n'; \
+             while read l; do printf '%s\\n' \"$l\"; done",
         );
         command.env("TERM", "dumb");
         command.cwd(dir);
@@ -14833,6 +14859,108 @@ mod tests {
              prose. `sprag panes` cannot ask *is anybody driving me* (item 595) until the run says \
              it in a form a program can read: {entry:?}",
         );
+        assert!(
+            lock(&workspace).close(pane).is_some(),
+            "the pane this gate opened was there to close",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE STAND-IN AGENT TAKES A LINE LONGER THAN A TTY'S CANONICAL BUFFER** — register
+    /// item 952, and the reason the gate above was red on macOS for twenty days while the product
+    /// was correct.
+    ///
+    /// # What the platform difference actually was
+    ///
+    /// [`echoing_agent_pane_in`]'s peer reads with `read`, and in CANONICAL mode the tty's line
+    /// discipline assembles that line in a buffer whose size the platform picks — silently
+    /// discarding whatever will not fit. MEASURED here, over a pty, driving that exact script:
+    /// **4,095 bytes come back whole and 4,096 comes back as 4,095**, with no error anywhere.
+    /// macOS's buffer is smaller than Linux's, and the marker the gate above sends is **2,013
+    /// characters on one line** — under this platform's limit and over that one's. Measured across
+    /// **15 consecutive macOS runs: 15 red**, the same test green here every time. A deterministic
+    /// platform fact, not the flake it was filed as.
+    ///
+    /// # ⚠⚠ Why this is a gate and not a comment on the fixture
+    ///
+    /// The peer's `stty` line is one word away from silently truncating again, and the next person
+    /// to lose that word would see exactly what item 952 saw: a green Linux job, a red macOS one,
+    /// and an assertion about a *product* that is behaving perfectly. So the fixture's capacity is
+    /// asserted directly, by the product's own write path ([`PaneAccess::inject`]), with a line
+    /// **past every canonical buffer either platform has** — this box's is 4,096.
+    ///
+    /// ⚠ It says nothing about how long a prompt the PRODUCT may type at a canonical peer. That
+    /// hazard is real and is registered on its own; what is fixed here is that this repository's
+    /// stand-in stops standing in for the tty's limit instead of for an agent.
+    #[test]
+    fn the_stand_in_agent_takes_a_line_longer_than_a_tty_canonical_buffer() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane(&workspace);
+        let access = sprag_plugin::WorkspacePaneAccess::new(Arc::clone(&workspace));
+
+        // Wait for the peer to be up, the way the fixture's own `ready_when` does.
+        let began = Instant::now();
+        while began.elapsed() < Duration::from_secs(20)
+            && !access
+                .pane_full_lines(pane)
+                .unwrap_or_default()
+                .iter()
+                .any(|line| line.contains("AGENT-READY"))
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        // ⚠ 8,192 rather than "a bit over": twice this box's measured 4,096 and many times the
+        // 1,024 a BSD line discipline hands out, so one constant covers both platforms and neither
+        // number has to be spelled here as folklore.
+        let long_line = "L".repeat(8192);
+        // ⚠⚠ THE PREMISE, because a line that FITS would make everything below green with the
+        // discipline back on — the vacuous pass this gate exists to prevent. 4,096 is what was
+        // measured on this box; the constant is twice it so one line covers the other platform's
+        // smaller one too. Grow it if a platform ever hands out more; never shrink it.
+        assert!(
+            long_line.chars().count() > 4096,
+            "⚠ the staged line ({} chars) must exceed every canonical buffer either platform hands \
+             out — 4,096 measured here, less on macOS — or this gate passes without asking \
+             anything. Grow it if a platform ever hands out more; never shrink it below that",
+            long_line.chars().count(),
+        );
+        let mut keys = sprag_plugin::KeyStroke::text(&long_line);
+        keys.push(sprag_plugin::KeyStroke::named("Enter"));
+        // ⚠ The write's own count is kept and asserted: it separates *the product wrote less than
+        // it was given* from *the tty ate what arrived*, which is the whole question here and which
+        // a bare `.expect()` would leave open.
+        let written = access
+            .inject(pane, &keys)
+            .expect("the stand-in pane takes an injection")
+            .bytes();
+        assert!(
+            written >= long_line.len() as u64,
+            "⚠ THE STAGING, NOT THE CLAIM: the injection carried {written} bytes for a line of {} \
+             — the write path shortened it before the tty ever saw it, so what fails below would \
+             not be the line discipline",
+            long_line.len(),
+        );
+
+        let began = Instant::now();
+        let mut held: Vec<String> = Vec::new();
+        while began.elapsed() < Duration::from_secs(20) {
+            held = access.pane_full_lines(pane).unwrap_or_default();
+            if held.iter().any(|line| line.contains(&long_line)) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let longest = held.iter().map(|line| line.chars().count()).max();
+        assert!(
+            held.iter().any(|line| line.contains(&long_line)),
+            "⛔ ITEM 952: the stand-in agent was handed one line of {} characters and did not hand \
+             it back. In canonical mode the tty assembles a line in a fixed buffer and DROPS the \
+             rest without an error — 4,096 on this box, less on macOS — so the peer's `stty` must \
+             keep `-icanon` or every gate that types a long brief at this pane is asserting about \
+             the line discipline instead of about the product. Longest line held: {longest:?}",
+            long_line.chars().count(),
+        );
+
         assert!(
             lock(&workspace).close(pane).is_some(),
             "the pane this gate opened was there to close",
