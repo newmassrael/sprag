@@ -93,6 +93,46 @@ pub fn data_carrying(scxml: &str) -> BTreeMap<String, BTreeSet<String>> {
     walked(scxml).reads
 }
 
+/// Every key this document NAMES beside `_event.data` — in executable content OR in its own
+/// commentary.
+///
+/// # ⚠⚠⚠⚠⚠ Why the commentary counts, and why that is not an escape hatch — register item 1024
+///
+/// [`data_carrying`] answers *what does the document READ*, which is the right question for a key
+/// the driver forgot. It is the wrong one for a key the driver SENDS, because this document
+/// deliberately publishes affordances it does not yet take:
+///
+/// > ROUTING A SINGLE DECISION SOMEWHERE OF ITS OWN, if a document ever wants to. The driver
+/// > publishes the matched rule's `name` as `_event.data.rule` beside the boolean, so a fork per
+/// > decision is one more line above this one.
+///
+/// and it says why the guard is not shipped — `==` over this datamodel is unverified, and the
+/// header's rule is that an undriven shape is not known to work. That is a decision with a reason,
+/// written where the decision lives, and a gate that called it dead publication would be telling
+/// the document it may not plan.
+///
+/// ⚠⚠ **THE EXEMPTION IS A PROPERTY, NOT A LIST**, which is what keeps it honest: the DOCUMENT
+/// admits the key by naming it, so nothing in this crate decides. And the gate PINS which keys are
+/// named-but-unread, so a comment written to silence a red is announced rather than absorbed.
+#[must_use]
+pub fn named(scxml: &str) -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+    let mut rest = scxml;
+    while let Some(at) = rest.find("_event.data.") {
+        rest = &rest[at + "_event.data.".len()..];
+        let key: String = rest
+            .chars()
+            .take_while(|letter| {
+                letter.is_ascii_lowercase() || letter.is_ascii_digit() || *letter == '_'
+            })
+            .collect();
+        if !key.is_empty() {
+            found.insert(key);
+        }
+    }
+    found
+}
+
 /// The `(state, event)` pairs where a BARE raise of a data-carrying event is HARMLESS — the state
 /// declares its own transition for it, that transition reads nothing, and what it enters reads
 /// nothing either.

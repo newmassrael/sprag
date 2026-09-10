@@ -14785,10 +14785,15 @@ impl OuterLoop {
             "context": spend.map_or(0, |spend| spend.context),
             "cold": spend.map_or(0, |spend| spend.cold),
             "floor": spend.map_or(0, |spend| spend.floor),
-            "unreadable": match accounted.unreadable() {
-                Some(record) => serde_json::Value::from(record.display().to_string()),
-                None => serde_json::Value::Bool(false),
-            },
+            // ⛔⛔⛔ NO `unreadable` KEY, AND ITS ABSENCE IS THE DECISION — register item 1024.
+            // The level was put on this event from the day it was computed and **no document has
+            // ever read it**: not in executable content, not in commentary, in any of this crate's
+            // `.scxml`. What a reader wants is not the level but the MOMENT it changed, which is
+            // taken as a diff off `self.unaccountable` above — so the key was a second publication
+            // of a fact that already reaches its consumers, paid for on every judged turn.
+            // ⚠ `TURN`, the fixture calling itself *what the driver puts on `turn.done`*, has
+            // never carried it either; the driver disagreed with its own fixture and nothing said
+            // so, because the gate that compares them only asked the other direction.
             // ⚠⚠ A WORD OR `false`, NEVER A NUMBER, and this key is the one where that rule bites
             // hardest: the count it stands for is ZERO on the answer a guard would most want, and
             // Lua's `0` is TRUE. See [`Made`], which holds the whole argument.
@@ -17996,18 +18001,24 @@ mod tests {
             let mut loops = bounded_at(lua, pane, Duration::from_secs(1))
                 .expect("the document's datamodel must carry its four authored strings");
             let costs = loops.costs_now(&access);
+            // ⚠⚠⚠ THE FIELD TRAVELS BESIDE THE PAYLOAD — register item 1024. What this test is
+            // about is *the run says WHICH FILE*, and the payload key it used to read that off was
+            // never read by any document; `unaccountable` is what reaches `Learned::unreadable`
+            // and the journal sentence. The payload comes back too, because the numbers beside it
+            // are this test's other half and they ARE read.
+            let record = loops.unaccountable.clone();
             access.lifecycle().expect("lifecycle").close(pane);
-            costs
+            (costs, record)
         };
 
-        let read = costs(Some(&readable));
-        let unread = costs(Some(&missing));
-        let untold = costs(None);
+        let (read, read_record) = costs(Some(&readable));
+        let (unread, unread_record) = costs(Some(&missing));
+        let (untold, untold_record) = costs(None);
         let _ = std::fs::remove_dir_all(&home);
 
         assert_eq!(
-            unread["unreadable"],
-            serde_json::json!(missing.display().to_string()),
+            unread_record.as_deref(),
+            Some(missing.as_path()),
             "⚠⚠⚠⚠⚠ ITEM 431(a): the agent said where it writes, nothing could read it, and the run \
              must say WHICH FILE. Got {unread}",
         );
@@ -18027,13 +18038,13 @@ mod tests {
         // would be sent looking for a fault in a perfectly healthy fresh session.
         assert_eq!(
             (
-                &read["unreadable"],
+                read_record.as_deref(),
                 &read["context"],
                 &read["cold"],
                 &read["floor"]
             ),
             (
-                &serde_json::json!(false),
+                None,
                 &serde_json::json!(0),
                 &serde_json::json!(0),
                 &serde_json::json!(0)
@@ -18045,8 +18056,7 @@ mod tests {
         // `/bin/sh` pane carries no session name for anything to derive either — so *"unreadable"*
         // would be a claim about a file nobody ever mentioned.
         assert_eq!(
-            untold["unreadable"],
-            serde_json::json!(false),
+            untold_record, None,
             "⚠⚠ nothing was named, so nothing failed to be read: {untold}",
         );
 
@@ -18089,20 +18099,26 @@ mod tests {
             WorkspacePaneAccess::new(Arc::clone(&workspace)).with_agent_state(Some(source));
         let mut loops = bounded_at(lua, pane, Duration::from_secs(1))
             .expect("the document's datamodel must carry its four authored strings");
+        // ⚠⚠⚠ READ OFF THE FIELD, NOT OFF THE PAYLOAD — register item 1024. This pair used to
+        // assert `costs_now(…)["unreadable"]`, a key the payload carried to a document that has
+        // never read it in any of this crate's thirteen `.scxml`. The channel that DELIVERS this
+        // fact is the one below: `unaccountable` feeds `Learned::unreadable`, which the journal
+        // renderer turns into the sentence item 431(a) is about.
         let before = loops.costs_now(&access);
+        let before_record = loops.unaccountable.clone();
         std::fs::write(&late, EMPTY).expect("the agent's record, written late");
         let after = loops.costs_now(&access);
+        let after_record = loops.unaccountable.clone();
         access.lifecycle().expect("lifecycle").close(pane);
         let _ = std::fs::remove_dir_all(&healed);
 
         assert_eq!(
-            before["unreadable"],
-            serde_json::json!(late.display().to_string()),
+            before_record.as_deref(),
+            Some(late.as_path()),
             "⚠ the first look must find nothing to read, or the pair below says nothing: {before}",
         );
         assert_eq!(
-            after["unreadable"],
-            serde_json::json!(false),
+            after_record, None,
             "⚠⚠⚠ AND THE SECOND LOOK MUST LET IT GO. The same file, now readable: an answer computed \
              once and remembered would tell the document a healthy session was unreadable for the \
              rest of its life: {after}",

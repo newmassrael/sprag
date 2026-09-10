@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use sprag_gate::loop_shape::DOCUMENT;
 use sprag_gate::payload::{
-    Rust, Spelled, data_carrying, indirect, spelled, tolerant, variant_of_event,
+    Rust, Spelled, data_carrying, indirect, named, spelled, tolerant, variant_of_event,
 };
 use sprag_gate::sources::{Source, rust_sources, workspace_root};
 
@@ -71,6 +71,46 @@ const CARRYING: &[&str] = &[
     "turn.blocked",
     "turn.done",
 ];
+
+/// Every key `ai_loop.scxml` NAMES beside `_event.data` and reads nowhere — register item 1024.
+///
+/// ⚠ Each is an affordance the document wrote down on purpose, with its reason beside it, and this
+/// is the EXEMPTION the gate for item 1024 grants — pinned rather than trusted by
+/// [`every_key_the_document_names_without_reading_is_one_it_says_why_about`].
+///
+/// ⚠⚠ IT HELD TWO ON ITS FIRST RUN, and the second one is why the pin exists: `design` was a name
+/// this document's prose gave to a verdict that has always travelled as `judged`. No driver ever
+/// sent such a key and no edge ever read one — so a sentence naming nothing was quietly widening
+/// what a payload may carry unread. The sentence was corrected rather than the pin.
+const AFFORDANCES: &[&str] = &["rule"];
+
+/// How many of the driver's payloads this gate can READ, and how many it cannot — measured
+/// 2026-09-11, register item 1024's residue turned into a number.
+///
+/// # ⚠⚠⚠⚠⚠ Why the uncoverable half is COUNTED rather than described
+///
+/// [`Rust::keys_of`] answers [`None`] for a payload assembled elsewhere and handed over in a
+/// variable, and it is right to: guessing would put a red on a shape nobody wrote down. But every
+/// claim in this file is then *about the readable ones*, and the size of the other half decides how
+/// much that is worth. Left in prose it is a sentence nobody re-measures — this repository's own
+/// rule — so it is a pin: **a new raise the scan cannot follow moves the second number and says
+/// so**, which is exactly the shape item 1024 was opened about.
+///
+/// ⚠ The FIRST number falling is the other alarm: sites went away, or the reader went blind to a
+/// shape it used to follow, and those two are indistinguishable from here.
+/// ⚠⚠ **TEN AND TWO on the day this was written, and the refusal NAMES the two** rather than
+/// leaving them to be re-derived:
+///
+/// * `outer.rs:8379` raises `brief` with `&payload.to_string()` — assembled a screen away, which is
+///   why register item 1023 built `sprag_gate::briefing` to ask this same question of that one edge
+///   by itself. Covered, elsewhere.
+/// * `outer.rs:10395` raises `prompt.unasked` with `&retyped.wire()` — a METHOD on a receiver, and
+///   [`Rust::keys_of`] follows a plain call's body but not this. Not covered anywhere, and the
+///   document does read `retyped`, so nothing is wrong there today.
+///
+/// So exactly ONE raise in this driver is dark, and this number is what says when that stops being
+/// true.
+const COVERAGE: (usize, usize) = (10, 2);
 
 /// The files this gate knowingly does not read, each with the reason.
 ///
@@ -321,6 +361,159 @@ fn every_payload_the_driver_writes_down_carries_the_keys_the_document_reads() {
          datamodel, so a guard on it is silently false and an `<assign>` of it writes nothing — \
          which is item 477's shape, a decision nothing carries:\n{}",
         short.join("\n"),
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **AND A KEY THE DRIVER PUTS ON AN EVENT THAT THE DOCUMENT NEVER READS** — register
+/// item 1024, the direction the gate above computes both halves of and only asks one of.
+///
+/// # Why this is a separate claim rather than a stricter one
+///
+/// `owed - keys` is *the driver sends less than the document reads*, and a missing key is `nil`.
+/// `keys - owed` is the opposite defect and it costs nothing at run time, which is exactly why
+/// nobody notices it: a value computed, put on an event, and dropped by the machine that was handed
+/// it. This repository has now paid that shape three times — item 1018 (`PANE_DRIVEN_KEY`, a key
+/// that could not be true), item 1021 (`PANE_BORNE_BY_KEY`, three weeks unread), item 1023's own
+/// first run — and **every one was found by a person, not a gate**.
+///
+/// ⚠⚠ IT IS ASKED PER EVENT AND NOT PER STATE, deliberately. Whether a payload is OWED is
+/// state-dependent — [`tolerant`] measures that, and `turn.blocked` owes three keys in `working`
+/// and nothing in `reflecting` — but whether a key is EVER read is not: the document either names
+/// it somewhere for that event or names it nowhere. So this direction needs no state and admits no
+/// exemption, which is what makes it safe to ask where the other direction needed care.
+///
+/// ⚠ Only payloads written DOWN, on the gate above's terms: [`Rust::keys_of`] answers [`None`] for
+/// one assembled a screen away rather than guessing, and the brief's is exactly that — which is why
+/// item 1023 built `sprag_gate::briefing` to ask this same question of that one edge.
+#[test]
+fn every_key_the_driver_puts_on_an_event_is_one_the_document_reads() {
+    let (carrying, rust, sites) = measured();
+    let admitted = named(&document());
+
+    let mut dead = Vec::new();
+    let mut read = 0usize;
+    for site in sites.iter().filter(|site| site.shipping) {
+        let Some(keys) = site
+            .payload
+            .as_deref()
+            .and_then(|beside| rust.keys_of(beside))
+        else {
+            continue;
+        };
+        read += 1;
+        let owed = carrying.get(&site.event).cloned().unwrap_or_default();
+        let spare: Vec<&String> = keys
+            .difference(&owed)
+            .filter(|key| !admitted.contains(*key))
+            .collect();
+        if !spare.is_empty() {
+            dead.push(format!(
+                "  {}:{} puts {spare:?} on `{}`, and nothing in {DOCUMENT} reads {} off it",
+                site.file,
+                site.line,
+                site.event,
+                if spare.len() == 1 { "it" } else { "them" },
+            ));
+        }
+    }
+    assert!(
+        read > 5,
+        "⚠⚠⚠ only {read} of the driver's payloads could be read at all, which is too few for this \
+         claim to be about anything — the reader has gone blind to the shapes the driver writes",
+    );
+    assert!(
+        dead.is_empty(),
+        "⛔⛔⛔⛔ REGISTER ITEM 1024: the driver computes these keys, puts them on an event, and \
+         the document never looks at them. Nothing fails, nothing is logged, and the cost is paid \
+         on every raise — which is why the three earlier instances of this shape each took a \
+         PERSON counting by hand to find.\n\
+         Two answers, and the first one to check is whether the DOCUMENT should be reading it: a \
+         key nobody reads is either a decision that never arrives or a computation to delete.\n{}",
+        dead.join("\n"),
+    );
+}
+
+/// ⚠⚠⚠⚠⚠ **AND HOW MUCH OF THE DRIVER THESE CLAIMS REACH IS PINNED** — register item 1024's
+/// residue, held as [`COVERAGE`].
+#[test]
+fn how_much_of_the_driver_these_claims_can_read_is_what_they_could_read_before() {
+    let (_, rust, sites) = measured();
+    let mut read = 0usize;
+    let mut opaque = Vec::new();
+    for site in sites.iter().filter(|site| site.shipping) {
+        if site
+            .payload
+            .as_deref()
+            .and_then(|beside| rust.keys_of(beside))
+            .is_some()
+        {
+            read += 1;
+        } else {
+            // ⚠ NAMED, NOT COUNTED — the number alone would leave the next reader re-deriving
+            // WHICH sites are dark, which is the prose-nobody-re-measures this pin exists to
+            // replace. The refusal prints them, so they are a fact the gate states rather than one
+            // a person has to go and find.
+            opaque.push(format!(
+                "  {}:{} raises `{}` with {}",
+                site.file,
+                site.line,
+                site.event,
+                site.payload.as_deref().unwrap_or("nothing beside it"),
+            ));
+        }
+    }
+
+    assert_eq!(
+        (read, opaque.len()),
+        COVERAGE,
+        "⚠⚠⚠⚠⚠ WHAT THIS FILE'S CLAIMS REACH HAS MOVED.\n\
+         The second number UP: a raise arrived whose payload this scan cannot follow, so every \
+         claim here is silent about it — which is the state register item 1024 was opened on. \
+         Either write the payload down where the event is spelled, or say here why this one \
+         cannot be.\n\
+         The first number DOWN: sites went away, or the reader stopped following a shape it used \
+         to. Those two look identical from here, which is why this is a pin and not a floor.\n\
+         The sites this scan cannot read, as it found them:\n{}",
+        opaque.join("\n"),
+    );
+}
+
+/// ⚠⚠⚠⚠⚠ **AND WHICH KEYS THE DOCUMENT NAMES WITHOUT READING IS PINNED** — register item 1024's
+/// exemption, asserted rather than trusted.
+///
+/// # Why an equality, and why the exemption needs one at all
+///
+/// The gate above admits a key the document NAMES, because this document plans in prose: `rule` is
+/// published *"so a fork per decision is one more line above this one"*, with the reason the line
+/// is not yet written. That is the document deciding, which is right — and it is also, exactly, a
+/// way to silence a red by typing a sentence. Item 903's rule is that an exemption is written down
+/// and its SIZE asserted; this is that, with the names, because there are few enough to name.
+///
+/// ⚠ Measured ABOVE the pin: a key was named in commentary and is read by nothing. Either the
+/// document means to route on it — then the guard belongs in the same commit — or somebody quieted
+/// this gate. Measured BELOW: an affordance was taken up (good, and the key now appears in
+/// [`data_carrying`]) or the commentary that admitted it is gone, which makes the driver's payload
+/// key dead in the way item 1021 was for three weeks.
+#[test]
+fn every_key_the_document_names_without_reading_is_one_it_says_why_about() {
+    let carrying = data_carrying(&document());
+    let read: BTreeSet<String> = carrying.values().flatten().cloned().collect();
+    let unread: Vec<String> = named(&document()).difference(&read).cloned().collect();
+
+    assert_eq!(
+        unread,
+        AFFORDANCES
+            .iter()
+            .map(|key| (*key).to_owned())
+            .collect::<Vec<String>>(),
+        "⚠⚠⚠⚠⚠ THE SET OF KEYS THIS DOCUMENT NAMES BUT DOES NOT READ HAS MOVED, and the gate that \
+         admits them is only as narrow as this line.\n\
+         MORE than the pin: check the commentary that names the new one. A document that plans to \
+         route on a key says so and says why it has not; a sentence added to quiet a red says \
+         neither.\n\
+         FEWER than the pin: an affordance was taken up — then it is read now and this is the \
+         happy direction — or the sentence that admitted it was deleted, which makes the driver's \
+         key dead publication with nothing left to say otherwise.",
     );
 }
 

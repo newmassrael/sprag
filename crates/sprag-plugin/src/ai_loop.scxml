@@ -4082,9 +4082,22 @@
       No expression over this datamodel can tell those apart. And a guard must
       not try: SCXML does not promise how often it evaluates one, and the
       measured judgement takes 4-6 seconds. So the driver judges ONCE, when it
-      raises the event, and publishes the verdict as `_event.data.design` — the
+      raises the event, and publishes the verdict as `_event.data.judged` — the
       same arrangement `judge`'s own `_event.data.done` has always used. The
       driver measures; the document decides.
+
+      ⚠ THAT KEY IS NAMED HERE BECAUSE THIS SENTENCE ONCE NAMED ANOTHER: it
+      called the verdict `design`, and no driver has ever sent a key of that name
+      and no edge here has ever read one — the verdict has travelled as `judged`
+      since the day it existed, with the matched rule's name beside it in `rule`.
+      Register item 1024's gate found it, because a key this document NAMES is
+      admitted as an affordance the driver may publish unread, and a name that
+      stands for nothing was widening that silently.
+
+      ⚠⚠ AND THE CORRECTION IS WRITTEN WITHOUT THE `_event.data.` PREFIX ON PURPOSE.
+      Spelling it here would re-admit the very key this paragraph is retiring —
+      the gate reads commentary, which is the whole reason it can honour an
+      affordance, and the same reason it can be talked into one.
 
       ⚠ A run with no judge configured, a judge that errs, and a judge that
       answers something which is not a verdict all arrive here as FALSE. Silence
