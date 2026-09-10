@@ -14011,21 +14011,46 @@ impl OuterLoop {
         // question — *the one thing this crate's barrier exists to prevent*, in the words of the
         // gate that caught it — and the journal line it wrote about doing so is the evidence.
         //
-        // ⚠⚠⚠ **ONLY OUT OF `Nothing`, AND THAT CLAUSE IS A SCOPE RATHER THAN A MEASURED RULE —
-        // SAID PLAINLY BECAUSE THE MUTATION DID NOT RING.** Widening it to re-ask after `Handled`
-        // too leaves the whole suite green (623 passed), so nothing here holds it today.
+        // ⚠⚠⚠⚠⚠ **ONLY OUT OF `Nothing`, AND IT IS A MEASURED RULE NOW** — register item 1031,
+        // which was opened because this clause was a SCOPE nothing held: widening it to re-ask
+        // after `Handled` too left the whole suite green, so the line was a comment.
         //
-        // It is kept for two reasons, and neither is a measurement:
-        //   * `Nothing` pressed nothing, so asking again is free; reaching `Handled` may ALREADY
-        //     have answered a dialog, and a second ask could press an authorised choice twice.
-        //   * it keeps this repair to the case that was measured broken, leaving the `Handled` path
-        //     byte-for-byte what it was before item 484.
+        // **It is held by `a_delivery_does_not_press_a_dialog_its_own_consent_already_answered`,
+        // and deleting this clause makes that gate red on a real pane.** What the peer wrote when
+        // it did, verbatim — the whole finding in one line:
         //
-        // ⛔ WHY IT CANNOT BE GATED HERE, rather than left as an unexplained line: staging the
-        // double press needs a peer whose dialog SURVIVES the key that answers it, and no fixture
-        // in this crate models one — `menu_peer` clears its screen in `took`, and its `EXTRA`
-        // witness counts every later byte, so the prompt this delivery goes on to type is
-        // indistinguishable from a second press. Registered as its own item rather than hidden.
+        // ```text
+        // WITNESS TOOK 10 AGAIN 10 TYPED 78 | Bash command | Do you want to proceed? | ❯ 1. Yes …
+        // ```
+        //
+        // `TOOK 10` is this run's consent pressing Enter. `AGAIN 10` is the re-ask pressing the
+        // SAME authorised option a second time. `TYPED 78` is the prompt that then went in, which
+        // is what says the delivery was reached at all. **A decision this run made once and acted
+        // on twice**, on a pane, not in an argument.
+        //
+        // # ⚠⚠⚠⚠ Which harm is the worse one — item 1031's ⑶, and item 484 did not decide it
+        //
+        // The two candidates are *press an authorised choice twice* and *type a prompt into a
+        // dialog*, and the screen above shows they are not alternatives: with the clause deleted
+        // the run did BOTH in one pass — `AGAIN 10` and then `TYPED 78` at the same live menu.
+        // So the ordering question the round that built this line left open has an answer that
+        // needed no ranking: **re-asking out of `Handled` does not trade one harm for the other,
+        // it adds one.** A pass that has already answered is a pass whose second ask can only
+        // repeat a key, because the thing it would be asking about is the dialog its own key was
+        // meant to close.
+        //
+        // ⚠⚠ AND THE `Nothing` SIDE KEEPS ITS ORIGINAL ARGUMENT, which the measurement does not
+        // touch: nothing was pressed there, so asking again is free, and the case item 484 was
+        // measured broken on is the one this repair still covers.
+        //
+        // ⚠ WHAT IT COST TO MEASURE, so nobody pays it twice: staging this needs a dialog that
+        // SURVIVES the key answering it (`menu_peer("sticky")`, whose witness tells `AGAIN` from
+        // `TYPED` — the four other kinds clear the screen in `took` and count every later byte as
+        // one `EXTRA`), a supervisor the BARRIER walks past but the delivery does not
+        // (`asking_peer_the_barrier_walks_past` — `DialogBetweenTheReads` publishes `asking: None`
+        // and so can never reach `Handled`, while the plain screen-derived one has no window and
+        // lets the barrier answer every pass), and enough pumps for the document to compose a
+        // prompt at all. Three mutations rang on none of those before all three were in place.
         //
         // ⚠⚠ AND IT IS STILL THE QUESTION THAT DECIDES, NEVER THE STATE WORD — the paragraph above
         // holds. `facing.blocked()` is not a refusal; it is the signal that the pane moved under
@@ -22425,6 +22450,165 @@ mod tests {
              it; shorter means nothing read the document at all",
         );
         access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// 🎯🎯🎯🎯🎯 **A DELIVERY DOES NOT PRESS A DIALOG ITS OWN CONSENT HAS ALREADY ANSWERED** —
+    /// register item 1031, and the arm that makes the narrowing at item 484's re-ask a MEASURED
+    /// rule instead of a comment.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What was unmeasurable until `menu_peer`'s fifth kind existed
+    ///
+    /// The re-ask asks the guard a second time when [`Faced`] disagrees with it, and it is narrowed
+    /// to `InTheWay::Nothing` — *nothing was pressed, so asking again is free*. Reaching `Handled`
+    /// means a consent may ALREADY have taken the dialog, and `unanswered_question` is not an
+    /// observation: it calls `answer`, whose `Reached::Answered` is a KEY going in. So a second ask
+    /// against a dialog still on the screen presses an authorised choice **twice**.
+    ///
+    /// Deleting the narrowing left the whole suite green (measured again this round: 630 passed),
+    /// because no fixture modelled a dialog that survives its own answer — the other four
+    /// `menu_peer` kinds clear the screen in `took`, and `standin_agent_refusing`'s un-dismissable
+    /// peer persists but records NOTHING about the keys it swallows. `sticky` is both halves at
+    /// once: it stays on the screen and it says `TOOK` / `AGAIN` / `TYPED`.
+    ///
+    /// ⚠⚠ **THE CONTROL LIVES IN [`crate::readiness`]**, where
+    /// `a_surviving_dialog_reports_a_second_press_apart_from_bytes_typed_at_it` answers the
+    /// question this gate cannot ask about itself: *can `AGAIN` ever appear?* Without it the
+    /// assertion below is satisfied by a word the fixture never prints, which is this workspace's
+    /// standing vacuous-green shape (items 482, 706, 799).
+    ///
+    /// ⚠ AND `TOOK` IS ASSERTED BESIDE IT, so a pass that answered NOTHING cannot read as a pass
+    /// that answered once: the claim is *exactly one press*, and only the pair says that.
+    #[test]
+    fn a_delivery_does_not_press_a_dialog_its_own_consent_already_answered() {
+        // ⛔⛔⛔⛔⛔ **THE COUNT IS SWEPT, NOT NAMED** — register item 1031, and three mutations
+        // that did not ring are why. Which supervisor read of a delivery is the one that matters
+        // is exactly the assumption `DialogBetweenTheReads` says a caller should vary rather than
+        // state, and this gate varies it: `asking_peer` (no window) leaves the barrier answering
+        // every pass and the delivery unreached; the never-settling verdict never lets the run
+        // become ready at all. Both stayed green under the mutation, which is a gate about nothing.
+        for reads in 0..8 {
+            if pressed_twice_within(reads) {
+                return;
+            }
+        }
+        panic!(
+            "⚠⚠⚠⚠⚠ ITEM 1031: no arrangement of the barrier's grace put this run's own consent in \
+             front of the DELIVERY, so the line under test never ran and the mutation over it \
+             cannot ring. That is this item's whole subject arriving one layer out: the fixtures \
+             reach the branch or nothing measures it",
+        );
+    }
+
+    /// One sweep step of [`a_delivery_does_not_press_a_dialog_its_own_consent_already_answered`]:
+    /// drive a delivery whose barrier walks past `reads` supervisor reads, and answer whether this
+    /// arrangement actually reached the guard — the `TYPED` witness is what says so.
+    ///
+    /// ⚠ It returns *did this arrangement measure anything*, and the ASSERTIONS are inside: an
+    /// arrangement that reached the delivery must not have pressed twice. A step that never got
+    /// there answers `false` and the sweep moves on.
+    fn pressed_twice_within(reads: u64) -> bool {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (access, pane) = crate::testing::asking_peer_the_barrier_walks_past("sticky", reads);
+        let mut loops = OuterLoop::new(Arc::clone(&lua), pane, &spec(None))
+            .expect("the document's datamodel must carry its authored strings");
+
+        let consent = crate::consent::Consents::of(vec![
+            crate::consent::Consent::parse(
+                "Do you want to proceed?".to_string(),
+                "Yes".to_string(),
+            )
+            .expect("two needles"),
+        ])
+        .expect("a non-empty consent list");
+
+        assert_eq!(
+            loops.brief(&Brief {
+                north_star: "prove a consent's key is pressed once".to_string(),
+                milestone: "deliver at a dialog that survives its answer".to_string(),
+                reference: "register item 1031".to_string(),
+                closing_rules: None,
+                working_rules: None,
+                unverified_rules: None,
+                context_ceiling: None,
+                reflect_after_refusals: None,
+                reaim_max: None,
+                stall_after_steps: None,
+                progress_marks: None,
+                milestone_check: None,
+                successor_check: None,
+                reask_max: None,
+                service: None,
+                max_turns: Some(Counted::Of(40)),
+                reflect_every: Some(99),
+                screen_rules: None,
+                may_answer: Some(consent),
+                // ⚠ A person IS expected, so the barrier consults the consent rather than ending on
+                // the first dialog it cannot answer — which is the arm this gate needs reached.
+                await_person_ms: Some(2_000),
+                handback_still_ms: None,
+                hold_within_ms: None,
+                ready_timeout_ms: None,
+                turn_within_ms: Some(1_000),
+            }),
+            Briefed::Took,
+            "the parts must be held",
+        );
+
+        // ⚠⚠⚠⚠⚠ **PUMPED UNTIL THE PROMPT IS COMPOSED, BECAUSE ONE PASS NEVER COMPOSES ONE.**
+        // `say` is reached only where the document raised a `Say` act — `serving.taken(Act::Say)`
+        // returns early otherwise — and a freshly briefed machine walks `idle` through several
+        // states before `priming` composes the first prompt. Measured this round: a one-pass
+        // version of this gate reached the delivery under NO grace count at all, and its sweep
+        // reported every arrangement as *measured nothing*, which is what sent a reader here.
+        //
+        // ⚠ BOUNDED, and the bound is the sweep's own answer: a step that never composes a prompt
+        // is an arrangement that measured nothing, not a hang.
+        let run = RunContext::uncancellable();
+        let mut pumped = None;
+        for _ in 0..12 {
+            pumped = Some(loops.pump(&access, &run));
+            if access
+                .pane_collapsed(pane)
+                .unwrap_or_default()
+                .contains("TYPED")
+            {
+                break;
+            }
+        }
+
+        let screen = access.pane_collapsed(pane).unwrap_or_default();
+        // ⚠⚠⚠⚠⚠ **THE PREMISE, AND IT IS WHAT `sticky`'s THIRD WORD IS FOR.** The re-ask this gate
+        // is about sits in the DELIVERY, after the hold and immediately before the prompt goes in —
+        // so a pass that never got that far leaves the narrowing unconsulted and the mutation
+        // silent. A prompt is not an answering key, so `sticky` records it as `TYPED`: its presence
+        // is this run reaching the injection, which no assertion about `AGAIN` can establish.
+        //
+        // ⚠⚠ AN ARRANGEMENT THAT DID NOT REACH IT IS NOT A FAILURE, it is a step of the sweep that
+        // measured nothing — so it answers `false` and the caller tries the next count. What would
+        // be a failure is EVERY count missing, which the sweep's own `panic!` says.
+        if !screen.contains("TYPED") {
+            let _ = pumped;
+            access.lifecycle().expect("lifecycle").close(pane);
+            return false;
+        }
+        assert!(
+            screen.contains("TOOK"),
+            "⚠⚠⚠ THE CONTROL: this run's own consent must have answered the dialog, or the \
+             assertion below is about a pass that reached the injection without ever meeting the \
+             guard. Screen {screen:?}",
+        );
+        assert!(
+            !screen.contains("AGAIN"),
+            "⛔⛔⛔⛔⛔ ITEM 1031: THIS DELIVERY PRESSED AN AUTHORISED CHOICE TWICE. The re-ask \
+             after `Faced` disagrees with the guard is narrowed to `InTheWay::Nothing` for exactly \
+             this reason — reaching `Handled` means a key may already have gone in, and \
+             `unanswered_question` answers rather than observes. A dialog still on the screen then \
+             takes the same authorised option a second time, which is a decision this run made \
+             once and acted on twice. Screen {screen:?}",
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
+        true
     }
 
     /// 🎯🎯🎯🎯🎯 **A BRIEF THAT NAMES NONE OF THE TEMPLATE'S CLAIMS IS TAKEN, AND THE RUN IS

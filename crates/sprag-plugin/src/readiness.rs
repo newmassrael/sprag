@@ -2985,6 +2985,77 @@ mod tests {
         .expect("a non-empty list")
     }
 
+    /// 🎯🎯🎯🎯🎯 **A DIALOG THAT SURVIVES ITS OWN ANSWER CAN BE PRESSED TWICE, AND THE FIXTURE
+    /// SAYS SO IN WORDS A GATE CAN READ** — register item 1031's control arm.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this exists before the gate that uses it
+    ///
+    /// Item 1031 is about a line nothing measures, and the reason nothing could was the FIXTURES:
+    /// `menu_peer`'s other four kinds clear the screen in `took`, so an answered dialog is gone and
+    /// a second ask has nothing to press, and their `EXTRA` witness counts every later byte, so a
+    /// delivery typing its prompt is indistinguishable from a second press. `sticky` fixes both.
+    ///
+    /// **But a witness that never fires is green about nothing** — the shape this workspace keeps
+    /// meeting (items 482, 706, 799). So before any gate stands on `AGAIN`'s absence, this arm
+    /// makes it PRESENT: answer the same surviving dialog twice, and read the word off the pane.
+    ///
+    /// ⚠⚠ IT ALSO PINS THE OTHER HALF — that a NON-answering byte is `TYPED` and not `AGAIN`. If
+    /// the two collapsed, a gate asserting *no second press* would be satisfied by a run that
+    /// pressed nothing and denied by one that merely typed, which is the confusion `EXTRA` already
+    /// has and the whole reason `sticky` needed words of its own.
+    #[test]
+    fn a_surviving_dialog_reports_a_second_press_apart_from_bytes_typed_at_it() {
+        let (access, pane) = asking_peer("sticky");
+        let run = RunContext::uncancellable();
+
+        // ── ① THE FIRST ANSWER, through the product's own consent path ──
+        let first = watched(Some(consent_to("Yes")), Duration::from_millis(400))
+            .reached(&access, pane, &run)
+            .expect("a blocked peer is not an error");
+        assert!(
+            matches!(first, Reached::Answered { .. } | Reached::Yes),
+            "⚠⚠ the control's own premise: a clause authorising `Yes` must answer this dialog, or \
+             nothing below is about a dialog that was answered at all: {first:?}",
+        );
+        let after_one = access.pane_collapsed(pane).unwrap_or_default();
+        assert!(
+            after_one.contains("TOOK"),
+            "⚠⚠⚠ the peer must record the key that acted: {after_one:?}",
+        );
+        assert!(
+            !after_one.contains("AGAIN"),
+            "⚠⚠⚠⚠ AND ONE ANSWER IS NOT A SECOND PRESS. If `AGAIN` were already here the word \
+             would be a constant, and every gate reading its absence would be green about \
+             nothing: {after_one:?}",
+        );
+
+        // ── ② AND THE DIALOG IS STILL THERE, which is the whole point of this kind ──
+        // ⚠ Through the SHIPPING parser (`peer_asking`), not by looking for the menu's text: what
+        // has to survive is a question the product reads, and a screen holding the words while the
+        // parser declines them would leave every gate below about a dialog no run can see.
+        assert!(
+            peer_asking(&access, pane).flatten().is_some(),
+            "⛔⛔⛔⛔⛔ ITEM 1031: `sticky` exists so an ANSWERED dialog is still on the screen for \
+             the shipping parser to read. If it is gone this kind has become the other four and \
+             the question *does anything press twice?* is unaskable again: {:?}",
+            access.pane_collapsed(pane),
+        );
+
+        // ── ③ THE SECOND ANSWER — the thing the narrowing in `OuterLoop` exists to prevent ──
+        let _ = watched(Some(consent_to("Yes")), Duration::from_millis(400))
+            .reached(&access, pane, &run)
+            .expect("a blocked peer is not an error");
+        let after_two = access.pane_collapsed(pane).unwrap_or_default();
+        assert!(
+            after_two.contains("AGAIN"),
+            "⛔⛔⛔⛔⛔ ITEM 1031: asking the guard AGAIN pressed the authorised choice a SECOND \
+             time, and the fixture must say so — this is the witness every gate over that line \
+             stands on, and if it cannot fire here it cannot fire anywhere: {after_two:?}",
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
     /// ⚠⚠⚠ **NOBODY CAME, AND THE RUN SAYS BOTH THINGS THAT ARE TRUE.**
     ///
     /// The other end of [`Attended`]: a caller declared a person was watching, the peer asked

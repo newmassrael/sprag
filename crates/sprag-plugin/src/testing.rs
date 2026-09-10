@@ -379,6 +379,29 @@ use crate::driver::Ceiling;
 /// * `either` — both, which is what a real agent's permission dialog does. The kind that makes
 ///   *"do not type a key you do not need"* a claim with consequences.
 /// * `deaf` — nothing works. The peer that makes [`Refusal::NotTaken`] reachable.
+/// * `sticky` — acts like `either`, and **the dialog survives the key that answered it**. Register
+///   item 1031: no fixture in this crate modelled one, so *"does anything press an authorised
+///   choice twice?"* was a question nothing could be asked.
+///
+/// # ⛔⛔⛔⛔⛔ Why `sticky` needs a WITNESS OF ITS OWN, and must not touch `EXTRA`
+///
+/// The other four kinds report `EXTRA <byte>` for anything arriving after they are done, and three
+/// gates in [`crate::readiness`] asserts `!screen.contains("EXTRA")` to hold *do not type a key you
+/// do not need*. That witness counts EVERY later byte — which is exactly why it cannot answer item
+/// 1031's question: a delivery that goes on to type its prompt at the pane is indistinguishable
+/// from one that pressed the dialog a second time. **Narrowing `EXTRA` to answering keys would
+/// silently weaken those three assertions**, so `sticky` carries its own words instead and the
+/// other four kinds keep theirs byte-for-byte.
+///
+/// It reports, in one line above the menu: `TOOK <byte>` for the key that acted, `AGAIN <byte>` for
+/// a SECOND answering key after that, and `TYPED <byte>` for anything else. So *the run pressed an
+/// authorised choice twice* and *the run typed its prompt into a dialog* are different screens.
+///
+/// ⚠⚠ **THE WITNESS IS PRINTED ABOVE THE MENU, NEVER BELOW IT.** `sprag_detect::choice` reads a
+/// dialog as a BOTTOM-ANCHORED numbered run and takes the last qualifying one, so a witness line
+/// under the options would be this fixture arguing with the parser the whole contract is built on.
+/// ⚠ And it is carried in a variable across the redraw, on `AFTER`'s own precedent: acting redraws,
+/// and a line printed once would be wiped by the next clear.
 pub(crate) fn menu_peer(kind: &str) -> String {
     format!(
         r#"
@@ -386,9 +409,12 @@ stty -icanon -echo 2>/dev/null
 kind={kind}
 sel=1
 seen=''
+w=''
+acted=0
 readbyte() {{ dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \n'; }}
 draw() {{
   printf '\033[2J\033[H'
+  if [ -n "$w" ]; then printf 'WITNESS%s\r\n' "$w"; fi
   printf 'Bash command\r\n'
   printf 'Do you want to proceed?\r\n'
   i=1
@@ -407,6 +433,10 @@ e=$(readbyte)
 printf 'EXTRA %s\r\n' "$e"
   done
 }}
+stick() {{
+  if [ "$acted" = 0 ]; then acted=1; w="$w TOOK $1"; else w="$w AGAIN $1"; fi
+  draw
+}}
 draw
 while :; do
   k=$(readbyte)
@@ -415,15 +445,21 @@ while :; do
 49|50|51)
   case "$kind" in
     numbers|either) sel=$((k-48)); took "$k" ;;
+    sticky) sel=$((k-48)); stick "$k" ;;
     marker) sel=$((k-48)); draw ;;
     *) seen="$seen $k"; printf 'SAW %s\r\n' "$k" ;;
   esac ;;
 13|10)
   case "$kind" in
     marker|either) took "$k" ;;
+    sticky) stick "$k" ;;
     *) seen="$seen $k"; printf 'SAW %s\r\n' "$k" ;;
   esac ;;
-*) seen="$seen $k"; printf 'SAW %s\r\n' "$k" ;;
+*)
+  case "$kind" in
+    sticky) w="$w TYPED $k"; draw ;;
+    *) seen="$seen $k"; printf 'SAW %s\r\n' "$k" ;;
+  esac ;;
   esac
 done
 "#
@@ -471,6 +507,51 @@ const FIXTURE_SETTLE: Duration = Duration::from_millis(300);
 /// question comes back at once and a wait keyed on the state never comes back at all — so the gate
 /// stops comparing durations and starts comparing OUTCOMES, which no scheduler can move.
 pub(crate) fn peer_settling(script: String, settle: Duration) -> (WorkspacePaneAccess, PaneId) {
+    let (access, pane, _) = peer_settling_gated(script, settle);
+    (access, pane)
+}
+
+/// [`peer_settling`], plus the cell that makes its verdict WALK PAST a number of reads — register
+/// item 1031, and the half of that item's measurement its own done-when does not name.
+///
+/// # ⛔⛔⛔⛔⛔ Why neither existing double can stage the window this item is about
+///
+/// The narrowing item 1031 is about lives in the DELIVERY, and reaching it needs a pass where the
+/// barrier walked past the pane and `say`'s own read then meets a dialog **that a consent can
+/// answer**. Measured this round, by three mutations that did not ring:
+///
+/// * [`DialogBetweenTheReads`] opens the window — grace reads answer *working*, later ones
+///   `Blocked` — but it publishes `asking: None` on purpose. `crate::readiness::peer_asking` is
+///   guarded on `Blocked` and hands back `seen.asking`, so that double can only ever produce
+///   `Some(None)`: *blocked with nothing readable*, which reaches `InTheWay::Asking` and never
+///   `Handled`. The branch under test is on the `Handled` side.
+/// * [`peer_settling`] derives `asking` from the screen with the shipping parser, so it DOES reach
+///   `Handled` — and its verdict is `Blocked` for as long as the menu is on the screen. With
+///   `menu_peer("sticky")`, whose dialog survives its own answer, the barrier meets that dialog on
+///   every pass, answers it, and the pass ends `NotReady`. The delivery is never reached at all.
+///
+/// So one has the question and no window, the other has the window and no question. **This is
+/// both**: the screen governs what is ASKED, and the cell governs whether this read reports it.
+///
+/// ⚠ The grace is spent ONE PER READ and `checked_sub` floors it, on [`DialogBetweenTheReads`]'s
+/// own argument: a count that wrapped would grant grace for ever the moment it ran out.
+/// ⚠⚠ A gate SWEEPS the count rather than naming one, for that fixture's stated reason — which
+/// read of a delivery is the last safe one is the assumption, and an assumption a caller can vary
+/// is one a caller can measure instead.
+pub(crate) fn peer_settling_gated(
+    script: String,
+    settle: Duration,
+) -> (WorkspacePaneAccess, PaneId, Arc<AtomicU64>) {
+    let walk_past: Arc<AtomicU64> = Arc::default();
+    let (access, pane) = peer_settling_over(script, settle, Arc::clone(&walk_past));
+    (access, pane, walk_past)
+}
+
+fn peer_settling_over(
+    script: String,
+    settle: Duration,
+    walk_past: Arc<AtomicU64>,
+) -> (WorkspacePaneAccess, PaneId) {
     let workspace = Arc::new(Mutex::new(Workspace::new((60, 12))));
     let pane = {
         let mut command = CommandBuilder::new("/bin/sh");
@@ -507,6 +588,40 @@ pub(crate) fn peer_settling(script: String, settle: Duration) -> (WorkspacePaneA
             let guard = workspace.lock().expect("the workspace mutex");
             guard.pane(id)?.pty().with_screen(|screen| {
                 let asking = sprag_detect::question(screen, sprag_detect::DIALOG_WINDOW);
+                // ⚠⚠⚠ **SPENT ONE PER READ, AND IT HIDES THE VERDICT RATHER THAN THE SCREEN** —
+                // register item 1031. While reads remain this supervisor answers `Idle` and no
+                // question, which is a peer the barrier walks past; the pane underneath is
+                // untouched, so a later read finds the dialog with the SHIPPING parser exactly as
+                // it always did. `checked_sub` floors the count, so grace cannot wrap back to
+                // *for ever* the moment it runs out.
+                if walk_past
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
+                        left.checked_sub(1)
+                    })
+                    .is_ok()
+                {
+                    return Some(AgentObservation {
+                        holding: None,
+                        composing: None,
+                        state: AgentState::Idle,
+                        agent: Some("claude".to_string()),
+                        authority: Authority::Scraped {
+                            rule: Some("dialog-choice-list".to_string()),
+                        },
+                        seq: 1,
+                        asked_seq: 1,
+                        reports: 0,
+                        asking: None,
+                        asked: None,
+                        said: None,
+                        said_seq: 0,
+                        noticed: None,
+                        running: None,
+                        transcript: None,
+                        settling: crate::access::Settling::Nothing,
+                        reporter: crate::access::ReporterVoice::Speaking,
+                    });
+                }
                 let mut seen = last_menu.lock().expect("the settle mutex");
                 if asking.is_some() {
                     seen.insert(id, std::time::Instant::now());
@@ -708,6 +823,28 @@ fn awaiting_the_menu(access: &WorkspacePaneAccess, pane: PaneId) {
 pub(crate) fn asking_peer(kind: &str) -> (WorkspacePaneAccess, PaneId) {
     let (access, pane) = peer_running(menu_peer(kind));
     awaiting_the_menu(&access, pane);
+    (access, pane)
+}
+
+/// 🎯🎯🎯🎯🎯 **A PEER SHOWING ITS MENU THAT THE NEXT `reads` SUPERVISOR READS WALK PAST** —
+/// register item 1031, and the arrangement that puts a dialog in front of the DELIVERY rather than
+/// in front of the barrier.
+///
+/// The menu is confirmed up FIRST, through the shipping parser, with the count still zero — so the
+/// pane is known to be asking before anything is hidden. Only then is the grace armed, and the next
+/// `reads` supervisor reads answer *working* while the screen underneath goes on holding the
+/// dialog. See [`peer_settling_gated`] for why neither existing double can stage this.
+///
+/// ⚠ Pair it with `menu_peer("sticky")`: the run's own consent answers the dialog inside the
+/// delivery, and a dialog that vanished there would leave the read AFTER the answer with nothing to
+/// disagree about — which is the whole window item 1031 is measured in.
+pub(crate) fn asking_peer_the_barrier_walks_past(
+    kind: &str,
+    reads: u64,
+) -> (WorkspacePaneAccess, PaneId) {
+    let (access, pane, walk_past) = peer_settling_gated(menu_peer(kind), FIXTURE_SETTLE);
+    awaiting_the_menu(&access, pane);
+    walk_past.store(reads, Ordering::Release);
     (access, pane)
 }
 
