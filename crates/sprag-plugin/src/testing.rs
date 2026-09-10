@@ -496,16 +496,22 @@ pub(crate) fn peer_settling(script: String, settle: Duration) -> (WorkspacePaneA
     // never expires — see [`peer_settling`].
     let source = {
         let workspace = Arc::clone(&workspace);
-        let last_menu: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+        // ⚠⚠ KEYED BY PANE — register item 1033, and see [`MenuSeen`] for the axis. ⚠ The arm that
+        // holds this, `one_panes_dialog_is_not_another_panes_verdict`, drives the OTHER supervisor:
+        // every caller of this one spawns a single pane, so no gate here can reach a second. The
+        // shape is kept in step with its sibling deliberately rather than left to drift — two
+        // spellings of one rule is where the copies come apart, which is this file's own note two
+        // screens up about `FIXTURE_SETTLE`.
+        let last_menu: Mutex<MenuSeen> = Mutex::new(MenuSeen::new());
         Arc::new(move |id: PaneId| {
             let guard = workspace.lock().expect("the workspace mutex");
             guard.pane(id)?.pty().with_screen(|screen| {
                 let asking = sprag_detect::question(screen, sprag_detect::DIALOG_WINDOW);
                 let mut seen = last_menu.lock().expect("the settle mutex");
                 if asking.is_some() {
-                    *seen = Some(std::time::Instant::now());
+                    seen.insert(id, std::time::Instant::now());
                 }
-                let settling = seen.is_some_and(|at| at.elapsed() < settle);
+                let settling = seen.get(&id).is_some_and(|at| at.elapsed() < settle);
                 Some(AgentObservation {
                     holding: None,
                     composing: None,
@@ -1183,6 +1189,26 @@ fn names_an_agent(seen: &AgentSeen, pane: PaneId, rows: &[String], asking: bool)
     }
     false
 }
+
+/// When each pane was last seen showing a menu — **one clock PER PANE**, register item 1033.
+///
+/// # ⚠⚠⚠⚠⚠ It was ONE clock for every pane, and the axis was already declared twice beside it
+///
+/// A settling supervisor answers *`Blocked`* for its whole window after a dialog has gone, and the
+/// two fixtures that model one kept that window in a bare `Mutex<Option<Instant>>`. So a menu on
+/// ANY pane stamped the clock and `settling` then applied it to EVERY pane: a pane that had asked
+/// nothing read `Blocked` for [`FIXTURE_SETTLE`], and a gate standing on that was measuring the
+/// neighbour.
+///
+/// ⚠⚠ THE AXIS IS NOT INVENTED HERE. [`SeqHighWater`] and [`AgentSeen`] are both keyed by
+/// [`PaneId`] and both say why in as many words — *a pane a loop has REPLACED is a different pane*.
+/// Three facts sat side by side in one closure; two carried that sentence and the third did not,
+/// and nothing in the tree said the third was different. It was not.
+///
+/// ⚠ **A LOOP THAT REPLACES ITS SESSION HOLDS TWO PANES UNDER ONE SUPERVISOR** — the old one and
+/// its replacement — so this is the arrangement the product actually runs in, not a corner.
+/// `one_panes_dialog_is_not_another_panes_verdict` is the arm; it went red on the bare `Option`.
+type MenuSeen = std::collections::HashMap<PaneId, std::time::Instant>;
 
 /// The monotone latch [`peer_seq`] is read through — **one high-water mark PER PANE**.
 ///
@@ -2905,7 +2931,8 @@ pub(crate) fn supervised_asking(workspace: &Arc<Mutex<Workspace>>) -> WorkspaceP
         let workspace = Arc::clone(workspace);
         let high: SeqHighWater = Arc::default();
         let identified: AgentSeen = Arc::default();
-        let last_menu: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+        // ⚠⚠ KEYED BY PANE, like the two above it — register item 1033. See [`MenuSeen`].
+        let last_menu: Mutex<MenuSeen> = Mutex::new(MenuSeen::new());
         Arc::new(move |id: PaneId| {
             let guard = workspace.lock().expect("the workspace mutex");
             guard.pane(id)?.pty().with_screen(|screen| {
@@ -2922,9 +2949,11 @@ pub(crate) fn supervised_asking(workspace: &Arc<Mutex<Workspace>>) -> WorkspaceP
                 let asking = sprag_detect::question(screen, sprag_detect::DIALOG_WINDOW);
                 let mut seen = last_menu.lock().expect("the settle mutex");
                 if asking.is_some() {
-                    *seen = Some(std::time::Instant::now());
+                    seen.insert(id, std::time::Instant::now());
                 }
-                let settling = seen.is_some_and(|at| at.elapsed() < FIXTURE_SETTLE);
+                let settling = seen
+                    .get(&id)
+                    .is_some_and(|at| at.elapsed() < FIXTURE_SETTLE);
                 Some(AgentObservation {
                     holding: None,
                     composing: None,
@@ -3796,6 +3825,97 @@ mod tests {
     use super::{Asks, COUNTER_FN, STANDIN_COLUMNS, peer_seq, refused_naming};
     use crate::access::{JobLeader, PaneDoing, PaneError};
     use crate::readiness::ReadyWhen;
+
+    /// ⛔⛔⛔⛔⛔ **ONE PANE'S DIALOG IS NOT ANOTHER PANE'S VERDICT** — register item 1033, and the
+    /// arm that did not exist is half of what that item is.
+    ///
+    /// # ⚠⚠⚠ Why this is a gate on a FIXTURE, and why that is not a lesser thing
+    ///
+    /// [`supervised_asking`](super::supervised_asking) stands in for the daemon's own
+    /// `agent_state_source`, and every gate built on it inherits whatever it believes. Item 484 cost
+    /// three weeks because a fixture's COMMENT was read as a fact about its code; this asks the code.
+    ///
+    /// # ⚠⚠ What is measured, and where the axis came from
+    ///
+    /// Three facts live side by side in that closure and two of them are keyed by pane —
+    /// `high: SeqHighWater` (`HashMap<PaneId, u64>`) and `identified: AgentSeen`
+    /// (`HashSet<PaneId>`), each with a doc paragraph saying *why*: **a pane a loop has REPLACED is
+    /// a different pane**. The third, the settle clock, was a bare `Mutex<Option<Instant>>`. So the
+    /// axis is not invented here: it is the one its two neighbours already declare.
+    ///
+    /// A loop that replaces its inner session holds exactly two panes under one supervisor — the
+    /// old one and its replacement — so this is the arrangement the product actually runs in.
+    ///
+    /// # ⚠ The two controls, without which a constant passes
+    ///
+    /// * the asking pane MUST read `Blocked`, or a supervisor that never blocks anything is green;
+    /// * with BOTH panes quiet neither may read `Blocked`, or a supervisor that blocks everything
+    ///   the moment it has ever seen a dialog is green on the arm above by accident.
+    #[test]
+    fn one_panes_dialog_is_not_another_panes_verdict() {
+        use crate::access::PaneAccess;
+        use sprag_terminal::{CommandBuilder, Workspace};
+        use std::sync::{Arc, Mutex};
+
+        let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, STANDIN_ROWS))));
+        let spawn = |script: String| {
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.arg("-c");
+            command.arg(script);
+            command.env("TERM", "dumb");
+            workspace
+                .lock()
+                .expect("the workspace mutex")
+                .spawn(command, "sh".to_string(), STANDIN_COLUMNS, STANDIN_ROWS)
+                .expect("spawn a pane")
+        };
+
+        // ⚠ The QUIET pane is spawned first and never asks anything. `cat` holds the pane open
+        // without painting, which is what *a peer that has stopped to ask nothing* looks like.
+        let quiet = spawn("stty -echo; printf 'QUIET-READY\\n'; exec cat".to_owned());
+        let asking = spawn(super::menu_peer("numbers"));
+
+        let access = super::supervised_asking(&workspace);
+        super::started(&access, quiet, "QUIET-READY");
+
+        // ⚠⚠ THE CONTROL THAT MUST COME FIRST: before any dialog exists, neither pane is blocked.
+        // Taken BEFORE the menu, because after it this supervisor's clock cannot be un-stamped.
+        let blocked = |pane| {
+            access
+                .supervision()
+                .and_then(|supervisor| supervisor.pane_agent_state(pane).seen())
+                .is_some_and(|seen| seen.state == sprag_detect::AgentState::Blocked)
+        };
+        assert!(
+            !blocked(quiet) && !blocked(asking),
+            "⚠⚠ THE CONTROL: with nothing asking, no pane may read `Blocked` — otherwise the arm \
+             below is green about a supervisor that blocks everything. quiet={:?} asking={:?}",
+            access.pane_collapsed(quiet),
+            access.pane_collapsed(asking),
+        );
+
+        super::awaiting_the_menu(&access, asking);
+
+        assert!(
+            blocked(asking),
+            "⚠⚠ THE SECOND CONTROL: the pane that IS asking must read `Blocked`, or this fixture \
+             never blocks anything and the claim below is about nothing: {:?}",
+            access.pane_collapsed(asking),
+        );
+        assert!(
+            !blocked(quiet),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1033: the pane that asked NOTHING is being reported \
+             `Blocked`, because this supervisor keeps ONE settle clock for every pane it watches \
+             instead of one per pane — while the two facts declared beside it are both keyed by \
+             `PaneId` and say why. A loop that replaces its session holds two panes here, so this \
+             is what a gate about a replacement is standing on. That pane's screen is {:?}",
+            access.pane_collapsed(quiet),
+        );
+
+        for pane in [quiet, asking] {
+            access.lifecycle().expect("lifecycle").close(pane);
+        }
+    }
 
     /// The rows [`standin_agent_asking`](super::standin_agent_asking) runs on, so the sweep below
     /// reads the geometry the peer is actually painted into rather than a roomier one.
