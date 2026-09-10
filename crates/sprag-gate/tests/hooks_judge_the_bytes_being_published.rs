@@ -335,6 +335,31 @@ impl Sandbox {
         }
         if hook == "pre-push" {
             command.args(["origin", "git@example.invalid:sprag.git"]);
+            // ⛔⛔⛔⛔⛔ **THE TREE IS STAMPED AS ALREADY CLEARED, because since register item 480
+            // the push hook REFUSES a tree the Rust gates have not been through.** It no longer
+            // runs them itself: `git push` opens its connection before this hook, so a gate that
+            // outlasts the remote's idle timeout loses the push after passing (7m15s, SIGPIPE 141,
+            // the ref unmoved). Without this line every push driven here meets that refusal, and
+            // the cases below — which are about the FORMAT gate, the pixel smoke and the ref walk
+            // — would all be measuring one sentence they are not about.
+            //
+            // ⚠⚠ IT IS THE HONEST FIXTURE AND NOT A WAIVER: what it stages is a commit that went
+            // through `pre-commit`, which is what the stamp means and the only way a real push
+            // gets one. A case that wants the refusal writes no stamp and asserts it —
+            // `no_push_hook_spends_the_connection_on_a_gate` holds the hook's side of the same
+            // fact from the text.
+            // ⚠ THROUGH `ambient::git_in`, not a bare `git` child — register item 965. `pre-commit`
+            // runs this suite, so under `git commit -- <pathspec>` a child of its own would inherit
+            // an ABSOLUTE `GIT_INDEX_FILE` naming the index git is about to commit, which outranks
+            // `current_dir` and would land a sandbox's read in the operator's repository.
+            if let Ok(tree) = sprag_gate::ambient::git_in(&self.dir)
+                .args(["rev-parse", "HEAD^{tree}"])
+                .output()
+                && tree.status.success()
+            {
+                let stamp = self.dir.join(".git").join("sprag-rust-gates-passed");
+                let _ = std::fs::write(stamp, tree.stdout);
+            }
         }
         command.stdin(match refs_on_stdin {
             Some(_) => Stdio::piped(),
@@ -875,11 +900,22 @@ fn a_push_that_changes_no_hook_passes_without_owing_the_hook_suite() {
     sandbox.done();
 }
 
-/// ⚠⚠⚠ **NO REFS AT ALL STILL OWES IT.** A hook run by hand, a git that fed nothing, a stream some
-/// tool upstream had already drained: the failure this guards is a paint change going unlooked-at,
-/// so not knowing has to mean *run it*.
+/// ⚠⚠⚠ **NO REFS AT ALL IS NOT WAVED THROUGH.** A hook run by hand, a git that fed nothing, a
+/// stream some tool upstream had already drained: the failure this guards is a change going
+/// unlooked-at, so not knowing has to mean *do not pass*.
+///
+/// # ⛔⛔⛔ It asserted the PIXEL SMOKE until register item 480, and the answer got stronger
+///
+/// While `pre-push` still ran the Rust gates itself, *not knowing* meant running them and then the
+/// smoke, and this case read the smoke's own line to prove nothing had been waived. Since 480 the
+/// push hook refuses a tree those gates have not cleared — and a push whose refs it cannot read is
+/// a push it cannot say that about, so it is REFUSED before anything expensive begins.
+///
+/// ⚠⚠ That is the same stance one notch further, not a retreat from it: the old answer let the push
+/// proceed if the gates passed, and this one does not let it proceed at all. What must never happen
+/// is the third thing — a quiet pass — and that is what is asserted.
 #[test]
-fn a_push_with_no_refs_on_stdin_owes_the_pixel_smoke() {
+fn a_push_with_no_refs_on_stdin_is_refused_rather_than_waived() {
     let sandbox = Sandbox::new("push-no-refs");
     sandbox.write("crates/sprag-host/base.rs", FORMATTED);
     sandbox.git(&["add", "crates/sprag-host/base.rs"]);
@@ -888,8 +924,16 @@ fn a_push_with_no_refs_on_stdin_owes_the_pixel_smoke() {
     let run = sandbox.run("pre-push", None, None);
     let told = said(&run);
     assert!(
-        reached_the_pixel_smoke(&told),
-        "an unresolvable push must run the gate rather than waive it: {told}",
+        !run.status.success(),
+        "⛔⛔⛔ an unresolvable push must not pass: this hook could not read a single ref, so it \
+         cannot say the tree being published has been through any gate — and a push nobody can \
+         describe is the one most likely to carry work nothing has seen: {told}",
+    );
+    assert!(
+        told.contains("rust-gates.sh --clear"),
+        "⚠⚠⚠ AND THE REFUSAL MUST NAME THE COMMAND THAT CLEARS IT — register item 480. A refusal \
+         whose remedy is not a command is a wall, and the stamp this hook reads is written by the \
+         COMMIT hook, so there is nothing else a person could type: {told}",
     );
     sandbox.done();
 }

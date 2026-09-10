@@ -19,13 +19,15 @@
 #        the check that bypass defeats.
 #      - read from the COMMIT on purpose: what the remote receives is the
 #        commit, and a tidy working copy says nothing about it.
-#   3. `cargo clippy --workspace --all-targets`
-#      - only when a Cargo workspace exists (Cargo.toml present); dormant
-#        until sprag grows Rust crates.
-#   4. the rustdoc gate (`.githooks/doc-gate.sh`)
-#      - same condition as clippy, and re-run here for the same reason clippy
-#        is: an amend or a `--no-verify` bypass can put a dead link into the
-#        history that pre-commit never saw.
+#   3. the Rust gates — clippy, the rustdoc gate, the ratchet lane — NOT RUN
+#      HERE, and that is register item 480's repair rather than an omission.
+#      They are checked by STAMP: a tree `.githooks/rust-gates.sh` has cleared
+#      is waved through, and a tree it has not is REFUSED with that command
+#      named. `git push` opens its connection before this hook runs, so a gate
+#      that outlasts the remote's idle timeout loses the push after passing —
+#      measured: 7m15s, SIGPIPE 141, `origin/main` unmoved.
+#      - an amend or a `--no-verify` bypass still cannot publish a dead link or
+#        a red ratchet: it meets the refusal instead of seven minutes.
 #
 # Install via `git config core.hooksPath .githooks` (one-time per clone).
 set -euo pipefail
@@ -436,6 +438,35 @@ rust_gates_cleared_every_pushed_tip() {
 # unlooked-at, so what cannot be compared is not waived.
 RUST_GATE_PATHS='*.rs *.scxml Cargo.toml Cargo.lock build.rs rust-toolchain.toml'
 
+# ── Does this push carry any tree at all?
+#
+# ⛔⛔⛔⛔⛔ **A DELETION HAS NOTHING TO COMPILE, AND SINCE ITEM 480 THAT MATTERS** — measured
+# 2026-09-10 by this repository's own hook suite, on the round that wrote the refusal below.
+#
+# While the branch below RAN the gates, a push nothing could be said about was answered
+# conservatively: run them anyway. That was free, because running a gate over a tree that is not
+# being published wastes time and refuses nothing. **A refusal is not free.** `git push --delete`
+# publishes no content — its local sha is all zeros and there is no tip to stamp — so refusing it
+# means a stale branch can never be removed, which is the sandbox's own words for it.
+#
+# ⚠⚠ IT IS NARROWER THAN *there is nothing to compare against*. A push whose refs this hook could
+# not read at all still reaches the refusal, deliberately: that is the case where something IS being
+# published and nobody knows what, and item 480's repair must not turn the conservative answer into
+# a waiver. Only a ref that carries no tree by construction is waved through here.
+pushed_range_compiles_nothing() {
+    local saw_ref=0 saw_tree=0 local_ref local_sha remote_ref remote_sha
+    while read -r local_ref local_sha remote_ref remote_sha; do
+        [ -n "$local_sha" ] || continue
+        : "$local_ref" "$remote_ref" "$remote_sha"
+        saw_ref=1
+        case "$local_sha" in
+            *[!0]*) saw_tree=1 ;;
+            *) ;;
+        esac
+    done <<<"$pushed_refs"
+    [ "$saw_ref" -eq 1 ] && [ "$saw_tree" -eq 0 ]
+}
+
 pushed_range_carries_no_rust() {
     local saw_ref=0 local_ref local_sha remote_ref remote_sha changed
     while read -r local_ref local_sha remote_ref remote_sha; do
@@ -501,34 +532,55 @@ if [ -f Cargo.toml ]; then
     if rust_gates_cleared_every_pushed_tip; then
         echo "pre-push: clippy, the rustdoc gate and the ratchet lane already passed on this exact \
 tree — skipping" >&2
+    elif pushed_range_compiles_nothing; then
+        echo "pre-push: this push carries no tree to compile — nothing for these gates to be \
+about" >&2
     elif pushed_range_carries_no_rust; then
         echo "pre-push: this push changes nothing clippy or rustdoc reads — skipping both" >&2
     else
-        echo "pre-push: cargo clippy --workspace --all-targets -- -D warnings ..." >&2
-        if ! cargo clippy --workspace --all-targets -- -D warnings; then
-            echo "pre-push: clippy failed — fix violations before push" >&2
-            exit 1
-        fi
-
-        if ! doc_gate; then
-            echo "pre-push: rustdoc gate failed — fix the dead link before push" >&2
-            exit 1
-        fi
-
-        # ⛔⛔⛔ THE RATCHET LANE, register item 784 — the same targets `pre-commit` runs, for the
-        # same reason it runs them, and here for the reason this whole block exists: an amend or a
-        # `--no-verify` reaches this line with no stamp, and a push is the last place a red can be
-        # stopped before CI is the one to say so.
+        # ⛔⛔⛔⛔⛔ **REFUSED HERE RATHER THAN RUN HERE** — register item 480, and the whole of its
+        # remaining half.
         #
-        # ⚠ `pushed_range_carries_no_rust` above can still skip it, and that is stated rather than
-        # hidden: a ratchet reads more than `.rs` — a workflow file or a `.scxml` can move one — so
-        # a push of only those files reaches CI unratcheted. Closing that is item 784's remaining
-        # arm, not something a wider pathspec here should paper over.
-        echo "pre-push: the ratchet lane (tests whose input is the tree) ..." >&2
-        if ! bash -c 'cargo test -p sprag-gate && cargo test -p sprag-rpc --test pins && cargo test -p sprag-tui --test gpu_free && cargo test -p sprag-client --test gpu_free'; then
-            echo "pre-push: a ratchet that reads the tree is red — fix it before push" >&2
-            exit 1
-        fi
+        # `git push` OPENS THE CONNECTION FIRST and runs this hook after it, so every second spent
+        # below is spent on an open ssh session. Measured 2026-08-20 while paying item 456: the
+        # rustdoc gate took **7m15s**, GitHub answered *"Connection to github.com closed by remote
+        # host"*, and `git push` exited **141 (SIGPIPE) after every gate had PASSED** —
+        # `git ls-remote origin main` confirmed the ref had not moved. A green gate lost the push,
+        # and the retry succeeded in seconds against a warm `target/doc-gate`, which is exactly why
+        # this reads as a flake and is not one: it is a race between one command's runtime and a
+        # remote's idle timeout, decided by cache temperature.
+        #
+        # ⚠⚠⚠ **A RETRY LOOP IS NOT THE FIX** — the item says so in as many words, because a retry
+        # hides which of the three things happened. Neither is offloading to `bx`: the work would
+        # move to another machine and the WALL CLOCK inside the connection would not change at all.
+        # What actually stops the connection being spent is not spending it.
+        #
+        # ⚠⚠ **AND THE REFUSAL NAMES A COMMAND, which is what stops it being a wall.** The stamp
+        # above is written by `pre-commit`, and after a commit there is no `.rs` staged, so nothing
+        # a person could type would clear this. `.githooks/rust-gates.sh` runs the same lane
+        # `pre-commit` runs — one copy of it, register item 213 — and stamps the tree, outside any
+        # connection.
+        #
+        # ⚠ **WHAT THIS DOES NOT GIVE UP**: item 784's property, that a push is the last place a
+        # red can be stopped before CI is the one to say so. It is still stopped here — by refusal
+        # rather than by seven minutes — and the refusal SPELLS THE LANE, which is both what a
+        # person needs and what that item's own reader walks this file for.
+        echo "pre-push: REFUSED — this push would spend an open GitHub connection on gates that \
+compile the workspace, and a gate that outlasts the remote's idle timeout loses the push after \
+passing (register item 480: 7m15s, SIGPIPE 141, the ref unmoved)." >&2
+        # ⚠⚠ THE INDIVIDUAL COMMANDS ARE NOT SPELLED HERE, and that is deliberate rather than terse:
+        # `no_push_hook_spends_the_connection_on_a_gate` asks that this file not carry them at all,
+        # because a reader deciding *does this hook run clippy* would otherwise have to read shell
+        # quoting to tell an `echo` from a call — the ambiguity
+        # `a_fleet_ceiling_is_a_measurement_with_a_date` had to solve with a command-position rule.
+        # The remedy is ONE command, and the lane below is spelled because item 784's reader walks
+        # this file for exactly those targets.
+        echo "pre-push: the tree being pushed has been through neither the workspace lint and \
+rustdoc gates nor the ratchet lane:" >&2
+        echo "pre-push:     cargo test -p sprag-gate && cargo test -p sprag-rpc --test pins && cargo test -p sprag-tui --test gpu_free && cargo test -p sprag-client --test gpu_free" >&2
+        echo "pre-push: run them outside the connection and push again:" >&2
+        echo "pre-push:     bash .githooks/rust-gates.sh --clear" >&2
+        exit 1
     fi
 
     # ⚠⚠ BEFORE THE PIXEL SMOKE, which builds three crates in release. This one is seconds, and a

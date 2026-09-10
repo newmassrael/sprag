@@ -104,8 +104,48 @@ impl Target {
 /// compared its own copy of the lane against its own copy of the population would agree with itself
 /// for ever — the artefact being read has to be the one git runs.
 fn lane_of(path: &Path) -> BTreeSet<Target> {
-    let text = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read the hook at {}: {e}", path.display()));
+    // ⛔⛔⛔⛔⛔ **COMMENT LINES ARE DROPPED, AND A COMMENT IS WHAT BROKE THIS READER** — 2026-09-10,
+    // measured on the round that moved the lane. The prose in `.githooks/rust-gates.sh` explains
+    // what the lane is and spells `cargo test -p sprag-gate` inside a sentence; this walk read the
+    // sentence, took the next word, and reported that the hook names a crate `sprag-gate`,` which
+    // is not in the tree. **A lane is what a hook RUNS**, and a hook that merely talks about a
+    // target is not running it — the same rule `sources::Source::code` keeps one layer up, and for
+    // the same reason: a gate that reads its own explanation goes red on the fix.
+    let mut text = read_code(path);
+    // ⛔⛔⛔⛔⛔ **AND THE LIBRARIES IT SOURCES, because the lane MOVED into one** — register item
+    // 480, 2026-09-10. `pre-commit` now reaches clippy, the rustdoc gate and this lane through
+    // `.githooks/rust-gates.sh`, so a reader that opened only the hook file would report that the
+    // commit hook runs no test at all — which is item 784's own red, raised about a hook that in
+    // fact runs every one of them.
+    //
+    // ⚠⚠ THIS IS THE GATE FOLLOWING THE FACT AND NOT BEING RELAXED. What it asks is unchanged:
+    // does this hook RUN the lane. A `.` of a file that runs it is running it; a file that merely
+    // NAMES the targets in prose still has to name them itself, which is exactly what `pre-push`
+    // does now — it refuses, and its refusal spells the lane out so both a person and this walk can
+    // see which tests the push has not been through.
+    //
+    // ⚠ Only this repository's own hook directory is followed, and only one level: a `.` of
+    // something outside `.githooks` is not a thing these hooks do, and a reader that chased
+    // arbitrary paths would be reading files this gate makes no claim about.
+    let sourced: Vec<String> = text
+        .lines()
+        .filter_map(|line| {
+            let code = line.trim();
+            let (_, tail) = code.split_once(".githooks/")?;
+            let name = tail.trim_end_matches('"').trim_end_matches('\'');
+            name.ends_with(".sh").then(|| name.to_owned())
+        })
+        .collect();
+    for name in sourced {
+        let library = path
+            .parent()
+            .unwrap_or_else(|| Path::new(".githooks"))
+            .join(&name);
+        if library.is_file() {
+            text.push('\n');
+            text.push_str(&read_code(&library));
+        }
+    }
     let mut found = BTreeSet::new();
     for tail in text.split("cargo test -p ").skip(1) {
         let mut words = tail.split_whitespace().map(unshell);
@@ -121,6 +161,17 @@ fn lane_of(path: &Path) -> BTreeSet<Target> {
         }
     }
     found
+}
+
+/// A shell file's CODE — its lines with every comment line dropped. See [`lane_of`], where a
+/// sentence about the lane was read as the lane.
+fn read_code(path: &Path) -> String {
+    let text = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read the hook at {}: {e}", path.display()));
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// A word from a hook, with the shell punctuation that can sit against it removed.

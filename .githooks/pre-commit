@@ -57,6 +57,11 @@ cd "$repo_root"
 
 # shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/doc-gate.sh"
+# ⛔ The Rust gates and the stamp that records which tree they cleared — register items 443 and 480.
+# Their one home: `pre-push` must not RUN them (it would spend an open GitHub connection on a
+# multi-minute gate), so it reads the stamp and names this file when the stamp does not cover the
+# push. See `.githooks/rust-gates.sh`.
+. "$repo_root/.githooks/rust-gates.sh"
 # shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/content-gate.sh"
 # shellcheck source-path=SCRIPTDIR
@@ -173,178 +178,24 @@ fi
 # first), and three thousand does — so the commits that escaped the lint were the LARGEST ones.
 # `$staged_rs` is built with `grep -E` and no `-q`, which reads its input to the end.
 if [ -f Cargo.toml ] && [ -n "$staged_rs" ]; then
-    # ⚠ ROUTED THROUGH THE BUILD-MACHINE WRAPPER WHEN ONE IS CONFIGURED (`$BX`),
-    # because these two are the heaviest thing this hook does to the machine it
-    # runs on. Measured 2026-08-19 on the 31GB workstation: the doc gate spawned
-    # five concurrent rustdocs and ONE of them reached 6.5GB RSS, which pushed
-    # 13GB into swap and took the box to load 29 while 82% of its CPU sat idle —
-    # all of that load was processes blocked on the paging disk, none of it
-    # compute. The note below already records this gate at 250s; that is its
-    # cost in TIME, and this is its cost in MEMORY.
+    # ⛔⛔⛔⛔⛔ THE LANE AND THE STAMP MOVED TO `.githooks/rust-gates.sh` — register item 480, and
+    # they moved because `pre-push` needed to be able to NAME them as a command rather than run
+    # them. `git push` opens its connection FIRST, so every second `pre-push` spends is spent on an
+    # open ssh session: the doc gate took 7m15s, GitHub closed the connection, and `git push` exited
+    # 141 after every gate had PASSED. The push hook now refuses and names that file; a refusal
+    # whose remedy is not a command is a wall, so the file is runnable and clears the gates itself.
     #
-    # THE TWO TRAVEL TOGETHER so the tree is synced once rather than twice, and
-    # `&&` keeps clippy's fail-fast: a clippy failure never reaches the doc gate.
-    # (They do not share a warm build the way some workspaces do — `doc_gate`
-    # sets its own `CARGO_TARGET_DIR`, which is exactly why it costs 250s — so
-    # what is saved here is the transfer, not a rebuild.)
-    #
-    # `$BX` IS AN OPT-IN AND ITS ABSENCE IS THE OLD BEHAVIOUR. No host, path or
-    # account is named in this tree; a checkout without it runs both here,
-    # unchanged.
-    #
-    # ⚠⚠ AND THE WRAPPER'S OWN VERDICT IS FINAL — THERE IS NO SECOND FALLBACK
-    # HERE, and an earlier version of this block had one that did real harm.
-    #
-    # It read "the wrapper printed no `bx: exit=` line" as "infrastructure went
-    # away" and re-ran the pair locally. But that line is absent for EVERY
-    # reason the wrapper declines to start: an untracked file it does not carry,
-    # a working tree the far side does not match, a floor no machine meets. All
-    # of those are the author's to fix, and all of them were being answered by
-    # quietly running the heaviest gate in this repository on the workstation
-    # instead. Measured 2026-08-20: six consecutive commits took that path while
-    # the box sat at load 13-25 with 11GB in swap, and the log said only that
-    # the tree differed.
-    #
-    # THE WRAPPER ALREADY FAILS OPEN BY ITSELF, which is what made the second
-    # fallback both redundant and blind: when no build machine is a candidate
-    # and this one can hold the work, it runs it here and reports `where=local`.
-    # It refuses only when it cannot proceed safely — and a refusal is a
-    # verdict, not an outage. Papering over it is how a hook reports "green"
-    # about a tree nobody checked.
-    # ⚠⚠ THE INNER QUOTES ARE SINGLE, AND THAT IS A GATE'S REQUIREMENT RATHER THAN A STYLE.
-    # `a_fleet_ceiling_is_a_measurement_with_a_date` compares this text against the reading taken
-    # from it, and it reads `.claude/remote-build.toml` as TOML basic strings — a `"` inside a value
-    # TRUNCATES it there, which that reader's own comment says will show up as a mismatch. So the
-    # command this hook hands the wrapper carries no double quote, and the two spellings can be the
-    # same string. `'-D warnings'` and `"-D warnings"` are the same word to sh; the outer quoting is
-    # double instead, which is safe here because the value holds no `$`, backtick or backslash.
-    lint_and_doc="cargo clippy --workspace --all-targets -- -D warnings && RUSTDOCFLAGS='-D warnings' CARGO_TARGET_DIR=target/doc-gate cargo doc --workspace --no-deps --document-private-items"
-
-    # ⛔⛔⛔⛔⛔ THE RATCHET LANE — register item 784, and the mechanism this hook was missing.
-    #
-    # Until this line the hook ran clippy, rustfmt and rustdoc and NO TEST AT ALL. So a commit that
-    # broke a ratchet in another crate passed, and passed `pre-push` too, and the only thing that
-    # ever said so was CI — measured 2026-08-31: `1f81f93` added a `sprag-tui` test function whose
-    # NAME ended `held()`, which is the literal needle a `sprag-gate` ratchet scans the workspace
-    # for; two commits then stood red on two platforms for two rounds. A person re-running the gate
-    # by hand caught it, and a person is not a mechanism.
-    #
-    # ⚠⚠⚠⚠ WHY A LANE AND NOT THE SUITE, with the numbers that decided it. `cargo test --workspace`
-    # is **258.6 s** warm on the build machine (3819 tests) against **22.3 s** for `sprag-gate`
-    # alone (measured 2026-08-31, both after `cargo build --workspace --all-targets`). Item 457 is
-    # already open against this hook for costing too much per commit, and its remedy and this one
-    # pull in opposite directions — so what runs here is the tests whose INPUT IS THE TREE, which
-    # are exactly the ones an unrelated crate's commit can turn red.
-    #
-    # ⚠⚠⚠ THE MEMBERSHIP IS NOT A LIST SOMEBODY MAINTAINS. Every target named here is derived from
-    # a property a test HAS — it reads the repository rather than its own crate — and
-    # `a_ratchet_that_reads_the_tree_runs_before_the_commit_lands` reads this file against the tree
-    # and goes red if a test acquires that property without joining the lane. A hand-kept list is
-    # the escape hatch this workspace's rule 6 is about: it grows, and a real one hides under it.
-    #
-    # ⚠ IT TRAVELS IN THE SAME COMMAND as clippy and the doc gate, so the tree is synced once and
-    # `&&` keeps the fail-fast ordering: the cheap compile error is reported before the tests run.
-    ratchets='cargo test -p sprag-gate && cargo test -p sprag-rpc --test pins && cargo test -p sprag-tui --test gpu_free && cargo test -p sprag-client --test gpu_free'
-    # ⛔⛔⛔⛔⛔ THIS LANE CARRIES ITS OWN RAM BOUND, DERIVED FROM ITS OWN READING — register item 932.
-    #
-    # The wrapper divides a host's free RAM by `peak_gb_per_task` from `.claude/remote-build.toml`,
-    # and that scalar is derived from `[commands]` — two commands, neither of them this one.
-    # Measured with this repository's own instrument (`measure-peak precommit`, cold target
-    # directory, sampler walking the run's ancestry): this lane peaks at **9,260,688 kB, 8.83 GiB**,
-    # in `rustdoc --crate-type bin --crate-name sprag_gui`. Budgeted at the declared 2 GiB a 22 GiB
-    # host is handed ELEVEN tasks of a job that wants nine each.
-    #
-    # ⚠⚠ RAISING THE SCALAR IS NOT THE FIX AND THAT WAS MEASURED TOO: `floor(8.83)+1 = 9` would
-    # divide the same 22 GiB into TWO for every command, including `build`, whose own reading is
-    # 1,204,328 kB. The declaration says both directions of wrong are real; this is the "too HIGH"
-    # one. So the reading lives in `[routed]`, where it cannot reach the scalar, and the bound is
-    # applied HERE instead — which also covers the branch below, where there is no wrapper at all
-    # and nothing has ever bounded this lane (register item 457's subject, and the path this hook
-    # actually takes when the index's `env -u BX` rule is followed).
-    #
-    # ⚠ DERIVED, NOT TYPED — item 457's standard. The figure comes out of the declaration by the
-    # same `sed` shape the wrapper uses on the same file, so editing the reading moves the bound.
-    # An already-set value wins, as it does inside the wrapper: an operator who chose a number
-    # meant it.
-    # ⛔⛔⛔⛔⛔ THE FILE IS TESTED BEFORE IT IS READ, AND `set -euo pipefail` IS WHY.
-    #
-    # `sprag-gate` links these hooks into a THROWAWAY repository and drives them (register item
-    # 467), and that repository has no `.claude/remote-build.toml`. A first draft read it anyway,
-    # with `sed … 2>/dev/null | head -1`: `sed` exits 2 on a file that is not there, `pipefail`
-    # makes the PIPELINE fail, the assignment then carries that status, and `set -e` kills the hook
-    # **at that line** — before the lane it was meant to bound and with nothing said. Four cases of
-    # `hooks_judge_the_bytes_being_published` went red on a hook that had simply stopped, and the
-    # only visible trace was the drift gate reporting a file the fixture's doubles wrote after it.
-    # ⚠ Silencing stderr hid the message and not the status; the first repair changed `2>/dev/null`
-    # and the red survived it, which is what pointed here. The path is anchored to `$repo_root` for
-    # the same reason: a relative one is a different file depending on where the hook was invoked.
-    #
-    # A checkout without the declaration is the same case as one without `$BX`: the absence is the
-    # old behaviour, silently. The warning below is for a declaration that IS there and says
-    # nothing about this lane — the case somebody has to fix (rule 6).
-    routed_decl="$repo_root/.claude/remote-build.toml"
-    routed_kb=""
-    if [ -f "$routed_decl" ]; then
-        routed_kb=$(sed -n 's/^precommit_kb = \([0-9]\+\).*/\1/p' "$routed_decl" | head -1)
-    fi
-    free_kb=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null || true)
-    if [ -n "$routed_kb" ] && [ -n "$free_kb" ] && [ "$routed_kb" -gt 0 ]; then
-        routed_jobs=$(( free_kb / routed_kb ))
-        [ "$routed_jobs" -ge 1 ] || routed_jobs=1
-        CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$routed_jobs}"
-        RUST_TEST_THREADS="${RUST_TEST_THREADS:-$routed_jobs}"
-        export CARGO_BUILD_JOBS RUST_TEST_THREADS
-        echo "pre-commit: this lane peaks at $((routed_kb / 1024))MB/task (declared in [routed]); ${free_kb}kB free -> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS" >&2
-    elif [ -f "$routed_decl" ]; then
-        echo "pre-commit: ⚠ no usable precommit_kb in $routed_decl — this lane is running UNBOUNDED (register item 932)" >&2
-    fi
-    echo "pre-commit: cargo clippy --workspace --all-targets -- -D warnings && doc gate && the ratchet lane ..." >&2
-    if [ -n "${BX:-}" ] && [ -x "${BX}" ]; then
-        "${BX}" --label pre-commit-lint -- bash -c "$lint_and_doc && $ratchets"
-    else
-        bash -c "$lint_and_doc && $ratchets"
-    fi
-
-    # ⚠⚠⚠⚠⚠ RECORD WHICH TREE THESE GATES CLEARED, so `pre-push` need not run them again on the
-    # same content — register item 443, raised by the owner asking why a push takes minutes.
-    #
-    # MEASURED: the rustdoc gate is **250 s** on a change to a crate the workspace depends on (a
-    # separate `CARGO_TARGET_DIR` means it re-documents every dependent), and it ran TWICE per
-    # change — here, and again at push. Clippy by then is cached at 0.2 s, so the doubling is
-    # entirely this one gate. The push half is what this removes; the safety property it must not
-    # remove is `pre-push`'s own reason for existing — *whatever an amend or a `--no-verify` slipped
-    # past pre-commit* — which is why what is recorded is the TREE and not a flag.
-    #
-    # ⚠⚠⚠ `git write-tree` IS THE TREE THIS COMMIT WILL CARRY: the index, written as an object.
-    # A push whose tip names that exact tree is a push of content these gates read; anything else —
-    # an amend, a rebase, a second commit, a `--no-verify`, a stamp this clone cannot read — will
-    # not match, and the push runs them.
-    #
-    # ⚠⚠⚠⚠ AND THE STAMP IS WITHHELD UNLESS THE WORKING TREE IS THE INDEX for everything these
-    # gates compile. Clippy and rustdoc read the WORKING TREE, not the index, so an unstaged edit or
-    # an untracked module means what they judged is not what the commit carries — and skipping on
-    # that basis would publish a tree nothing had ever compiled. Both are checked; either one
-    # withholds the stamp, which costs a push its gates and nothing else.
-    #
-    # ⚠⚠ EVERY QUERY THAT FAILS READS AS *not clean*, spelled as a word rather than left empty: an
-    # unreadable index is exactly the case item 404 measured passing as *nothing to check*, one gate
-    # over, and here it would hand a push permission to skip on evidence nobody has.
-    gate_paths='*.rs *.scxml Cargo.toml Cargo.lock build.rs rust-toolchain.toml'
-    # shellcheck disable=SC2086  # intentional word-split of the pathspec list
-    unstaged="$(git diff --name-only -- $gate_paths)" || unstaged="unreadable"
-    # shellcheck disable=SC2086  # intentional word-split of the pathspec list
-    untracked="$(git ls-files --others --exclude-standard -- $gate_paths)" || untracked="unreadable"
-    staged_tree="$(git write-tree)" || staged_tree=""
-    git_dir="$(git rev-parse --git-dir)" || git_dir=""
-    if [ -z "$unstaged" ] && [ -z "$untracked" ] && [ -n "$staged_tree" ] && [ -n "$git_dir" ]; then
-        printf '%s\n' "$staged_tree" >"$git_dir/sprag-rust-gates-passed"
-    else
-        if [ -n "$git_dir" ]; then
-            rm -f "$git_dir/sprag-rust-gates-passed"
-        fi
-        echo "pre-commit: the working tree is not what this commit carries, so the push will run \
-clippy, the rustdoc gate and the ratchet lane again" >&2
-    fi
+    # ⚠ ONE COPY, which is register item 213 measured in this very repository: `pre-commit` gained
+    # `-D warnings` in `949dd73` and `pre-push` never did, so the push gate printed findings and
+    # exited 0 for twelve commits. The reasoning that used to live here — the wrapper routing, the
+    # RAM bound, why the wrapper's verdict is final, why the stamp is a TREE — is all in that file,
+    # unchanged and in one place.
+    rust_gates_run
+    # ⚠ FAILING TO STAMP MUST NOT FAIL THE COMMIT, which is the behaviour this move preserves
+    # exactly: an unstaged edit or an untracked module means what the gates just judged is not what
+    # this commit carries, so the stamp is WITHHELD and the push asks for them again. That costs a
+    # push its gates and nothing else — it has never been a reason to refuse the commit.
+    rust_gates_stamp || true
 fi
 
 # The workflow gate — a workflow file is the one thing CI cannot gate, since an invalid expression
