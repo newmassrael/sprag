@@ -219,7 +219,7 @@ fn real_sed() -> Option<String> {
 fn posix_sed_note(sed_is_gnu: bool, shim_built: bool) -> String {
     match (sed_is_gnu, shim_built) {
         (true, true) => "this machine's sed takes the GNU alternation, so a strict one was \
-                         injected and both readings are covered"
+                         injected and the alternation and the label reading are covered"
             .to_owned(),
         (true, false) => "this machine's sed takes the GNU alternation and NO strict one could be \
                           built, so the BSD reading went unmeasured here"
@@ -234,18 +234,23 @@ fn posix_sed_note(sed_is_gnu: bool, shim_built: bool) -> String {
 
 /// The environments every declared selftest is driven under, and the sentence about the last one.
 ///
-/// ⛔⛔⛔⛔⛔ **TWO OF THESE REDDENED CI, AND NEITHER IS THE PLATFORM'S NAME.** Both macOS failures
-/// this gate found were behaviours a Linux runner can be made to have:
+/// ⛔⛔⛔⛔⛔ **THREE OF THESE REDDENED CI, AND NONE IS THE PLATFORM'S NAME.** Every macOS failure
+/// this gate found was a behaviour a Linux runner can be made to have:
 ///
 /// * `mktemp -d` answers under `/var`, a symlink to `/private/var`, so a guard comparing a logical
 ///   path to git's physical one refused every run;
-/// * `sed` is BSD, so `\|` in a BRE is a literal and a marker silently matched nothing.
+/// * `sed` is BSD, so `\|` in a BRE is a literal and a marker silently matched nothing;
+/// * `sed` is BSD, so a LABEL's argument ends at a newline and not at a `;` — register item 1001,
+///   where a normaliser's collapse loop was swallowed into the label's name, the keys stayed
+///   uncollapsed, and item 986's arm reported a difference item 986 was not about.
 ///
 /// ⇒ Injected rather than waited for. A repository whose macOS job runs once per push cannot
 /// afford to learn these one round at a time, and the injection makes the LINUX job catch them.
 ///
-/// ⚠ It does not claim to cover BSD. It covers the two differences that have actually cost this
-/// repository a red, and it says which it covered.
+/// ⚠ It does not claim to cover BSD. It covers the three differences that have actually cost this
+/// repository a red, it says which it covered, and
+/// [`the_strict_sed_shows_both_differences_it_is_named_for`] measures that the injection changes
+/// the answers rather than only the environment's name.
 fn environments(scratch: &Path) -> (Vec<Environment>, String) {
     let mut envs: Vec<Environment> = vec![("as configured".to_owned(), Vec::new())];
 
@@ -287,6 +292,166 @@ fn environments(scratch: &Path) -> (Vec<Environment>, String) {
         shim_built = true;
     }
     (envs, posix_sed_note(sed_is_gnu, shim_built))
+}
+
+/// The strict `sed` this suite drives the selftests under, and the variables it needs — the double
+/// on a machine whose own `sed` takes the GNU extensions, and the machine's own `sed` otherwise.
+///
+/// ⚠ The second case is not a fallback. On a machine whose `sed` is already BSD there is nothing to
+/// make strict and [`environments`] builds no double, so the plain program IS the subject.
+fn strict_sed() -> (PathBuf, Vec<(String, String)>) {
+    if !sed_takes_gnu_alternation() {
+        return (PathBuf::from("sed"), Vec::new());
+    }
+    let doubles = Doubles::of(env!("CARGO_MANIFEST_DIR")).set("declared-selftest");
+    let program = doubles.program("sed");
+    let real = real_sed().expect(
+        "this machine's sed takes the GNU alternation, so `command -v sed` must find the program \
+         the double stands in front of",
+    );
+    (program, vec![("SPRAG_REAL_SED".to_owned(), real)])
+}
+
+/// What `program` answers when `input` is fed to it with `script` — the status and everything it
+/// said, joined the way a reader meets it.
+///
+/// ⚠ Through `sh` rather than a piped stdin, deliberately: item 471's gate is about a suite that
+/// feeds a child and dies when the child refuses first, and a refusing `sed` is exactly this
+/// subject. The shell owns the pipe, so a refusal is a status to read rather than a broken write.
+fn asking_sed(
+    program: &Path,
+    vars: &[(String, String)],
+    input: &str,
+    script: &[&str],
+) -> (bool, String) {
+    let mut run = Command::new("sh");
+    run.arg("-c")
+        .arg(r#"text=$1; shift; program=$1; shift; printf '%s\n' "$text" | "$program" "$@""#)
+        .arg("sh")
+        .arg(input)
+        .arg(program);
+    for word in script {
+        run.arg(word);
+    }
+    for (key, value) in vars {
+        run.env(key, value);
+    }
+    let said = run
+        .output()
+        .unwrap_or_else(|why| panic!("{} must be runnable: {why}", program.display()));
+    (
+        said.status.success(),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&said.stdout),
+            String::from_utf8_lossy(&said.stderr),
+        ),
+    )
+}
+
+/// ⛔⛔⛔⛔⛔ **AND THE STRICT `sed` IS A MEASUREMENT, NOT A NAME** — register item 1001.
+///
+/// [`environments`] injects a `sed` and calls the environment *a POSIX sed*. Until this test
+/// existed nothing anywhere asked whether that injection changed a single answer, and measured
+/// 2026-09-10 it changed ONE of the two differences it names and not the other:
+///
+/// * `--posix` turns off GNU's REGULAR EXPRESSION extensions, so `\|` really does stop being
+///   alternation — the reading items 798 and 799 were about, and it works;
+/// * `--posix` does not touch how a script is PARSED INTO COMMANDS. The argument of a label ends at
+///   a NEWLINE and not at a `;`, so BSD reads `:a` followed by `; …; ta` as one label NAME, warns
+///   `unused label`, exits 0 and runs none of it. The double read it GNU's way, so for that
+///   difference the environment was byte-identical to *as configured* — and
+///   `.githooks/loop-read.sh` carried the spelling into the macOS job for two rounds with every
+///   Linux run green.
+///
+/// ⇒ The double REFUSES the second shape rather than emulating it, because GNU sed has no flag that
+/// reads a label BSD's way and a stand-in that cannot reproduce a difference must say so.
+///
+/// ⚠⚠ **AND A REFUSAL IS NOT FREE**, so the repaired spelling is asked for in the same test: a
+/// double that refused every loop would be a wall rather than a measurement.
+#[test]
+fn the_strict_sed_shows_both_differences_it_is_named_for() {
+    let (program, vars) = strict_sed();
+    let at = program.display().to_string();
+
+    // ⑴ THE REGEX READING. A GNU sed answers `x` here; a strict one matches nothing at all.
+    //
+    // ⚠ THE STATUS IS READ BEFORE THE ANSWER, and the two are different findings: a strict sed
+    // that REFUSED this would also say nothing, and reporting that as *the alternation went
+    // unmeasured* would hand a reader the wrong act. This script is a plain BRE with no label in
+    // it, so nothing here is a spelling anybody may refuse.
+    let (took, alternation) = asking_sed(
+        &program,
+        &vars,
+        "baseline x",
+        &["-n", r"s/^\(baseline\|read\) //p"],
+    );
+    assert!(
+        took,
+        "⛔ ITEM 1001: {at} REFUSED a plain BRE that carries no label at all, saying:\n{}\nA strict \
+         sed stands in front of every hook this suite drives; one that refuses an ordinary script \
+         is a wall, not a measurement.",
+        alternation.trim_end(),
+    );
+    assert!(
+        alternation.trim().is_empty(),
+        "⛔ ITEM 799: {at} answered `{}` to a BRE whose `\\|` only means alternation under GNU. \
+         The environment this suite calls *a POSIX sed* is then the same environment as *as \
+         configured*, and the marker that went invisible on macOS would go unmeasured here again.",
+        alternation.trim(),
+    );
+
+    // ⑵ THE PARSE READING — the one that was NOT covered. A strict sed must not answer `RUN`: it
+    // either refuses the spelling (the double) or reads the label BSD's way and leaves the keys
+    // uncollapsed (a machine whose own sed is BSD). Both are the difference being visible.
+    let (_, labelled) = asking_sed(
+        &program,
+        &vars,
+        "probe#1 probe#2",
+        &["s/probe#[0-9]*/RUN/g; :a; s/RUN RUN/RUN/; ta"],
+    );
+    assert_ne!(
+        labelled.trim(),
+        "RUN",
+        "⛔ ITEM 1001: {at} collapsed the keys, which means it parsed `:a; …; ta` the way GNU does \
+         — a label's argument ends at a NEWLINE, so this script does something else entirely on \
+         the platform this environment exists to stand in for. A strict sed must refuse the \
+         spelling or answer `RUN RUN`; answering `RUN` is this environment measuring nothing.",
+    );
+
+    // ⑶ AND THE REPAIR STILL WORKS. Without this the two above are satisfied by a program that
+    // refuses everything, which would stop every hook rather than measure one.
+    let (fine, repaired) = asking_sed(
+        &program,
+        &vars,
+        "probe#1 probe#2",
+        &["-e", "s/probe#[0-9]*/RUN/g", "-e", r"s/RUN\( RUN\)*/RUN/g"],
+    );
+    assert!(
+        fine && repaired.trim() == "RUN",
+        "⛔ ITEM 1001: {at} exited {fine} and answered `{}` to the LOOPLESS spelling every \
+         implementation measured on 2026-09-10 answers `RUN` to. A strict sed that refuses the \
+         repair as well as the defect is a wall, and the hooks it stands in front of cannot be \
+         written at all.",
+        repaired.trim(),
+    );
+
+    // ⑷ ⛔⛔⛔⛔⛔ AND A `;` IS NOT ITSELF THE DEFECT, which arm ⑶ alone cannot say. Measured while
+    // writing this test: a double mutated to refuse EVERY fragment stayed GREEN through ⑴–⑶,
+    // because the repaired spelling in ⑶ carries no `;` at all and the refusal is only reached by
+    // a script that does. `;` between ordinary commands is POSIX and this repository's hooks spell
+    // it TEN times (counted 2026-09-10, the shell's own `;` excluded) — a strict sed that refused
+    // it would stop `loop_read_keys` and six of `hosted-read.sh`'s lines on the platform this
+    // stands in for, for a rule that is not true.
+    let (plain, separated) = asking_sed(&program, &vars, "a b", &["/^$/d;s/ .*//"]);
+    assert!(
+        plain && separated.trim() == "a",
+        "⛔ ITEM 1001: {at} exited {plain} and answered `{}` to `/^$/d;s/ .*//`, a script whose \
+         `;` merely separates two ordinary commands and which POSIX, GNU, busybox and a FreeBSD \
+         sed all answer `a` to (measured 2026-09-10). The strict sed is refusing the separator \
+         rather than the label rule, which is a wall wearing this gate's name.",
+        separated.trim(),
+    );
 }
 
 /// ⛔ **THE GATE.** Every declared selftest runs here, under every environment, and every one of
@@ -367,8 +532,9 @@ fn the_driven_environments_include_the_one_that_reddened_ci() {
     // ⛔ The note's three cases cannot all be reached on one machine, so they are driven directly —
     // the lesson `refusal_for` above had to learn twice.
     assert!(
-        posix_sed_note(true, true).contains("both readings are covered"),
-        "a machine with GNU sed and a shim covers both readings and must say so",
+        posix_sed_note(true, true).contains("the alternation and the label reading are covered"),
+        "a machine with GNU sed and a shim covers both readings and must NAME them — the note used \
+         to say *both readings* when the shim only ever made one of them strict",
     );
     assert!(
         posix_sed_note(true, false).contains("went unmeasured"),

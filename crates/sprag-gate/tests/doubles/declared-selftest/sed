@@ -11,4 +11,107 @@
 # ⚠ The real `sed` arrives by name in the environment rather than being searched
 # for: this double sits AT THE FRONT of `PATH`, so `command -v sed` here would
 # find this script and exec itself forever.
+#
+# ⛔⛔⛔⛔⛔ AND `--posix` IS ONLY HALF OF THE DIFFERENCE -- register item 1001.
+#
+# `--posix` turns off GNU's REGULAR EXPRESSION extensions, which is the whole of
+# the `\|` reading items 798 and 799 were about. It does not change how a script
+# is PARSED INTO COMMANDS, and that is the second place the two seds disagree:
+# the argument of a label or a branch ends at a NEWLINE, so BSD sed reads
+# `:a` followed by `; s/A A/A/; ta` as ONE label whose NAME is all of it, warns
+# `unused label`, EXITS 0, and silently never runs the loop. GNU reads the `;`
+# as a command separator and does.
+#
+# ⚠⚠ MEASURED 2026-09-10, and the measurement is why this arm exists: with a
+# FreeBSD sed built from source on the Linux box, `.githooks/loop-read.sh`'s
+# normaliser collapsed its keys under GNU and did NOT under BSD -- while THIS
+# DOUBLE, run exactly as the suite runs it, collapsed them too. So the
+# environment the suite calls *a POSIX sed* was not a measurement of this at
+# all, and the spelling rode into the macOS job for two rounds with every Linux
+# run green.
+#
+# ⇒ A REFUSAL rather than an emulation, stated plainly: GNU sed has no flag that
+# makes it read a label BSD's way, so a double that cannot reproduce the
+# difference must refuse the spelling instead of passing it.
+#
+# ⚠ WHAT THIS SCAN CAN AND CANNOT SEE. It splits a script on `;` and asks
+# whether a fragment that is not the last one begins with a label or a branch.
+# So a `;` inside a regular expression can start a fragment that only LOOKS like
+# a branch (`s/;t1;/x/`), and `-f script-file`, a bundled `-ne`, and a script
+# arriving on standard input are not read at all. Those are stated rather than
+# implied; every script this repository's hooks actually spell is an argument.
+
+# Refuse the script in $1, naming the one thing to do about it.
+say_unportable() {
+    printf '%s\n' \
+        "sed (the POSIX double): REFUSING a script BSD sed reads differently:" \
+        "  $1" \
+        "  The argument of a ':' label and of a 'b'/'t' branch ends at a NEWLINE," \
+        "  not at a ';'. BSD sed therefore reads everything after the label as part" \
+        "  of its NAME, prints 'unused label', exits 0, and runs none of it -- so" \
+        "  this script means something different there and says nothing about it." \
+        "  Give each label and branch its own -e fragment, or write the script with" \
+        "  no loop at all. Register item 1001." >&2
+    exit 2
+}
+
+# Refuse $1 when a label or branch is followed by more script on the same line.
+scan_script() {
+    scan_rest="$1"
+    while [ "$scan_rest" != "${scan_rest#*;}" ]; do
+        scan_head="${scan_rest%%;*}"
+        scan_rest="${scan_rest#*;}"
+        while [ "$scan_head" != "${scan_head# }" ]; do
+            scan_head="${scan_head# }"
+        done
+        while [ "$scan_head" != "${scan_head#	}" ]; do
+            scan_head="${scan_head#	}"
+        done
+        case "$scan_head" in
+            :[0-9A-Za-z_-]* | b[0-9A-Za-z_-]* | t[0-9A-Za-z_-]*) say_unportable "$1" ;;
+        esac
+    done
+}
+
+# Which arguments are SCRIPTS: every `-e` value, or the first non-option when no
+# `-e` and no `-f` was given. Everything else is an option or an input file.
+sed_expect=""
+sed_seen_script=0
+for sed_arg in "$@"; do
+    if [ "$sed_expect" = script ]; then
+        scan_script "$sed_arg"
+        sed_expect=""
+        continue
+    fi
+    if [ "$sed_expect" = file ]; then
+        sed_expect=""
+        continue
+    fi
+    case "$sed_arg" in
+        -e | --expression)
+            sed_expect=script
+            sed_seen_script=1
+            ;;
+        --expression=*)
+            scan_script "${sed_arg#--expression=}"
+            sed_seen_script=1
+            ;;
+        -e*)
+            scan_script "${sed_arg#-e}"
+            sed_seen_script=1
+            ;;
+        -f | --file)
+            sed_expect=file
+            sed_seen_script=1
+            ;;
+        -*) ;;
+        *)
+            if [ "$sed_seen_script" -eq 0 ]; then
+                scan_script "$sed_arg"
+                sed_seen_script=1
+            fi
+            ;;
+    esac
+done
+
 exec "${SPRAG_REAL_SED:?the real sed must be named in SPRAG_REAL_SED}" --posix "$@"

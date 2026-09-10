@@ -844,6 +844,30 @@ loop_read_gap() {
     return 0
 }
 
+# A `--next` line with its RUN KEYS ERASED, so two populations of different sizes
+# can be compared for their GROUPING alone -- arm (12x-f) reads the same shape out
+# of two and eight runs, and the keys are the only part that must differ.
+#
+# ⛔⛔⛔⛔⛔ POSIX, AND THE `;` IS THE WHOLE OF WHY -- register item 1001. This was
+# ONE sed script that erased the keys and then ran a labelled loop to collapse the
+# adjacent ones, with the label, its body and the branch separated by semicolons.
+# The argument of a label ends at a NEWLINE and not at a `;`, so BSD sed read the
+# label's NAME as everything after it, printed `unused label`, EXITED 0, and never
+# ran the collapse. Each group's line then kept ONE key token at two runs and FOUR
+# at eight (measured 2026-09-10), the arm below read that as different groupings,
+# and item 986 -- whose claim is about COST and whose cost assertions passed --
+# wore the failure. On macOS, every round, while every Linux run was green.
+#
+# ⚠⚠ THE LOOP IS GONE RATHER THAN RE-SPELLED across `-e` fragments. A label that
+# does not exist cannot be terminated wrongly, and one global substitution says
+# the same thing: a run of keys separated by single spaces becomes one token.
+# Measured 2026-09-10 against GNU sed, busybox sed and a FreeBSD sed built from
+# source on this machine -- all three answer identically, and only the third
+# answered differently before.
+loop_read_erase_run_keys() {
+    command sed -e 's/probe#[0-9]*/RUN/g' -e 's/RUN\( RUN\)*/RUN/g'
+}
+
 # ⛔⛔⛔⛔⛔ THE ARMS. Driven against a THROWAWAY state directory, never the real
 # one -- `hosted-read.sh` learnt that the hard way (register item 792: a harness
 # that can write outside its subject eventually does), and the same rule is
@@ -1521,7 +1545,7 @@ SCORINGS
   {"id":71,"finished":true,"outcome":"exhausted","checks":{"milestone_scoring":"authored"}}]}
 SMALL
     small="$(LOOP_READ_SCAN_LOG="$tmp/scan-small" LOOP_READ_SPRAG="$tmp/bin/sprag-scoped" \
-        loop_read_gap | command grep " ended '" | command sed 's/probe#[0-9]*/RUN/g; :a; s/RUN RUN/RUN/; ta' \
+        loop_read_gap | command grep " ended '" | loop_read_erase_run_keys \
         | command sort -u)"
     : > "$tmp/scan-big"
     cat > "$tmp/state/sprag/probe.runs.json" <<'BIG'
@@ -1536,7 +1560,7 @@ SMALL
   {"id":77,"finished":true,"outcome":"exhausted","checks":{"milestone_scoring":"authored"}}]}
 BIG
     big="$(LOOP_READ_SCAN_LOG="$tmp/scan-big" LOOP_READ_SPRAG="$tmp/bin/sprag-scoped" \
-        loop_read_gap | command grep " ended '" | command sed 's/probe#[0-9]*/RUN/g; :a; s/RUN RUN/RUN/; ta' \
+        loop_read_gap | command grep " ended '" | loop_read_erase_run_keys \
         | command sort -u)"
     scan_small="$(command wc -c < "$tmp/scan-small" | command tr -d ' ')"
     scan_big="$(command wc -c < "$tmp/scan-big" | command tr -d ' ')"
