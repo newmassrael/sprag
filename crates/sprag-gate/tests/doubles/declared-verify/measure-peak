@@ -17,8 +17,79 @@
 # tracked, executable helpers.
 #
 # Usage:  bx -- bash crates/sprag-gate/tests/doubles/declared-verify/measure-peak <command-name>
-# Prints: the largest VmHWM in kB and the command line that reached it, then the run's own status.
+#         bash crates/sprag-gate/tests/doubles/declared-verify/measure-peak --platforms
+# Prints: which platform and method the reading was taken with, the largest VmHWM in kB and the
+#         command line that reached it, then the run's own status.
+# Refuses: exit 3 where its method cannot be run here, exit 4 where the run produced no sample at
+#         all. NOT MEASURABLE and ZERO are different answers and this instrument must not spell
+#         them alike — register item 1008.
 set -u
+
+# ⛔⛔⛔⛔⛔ WHERE THIS INSTRUMENT'S METHOD EXISTS, AS A LINE RATHER THAN AS PROSE — item 1008.
+#
+# The reading is `VmHWM` out of procfs, which is a LINUX interface: macOS has no `/proc` at all.
+# The header above has said so since register item 623 and nothing ASKED it, so on a host without
+# procfs this instrument did not refuse. MEASURED 2026-09-10, running the whole of this file with
+# every `/proc` path answering ENOENT: it ran the command to the end, exited **0**, wrote **0
+# bytes** to stderr, and simply left `PEAK_KB` out of its output. An absent line is not a
+# measurement of zero, and it reads exactly like a peak too small to be worth printing.
+#
+# ⚠ ONE LINE — `uname -s`:method — and it is the whole of what this instrument admits.
+# `--platforms` prints its names, so the gate that judges a RECORDED reading asks THIS rather than
+# keeping a list of its own. Teaching this instrument another platform is a line here, a probe in
+# the `case` below and a sampler; the gate follows without being edited.
+METHODS="Linux:proc-vmhwm"
+
+# ⚠ ANSWERED BEFORE ANYTHING ELSE, because whoever asks it may be JUDGING a reading rather than
+# taking one: it needs no declaration, no workspace and no procfs.
+if [ "${1:-}" = "--platforms" ]; then
+    for entry in $METHODS; do printf '%s\n' "${entry%%:*}"; done
+    exit 0
+fi
+
+# ⛔⛔⛔ THE METHOD IS PROBED BEFORE THE WORK, AND IT IS ASKED FOR ITS ANSWER RATHER THAN ITS NAME.
+#
+# BEFORE, because a refusal that arrives after a cold build has already spent the thing the run was
+# for — and the run is minutes long by construction, since a warm `CARGO_TARGET_DIR` skips the work
+# whose peak is the answer. FOR ITS ANSWER, because a host can be CALLED Linux and still not
+# answer: a container built without procfs, or a `/proc` this process may not read. So `uname -s`
+# NAMES the platform for the record, and `VmHWM` ANSWERING is what says a reading can be taken.
+#
+# ⚠ `MEASURE_PEAK_PROCFS` is the seam the gate drives, and it fails CLOSED: pointing it anywhere
+# that does not answer makes this instrument refuse, and it can never turn a refusal into a reading.
+procfs="${MEASURE_PEAK_PROCFS:-/proc}"
+platform=$(uname -s)
+method=""
+for entry in $METHODS; do
+    [ "${entry%%:*}" = "$platform" ] && method="${entry#*:}"
+done
+
+refuse() {
+    echo "measure-peak: NOT MEASURABLE HERE — $1" >&2
+    shift
+    for extra in "$@"; do echo "measure-peak: $extra" >&2; done
+    echo "measure-peak: platform=$platform, procfs=$procfs, admitted: $METHODS" >&2
+    exit 3
+}
+
+[ -n "$method" ] || refuse \
+    "\`uname -s\` answers $platform and no method here samples a peak on it." \
+    "A reading taken on another platform is not a reading of this host: record the platform beside" \
+    "the number, and teach the METHODS line above before taking one here."
+
+case "$method" in
+    proc-vmhwm)
+        grep -q '^VmHWM:' "$procfs/self/status" 2>/dev/null || refuse \
+            "the method for $platform is \`$method\` and \`$procfs/self/status\` answers no" \
+            "\`VmHWM:\` line, so there is nothing here to sample."
+        ;;
+    *)
+        refuse \
+            "METHODS names \`$method\` for $platform and this file has no probe or sampler for it." \
+            "A platform was admitted on that line and the two blocks under it were not written."
+        ;;
+esac
+
 name="${1:?name a key from [commands], e.g. verify}"
 decl=".claude/remote-build.toml"
 [ -f "$decl" ] || { echo "run me from the workspace root; no $decl here" >&2; exit 2; }
@@ -58,7 +129,7 @@ mine() {
     local pid="$1" hops=0 ppid
     while [ "$pid" -gt 1 ] && [ "$hops" -lt 12 ]; do
         [ "$pid" -eq "$job" ] && return 0
-        ppid=$(awk '/^PPid:/{print $2}' "/proc/$pid/status" 2>/dev/null) || return 1
+        ppid=$(awk '/^PPid:/{print $2}' "$procfs/$pid/status" 2>/dev/null) || return 1
         [ -n "${ppid:-}" ] || return 1
         pid="$ppid"
         hops=$((hops + 1))
@@ -67,8 +138,8 @@ mine() {
 }
 
 while kill -0 "$job" 2>/dev/null; do
-    for p in /proc/[0-9]*; do
-        pid="${p#/proc/}"
+    for p in "$procfs"/[0-9]*; do
+        pid="${p##*/}"
         hwm=$(awk '/^VmHWM/{print $2}' "$p/status" 2>/dev/null) || continue
         [ -n "${hwm:-}" ] || continue
         mine "$pid" || continue
@@ -82,6 +153,11 @@ wait "$job"
 rc=$?
 
 echo "MEASURED_COMMAND=$name"
+# ⚠ THE PROVENANCE TRAVELS WITH THE NUMBER — item 1008. `[peak_measured]` and `[routed]` record a
+# platform per reading and `every_reading_names_a_platform_the_instrument_can_measure_on` checks it
+# against `--platforms` above, so these two lines are what a person copies into the declaration.
+echo "MEASURED_PLATFORM=$platform"
+echo "MEASURED_METHOD=$method"
 echo "RUN_STATUS=$rc"
 # ⚠ A NON-ZERO RUN IS STILL A VALID MEASUREMENT — the peak is what the work cost, not whether it
 # passed — but the reason has to travel with it or the number arrives unexplained.
@@ -114,6 +190,16 @@ for leg in /tmp/sprag-verify-1.log /tmp/sprag-verify-2.log; do
     errors=$(grep -ac -e '^error\[' -e 'could not compile' "$leg")
     echo "LEG_${leg##*/} STARTED=$started REPORTED=$reported COMPILE_ERRORS=$errors"
 done
+# ⛔⛔⛔ NO SAMPLE IS «NOT MEASURED» AND NOT A PEAK OF ZERO — item 1008's second half, measured on
+# this instrument the same day and on THIS platform: a command that ends inside one sweep of the
+# process table leaves the sample file empty, and this file then printed a green report with no
+# `PEAK_KB` line in it. That is the identical silence a host with no procfs gave, and either one has
+# to be a refusal or a reader cannot tell *too short to catch* from *this host cannot answer*.
+if [ ! -s "$peaks" ]; then
+    echo "measure-peak: NOT MEASURABLE HERE — the run of \`$name\` ended with no sample taken:" >&2
+    echo "measure-peak: nothing under it was alive at any sweep of $procfs. That is not a peak of 0." >&2
+    exit 4
+fi
 sort -rn "$peaks" | head -1 | while IFS=$'\t' read -r kb line; do
     echo "PEAK_KB=$kb"
     echo "PEAK_WORST=$line"

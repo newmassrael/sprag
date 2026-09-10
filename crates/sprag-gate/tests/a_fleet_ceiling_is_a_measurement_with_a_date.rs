@@ -66,6 +66,18 @@
 //! `peak_gb_per_task = 9` and divide the same host into two tasks for `build` as well, whose own
 //! reading is 1,204,328 kB — the "too HIGH" failure named below, self-inflicted.
 
+//! ⛔⛔⛔⛔⛔ **AND EVERY ONE OF THOSE NUMBERS IS A CLAIM ABOUT ONE PLATFORM** — register item 1008.
+//!
+//! `VmHWM` out of procfs is how all of this is taken, and procfs is Linux's. The instrument said so
+//! in a comment and nothing asked it, so on a host without `/proc` it did not refuse: measured
+//! 2026-09-10 with every `/proc` path answering ENOENT, it ran the command to the end, exited 0,
+//! wrote nothing to stderr and left `PEAK_KB` out of its report — an answer indistinguishable from
+//! a peak too small to print. Two clauses close it:
+//! [`every_reading_names_a_platform_the_instrument_can_measure_on`] holds that a RECORDED figure
+//! says where it came from, against what `measure-peak --platforms` itself admits; and
+//! [`the_instrument_refuses_where_its_method_is_not_there`] holds that the NEXT run refuses instead
+//! of answering, before it spends the cold build it cannot measure.
+
 use std::collections::BTreeMap;
 
 use sprag_gate::sources::workspace_root;
@@ -259,6 +271,187 @@ fn the_measurement_says_when_and_where_it_was_taken() {
             "⚠ `[peak_measured] {field} = {value}` says too little to point a re-measurement at.",
         );
     }
+}
+
+/// ⛔⛔⛔⛔⛔ **EVERY READING NAMES THE PLATFORM IT WAS TAKEN ON, AND IT IS ONE THE INSTRUMENT CAN
+/// TAKE A READING ON** — register item 1008.
+///
+/// `date` and `host` above age a number; the PLATFORM decides whether the number could exist. The
+/// instrument samples `VmHWM` out of procfs, which is a Linux interface — macOS has no `/proc` at
+/// all — so every figure in this file is a claim about one platform's memory behaviour, and until
+/// this clause nothing in the tree said which. Measured 2026-09-10, running the instrument with
+/// every `/proc` path answering ENOENT: it ran the command, exited **0**, wrote nothing to stderr
+/// and left `PEAK_KB` out of its report. A reading recorded from such a run is indistinguishable
+/// from one nobody took.
+///
+/// ⚠⚠ **THE ADMISSIBLE SET IS ASKED OF THE INSTRUMENT, NOT KEPT HERE.** `measure-peak --platforms`
+/// prints the platforms its `METHODS` line admits, so teaching it macOS makes this clause accept a
+/// macOS reading on the same commit — and a list here would have been a second opinion that ages
+/// separately. Register item 445's rule (a list with no glob decides alone), applied to a fact that
+/// lives in a program.
+///
+/// ⚠ An empty answer would make this vacuously green, which is item 441's hazard, so the emptiness
+/// is asserted before anything is judged against it.
+#[test]
+fn every_reading_names_a_platform_the_instrument_can_measure_on() {
+    let admitted = admitted_platforms();
+    assert!(
+        !admitted.is_empty(),
+        "⚠ `measure-peak --platforms` named no platform at all, so every field this clause \
+         compares against it would be judged against nothing — register item 441. Read its \
+         `METHODS` line: it is the one place this instrument admits a platform.",
+    );
+
+    let decl = read_decl();
+    let mut judged = 0;
+
+    // `[peak_measured]` carries ONE platform for the table, exactly as it carries one `date` and
+    // one `host`: both of its rows were taken in the same session on the same machine.
+    judged += judge_platform(
+        &decl.table("peak_measured"),
+        "peak_measured",
+        "platform",
+        &admitted,
+    );
+
+    // `[routed]` records per command — `precommit_date`, `precommit_host` — so the platform is per
+    // command too. The population is every recorded READING, which is what a `_kb` row is.
+    let routed = decl.table("routed");
+    let readings: Vec<String> = routed
+        .keys()
+        .filter_map(|key| key.strip_suffix("_kb"))
+        .map(str::to_owned)
+        .collect();
+    for name in readings {
+        judged += judge_platform(&routed, "routed", &format!("{name}_platform"), &admitted);
+    }
+
+    assert!(
+        judged > 1,
+        "⚠ this clause judged {judged} field(s). It reads `[peak_measured]` and every `_kb` row of \
+         `[routed]`, so a count this low means the tables it walks have moved and it is now \
+         guarding less than it says — register item 441.",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **THE INSTRUMENT REFUSES WHERE ITS METHOD IS NOT THERE, RATHER THAN ANSWERING WITHOUT
+/// IT** — register item 1008, and the half a recorded platform cannot cover.
+///
+/// A field saying `Linux` is provenance for a reading somebody already took. It says nothing about
+/// the NEXT run, which is where the defect was: on a host with no procfs the instrument ran the
+/// whole command and reported a green run with no peak in it. **NOT MEASURABLE and ZERO are
+/// different answers**, and this repository has paid for that distinction repeatedly — item 1001
+/// (a started count that silently became 0), item 1006 and item 1007 (a `grep` whose pattern
+/// counted 0 under a BSD regex) are the same face in three other files.
+///
+/// ⚠⚠ **AND IT MUST REFUSE BEFORE IT RUNS THE COMMAND.** The run is minutes of cold compilation by
+/// construction — a warm `CARGO_TARGET_DIR` skips the work whose peak is the answer — so a refusal
+/// that arrives afterwards has already spent what it was refusing to measure. That is what the
+/// `MEASURED_COMMAND` assertion below is for: the instrument prints that line as soon as the run is
+/// over, so its ABSENCE is the evidence that nothing was run.
+///
+/// ⚠ The seam is `MEASURE_PEAK_PROCFS` and it fails CLOSED: pointing it at nothing makes the
+/// instrument refuse, and no value of it can turn a refusal into a reading. On a platform the
+/// instrument does not admit at all (macOS, where this suite also runs) the refusal comes one step
+/// earlier, from `uname -s`, and both spell it `NOT MEASURABLE HERE` — which is why that is what is
+/// asserted rather than either message.
+#[test]
+fn the_instrument_refuses_where_its_method_is_not_there() {
+    // ⚠⚠ A DECLARATION OF ITS OWN, so that a regression cannot cost a cold build. If the pre-flight
+    // ever stops refusing, this case runs the command it names — and the one named here is `true`,
+    // rather than the workspace's real `verify`, which is a `cargo test --workspace` away.
+    // ⚠ Through [`sprag_scratch`] and never `std::env::temp_dir()` — register item 794: the bare
+    // call answers a RELATIVE path when `TMPDIR` is set-and-empty, and this fixture would then
+    // stage a declaration inside this crate's own directory. `scratch_for` also mints the per-run
+    // name with the pid where the reaper reads it (item 795).
+    let stage = sprag_scratch::scratch_for("sprag-measure-peak-preflight", "");
+    std::fs::create_dir_all(stage.join(".claude")).expect("a staging directory for the instrument");
+    std::fs::write(
+        stage.join(".claude/remote-build.toml"),
+        "[commands]\nverify = \"true\"\n",
+    )
+    .expect("a declaration for the instrument to read");
+
+    let out = std::process::Command::new("bash")
+        .arg(instrument())
+        .arg("verify")
+        .env("MEASURE_PEAK_PROCFS", stage.join("no-procfs-here"))
+        .current_dir(&stage)
+        .output()
+        .expect("the instrument runs under a shell");
+    let _ = std::fs::remove_dir_all(&stage);
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "⛔ ITEM 1008: the instrument could not use its method and still exited 0. A reading taken \
+         from such a run has no peak line in it, which reads exactly like a peak too small to \
+         print.\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+    assert!(
+        stderr.contains("NOT MEASURABLE HERE"),
+        "⛔ ITEM 1008: the instrument refused without saying that the MEASUREMENT is what was \
+         impossible. A non-zero exit alone is read as the measured run having failed, which is a \
+         valid reading in this instrument.\nstderr:\n{stderr}",
+    );
+    assert!(
+        !stdout.contains("PEAK_KB"),
+        "⛔ ITEM 1008: a refusal must not also print a peak.\nstdout:\n{stdout}",
+    );
+    assert!(
+        !stdout.contains("MEASURED_COMMAND"),
+        "⛔ ITEM 1008: the instrument ran the command before refusing. The refusal has to come \
+         BEFORE the work, or it arrives having already spent the cold build it was declining to \
+         measure.\nstdout:\n{stdout}",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **A REPORT WITH NO PEAK IN IT IS NEVER GREEN** — register item 1008's other half, and
+/// the invariant rather than one of the roads to it.
+///
+/// The missing procfs was the first road; a run too short to be caught is the second, and it was
+/// measured on THIS platform the same day: `measure-peak` swept the process table once, the command
+/// had already ended, and it printed `RUN_STATUS=0` with no `PEAK_KB` line — byte for byte the
+/// silence the host with no procfs produced. Whoever reads that output cannot tell *too short to
+/// catch* from *this host cannot answer*, and both are **not measured** rather than zero.
+///
+/// ⚠⚠ **THE CLAIM IS OVER THE OUTPUT, NOT OVER THE EXIT PATH**, because the roads differ per
+/// platform and the invariant does not: no `PEAK_KB` ⇒ non-zero. On Linux this case reaches the
+/// empty-sample refusal; on macOS the instrument refuses one step earlier, at `uname -s`, and the
+/// same assertion holds for a different reason. ⚠ Stated rather than hidden: that makes the Linux
+/// job the one that actually exercises the empty-sample branch — the same asymmetry
+/// [`sprag_gate::doubles`] names for `ETXTBSY`.
+///
+/// ⚠ And a sweep that DOES catch the command is not a failure of this case: the invariant is an
+/// implication, so a run that produced a peak satisfies it without the branch being reached.
+#[test]
+fn a_report_with_no_peak_in_it_is_never_green() {
+    // ⚠ Item 794 again, and the reason is the same one the case above gives.
+    let stage = sprag_scratch::scratch_for("sprag-measure-peak-short", "");
+    std::fs::create_dir_all(stage.join(".claude")).expect("a staging directory for the instrument");
+    std::fs::write(
+        stage.join(".claude/remote-build.toml"),
+        "[commands]\nverify = \"true\"\n",
+    )
+    .expect("a declaration for the instrument to read");
+
+    let out = std::process::Command::new("bash")
+        .arg(instrument())
+        .arg("verify")
+        .current_dir(&stage)
+        .output()
+        .expect("the instrument runs under a shell");
+    let _ = std::fs::remove_dir_all(&stage);
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stdout.contains("PEAK_KB=") || !out.status.success(),
+        "⛔ ITEM 1008: the instrument reported a run with no `PEAK_KB` in it and exited 0. An \
+         absent peak is NOT MEASURED — a reader copying this into `[peak_measured]` has nothing to \
+         copy and no reason to look for one.\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
 }
 
 /// ⛔⛔⛔⛔⛔ **EVERY COMMAND THIS REPOSITORY HANDS THE WRAPPER IS ONE IT MEASURED, AND EVERY SUCH
@@ -464,6 +657,71 @@ fn read_decl() -> Decl {
     }
 
     Decl { top, tables }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Asking the instrument — register item 1008
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The tracked instrument every figure in `[peak_measured]` and `[routed]` was taken with.
+///
+/// ⚠ Reached through [`sprag_gate::doubles`] rather than by joining a path, so a missing file or a
+/// checkout that dropped the execute bit is reported as the staging failure it is — register item
+/// 384's lesson, and item 467's rule that nothing here writes a program it then runs.
+fn instrument() -> std::path::PathBuf {
+    sprag_gate::doubles::Doubles::of(env!("CARGO_MANIFEST_DIR"))
+        .set("declared-verify")
+        .program("measure-peak")
+}
+
+/// The platforms the instrument says it can take a reading on — ASKED, not listed.
+///
+/// ⚠ It answers this before it looks for a declaration, a workspace or a procfs, because whoever
+/// asks may be judging a recorded reading from a host that could not take one.
+fn admitted_platforms() -> Vec<String> {
+    let out = std::process::Command::new("bash")
+        .arg(instrument())
+        .arg("--platforms")
+        .output()
+        .expect("the instrument answers what it can measure");
+    assert!(
+        out.status.success(),
+        "⚠ `measure-peak --platforms` exited {:?}. That question needs nothing of the host, so a \
+         failure here is the instrument being broken rather than the platform being wrong.\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// One recorded reading's platform field: present, and one the instrument admits.
+///
+/// Returns 1 so the caller can count what it judged and refuse to be vacuously green.
+fn judge_platform(
+    table: &BTreeMap<String, String>,
+    table_name: &str,
+    field: &str,
+    admitted: &[String],
+) -> usize {
+    let platform = table.get(field).unwrap_or_else(|| panic!(
+        "⛔ ITEM 1008: `[{table_name}]` records a reading and no `{field}`, so nothing says which \
+         platform's memory behaviour the number describes. The instrument prints it now — take the \
+         `MEASURED_PLATFORM` line from:\n    bash crates/sprag-gate/tests/doubles/declared-verify/\
+         measure-peak <name>",
+    ));
+    assert!(
+        admitted.iter().any(|known| known == platform),
+        "⛔ ITEM 1008: `[{table_name}] {field} = {platform}` names a platform the instrument \
+         cannot take a reading on. It admits {admitted:?} — its `METHODS` line is the one place \
+         that changes. Either the reading came from somewhere this instrument has no method for, \
+         or a method was added there and its probe and sampler were not.",
+    );
+    1
 }
 
 /// The hook directory, WALKED rather than listed — register item 445's rule, applied to the one
