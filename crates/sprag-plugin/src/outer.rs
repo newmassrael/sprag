@@ -5962,6 +5962,29 @@ impl Faced {
         }
     }
 
+    /// **WHETHER THIS PANE'S OWN SUPERVISOR IS CALLING IT `Blocked`** — register item 484.
+    ///
+    /// ⚠⚠⚠ IT IS NOT A REFUSAL AND MUST NOT BECOME ONE. A supervisor goes on calling a pane
+    /// `Blocked` for [`sprag_detect::DEFAULT_SETTLE`] after a dialog has been answered and gone, so
+    /// a door keyed on this would refuse every prompt a screen rule types straight after answering
+    /// one — `Readiness::unanswered_question`'s own doc measures that. What this answers is
+    /// narrower: *the reading taken at the instant the bytes go in disagrees with the guard that
+    /// just ran*, which is the signal to ask that guard again.
+    ///
+    /// ⚠⚠ The three arms that could not read the peer answer `false`. An absence of evidence is
+    /// never read as the negative here — a build with no detector must not have every delivery
+    /// refused, which is the same stance `peer_asking` takes one crate over.
+    #[must_use]
+    pub const fn blocked(&self) -> bool {
+        matches!(
+            self,
+            Self::Seen {
+                state: sprag_detect::AgentState::Blocked,
+                ..
+            }
+        )
+    }
+
     /// **WHETHER A PROCESS INSIDE THE PANE SAID THIS**, rather than a rule reading its screen.
     ///
     /// ⚠⚠⚠ It exists so this reading serves BOTH its readers. `say` used to ask the supervisor a
@@ -13951,21 +13974,10 @@ impl OuterLoop {
         //
         // ⚠ AFTER THE HOLD AND NOT BEFORE IT, for the reading's reason one paragraph down: the
         // moment worth asking about is the one the bytes actually go in at.
-        if let Some(unanswered) =
+        let mut in_the_way =
             self.driving
                 .ready
-                .unanswered_question(panes, self.driving.pane, run)?
-        {
-            // ⚠⚠ THE NOTICE IS RECORDED IN THE BARRIER'S OWN VOCABULARY, and it is the SAME notice
-            // `barrier_says` records for the same fact — so `screening` can quote the question and
-            // `judged` can claim it, whichever door the run came in at.
-            let asking = unanswered.noted();
-            self.noticed = Some(Noticed::Asking(unanswered));
-            return Err(PaneError::PeerAsking {
-                pane: self.driving.pane,
-                asking,
-            });
-        }
+                .unanswered_question(panes, self.driving.pane, run)?;
         // ⚠⚠⚠⚠⚠ **WHAT THIS RUN IS ABOUT TO TYPE AT** — register item 745(C), and here for the
         // reason the line below is here: this function is the only place every question passes
         // through, so it is the only place a record of the peer can be taken on EVERY delivery
@@ -13989,6 +14001,52 @@ impl OuterLoop {
         // bytes are out. The refusals that matter here are on the far side of that point: a prompt
         // the composer folded away IS a delivery, and it is the one this record exists for.
         let facing = Faced::read(panes, self.driving.pane);
+        // ⛔⛔⛔⛔⛔ **AND WHEN THAT READING DISAGREES WITH THE GUARD ABOVE, THE GUARD IS ASKED
+        // AGAIN** — register item 484, and until this line the disagreement was only WRITTEN DOWN.
+        //
+        // The two reads are two answers to one question, taken microseconds apart, and nothing kept
+        // them in step. Measured three times in `target/bx-logs` (2026-08-28, 08-30, 09-01), all
+        // three the same walk: `Resuming --SessionReady--> Priming — it typed at a peer its
+        // supervisor called Blocked`. The run typed a prompt into a pane showing somebody else's
+        // question — *the one thing this crate's barrier exists to prevent*, in the words of the
+        // gate that caught it — and the journal line it wrote about doing so is the evidence.
+        //
+        // ⚠⚠⚠ **ONLY OUT OF `Nothing`, AND THAT CLAUSE IS A SCOPE RATHER THAN A MEASURED RULE —
+        // SAID PLAINLY BECAUSE THE MUTATION DID NOT RING.** Widening it to re-ask after `Handled`
+        // too leaves the whole suite green (623 passed), so nothing here holds it today.
+        //
+        // It is kept for two reasons, and neither is a measurement:
+        //   * `Nothing` pressed nothing, so asking again is free; reaching `Handled` may ALREADY
+        //     have answered a dialog, and a second ask could press an authorised choice twice.
+        //   * it keeps this repair to the case that was measured broken, leaving the `Handled` path
+        //     byte-for-byte what it was before item 484.
+        //
+        // ⛔ WHY IT CANNOT BE GATED HERE, rather than left as an unexplained line: staging the
+        // double press needs a peer whose dialog SURVIVES the key that answers it, and no fixture
+        // in this crate models one — `menu_peer` clears its screen in `took`, and its `EXTRA`
+        // witness counts every later byte, so the prompt this delivery goes on to type is
+        // indistinguishable from a second press. Registered as its own item rather than hidden.
+        //
+        // ⚠⚠ AND IT IS STILL THE QUESTION THAT DECIDES, NEVER THE STATE WORD — the paragraph above
+        // holds. `facing.blocked()` is not a refusal; it is the signal that the pane moved under
+        // the guard, and the refusal is the guard's own, reached by the same code as before.
+        if facing.blocked() && matches!(in_the_way, crate::readiness::InTheWay::Nothing) {
+            in_the_way = self
+                .driving
+                .ready
+                .unanswered_question(panes, self.driving.pane, run)?;
+        }
+        if let crate::readiness::InTheWay::Asking(unanswered) = in_the_way {
+            // ⚠⚠ THE NOTICE IS RECORDED IN THE BARRIER'S OWN VOCABULARY, and it is the SAME notice
+            // `barrier_says` records for the same fact — so `screening` can quote the question and
+            // `judged` can claim it, whichever door the run came in at.
+            let asking = unanswered.noted();
+            self.noticed = Some(Noticed::Asking(unanswered));
+            return Err(PaneError::PeerAsking {
+                pane: self.driving.pane,
+                asking,
+            });
+        }
         // ⚠ Recorded here rather than at any composition site, for [`Session::asked`]'s reason one
         // screen down: a screen rule's text is typed at the peer too and is in no prompt slot at
         // all, so this function is the only place every question passes through.

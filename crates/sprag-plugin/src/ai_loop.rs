@@ -6512,6 +6512,102 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
+    /// ⛔⛔⛔⛔⛔ **NO PASS MAY TYPE A PROMPT AT A PEER ITS SUPERVISOR IS CALLING `Blocked`** —
+    /// register item 484, and this is the sentence three real failures wrote in the journal.
+    ///
+    /// # The evidence this arm was built from, rather than a hypothesis
+    ///
+    /// Item 484 was carried for three weeks as *a `sprag-plugin` lib test failed once in twelve
+    /// full-suite runs and is not attributed*. The twenty-six logs under `target/bx-logs` that
+    /// carry that failure hold three genuine ones — 2026-08-28, 08-30 and 09-01 — and all three
+    /// walked the SAME road:
+    ///
+    /// ```text
+    /// Restarting --SessionReplaced--> Resuming
+    /// Resuming --SessionReady--> Priming — it typed at a peer its supervisor called Blocked
+    /// ```
+    ///
+    /// So it is not a flake and it is not the `unattended` edge the register suspected: the run
+    /// typed a prompt into a pane showing somebody else's question, which
+    /// `a_replacement_session_that_comes_up_asking_ends_the_run_saying_what_it_asked` calls *the
+    /// one thing this crate's barrier exists to prevent*. Everything after that line in those walks
+    /// is a consequence of it.
+    ///
+    /// # ⚠⚠⚠ Why this is deterministic where the failure is not
+    ///
+    /// Reproducing the race costs sixty-two runs for three failures (measured: 12+12 by the
+    /// register, 8 full-suite and 30 solo here, all green). It does not have to be raced, because
+    /// the shape is *the supervisor's answer changes between two reads of one delivery* and this
+    /// crate already owns a double that stages exactly that. What it could not do was place the
+    /// flip anywhere but the first gap, which is why [`DialogBetweenTheReads::raise_after`] takes a
+    /// count now.
+    ///
+    /// # ⚠⚠ The population, and why it is a sweep rather than a number
+    ///
+    /// How many times a delivery asks the supervisor is an INTERNAL ORDER — the barrier, the guard
+    /// that refuses a dialog, then [`crate::outer::Faced`] at the instant the bytes go in — and a
+    /// gate that hard-coded *the third read* would be asserting about today's call graph. So the
+    /// flip is swept across every position a delivery can put it in, and the claim is about all of
+    /// them: wherever the peer stops to ask, no pass may type at it afterwards. A position where
+    /// the barrier catches it first is a PASS, not an exemption — the run stopped, which is the
+    /// property.
+    #[test]
+    fn no_pass_types_at_a_peer_its_supervisor_is_calling_blocked() {
+        let mut typed_at_a_blocked_peer: Vec<String> = Vec::new();
+        for flip in 0..8_u64 {
+            let (workspace, pane) = crate::testing::standin_agent(u32::MAX);
+            let (dialog, access) = crate::testing::DialogBetweenTheReads::over(&workspace);
+            let mut loops = AiLoop::new(
+                engine(),
+                pane,
+                &Brief {
+                    await_person_ms: Some(200),
+                    handback_still_ms: Some(50),
+                    turn_within_ms: Some(2_000),
+                    ..brief_for(1_000_000)
+                },
+                &standin_spec(),
+            )
+            .expect("a well-briefed loop over a live pane starts");
+
+            // The peer stops to ask after `flip` more answers of *working*, so across the sweep the
+            // dialog lands in every gap a delivery has.
+            dialog.raise_after(flip);
+            let run = RunContext::uncancellable();
+            let mut walked: Vec<String> = Vec::new();
+            for _ in 0..6 {
+                match loops.step(&access, &run) {
+                    Ok(step) => {
+                        if let Some(note) = step.note {
+                            walked.push(note);
+                        }
+                    }
+                    // A refusal is one of the endings this property allows: the run stopped rather
+                    // than typing, which is the whole claim.
+                    Err(_) => break,
+                }
+            }
+            access.lifecycle().expect("lifecycle").close(pane);
+
+            if let Some(note) = walked
+                .iter()
+                .find(|note| note.contains("it typed at a peer its supervisor called Blocked"))
+            {
+                typed_at_a_blocked_peer.push(format!("flip after {flip} read(s): {note}"));
+            }
+        }
+
+        assert!(
+            typed_at_a_blocked_peer.is_empty(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 484: a pass typed a prompt into a pane whose own supervisor \
+             was calling it `Blocked` at the instant the bytes went in — and the run SAID SO, in \
+             the line it wrote about doing it. A peer that has stopped to ask reads the next \
+             keystroke as an answer to ITS question, so this is the barrier's whole reason for \
+             existing, and the journal has been recording the breach rather than refusing it.\n\n{}",
+            typed_at_a_blocked_peer.join("\n"),
+        );
+    }
+
     /// ⚠⚠⚠ **A WINDOW THAT RAN OUT BEFORE THE ACCOUNT ARRIVED SAYS SO, IN THE RUN'S JOURNAL** —
     /// the silence item 208 removes, put back one step later and removed again.
     ///

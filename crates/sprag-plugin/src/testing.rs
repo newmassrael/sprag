@@ -2988,14 +2988,23 @@ pub(crate) fn supervised_asking(workspace: &Arc<Mutex<Workspace>>) -> WorkspaceP
 /// stops staging the window, and the gate standing on it says so by going red.
 pub(crate) struct DialogBetweenTheReads {
     raised: Arc<std::sync::atomic::AtomicBool>,
-    grace: Arc<std::sync::atomic::AtomicBool>,
+    /// How many more reads still answer *working* before the dialog shows.
+    ///
+    /// ⚠⚠⚠ **A COUNT RATHER THAN A FLAG — register item 484.** One grace read stages the window
+    /// between a pass's FIRST two supervisor reads, which is the arm `Over::Asking` needed. A
+    /// delivery reads the supervisor more than twice — the barrier, then the guard that refuses a
+    /// dialog, then [`crate::outer::Faced`] at the instant the bytes go in — so the window that
+    /// matters to item 484 is further in, and a flag cannot reach it. The count is what lets a gate
+    /// SWEEP where the flip lands instead of guessing the order, which is the assumption the
+    /// paragraph above says this fixture rests on.
+    grace: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl DialogBetweenTheReads {
     /// The double, and the access that reads through it.
     pub(crate) fn over(workspace: &Arc<Mutex<Workspace>>) -> (Self, WorkspacePaneAccess) {
         let raised: Arc<std::sync::atomic::AtomicBool> = Arc::default();
-        let grace: Arc<std::sync::atomic::AtomicBool> = Arc::default();
+        let grace: Arc<std::sync::atomic::AtomicU64> = Arc::default();
         let source = {
             let workspace = Arc::clone(workspace);
             let raised = Arc::clone(&raised);
@@ -3005,11 +3014,17 @@ impl DialogBetweenTheReads {
                 let rows = WorkspacePaneAccess::new(Arc::clone(&workspace))
                     .pane_full_lines(id)
                     .unwrap_or_default();
-                let blocked = raised.load(std::sync::atomic::Ordering::Acquire)
-                    // ⚠ THE ONE GRACE READ IS THE BARRIER'S, and it is spent here: the first read
-                    // after `raise` still answers *working*, every read after it sees the dialog.
-                    // `swap` so the grace cannot be spent twice.
-                    && !grace.swap(false, std::sync::atomic::Ordering::AcqRel);
+                // ⚠ THE GRACE READS ARE SPENT HERE, ONE PER READ: the first `n` reads after
+                // `raise_after(n)` still answer *working*, every read after them sees the dialog.
+                // `checked_sub` so the count cannot wrap and grant grace for ever once it runs out.
+                let spent_grace = grace
+                    .fetch_update(
+                        std::sync::atomic::Ordering::AcqRel,
+                        std::sync::atomic::Ordering::Acquire,
+                        |left| left.checked_sub(1),
+                    )
+                    .is_ok();
+                let blocked = raised.load(std::sync::atomic::Ordering::Acquire) && !spent_grace;
                 Some(AgentObservation {
                     holding: None,
                     composing: None,
@@ -3059,7 +3074,17 @@ impl DialogBetweenTheReads {
     /// Raise the dialog — from the NEXT read but one, so the barrier of the pass that follows still
     /// sees a working peer and only the completion's poll meets the question.
     pub(crate) fn raise(&self) {
-        self.grace.store(true, std::sync::atomic::Ordering::Release);
+        self.raise_after(1);
+    }
+
+    /// Raise the dialog after `reads` more answers of *working* — [`raise`](Self::raise) generalised.
+    ///
+    /// ⚠⚠ **SO A GATE CAN SWEEP WHERE THE FLIP LANDS** — register item 484. Which read of a
+    /// delivery is the last safe one is exactly what this fixture's header says it ASSUMES, and an
+    /// assumption a caller can vary is one a caller can measure instead.
+    pub(crate) fn raise_after(&self, reads: u64) {
+        self.grace
+            .store(reads, std::sync::atomic::Ordering::Release);
         self.raised
             .store(true, std::sync::atomic::Ordering::Release);
     }

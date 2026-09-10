@@ -95,6 +95,39 @@ pub(crate) fn peer_noticed(panes: &dyn PaneAccess, pane: PaneId) -> Option<Strin
         .flatten()
 }
 
+/// **WHAT THE GUARD BEFORE AN INJECTION FOUND ON THE PANE** — register item 484.
+///
+/// # ⚠⚠⚠ Why `Nothing` and `Handled` are not one answer, and what folding them cost
+///
+/// Both mean *no question is in this run's way*, and until item 484 they were one `None`. They
+/// differ in the one respect their caller needs: **reaching `Handled` may have PRESSED A KEY** at
+/// the pane — a consent taking a dialog is an injection — so the question must not be asked again
+/// on the same pass, or the same authorised choice goes in twice. `Nothing` pressed nothing, so it
+/// may be re-asked freely, and re-asking it is what closes the window below.
+///
+/// # ⚠⚠ The window this distinction exists to close
+///
+/// The delivery reads the supervisor TWICE — this guard, and [`crate::outer::Faced`] at the instant
+/// the bytes go in — and those are two answers to one question that nothing keeps in step. Measured
+/// three times in `target/bx-logs` (2026-08-28, 08-30, 09-01): the guard said nothing was asking,
+/// the second read said `Blocked`, and the run typed a prompt into somebody else's question **and
+/// wrote a journal line saying so**. A record that names a hazard is not a gate on it.
+///
+/// ⚠ The repair does NOT key a refusal on the state — the paragraph on
+/// [`unanswered_question`](Readiness::unanswered_question) explains why that would refuse every
+/// prompt typed straight after a screen rule answered a dialog. The state is only the signal that
+/// the two reads DISAGREE; the decision is still this guard's, asked a second time.
+#[derive(Debug)]
+pub(crate) enum InTheWay {
+    /// The pane was not asking at all, and nothing was pressed.
+    Nothing,
+    /// A dialog was seen and it is not in this run's way — a consent took it, it had already gone,
+    /// or the run ended underneath. ⚠ A key may have gone in.
+    Handled,
+    /// A dialog is up and nothing this run holds may answer it.
+    Asking(Unanswered),
+}
+
 /// What a peer did with the number that was typed at it — the three states an answer can be in
 /// while it is being given.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1848,17 +1881,17 @@ impl Readiness {
         panes: &dyn PaneAccess,
         pane: PaneId,
         run: &RunContext,
-    ) -> Result<Option<Unanswered>, PaneError> {
+    ) -> Result<InTheWay, PaneError> {
         let Some(asking) = settled_question(panes, pane, run) else {
-            return Ok(None);
+            return Ok(InTheWay::Nothing);
         };
         Ok(match self.answer(panes, pane, asking, run)? {
-            Reached::Asking(unanswered) => Some(unanswered),
+            Reached::Asking(unanswered) => InTheWay::Asking(unanswered),
             // ⚠ EVERY OTHER ANSWER IS *THE DIALOG IS NOT IN THIS RUN'S WAY*: a consent took it
             // ([`Reached::Answered`]), the pane is ready ([`Reached::Yes`]), or the run ended
             // underneath — and that last one is the CALLER's to notice, at the `?` its own
             // delivery is about to reach, rather than a second ending invented here.
-            _ => None,
+            _ => InTheWay::Handled,
         })
     }
 
