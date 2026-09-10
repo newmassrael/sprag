@@ -664,7 +664,7 @@ impl Default for Delivery {
 /// Six outcomes and not a `bool`, because "the pane never took it" is a thing a supervisor must
 /// be able to act on — hand the pane to a person — and is not the same as an error. An unknown
 /// pane or an unencodable key IS an error and comes back as [`PaneError`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Delivered {
     /// The text is on the pane's screen AND THE PROGRAM IS WHAT PUT IT THERE — the pane's echo is
     /// off, so nothing but the program could have painted it. `attempts` is how many injections it
@@ -802,7 +802,27 @@ pub enum Delivered {
     /// NEVER MOVED** — a pane that moved without showing the text is
     /// [`Reported`](Self::Reported)'s, or a refusal that names the agent's silence. The distinction
     /// is what stopped a folded paste from being read as a swallowed one; see that answer's doc.
-    Unconfirmed { attempts: u32, written: Written },
+    ///
+    /// ⛔⛔⛔⛔⛔ **AND IT CARRIES WHAT TELLS THE THREE PANES APART** — register item 1015.
+    ///
+    /// `PaneError::NeverTook` names three panes that produce this answer and then says *only the
+    /// peer itself can tell the first from the last*. That sentence was FALSE, and this delivery is
+    /// what makes it false: `await_text` already computes whether the screen MOVED, and already
+    /// holds the screen it read — and both were dropped on the floor at the moment they were worth
+    /// something. A live loop died on this refusal and nobody could say which pane it had been.
+    ///
+    /// * `moved` — the screen changed while this delivery was in flight and never carried the text.
+    ///   A composer that folded the paste away moved; a pane too narrow to hold the confirmation on
+    ///   one row moved; **a peer that took the bytes and painted nothing did not.**
+    /// * `screen` — what that pane was showing when the last attempt gave up, or [`None`] where the
+    ///   pane could not be read at all. A placeholder like `[Pasted text +5 lines]` is the first
+    ///   pane saying its own name.
+    Unconfirmed {
+        attempts: u32,
+        written: Written,
+        moved: bool,
+        screen: Option<String>,
+    },
     /// **THE TEXT ARRIVED, THE SUBMIT WAS PRESSED, AND THE CALLER'S EVIDENCE FOR IT NEVER CAME** —
     /// typed, and as far as anything here can tell not sent.
     ///
@@ -953,7 +973,7 @@ impl Delivered {
     /// ⚠ Exhaustive with no `_` arm, [`refused`](Self::refused)'s rule: an eleventh answer cannot
     /// be added without somebody saying how many injections it took.
     #[must_use]
-    pub const fn injections(self) -> u32 {
+    pub const fn injections(&self) -> u32 {
         match self {
             Self::Confirmed { attempts, .. }
             | Self::OnScreenOnly { attempts, .. }
@@ -964,7 +984,7 @@ impl Delivered {
             | Self::Unsubmitted { attempts, .. }
             | Self::Unreported { attempts, .. }
             | Self::Stopped { attempts, .. }
-            | Self::Unwitnessed { attempts, .. } => attempts,
+            | Self::Unwitnessed { attempts, .. } => *attempts,
         }
     }
 
@@ -978,7 +998,7 @@ impl Delivered {
     /// PROGRAM ITSELF.** A peer that names the question it received has said it is holding the text,
     /// which is what this asks — and a stronger source than the paint `Confirmed` is read off.
     #[must_use]
-    pub const fn is_confirmed(self) -> bool {
+    pub const fn is_confirmed(&self) -> bool {
         matches!(self, Self::Confirmed { .. } | Self::Reported { .. })
     }
 
@@ -1009,7 +1029,7 @@ impl Delivered {
     /// same read-back as `Confirmed`, so the text WAS on that screen. Answering false here would
     /// file it as a fold, and a run's fold budget is what stops it for a person.
     #[must_use]
-    pub const fn is_on_screen(self) -> bool {
+    pub const fn is_on_screen(&self) -> bool {
         matches!(
             self,
             Self::Confirmed { .. }
@@ -1041,13 +1061,24 @@ impl Delivered {
     /// ⚠ It builds the error and does not RAISE it: the counters a refusal moves are the driver's,
     /// and a type that reached into them would be two authorities on one tally.
     #[must_use]
-    pub const fn refused(self) -> Option<PaneError> {
+    pub fn refused(&self) -> Option<PaneError> {
         match self {
             // Nothing ever appeared on that pane: the bytes went to the pty and the program behind
             // it showed none of them. A turn waited out here is a turn nobody was asked for.
-            Self::Unconfirmed { attempts, written } => Some(PaneError::NeverTook {
+            //
+            // ⛔⛔⛔ AND IT CARRIES THE EVIDENCE THAT TELLS THE THREE PANES APART — register item
+            // 1015. See `PaneError::NeverTook`, whose sentence used to send its reader to the peer
+            // for a distinction this delivery had already made and thrown away.
+            Self::Unconfirmed {
                 attempts,
+                written,
+                moved,
+                screen,
+            } => Some(PaneError::NeverTook {
+                attempts: *attempts,
                 written: written.bytes(),
+                moved: *moved,
+                screen: screen.clone(),
             }),
             // The text is ON that pane and the submit established nothing — the composer is holding
             // a question nobody put. Go and look at it.
@@ -1056,9 +1087,9 @@ impl Delivered {
                 written,
                 wanted,
             } => Some(PaneError::NeverSubmitted {
-                attempts,
+                attempts: *attempts,
                 written: written.bytes(),
-                wanted,
+                wanted: *wanted,
             }),
             // The composer SWALLOWED it and nothing since has placed it anywhere — neither the
             // agent's account nor the composer letting go. The opposite instruction to the one
@@ -1068,9 +1099,9 @@ impl Delivered {
                 written,
                 wanted,
             } => Some(PaneError::NeverReported {
-                attempts,
+                attempts: *attempts,
                 written: written.bytes(),
-                wanted,
+                wanted: *wanted,
             }),
             // ⚠⚠⚠ AND THE FIVE A RUN CARRIES ON WITH. `Released` is here BY DECISION and not by
             // falling off the end of a cascade — register item 762: the composer let go of the
@@ -1110,7 +1141,7 @@ impl Delivered {
     /// ⚠ Exhaustive for [`refused`](Self::refused)'s reason: it was `matches!(.., Stopped { .. })`
     /// at the call site, where every later answer defaulted to *a question was asked*.
     #[must_use]
-    pub const fn asked_nothing(self) -> bool {
+    pub const fn asked_nothing(&self) -> bool {
         match self {
             Self::Stopped { .. } => true,
             Self::Confirmed { .. }
@@ -1127,7 +1158,7 @@ impl Delivered {
 
     /// How many bytes reached the pty across every attempt — what a plugin charges as its
     /// [`Cost`](crate::plugin::Cost), since a swallowed write cost the same as a landed one.
-    pub const fn written(self) -> Written {
+    pub const fn written(&self) -> Written {
         match self {
             Self::Confirmed { written, .. }
             | Self::Reported { written, .. }
@@ -1138,7 +1169,7 @@ impl Delivered {
             | Self::Emptied { written, .. }
             | Self::Unreported { written, .. }
             | Self::Stopped { written, .. }
-            | Self::Unwitnessed { written, .. } => written,
+            | Self::Unwitnessed { written, .. } => *written,
         }
     }
 }
@@ -1361,7 +1392,7 @@ impl Witnessed {
     /// ⚠⚠ EXHAUSTIVE over [`Delivered`], so an eighth answer arrives here as a variant that no
     /// longer compiles rather than as a delivery a walk silently says nothing about.
     #[must_use]
-    pub const fn of(delivered: Delivered) -> Option<Self> {
+    pub const fn of(delivered: &Delivered) -> Option<Self> {
         match delivered {
             Delivered::Confirmed { .. } => Some(Self::Painted),
             Delivered::OnScreenOnly { .. } => Some(Self::Echoed),
@@ -1725,6 +1756,13 @@ pub fn deliver(
     // while the second is being made) still confirms instead of being compared against a screen it
     // had already moved.
     let before = panes.pane_collapsed(pane);
+    // ⛔⛔⛔⛔⛔ **THE EVIDENCE A FAILED DELIVERY OWES ITS READER** — register item 1015. Accumulated
+    // ACROSS attempts rather than taken from the last one: *did this delivery ever move that
+    // screen* is a question about the delivery, and a peer that painted for the first injection and
+    // sat still for the third has moved. `saw` is the newest reading, which is the pane as it was
+    // when the run gave up.
+    let mut moved = false;
+    let mut saw: Option<String> = None;
 
     for _ in 0..spec.attempts.max(1) {
         if run.stopped() {
@@ -1735,14 +1773,19 @@ pub fn deliver(
         }
         attempts += 1;
         written += panes.inject(pane, &keys)?.bytes();
-        match await_text(
+        let (seen, screen) = await_text(
             panes,
             run,
             pane,
             needle,
             spec.echo_timeout,
             before.as_deref(),
-        ) {
+        );
+        moved |= matches!(seen, OnScreen::MovedWithoutIt);
+        if screen.is_some() {
+            saw = screen;
+        }
+        match seen {
             OnScreen::Stopped => {
                 return Ok(Delivered::Stopped {
                     attempts,
@@ -1928,6 +1971,8 @@ pub fn deliver(
     Ok(Delivered::Unconfirmed {
         attempts,
         written: Written::of(written),
+        moved,
+        screen: saw,
     })
 }
 
@@ -2118,8 +2163,15 @@ fn await_text(
     needle: &str,
     timeout: Duration,
     before: Option<&str>,
-) -> OnScreen {
+) -> (OnScreen, Option<String>) {
     let start = std::time::Instant::now();
+    // ⛔⛔⛔⛔⛔ **THE SCREEN IS KEPT, NOT JUST CLASSIFIED** — register item 1015. This loop reads the
+    // pane in order to answer a three-way question and then dropped what it read, so a delivery
+    // that failed could say only THAT it failed. A live loop died here at iteration 932 and the
+    // refusal listed three panes it could not choose between — while this variable had the answer
+    // in it, one frame earlier. It is the LAST read rather than the first: the question a reader
+    // asks afterwards is what the pane was showing when the run gave up on it.
+    let mut last: Option<String> = None;
     // ⚠⚠⚠ RAISED INSIDE THE WAIT, NOT ASKED AFTER IT. *Did this delivery move the screen* is a
     // comparison against a moment, so it has to be taken while the poll that observed the change is
     // the poll doing the comparing — a second read taken once the grace expired would be a different
@@ -2127,7 +2179,7 @@ fn await_text(
     let mut moved = false;
     loop {
         if run.stopped() {
-            return OnScreen::Stopped;
+            return (OnScreen::Stopped, last);
         }
         // An unknown pane can never show anything, and saying so at once beats spending the whole
         // grace on it — the caller's next `inject` will report `UnknownPane` properly.
@@ -2152,25 +2204,32 @@ fn await_text(
             Some(text)
                 if squeezed(&text).contains(&squeezed(needle)) && Some(text.as_str()) != before =>
             {
-                return OnScreen::Shown;
+                return (OnScreen::Shown, Some(text));
             }
             // An unknown pane can never show anything, and it can never be said to have MOVED
             // either — there is no screen to compare.
-            None => return OnScreen::Nothing,
+            //
+            // ⚠ `last` and not `None`: a pane that goes away mid-wait was READABLE a moment ago,
+            // and what it was showing then is the only account of it there will ever be.
+            None => return (OnScreen::Nothing, last),
             // ⚠⚠⚠⚠ THE ATTRIBUTION, and it is taken on a screen that does NOT carry the needle: the
             // pane is showing something it was not showing before this delivery began, so the bytes
             // reached a program that is displaying something else for them. `before` of `None` is a
             // baseline that could not be read, and a change is a claim that needs one.
             Some(text) => {
                 moved |= before.is_some_and(|was| was != text);
+                last = Some(text);
             }
         }
         if start.elapsed() >= timeout {
-            return if moved {
-                OnScreen::MovedWithoutIt
-            } else {
-                OnScreen::Nothing
-            };
+            return (
+                if moved {
+                    OnScreen::MovedWithoutIt
+                } else {
+                    OnScreen::Nothing
+                },
+                last,
+            );
         }
         std::thread::sleep(POLL_INTERVAL);
     }
@@ -2878,10 +2937,134 @@ mod tests {
             Delivered::Unconfirmed {
                 attempts: 2,
                 written: Written::of(10),
+                // ⚠ A pane that ignores input never repaints, so `moved` is false and there IS a
+                // screen — the unchanged one, still showing the peer's own readiness marker. That
+                // pairing is the third pane of item 1015's three, asserted here rather than left to
+                // the refusal's prose. ⚠⚠ `GO` and not `""`: this line said the empty string first,
+                // which was a guess, and the suite answered with the measurement.
+                moved: false,
+                screen: Some(GO.to_owned()),
             },
         );
         assert!(!outcome.is_confirmed());
         access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE THREE PANES BEHIND ONE REFUSAL ARE TOLD APART, WHICH THAT REFUSAL SAID ONLY
+    /// THE PEER COULD DO** — register item 1015.
+    ///
+    /// # What was lost, and where
+    ///
+    /// `PaneError::NeverTook` names three panes that produce it — a composer that folded the paste
+    /// away, one too narrow to carry the confirmation on a row, and a peer that took the bytes and
+    /// painted nothing — and then said *only the peer itself can tell the first from the last*.
+    /// That sentence was FALSE ABOUT ITS OWN CALLER: [`await_text`] computes whether the screen
+    /// moved on every single delivery, and holds the screen it read while it does. Both were
+    /// dropped one frame before they were worth something.
+    ///
+    /// ⚠⚠ It cost a live loop: a run died at iteration 932 on this refusal, and the watching
+    /// session had to rule the candidates out BY HAND from a pane capture and an arithmetic on the
+    /// byte count — evidence that exists nowhere in the record and could not be recovered later.
+    /// The daemon log does not record injections and the agent transcript records only what was
+    /// SUBMITTED, so an unsubmitted prompt is written down by nothing.
+    ///
+    /// # ⚠ Two real ptys, because the fact under test is what a peer DID
+    ///
+    /// One peer eats a byte and repaints a placeholder; the other eats everything and paints
+    /// nothing. Nothing here sets `moved` — it is read back out of a delivery to two programs that
+    /// behaved differently, which is the only way this claim is about the product.
+    #[test]
+    fn a_composer_that_folded_the_paste_is_told_from_a_peer_that_painted_nothing() {
+        let spec = || Delivery {
+            echo_timeout: Duration::from_millis(200),
+            attempts: 2,
+            ..Delivery::new()
+        };
+
+        // ⑴ THE FOLDING COMPOSER. It consumes one byte, paints something that is not the text, and
+        // swallows the rest — the shape a real agent's composer produces for a long paste.
+        let (folding, fold_pane) = ready_peer(&peer(
+            "dd bs=1 count=1 of=/dev/null 2>/dev/null; printf '[Pasted text +5 lines]'; \
+             exec cat > /dev/null",
+        ));
+        let folded = deliver(
+            &folding,
+            &RunContext::uncancellable(),
+            fold_pane,
+            "hello",
+            &spec(),
+        )
+        .expect("a folding composer is not an error");
+
+        // ⑵ THE PEER THAT PAINTS NOTHING.
+        let (silent, silent_pane) = ready_peer(&peer("exec cat > /dev/null"));
+        let unpainted = deliver(
+            &silent,
+            &RunContext::uncancellable(),
+            silent_pane,
+            "hello",
+            &spec(),
+        )
+        .expect("a pane that ignores input is not an error");
+
+        let (
+            Delivered::Unconfirmed {
+                moved: fold_moved,
+                screen: fold_screen,
+                ..
+            },
+            Delivered::Unconfirmed {
+                moved: silent_moved,
+                ..
+            },
+        ) = (&folded, &unpainted)
+        else {
+            panic!(
+                "both peers must reach the same answer, or this case compares two things: {folded:?} / {unpainted:?}"
+            );
+        };
+        assert!(
+            *fold_moved,
+            "the composer repainted its box, so this delivery MOVED the screen without ever \
+             carrying the text — that is the fact the refusal needs and it is computed already: \
+             {folded:?}",
+        );
+        assert!(
+            !*silent_moved,
+            "and a peer that reads its bytes into /dev/null paints nothing at all, so this one did \
+             NOT move: {unpainted:?}",
+        );
+        assert!(
+            fold_screen
+                .as_deref()
+                .is_some_and(|screen| screen.contains("[Pasted text")),
+            "and the screen is kept, so the placeholder — the composer saying its own name — is in \
+             the record a person reads afterwards: {fold_screen:?}",
+        );
+
+        // ⛔⛔ AND THE SENTENCES DIFFER, which is the whole item: two runs that used to leave the
+        // same account now leave accounts a reader can act on differently.
+        let fold_said = folded.refused().expect("a fold is a refusal").to_string();
+        let silent_said = unpainted
+            .refused()
+            .expect("silence is a refusal")
+            .to_string();
+        assert!(
+            fold_said.contains("THE SCREEN DID MOVE") && fold_said.contains("[Pasted text"),
+            "the fold's refusal must name the fold and show what it saw: {fold_said}",
+        );
+        assert!(
+            silent_said.contains("THE SCREEN NEVER MOVED AT ALL"),
+            "and the silent peer's must name the opposite: {silent_said}",
+        );
+        assert_ne!(
+            fold_said, silent_said,
+            "⛔ ITEM 1015: two different panes still leave the same account, which is the defect \
+             whole — the refusal is back to telling its reader to go and ask the peer",
+        );
+
+        folding.lifecycle().expect("lifecycle").close(fold_pane);
+        silent.lifecycle().expect("lifecycle").close(silent_pane);
     }
 
     /// ⚠⚠⚠ **A PANE THAT WILL NEVER READ A BYTE USED TO COME BACK CONFIRMED**, in 20 ms, and this
@@ -4010,13 +4193,13 @@ mod tests {
              session that had the question all along. Got {landed:?}",
         );
         assert_eq!(
-            Witnessed::of(landed).map(Witnessed::landing),
+            Witnessed::of(&landed).map(Witnessed::landing),
             Some(Landing::Asked),
             "and the road it publishes must say a question was asked, or the run's landing count \
              is still missing every delivery this contract saved",
         );
         assert!(
-            !Witnessed::of(landed).is_some_and(Witnessed::folded_away),
+            !Witnessed::of(&landed).is_some_and(Witnessed::folded_away),
             "⚠⚠ AND IT IS NOT A FOLD, which is the whole difference from `LetGo`: this prompt WAS \
              on that pane, and filing it as a fold would spend the run's fold budget — the thing \
              that stops a run for a person — on a delivery that folded nothing",
@@ -4306,6 +4489,8 @@ mod tests {
             Delivered::Unconfirmed {
                 attempts: 1,
                 written,
+                moved: false,
+                screen: None,
             },
             Delivered::Unsubmitted {
                 attempts: 1,
@@ -4327,7 +4512,7 @@ mod tests {
                 wanted,
             },
         ];
-        for delivered in every {
+        for delivered in &every {
             assert_eq!(
                 delivered.refused().is_none(),
                 Witnessed::of(delivered).is_some(),
@@ -4369,7 +4554,7 @@ mod tests {
              sentence the wrong way round, and it would make a run discard a turn it had already \
              paid for",
         );
-        for delivered in every {
+        for delivered in &every {
             assert!(
                 delivered.asked_nothing() == matches!(delivered, Delivered::Stopped { .. }),
                 "⚠⚠ AND EXACTLY ONE ANSWER MEANS IT — {delivered:?} disagrees. A second variant \
@@ -5029,6 +5214,8 @@ mod tests {
                 Delivered::Unconfirmed {
                     attempts: 3,
                     written: bytes,
+                    moved: false,
+                    screen: None,
                 },
                 None,
             ),
@@ -5043,7 +5230,7 @@ mod tests {
         ];
         for (delivered, expected) in answers {
             assert_eq!(
-                Witnessed::of(delivered),
+                Witnessed::of(&delivered),
                 expected,
                 "⚠⚠⚠ ITEM 434: {delivered:?} must report {expected:?}. A success whose grounds are \
                  dropped reaches a supervisor as the same `Ok(bytes)` every other success does",
@@ -5509,7 +5696,7 @@ mod tests {
                     Duration::from_secs(30),
                     None,
                 ),
-                OnScreen::Stopped,
+                (OnScreen::Stopped, _),
             ),
             "and this file's rule is the opposite one, on the same context and the same evidence",
         );

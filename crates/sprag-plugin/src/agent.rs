@@ -776,10 +776,20 @@ impl Agent {
             // absent), so there is no turn to wait for and nothing on that screen is this run's.
             // A REFUSAL rather than a converged empty capture: the latter tells a caller the model
             // said nothing, which is the one reading that is both actionable and false.
-            Prompted::Delivered(Delivered::Unconfirmed { attempts, written }) => {
+            // ⚠ THE EVIDENCE TRAVELS WITH IT — register item 1015. This adapter builds the refusal
+            // itself rather than going through `Delivered::refused`, so a field added there and not
+            // here would be a second, poorer account of the same failure.
+            Prompted::Delivered(Delivered::Unconfirmed {
+                attempts,
+                written,
+                moved,
+                screen,
+            }) => {
                 return Err(PaneError::NeverTook {
                     attempts,
                     written: written.bytes(),
+                    moved,
+                    screen,
                 });
             }
             // The prompt is in the pane and the submit after it established nothing, so the peer

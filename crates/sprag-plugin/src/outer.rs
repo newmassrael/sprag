@@ -14073,7 +14073,7 @@ impl OuterLoop {
         // ⛔⛔⛔ AND WHAT IT COST — register item 909, read off the SAME answer the road is read
         // off so the two can never describe different deliveries.
         self.record_delivery(
-            crate::deliver::Witnessed::of(delivered),
+            crate::deliver::Witnessed::of(&delivered),
             delivered.injections(),
         );
         // ⚠⚠ AND WHAT IT WAS TYPED AT — register item 745(C), recorded at the same moment as the

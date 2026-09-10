@@ -415,7 +415,23 @@ pub enum PaneError {
         attempts: u32,
         /// How many bytes reached the pseudoterminal across all of them. Paid for, and gone.
         written: u64,
-    } = { attempts: 0, written: 0 },
+        /// ⛔⛔⛔⛔⛔ **WHETHER THE SCREEN MOVED AT ALL** — register item 1015, and the whole of what
+        /// separates two of the three panes this refusal names.
+        ///
+        /// A composer that folds a paste away MOVES the screen; a pane too narrow to carry the
+        /// confirmation on one row MOVES it; a peer that takes the bytes and paints nothing does
+        /// NOT. `deliver` has computed this on every delivery since the read-back existed and
+        /// dropped it on the floor — which is why this refusal used to end *only the peer itself
+        /// can tell the first from the last*, a sentence that was false about its own caller.
+        moved: bool,
+        /// What that pane was showing when the last attempt gave up, or [`None`] where it could not
+        /// be read at all.
+        ///
+        /// ⚠ A placeholder like `[Pasted text +5 lines]` is the folding composer saying its own
+        /// name, and it is the evidence a person would have gone to the pane for — except that by
+        /// the time anyone reads a run record the pane is gone.
+        screen: Option<String>,
+    } = { attempts: 0, written: 0, moved: false, screen: None },
     /// ⚠⚠ THE PROMPT ARRIVED AND THE SUBMIT AFTER IT SHOWED NOTHING, so the text is sitting in the
     /// pane and the peer was never asked.
     ///
@@ -831,22 +847,55 @@ impl std::fmt::Display for PaneError {
             // which cost two rounds of widening a pane that was never the cause; the cause was a
             // composer that had FOLDED the paste away, so the text was in the pane and no needle
             // could reach it. A refusal that lists causes owes the list.
-            Self::NeverTook { attempts, written } => {
+            // ⛔⛔⛔⛔⛔ **AND IT NAMES WHICH OF THEM THIS WAS** — register item 1015. The sentence
+            // used to list three panes and end *only the peer itself can tell the first from the
+            // last*, which was FALSE about its own caller: `deliver` had already computed whether
+            // the screen moved, and was already holding the screen it read. A live loop died on
+            // this refusal and the account it left could not be narrowed by anybody.
+            Self::NeverTook {
+                attempts,
+                written,
+                moved,
+                screen,
+            } => {
                 write!(
                     f,
                     "the prompt could not be read back off the pane: {attempts} injections put \
                      {written} bytes on its pseudoterminal and none of them CHANGED it into a \
                      screen carrying the confirmation, so nothing was submitted and no reply is \
-                     this run's. Three panes answer this with the text plainly arrived: one whose \
-                     COMPOSER FOLDED THE PASTE AWAY — showing something like \"[Pasted text +5 \
-                     lines]\" where the text should be, which no choice of needle can match — one \
-                     too narrow to carry the confirmation on one row, and one whose screen never \
-                     moved at all, a peer that took the bytes and painted nothing. Only the peer \
-                     itself can tell the first from the last: an agent whose hooks report the \
-                     prompt it received is confirmed by that account instead of by its screen, so a \
-                     pane that reaches this refusal either publishes no such report or never showed \
-                     any sign of taking the bytes"
-                )
+                     this run's. "
+                )?;
+                if *moved {
+                    write!(
+                        f,
+                        "THE SCREEN DID MOVE, without ever carrying the text, so the bytes reached \
+                         a program that painted something else for them. That is a COMPOSER THAT \
+                         FOLDED THE PASTE AWAY — showing something like \"[Pasted text +5 lines]\" \
+                         where the text should be, which no choice of needle can match — or a pane \
+                         TOO NARROW to carry the confirmation on one row. It is not a peer that \
+                         painted nothing, and the screen below is what separates the two"
+                    )?;
+                } else {
+                    write!(
+                        f,
+                        "THE SCREEN NEVER MOVED AT ALL: this pane is a peer that took the bytes and \
+                         painted nothing, and it is NOT a composer folding the paste — a fold \
+                         repaints the box. An agent whose hooks report the prompt it received is \
+                         confirmed by that account instead of by its screen, so a pane that reaches \
+                         this refusal publishes no such report"
+                    )?;
+                }
+                // ⚠⚠ THE SCREEN LAST AND ONLY WHEN THERE IS ONE. `None` is *the pane could not be
+                // read*, which is a fourth thing and must not be printed as an empty screen — a
+                // reader who sees `""` concludes the peer painted nothing, which is the one
+                // reading this refusal has just ruled out or confirmed on other evidence.
+                match screen {
+                    Some(screen) => write!(f, ". The pane was showing: {screen:?}"),
+                    None => write!(
+                        f,
+                        ". The pane could not be read at all, so there is no screen"
+                    ),
+                }
             }
             Self::NeverSubmitted {
                 attempts,

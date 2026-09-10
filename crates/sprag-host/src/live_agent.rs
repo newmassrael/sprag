@@ -3569,8 +3569,18 @@ fn what_a_key_does_to_a_live_agents_permission_dialog() {
             },
         );
         let landed = match &typed {
-            Ok(Delivered::Unconfirmed { attempts, written }) => {
-                format!("⚠ NEVER APPEARED on screen ({attempts} attempts, {written:?})")
+            // ⚠ The evidence rides along — register item 1015. A live probe's note that says only
+            // *never appeared* is the account this item exists to widen.
+            Ok(Delivered::Unconfirmed {
+                attempts,
+                written,
+                moved,
+                screen,
+            }) => {
+                format!(
+                    "⚠ NEVER APPEARED on screen ({attempts} attempts, {written:?}, \
+                     screen moved: {moved}, showing {screen:?})"
+                )
             }
             Ok(other) => format!("was confirmed on screen ({other:?})"),
             Err(error) => format!("⚠ could not be typed at all ({error:?})"),
