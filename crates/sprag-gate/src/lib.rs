@@ -94,6 +94,14 @@ pub mod vocabulary;
 /// person counting `git grep` hits by hand.
 pub mod published;
 
+/// Whether the BRIEF's two sides name the same words — item 1023.
+///
+/// [`published`]'s face on the edge that gate cannot reach. That one asks whether a word the HOST
+/// puts on its wire has a Rust reader; this one's reader is a DOCUMENT, so the question has to be
+/// asked of the payload and the `brief` transition together — and asked both ways, because a key
+/// the document reads and nobody writes assigns nil over a decision its author made.
+pub mod briefing;
+
 /// Every Rust source this workspace carries, for the gates that judge the TEXT of it.
 ///
 /// Shared by the two workspace-wide ratchets (items 467 and 471) rather than copied into each: the

@@ -330,17 +330,74 @@ pub fn declared_acts(scxml: &str) -> usize {
 #[must_use]
 pub fn uncommented(scxml: &str) -> String {
     let mut kept = String::with_capacity(scxml.len());
-    let mut rest = scxml;
-    while let Some(open) = rest.find("<!--") {
-        kept.push_str(&rest[..open]);
-        let after = &rest[open + "<!--".len()..];
-        let Some(close) = after.find("-->") else {
-            return kept;
-        };
-        rest = &after[close + "-->".len()..];
+    let mut at = 0;
+    for (open, end) in comments(scxml) {
+        kept.push_str(&scxml[at..open]);
+        at = end;
     }
-    kept.push_str(rest);
+    kept.push_str(&scxml[at..]);
     kept
+}
+
+/// The document's lines with every comment BLANKED rather than removed, one-indexed.
+///
+/// # ⛔⛔⛔⛔⛔ Why this exists beside [`uncommented`], which already drops comments
+///
+/// Removing a comment removes its NEWLINES, so every line after the first one is renumbered — and
+/// a gate built on that reports a line nobody can open. Measured 2026-09-10 while register item
+/// 1023's gate was being built: it named `ai_loop.scxml:508` for an `<assign>` that is on line
+/// **3601**, and the number looked entirely plausible.
+///
+/// ⚠ *Does the needle match?* and *where is it?* are different questions, and only one of them
+/// survives having the text edited underneath it. [`uncommented`] is right for the first; this is
+/// what the second needs.
+#[must_use]
+pub fn uncommented_lines(scxml: &str) -> Vec<(usize, String)> {
+    let mut blanked = String::with_capacity(scxml.len());
+    let mut at = 0;
+    for (open, end) in comments(scxml) {
+        blanked.push_str(&scxml[at..open]);
+        // ⚠ CHAR BY CHAR, never by byte: this document's commentary is not ASCII, and a blank
+        // written at a byte offset inside a character is not a string at all.
+        for character in scxml[open..end].chars() {
+            blanked.push(if character == '\n' { '\n' } else { ' ' });
+        }
+        at = end;
+    }
+    blanked.push_str(&scxml[at..]);
+    blanked
+        .lines()
+        .enumerate()
+        .map(|(index, line)| (index + 1, line.to_owned()))
+        .collect()
+}
+
+/// Every `<!-- … -->` in the document, as byte ranges over `scxml`.
+///
+/// ⚠⚠ ONE definition of what a comment is, and both readers above are written in terms of it —
+/// this module's own rule, applied to itself. Two copies is where two readers of the same file come
+/// to disagree, which is the defect [`uncommented`] was made `pub` to prevent.
+///
+/// ⚠ An unterminated `<!--` runs to the end of the file, which is what a parser would do with it; a
+/// document that shipped one would not open at all.
+fn comments(scxml: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut at = 0;
+    while let Some(found) = scxml[at..].find("<!--") {
+        let open = at + found;
+        let after = open + "<!--".len();
+        match scxml[after..].find("-->") {
+            Some(close) => {
+                at = after + close + "-->".len();
+                spans.push((open, at));
+            }
+            None => {
+                spans.push((open, scxml.len()));
+                break;
+            }
+        }
+    }
+    spans
 }
 
 /// One prompt the document COMPOSES — an `<assign>` whose `location` names a prompt.
