@@ -388,9 +388,14 @@ run_pixel_smoke() {
 #
 # ⚠⚠⚠ WHAT IT MUST NOT GIVE UP is this hook's whole reason for existing: *whatever an amend or a
 # `--no-verify` slipped past pre-commit*. So the question asked is not "did a gate run recently" but
-# **"was THIS TREE the one it cleared"** — `pre-commit` writes the index's tree hash after both gates
-# pass, and only when the working tree it compiled IS that index. Anything else fails to match: an
-# amend, a rebase, a second commit, a commit made with `--no-verify`, a stamp this clone cannot read.
+# **"was THIS TREE the one it cleared"** — `pre-commit` writes the hash of the tree those gates
+# actually compiled. Anything else fails to match: an amend, a rebase, a second commit, a commit made
+# with `--no-verify`, a stamp this clone cannot read.
+#
+# ⚠⚠ THAT TREE IS NOW THE INDEX'S BY CONSTRUCTION — register item 1011. The stamp used to be
+# withheld unless the working tree happened to equal the index, because the gates compiled the disk;
+# they compile a mirror of the index instead, so the hash written IS the content being published and
+# the condition it was hedged with is gone.
 #
 # ⚠⚠⚠⚠ EVERY UNKNOWN ANSWERS NO, which is the direction that costs minutes rather than correctness —
 # the same stance the pixel walk above takes, inverted because the risk here is skipping rather than

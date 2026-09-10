@@ -4,4 +4,25 @@
 #
 # TRACKED rather than written by the suite: register item 467.
 printf 'cargo %s\n' "$*" >> "$DOUBLE_LOG"
+
+# ⛔⛔⛔⛔⛔ AND WHICH BYTES IT WAS STANDING IN FRONT OF — register item 1011.
+#
+# Recording only the subcommand answers *did the gate run*, and the defect that item is about
+# passes that question with flying colours: clippy ran, on the wrong content. So this reports the
+# ANSWER rather than the name — the first line of the file the case put a different body in the
+# index and the working tree for. A case asserting on this is asking which of the two the gate was
+# given, which is the only form of the question that can go red.
+#
+# ⚠ Silent when the file is absent: every other case in that suite stages something else, and a
+# double that refused what it was not asked about would fail runs it has no opinion on.
+#
+# ⛔⛔⛔ THE SUBCOMMAND RIDES ON THE SAME LINE, AND THAT IS A FIX RATHER THAN DETAIL. The hook hands
+# the wrapper TWO commands with two subjects — clippy and rustdoc compile the index, the ratchet
+# lane runs in the working tree — so `which bytes did cargo see` has two right answers in one run
+# and a line carrying only the bytes cannot be asked about either. Measured: the case asserting
+# that no `cargo` saw the working tree's copy went red on the ratchet lane, which is *supposed* to
+# see it.
+if [ -f subject.rs ]; then
+    printf 'cargo-saw %s %s\n' "${1:-none}" "$(head -1 subject.rs)" >> "$DOUBLE_LOG"
+fi
 exit 0

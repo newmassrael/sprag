@@ -3,11 +3,18 @@
 #
 # ⛔⛔⛔⛔⛔ WHY THIS EXISTS, AND WHAT IT COST TO LEARN
 #
-# `pre-commit` and `pre-push` compile THE WORKING TREE, not the index: `cargo clippy
-# --workspace`, the rustdoc gate and the ratchet lane all read the files on disk. Those
-# gates take six to ten minutes, and a session that has just typed `git commit` wants to
-# get on with the next piece of work -- so it edits, and the hook is compiling what the
-# edit is halfway through.
+# `pre-commit` and `pre-push` run gates that READ THE FILES ON DISK and take six to ten
+# minutes doing it, and a session that has just typed `git commit` wants to get on with the
+# next piece of work -- so it edits, and the hook is reading what the edit is halfway
+# through.
+#
+# ⚠⚠ WHICH GATES THOSE ARE CHANGED ON 2026-09-10 -- register item 1011. `cargo clippy
+# --workspace` and the rustdoc gate used to be the worst of them; they now compile a checkout of
+# the INDEX, taken before either starts, so a mid-run edit cannot reach them at all. What still
+# reads the disk is `mnemosyne-cli validate-workspace`, `validate-code-refs`, THE RATCHET LANE
+# (which that item's own note says is still owed) and the pixel smoke on the push side -- so the
+# report below is still the only place a reader can learn that their own editing is what moved.
+# ⚠ The example above is a ratchet-lane failure, and it is still exactly reproducible.
 #
 # The failure that follows is INDISTINGUISHABLE FROM A REAL DEFECT, because it is a real
 # compile error, correctly reported, about code that really was on disk. Measured on
@@ -243,7 +250,7 @@ tree_drift_report() {
         printf '%s: ⚠⚠ THE WORKING TREE CHANGED WHILE THIS HOOK RAN — %s of %s fingerprinted path(s):\n' \
             "$hook" "$(printf '%s\n' "$moved" | wc -l | tr -d ' ')" "$fingerprinted" >&2
         printf '%s\n' "$moved" | sed "s|^|$hook:     |" >&2
-        printf '%s: ⚠⚠ these gates compile the WORKING TREE and not the index, so a failure above may be about an edit made while they ran rather than about what you are committing. Re-run on a still tree to tell the two apart.\n' \
+        printf '%s: ⚠⚠ the gates that read the disk — validate-workspace, validate-code-refs, the ratchet lane, the pixel smoke — may therefore have failed about an edit made while they ran rather than about what you are committing. Re-run on a still tree to tell the two apart. Clippy and the rustdoc gate compile the INDEX and are not affected (register item 1011).\n' \
             "$hook" >&2
     else
         printf '%s: the working tree held still while this hook ran (%s path(s) fingerprinted)\n' \

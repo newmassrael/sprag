@@ -33,9 +33,18 @@
 #        staged files include `*.rs`. docs/atomic-only commits stay cheap.
 #      - `-D warnings` is load-bearing: without it the line printed findings
 #        and exited 0, and three lints rode through on that.
+#      - ⚠⚠⚠⚠ IT COMPILES THE STAGED CONTENT, and that sentence was FALSE
+#        until 2026-09-10 (item 1011). This gate read the files on disk, so a
+#        commit could pass green and carry Rust that nothing had compiled —
+#        the same defect item 404 fixed for rustfmt two gates up, left standing
+#        in the two gates that cost the most. Driven end to end: staged Rust
+#        failing `-D warnings` behind a clean working tree committed at rc=0,
+#        and clippy on the committed tree answered 101.
 #
 #   4. the rustdoc gate (`.githooks/doc-gate.sh`)
-#      - same condition as clippy. Catches a broken intra-doc link at the
+#      - same condition as clippy, and the same staged content: both run in
+#        the mirror `.githooks/content-gate.sh` lays the index out in.
+#      - Catches a broken intra-doc link at the
 #        commit that writes it, which is the only cheap place to catch one:
 #        rustdoc is not run by any build, so before this gate existed the
 #        breakage accumulated silently (five links, across three crates).
@@ -71,11 +80,15 @@ cd "$repo_root"
 
 # ⛔⛔⛔⛔ FINGERPRINT THE TREE BEFORE ANY GATE READS IT — register item 925.
 #
-# Everything below compiles the WORKING TREE, not the index, and takes minutes doing it.
-# A session that edits while it waits gets a compile error that is REAL, correctly
-# reported, and about code the author was midway through writing — and until this line
-# nothing anywhere said so. Measured 2026-09-06: a push was lost to exactly that and read
-# as a defect in what was being pushed.
+# Several gates below read the WORKING TREE and take minutes doing it. A session that edits
+# while it waits gets a failure that is REAL, correctly reported, and about work the author
+# was midway through — and until this line nothing anywhere said so. Measured 2026-09-06: a
+# push was lost to exactly that and read as a defect in what was being pushed.
+#
+# ⚠⚠ CLIPPY AND THE RUSTDOC GATE ARE NO LONGER AMONG THEM — register item 1011. They compile a
+# checkout of the INDEX, taken before either starts, so a mid-run edit cannot reach them.
+# `validate-workspace`, `validate-code-refs`, the ratchet lane and this fingerprint still read
+# the disk, which is why the report stays.
 #
 # ⚠ It arms a `trap ... EXIT`, so the report prints on the failing paths too — which are
 # the only paths where it matters. The trap preserves this hook's own exit status.

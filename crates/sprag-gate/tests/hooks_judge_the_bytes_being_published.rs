@@ -550,6 +550,191 @@ fn a_module_root_is_not_refused_for_children_the_commit_does_not_carry() {
     sandbox.done();
 }
 
+/// Two bodies rustfmt accepts unchanged, told apart by the name they declare.
+///
+/// ⚠ BOTH FORMATTED ON PURPOSE. The gate under test below is the compiler's, not the format rule's,
+/// and a fixture that was also unformatted would let the rustfmt refusal satisfy the case while
+/// clippy went on reading whatever it liked.
+const STAGED_BODY: &str = "fn staged() {}\n";
+
+/// The same file, still being worked on. Never staged, and so never part of any commit.
+const ON_DISK_BODY: &str = "fn on_disk() {}\n";
+
+/// ⛔⛔⛔⛔⛔ **THE BIG GATES READ THE FILE ON DISK AND CALLED IT THE COMMIT** — register item 1011,
+/// which is this file's opening defect one gate over and four months later.
+///
+/// Item 404 moved rustfmt onto the staged content and said so in `pre-commit`'s header. Clippy, the
+/// rustdoc gate and the ratchet lane were left compiling the working tree — the gates that cost the
+/// most, and the ones that decide whether the thing being committed BUILDS. So a commit could pass
+/// every gate green and carry Rust that nothing had ever compiled. That is register item 213's
+/// shape exactly: one rule, two spellings, and only the cheap one fixed.
+///
+/// ⚠⚠ **WHAT THESE CASES DO NOT COVER, so a green run is not misread: the RATCHET LANE.** It still
+/// compiles the disk, and `rust-gates.sh`'s note on it carries the measurement that says why moving
+/// it is its own piece of work rather than one more line here.
+///
+/// ⚠⚠⚠ **DRIVEN END TO END BEFORE IT WAS WRITTEN**, outside this harness and with a real cargo,
+/// because a defect measured only through a double is a claim about the double. 2026-09-10: stage
+/// Rust that fails `-D warnings`, leave clean Rust on disk, `git commit` → **rc=0**; then
+/// `cargo clippy --workspace --all-targets -- -D warnings` on the committed tree → **rc=101,
+/// `error: unused variable`**. The commit that landed could not be built by the person who pulled it.
+///
+/// ⚠⚠ **THE ASSERTION IS ON THE BYTES, NOT ON WHERE THE GATE STOOD.** *Clippy ran in a mirror* is a
+/// fact about the mechanism and would stay true if the mirror held the wrong tree; *clippy was
+/// handed `fn staged`* is the answer, and it is the only form of the question that goes red when
+/// the mirror is laid out from the wrong place. The `cargo` double reports it.
+#[test]
+fn the_rust_gates_compile_the_staged_bytes_and_not_the_file_on_disk() {
+    let sandbox = Sandbox::new("commit-rust-gates-index");
+    sandbox.write("subject.rs", STAGED_BODY);
+    sandbox.git(&["add", "subject.rs"]);
+    // …and then work carries on in the editor. This repository stages by path and reads
+    // `git diff --cached` precisely because the two diverge (register item 196), so what follows is
+    // the ordinary state here rather than a contrived one.
+    sandbox.write("subject.rs", ON_DISK_BODY);
+
+    let run = sandbox.run("pre-commit", None, None);
+    let told = said(&run);
+    assert!(
+        run.status.success(),
+        "both bodies are formatted and the doubled toolchain agrees with everything, so this \
+         commit must pass — a refusal here would be about something this case is not: {told}",
+    );
+
+    let invoked = sandbox.invocations();
+    assert!(
+        invoked.contains("cargo clippy"),
+        "the expensive gates must have run at all, or the assertion below is vacuously true:\n\
+         {invoked}",
+    );
+    assert!(
+        invoked.contains("cargo-saw clippy fn staged() {}"),
+        "the INDEX holds `fn staged` and that is what this commit will carry, so that is what \
+         clippy has to compile. It was given something else:\n{invoked}",
+    );
+    assert!(
+        !invoked.contains("cargo-saw clippy fn on_disk() {}"),
+        "and clippy must not have been given the working tree's copy, which nobody is \
+         committing:\n{invoked}",
+    );
+    assert!(
+        invoked.contains("cargo-saw doc fn staged() {}"),
+        "and the rustdoc gate is the other half of item 1011 — it moved in the same edit and is \
+         asserted separately, because one of the two could be left behind in silence:\n{invoked}",
+    );
+
+    // ⛔⛔ AND THE REMAINDER IS PINNED HERE RATHER THAN DESCRIBED. The ratchet lane still runs in
+    // the working tree, and `rust-gates.sh`'s note says why that is its own piece of work. Writing
+    // it down as prose would leave nothing to notice the day it changes; asserting it means the
+    // round that moves the lane has to come here and say so.
+    assert!(
+        invoked.contains("cargo-saw test fn on_disk() {}"),
+        "the ratchet lane is NOT fixed by item 1011 and is supposed to have seen the working \
+         tree's copy. If this failed because the lane finally moved onto the index, that is good \
+         news and this assertion is the thing to update:\n{invoked}",
+    );
+    sandbox.done();
+}
+
+/// ⚠⚠ **THE SAME FIX FROM THE OTHER SIDE** — a gate that compiled a mirror of some FIXED tree would
+/// satisfy the case above for as long as the fixture never changed. This one commits, then stages a
+/// second body, and requires the gates to have moved with the index.
+///
+/// ⚠ It is the arm that would catch a mirror laid out from `HEAD` rather than from the index — a
+/// plausible reading of "the committed bytes", and the wrong one: `HEAD` is the commit BEFORE this
+/// one.
+#[test]
+fn the_rust_gates_follow_the_index_rather_than_the_commit_already_made() {
+    let sandbox = Sandbox::new("commit-rust-gates-moves");
+    sandbox.write("subject.rs", ON_DISK_BODY);
+    sandbox.git(&["add", "subject.rs"]);
+    sandbox.commit("build(fixture): a first body, already committed");
+
+    sandbox.write("subject.rs", STAGED_BODY);
+    sandbox.git(&["add", "subject.rs"]);
+
+    let run = sandbox.run("pre-commit", None, None);
+    let invoked = sandbox.invocations();
+    assert!(
+        run.status.success(),
+        "the staged body is formatted and every doubled tool agrees: {}",
+        said(&run),
+    );
+    assert!(
+        invoked.contains("cargo-saw clippy fn staged() {}"),
+        "the index has moved on from `HEAD`, and the gates must judge where it moved TO:\n{invoked}",
+    );
+    sandbox.done();
+}
+
+/// ⛔⛔⛔⛔⛔ **A MIRROR THAT IS KEPT IS A MIRROR THAT CAN GO WRONG** — register item 1011's second
+/// half, and the arm without which the fix would have shipped a new silent way to compile the wrong
+/// bytes.
+///
+/// The layout persists between commits so that cargo's cache survives (a throwaway directory means a
+/// cold build every time: 1m17s against 11.9s, measured). The price is that `git read-tree -m -u`
+/// only touches the paths whose content moved — it does not look at the files it is leaving alone.
+/// Measured 2026-09-10: corrupt one by hand, ask for the SAME tree again, and it exits **0** with
+/// the wrong bytes still there. `content-gate.sh` therefore VERIFIES the layout and lays the whole
+/// thing out again on any dirt at all.
+///
+/// ⚠⚠ THE CASE STAGES THE CORRUPTION THE REAL ONE WOULD BE — an interrupted sync leaves a file that
+/// is not what the scratch index recorded — and requires the next run to compile the index anyway.
+/// Delete the verification and this goes red while every other arm here stays green.
+#[test]
+fn a_mirror_that_was_corrupted_is_laid_out_again_rather_than_compiled() {
+    let sandbox = Sandbox::new("commit-rust-gates-repair");
+    sandbox.write("subject.rs", STAGED_BODY);
+    sandbox.git(&["add", "subject.rs"]);
+
+    // The first run lays the mirror out and leaves it there.
+    let first = sandbox.run("pre-commit", None, None);
+    assert!(
+        first.status.success(),
+        "the fixture's own first commit must pass: {}",
+        said(&first),
+    );
+    let mirrored = sandbox
+        .dir
+        .join("target")
+        .join("index-gates")
+        .join("subject.rs");
+    assert!(
+        mirrored.is_file(),
+        "the Rust gates are supposed to have checked the index out at {} — without that this case \
+         is asserting about a path nothing writes",
+        mirrored.display(),
+    );
+
+    // …and then it is not what it was. `read-tree` will not notice: the tree it is asked for has
+    // not changed, so there is nothing it considers itself to owe.
+    std::fs::write(&mirrored, ON_DISK_BODY).expect("corrupt the mirror");
+
+    // ⚠⚠ THE LOG IS EMPTIED FIRST, or the assertion below is satisfied by the FIRST run's entry and
+    // says nothing whatever about the second — a green about a line written before the corruption
+    // existed. Measured by writing it the other way round: the case passed with the repair removed.
+    std::fs::write(&sandbox.log, "").expect("empty the invocation log");
+
+    let run = sandbox.run("pre-commit", None, None);
+    let invoked = sandbox.invocations();
+    assert!(
+        run.status.success(),
+        "nothing about the commit changed, so it must still pass: {}",
+        said(&run),
+    );
+    assert!(
+        invoked.contains("cargo-saw clippy fn staged() {}"),
+        "the index still holds `fn staged`, so a checkout found in any other state must be laid \
+         out again before anything compiles it:\n{invoked}",
+    );
+    assert!(
+        !invoked.contains("cargo-saw clippy fn on_disk() {}"),
+        "and the corrupted copy must not have been what clippy was given — that is neither the \
+         index nor the working tree nor anything a person could name:\n{invoked}",
+    );
+    sandbox.done();
+}
+
 /// ⚠⚠ **THE CONTROL FOR THE WORKFLOW GATE**, and the first thing that ever ran it: nothing in this
 /// repository had executed the actionlint branch, so *the checker is reached at all* was itself
 /// unmeasured.

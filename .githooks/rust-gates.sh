@@ -46,6 +46,19 @@ lint_and_doc="cargo clippy --workspace --all-targets -- -D warnings && RUSTDOCFL
 # open against this lane for costing too much per commit.
 ratchets='cargo test -p sprag-gate && cargo test -p sprag-rpc --test pins && cargo test -p sprag-tui --test gpu_free && cargo test -p sprag-client --test gpu_free'
 
+# Where the checkout of the index these gates compile is kept.
+#
+# ⚠ UNDER `target/`, which this repository's TRACKED `.gitignore` excludes, so it is invisible to
+# `git status`, to `git ls-files --others` and therefore to `tree-drift.sh`'s fingerprint — the arm
+# of that selftest about a gate writing under an ignored path is exactly this case, one directory
+# over. It also puts the second `target/` cargo fills on the build-cache volume rather than beside
+# the repository, since `target` here is a symlink onto it.
+rust_gates_mirror_path() {
+    local root
+    root="$(git rev-parse --show-toplevel)" || return 1
+    printf '%s\n' "$root/target/index-gates"
+}
+
 # Where the cleared tree is recorded. Empty output means this clone could not be asked.
 rust_gates_stamp_path() {
     local git_dir
@@ -97,39 +110,35 @@ rust_gates_stamp_path() {
 #
 # ⚠ `RUST_GATES_MEMINFO` is the seam the gates drive, and it fails CLOSED: pointing it anywhere that
 # does not answer makes this lane UNBOUNDED and loud, and no value of it can raise the job count.
-rust_gates_bound_this_lane() {
-    local routed_decl routed_kb routed_platform host_platform free_kb routed_jobs root meminfo
+# ⛔⛔⛔⛔⛔ THE ARITHMETIC AND THE THREE REFUSALS, SPELLED ONCE FOR BOTH LANES — register item 213,
+# which is this repository's own measurement that a reason duplicated is a reason that drifts
+# (`-D warnings` added to one clippy line and not its twin, for twelve commits). Item 1011 split
+# this hook's one routed command into two, and copying this block would have been that defect
+# arriving by the shortest road available.
+#
+#   $1  the reading, in kB, as `[routed]` recorded it — empty where there is none
+#   $2  the platform that reading was taken on — empty where the row does not say
+#   $3  the lane's name in `[routed]`, which is also the argument to `measure-peak`
+rust_gates_bound_from() {
+    local routed_kb="$1" routed_platform="$2" lane="$3"
+    local host_platform free_kb routed_jobs meminfo routed_decl root
     root="${repo_root:-$(git rev-parse --show-toplevel 2>/dev/null || printf '.')}"
     routed_decl="$root/.claude/remote-build.toml"
-    routed_kb=""
-    routed_platform=""
-    if [ -f "$routed_decl" ]; then
-        # ⛔ `[0-9][0-9]*` AND NOT `[0-9]\+` -- register item 1006. `\+` is a GNU
-        # extension to a basic regular expression; BSD reads it as a LITERAL `+`,
-        # so on macOS this matched nothing, `routed_kb` came back empty, and the
-        # branch below announced *no usable precommit_kb in the file* about a
-        # file that says exactly what it should. A refusal naming the wrong cause
-        # is worse than none. Measured 2026-09-10 with a FreeBSD regex(3) built
-        # here: `1234` under GNU, empty under BSD, and `1+` matched instead.
-        routed_kb=$(sed -n 's/^precommit_kb = \([0-9][0-9]*\).*/\1/p' "$routed_decl" | head -1)
-        # ⚠ The same basic-regex rule as the line above: `[^"]*` and no `\+` anywhere.
-        routed_platform=$(sed -n 's/^precommit_platform = "\([^"]*\)".*/\1/p' "$routed_decl" | head -1)
-    fi
     host_platform=$(uname -s 2>/dev/null || printf 'unknown')
     meminfo="${RUST_GATES_MEMINFO:-/proc/meminfo}"
     free_kb=$(awk '/^MemAvailable:/{print $2}' "$meminfo" 2>/dev/null || true)
 
     if [ -z "$routed_kb" ] || [ "$routed_kb" -le 0 ] 2>/dev/null; then
         # The declaration is there and says nothing about this lane — the original case, unchanged.
-        [ -f "$routed_decl" ] && echo "rust-gates: ⚠ no usable precommit_kb in $routed_decl — this lane is running UNBOUNDED (register item 932)" >&2
+        [ -f "$routed_decl" ] && echo "rust-gates: ⚠ no usable reading for the $lane lane in $routed_decl — it is running UNBOUNDED (register item 932)" >&2
         return 0
     fi
     if [ -n "$routed_platform" ] && [ "$routed_platform" != "$host_platform" ]; then
-        echo "rust-gates: ⚠ precommit_kb was measured on $routed_platform and this host is $host_platform — that number is one platform's memory behaviour, so this lane is running UNBOUNDED rather than bounded by somebody else's peak (register item 1009). Take a reading here: bash crates/sprag-gate/tests/doubles/declared-verify/measure-peak precommit" >&2
+        echo "rust-gates: ⚠ the $lane lane's reading was taken on $routed_platform and this host is $host_platform — that number is one platform's memory behaviour, so this lane is running UNBOUNDED rather than bounded by somebody else's peak (register item 1009). Take a reading here: bash crates/sprag-gate/tests/doubles/declared-verify/measure-peak $lane" >&2
         return 0
     fi
     if [ -z "$free_kb" ]; then
-        echo "rust-gates: ⚠ cannot read this host's free memory from $meminfo — the reading in [routed] is fine and it is the HOST that cannot be measured, so this lane is running UNBOUNDED (register item 1009)" >&2
+        echo "rust-gates: ⚠ cannot read this host's free memory from $meminfo — the reading in [routed] is fine and it is the HOST that cannot be measured, so the $lane lane is running UNBOUNDED (register item 1009)" >&2
         return 0
     fi
     routed_jobs=$(( free_kb / routed_kb ))
@@ -137,7 +146,47 @@ rust_gates_bound_this_lane() {
     CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$routed_jobs}"
     RUST_TEST_THREADS="${RUST_TEST_THREADS:-$routed_jobs}"
     export CARGO_BUILD_JOBS RUST_TEST_THREADS
-    echo "rust-gates: this lane peaks at $((routed_kb / 1024))MB/task (declared in [routed], measured on $host_platform); ${free_kb}kB free -> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS" >&2
+    echo "rust-gates: the $lane lane peaks at $((routed_kb / 1024))MB/task (declared in [routed], measured on $host_platform); ${free_kb}kB free -> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS" >&2
+}
+
+# ⚠⚠ THE TWO THIN READERS BELOW EXIST TO HOLD THE KEY NAMES AS LITERAL TEXT, and that is a
+# requirement rather than a style. `every_command_this_repository_hands_the_wrapper_is_one_it_
+# measured` asserts that the hook behind each `"${BX}"` call site CONTAINS `<name>_kb = ` and
+# `<name>_platform = ` — the key and its `=`, not the bare name — precisely so a hook cannot
+# MENTION a reading while dividing by something else. A single reader taking `${lane}_kb` would put
+# no such text in this file and the gate would be right to refuse it.
+
+# `[routed] precommit` — clippy and the rustdoc gate, which compile the index checkout.
+rust_gates_bound_lint_lane() {
+    local kb="" platform="" routed_decl root
+    root="${repo_root:-$(git rev-parse --show-toplevel 2>/dev/null || printf '.')}"
+    routed_decl="$root/.claude/remote-build.toml"
+    if [ -f "$routed_decl" ]; then
+        # ⛔ `[0-9][0-9]*` AND NOT `[0-9]\+` -- register item 1006. `\+` is a GNU
+        # extension to a basic regular expression; BSD reads it as a LITERAL `+`,
+        # so on macOS this matched nothing, the reading came back empty, and the
+        # branch above announced *no usable reading* about a file that says
+        # exactly what it should. A refusal naming the wrong cause is worse than
+        # none. Measured 2026-09-10 with a FreeBSD regex(3) built here: `1234`
+        # under GNU, empty under BSD, and `1+` matched instead.
+        kb=$(sed -n 's/^precommit_kb = \([0-9][0-9]*\).*/\1/p' "$routed_decl" | head -1)
+        # ⚠ The same basic-regex rule as the line above: `[^"]*` and no `\+` anywhere.
+        platform=$(sed -n 's/^precommit_platform = "\([^"]*\)".*/\1/p' "$routed_decl" | head -1)
+    fi
+    rust_gates_bound_from "$kb" "$platform" "precommit"
+}
+
+# `[routed] ratchets` — the tests whose input is the tree, which still run in the working tree.
+rust_gates_bound_ratchet_lane() {
+    local kb="" platform="" routed_decl root
+    root="${repo_root:-$(git rev-parse --show-toplevel 2>/dev/null || printf '.')}"
+    routed_decl="$root/.claude/remote-build.toml"
+    if [ -f "$routed_decl" ]; then
+        # ⛔ The same basic-regex rule as its twin above — item 1006.
+        kb=$(sed -n 's/^ratchets_kb = \([0-9][0-9]*\).*/\1/p' "$routed_decl" | head -1)
+        platform=$(sed -n 's/^ratchets_platform = "\([^"]*\)".*/\1/p' "$routed_decl" | head -1)
+    fi
+    rust_gates_bound_from "$kb" "$platform" "ratchets"
 }
 
 # Run clippy, the rustdoc gate and the ratchet lane, routed through the build-machine wrapper when
@@ -155,14 +204,97 @@ rust_gates_bound_this_lane() {
 #
 # ⚠ THE TWO TRAVEL TOGETHER so the tree is synced once rather than twice, and `&&` keeps clippy's
 # fail-fast: a clippy failure never reaches the doc gate.
+#
+# ## ⛔⛔⛔⛔⛔ CLIPPY AND THE RUSTDOC GATE COMPILE THE INDEX, NOT THE WORKING TREE — item 1011
+#
+# (The ratchet lane below does NOT, and the note on it says why and what that still owes.)
+#
+# `git commit` takes the INDEX; these gates used to compile the files on disk. Those are two
+# different things in this repository more often than not — work here stages by path and reads
+# `git diff --cached` precisely because index and working tree diverge (item 196, two writers in
+# one tree) — so a commit could pass every gate green and carry bytes NOTHING HAD EVER COMPILED.
+#
+# ⚠ Not a hypothetical, and not inferred from reading this file. Driven end to end 2026-09-10
+# against a real workspace with a real cargo: stage Rust that fails `-D warnings`, leave clean
+# Rust on disk, `git commit` → **rc=0**, and `cargo clippy` on the committed tree → **rc=101,
+# `error: unused variable`**. Register item 404 had already judged this exact shape for rustfmt
+# and moved it onto the staged content; the two larger gates were left behind, which is item
+# 213's face — one rule, two spellings, and only one of them fixed.
+#
+# ⚠⚠ AND IT IS THE SAME FAMILY OF FIX, not a new mechanism: `index_mirror` sits in
+# `content-gate.sh` beside the one rustfmt already uses. It differs in two ways, each of which was
+# measured rather than reasoned out — it PERSISTS, because a compiler has a cache and rustfmt has
+# not, and it is a real WORKING TREE of this repository, because the ratchet lane's tests ask git
+# about the tree they are standing in. See that function for both measurements.
+#
+# ⚠⚠⚠ THE TREE IS WRITTEN OUT BEFORE ANYTHING IS COMPILED AND REMEMBERED, so `rust_gates_stamp`
+# records what these gates actually read rather than asking git a second time. The index can move
+# under a running hook — item 196 again — and a stamp taken afterwards would name a tree nothing
+# had compiled, which is the very defect one paragraph up wearing the push's clothes.
 rust_gates_run() {
-    rust_gates_bound_this_lane
-    echo "rust-gates: cargo clippy --workspace --all-targets -- -D warnings && doc gate && the ratchet lane ..." >&2
-    if [ -n "${BX:-}" ] && [ -x "${BX}" ]; then
-        "${BX}" --label pre-commit-lint -- bash -c "$lint_and_doc && $ratchets"
-    else
-        bash -c "$lint_and_doc && $ratchets"
+    local mirror where
+    RUST_GATES_COMPILED_TREE=""
+    if ! where="$(rust_gates_mirror_path)"; then
+        echo "rust-gates: this clone cannot say where its own root is, so the committed bytes cannot be checked out to compile" >&2
+        return 1
     fi
+    if ! RUST_GATES_COMPILED_TREE="$(git write-tree)"; then
+        RUST_GATES_COMPILED_TREE=""
+        echo "rust-gates: the index could not be written out as a tree — a gate cannot judge what it cannot read" >&2
+        return 1
+    fi
+    if ! mirror="$(index_mirror "$where" "$RUST_GATES_COMPILED_TREE")"; then
+        RUST_GATES_COMPILED_TREE=""
+        echo "rust-gates: the index could not be checked out at $where — a gate cannot judge what it cannot read" >&2
+        return 1
+    fi
+    echo "rust-gates: cargo clippy --workspace --all-targets -- -D warnings && doc gate && the ratchet lane ..." >&2
+    echo "rust-gates: on the INDEX — tree $RUST_GATES_COMPILED_TREE, checked out at $mirror, which is what this commit will carry" >&2
+    # ⚠⚠ A SUBSHELL, so the caller's working directory is untouched and the `"${BX}"` line below
+    # stays the one word-for-word command `a_fleet_ceiling_is_a_measurement_with_a_date` composes
+    # from this file's own assignments. A `(cd … && "${BX}" … )` one-liner would put a `)` on the
+    # end of that argv and the clause reading it could no longer say what the wrapper is given.
+    (
+        cd "$mirror" || exit 1
+        # ⚠ INSIDE THE SUBSHELL, so the bound this exports belongs to this lane and does not leak
+        # onto the one below it, which has its own reading and a peak an order of magnitude smaller.
+        rust_gates_bound_lint_lane
+        if [ -n "${BX:-}" ] && [ -x "${BX}" ]; then
+            "${BX}" --label pre-commit-lint -- bash -c "$lint_and_doc"
+        else
+            bash -c "$lint_and_doc"
+        fi
+    ) || return 1
+
+    # ⛔⛔⛔⛔⛔ AND THE RATCHET LANE STAYS IN THE WORKING TREE, WHICH IS A DEBT AND NOT A DESIGN.
+    #
+    # It used to ride on the line above, `&&`-joined, so moving that line moved this one too — and
+    # moving it was MEASURED to be wrong for a reason that has nothing to do with which bytes are
+    # right. This lane is `cargo test`, and two of its targets are ABOUT THE REPOSITORY THEY STAND
+    # IN: `scratch-guard.sh`'s selftest asserts *the live form calls this repository the caller's
+    # own*, and from a linked worktree the guard answers *the scratch git dir is not the scratch
+    # directory own* instead, because it compares against `<dir>/.git` and a worktree's is a FILE
+    # pointing elsewhere. **2 of 9 targets red at the commit that tried it.** Those arms are right;
+    # the guard has no notion of a linked worktree, and teaching it one is a change to the thing
+    # that stops a harness deleting somebody's repository (register item 792) — not a change to
+    # make in passing while paying a different item.
+    #
+    # ⚠⚠ SO WHAT IS OWED HERE IS STATED RATHER THAN HIDDEN: this lane still compiles the disk, and
+    # a commit can still carry test bytes nothing ran. Item 1011's own done-when named clippy and
+    # the rustdoc gate, which is what moved; the rest is its own item, with this measurement.
+    #
+    # ⚠ A SECOND WRAPPER CALL, where there used to be one. The comment that said the two travel
+    # together so the tree is synced once was true while they had ONE subject; they now have two
+    # different trees, and a single sync could not have served both.
+    echo "rust-gates: the ratchet lane, on the WORKING TREE — see this function's note ..." >&2
+    (
+        rust_gates_bound_ratchet_lane
+        if [ -n "${BX:-}" ] && [ -x "${BX}" ]; then
+            "${BX}" --label pre-commit-ratchets -- bash -c "$ratchets"
+        else
+            bash -c "$ratchets"
+        fi
+    )
 }
 
 # ⚠⚠⚠⚠⚠ RECORD WHICH TREE THESE GATES CLEARED, so `pre-push` need not run them again on the same
@@ -172,36 +304,38 @@ rust_gates_run() {
 # `CARGO_TARGET_DIR` means it re-documents every dependent), and it ran TWICE per change. Clippy by
 # then is cached at 0.2 s, so the doubling is entirely this one gate.
 #
-# ⚠⚠⚠ `git write-tree` IS THE TREE THIS COMMIT WILL CARRY: the index, written as an object. A push
-# whose tip names that exact tree is a push of content these gates read; anything else — an amend, a
-# rebase, a second commit, a `--no-verify`, a stamp this clone cannot read — will not match.
+# ⚠⚠⚠ THE TREE STAMPED IS THE TREE COMPILED, and `rust_gates_run` is the only thing that can say
+# what that was. A push whose tip names that exact tree is a push of content these gates read;
+# anything else — an amend, a rebase, a second commit, a `--no-verify`, a stamp this clone cannot
+# read — will not match.
 #
-# ⚠⚠⚠⚠ AND THE STAMP IS WITHHELD UNLESS THE WORKING TREE IS THE INDEX for everything these gates
-# compile. Clippy and rustdoc read the WORKING TREE, not the index, so an unstaged edit or an
-# untracked module means what they judged is not what the commit carries — and skipping on that
-# basis would publish a tree nothing had ever compiled.
+# ⛔⛔⛔⛔⛔ AND THE WITHHOLDING IS GONE BECAUSE ITS REASON IS — register item 1011. This used to
+# refuse to stamp whenever the working tree differed from the index over `*.rs`, `Cargo.toml` and
+# four other patterns, and the reason it gave was true: *clippy and rustdoc read the WORKING TREE,
+# not the index*. They now read the index, so the tree they cleared is the tree the commit carries
+# and there is nothing left to withhold.
 #
-# ⚠⚠ EVERY QUERY THAT FAILS READS AS *not clean*, spelled as a word rather than left empty: an
-# unreadable index is exactly the case item 404 measured passing as *nothing to check*, and here it
-# would hand a push permission to skip on evidence nobody has.
+# ⚠⚠ THAT DELETED A WALL AS WELL AS A LIE. `bash .githooks/rust-gates.sh --clear` is the command
+# `pre-push` names when it refuses, and it could not clear a tree that had ANY unstaged edit under
+# those patterns — which after a commit, in a tree with two writers, is the ordinary state. The
+# remedy a refusal named was one the refusing condition forbade.
+#
+# ⚠⚠⚠ AN UNSET `RUST_GATES_COMPILED_TREE` IS A REFUSAL, NEVER A STAMP OF WHATEVER GIT SAYS NOW.
+# Asking `git write-tree` again here would read the index as it stands at THIS instant, and item
+# 196 is that a second writer stages into this tree while these gates run — so the stamp would name
+# a tree nothing had compiled and hand the push permission to skip on evidence nobody has.
 rust_gates_stamp() {
-    local gate_paths unstaged untracked staged_tree stamp
-    gate_paths='*.rs *.scxml Cargo.toml Cargo.lock build.rs rust-toolchain.toml'
-    # shellcheck disable=SC2086  # intentional word-split of the pathspec list
-    unstaged="$(git diff --name-only -- $gate_paths)" || unstaged="unreadable"
-    # shellcheck disable=SC2086  # intentional word-split of the pathspec list
-    untracked="$(git ls-files --others --exclude-standard -- $gate_paths)" || untracked="unreadable"
-    staged_tree="$(git write-tree)" || staged_tree=""
+    local stamp
     stamp="$(rust_gates_stamp_path)" || stamp=""
-    if [ -z "$unstaged" ] && [ -z "$untracked" ] && [ -n "$staged_tree" ] && [ -n "$stamp" ]; then
-        printf '%s\n' "$staged_tree" >"$stamp"
+    if [ -n "${RUST_GATES_COMPILED_TREE:-}" ] && [ -n "$stamp" ]; then
+        printf '%s\n' "$RUST_GATES_COMPILED_TREE" >"$stamp"
         return 0
     fi
     if [ -n "$stamp" ]; then
         rm -f "$stamp"
     fi
-    echo "rust-gates: the working tree is not what the index carries, so no tree was stamped and \
-the push will ask for these gates again" >&2
+    echo "rust-gates: no tree was compiled in this run, so nothing was stamped and the push will \
+ask for these gates again" >&2
     return 1
 }
 
@@ -225,6 +359,12 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     case "${1:-}" in
         --clear)
             cd "$(git rev-parse --show-toplevel)" || exit 1
+            # ⚠ THE MIRROR THESE GATES COMPILE IS `content-gate.sh`'s — register item 1011. A hook
+            # has already sourced it; run by a person this file has not, and a `--clear` that fell
+            # over an undefined function would be a refusal whose remedy is the command that just
+            # failed.
+            # shellcheck source-path=SCRIPTDIR
+            . "$(dirname "${BASH_SOURCE[0]}")/content-gate.sh"
             rust_gates_run || exit 1
             rust_gates_stamp || exit 1
             echo "rust-gates: cleared, and this tree is stamped — push again." >&2

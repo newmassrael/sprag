@@ -89,6 +89,112 @@ content_mirror() {
     printf '%s' "$mirror"
 }
 
+# Check the INDEX out at a STABLE path as a WORKING TREE OF THIS REPOSITORY, and print where it
+# went. Only the paths that moved since the last call are rewritten.
+#
+#   $1  where the checkout lives
+#   $2  the tree to check out, as `git write-tree` answered it
+#
+# Answers nonzero, having printed nothing, if the checkout cannot be made or cannot be trusted.
+#
+# ## ⛔⛔⛔⛔⛔ Why not `content_mirror`, which is right there — register item 1011
+#
+# Two reasons, and the second was MEASURED after the first draft of this function had already
+# been written the other way.
+#
+# **⑴ It must PERSIST.** A throwaway directory is right for rustfmt, which reads each file once:
+# the layout costs 180ms and nothing is carried between runs. The Rust gates COMPILE what they
+# are handed, and a compiler's cache is keyed on paths and file timestamps — so a fresh
+# temporary directory every commit is a COLD BUILD every commit. Measured on this tree,
+# 2026-09-10: **1m17s cold against 11.9s warm**, the working tree's own warm lane being 12.8s.
+# That is the whole difference between *the gates judge the right bytes* and *the gates cost six
+# minutes*. `git checkout` writes only the paths that differ, so every other file keeps the
+# timestamp cargo's freshness check reads. Measured: one file moved in the index, one file's
+# mtime moved in the checkout, the other 350 left alone.
+#
+# **⑵ ⛔⛔⛔ IT MUST BE A REPOSITORY, and a plain directory of files is not one.** The ratchet
+# lane runs here too, and the tests in it ask git about the tree they are standing in — item
+# 809's whole subject. A first draft laid the bytes out with `read-tree -m -u` into an ordinary
+# directory and **two targets went red at the commit that shipped it**: `scratch-guard.sh`'s
+# selftest asserts *inside a repository the marker home is an absolute git dir*, and outside one
+# there is no such answer. Those arms were right and the mirror was wrong. ⚠ The repair that
+# suggests itself — teach the selftest to stand down where there is no repository — is the one
+# this workspace refuses on principle: it would disable a gate exactly where nobody is looking.
+#
+# `git worktree` is the mechanism git already has for *a second checkout of this repository at a
+# given state*, and it gives the checkout its OWN index and HEAD, so nothing running in it can
+# reach the index the operator is committing (register item 965, which is that failure).
+#
+# ⚠⚠ THE COMMIT OBJECT IS SCAFFOLDING. `worktree add` and `checkout` take a commit-ish and the
+# subject here is a bare tree, so one is written for it. It is unreferenced, never pushed, and
+# collected by `git gc` like any other dangling object. Its identity is spelled here rather than
+# read from the caller's config: a hook that refused because somebody had not set `user.email`
+# would be refusing for a reason that has nothing to do with the commit being made.
+#
+# ## ⚠⚠ AND THE CHECKOUT IS VERIFIED RATHER THAN TRUSTED
+#
+# `--force` is what makes a re-checkout of the SAME commit a REPAIR: measured 2026-09-10,
+# corrupt a file by hand and the forced checkout puts it back, where the first draft's
+# `read-tree -m -u` exited 0 and left the wrong bytes there. The verification stays anyway,
+# because a repair nobody checks is a claim: `diff-files` must read clean before the path is
+# printed, and anything else is *this could not be laid out* rather than a mirror.
+#
+# ⚠ WHAT THAT DOES NOT REACH, said rather than hidden: a corruption preserving BOTH the size and
+# the timestamp is invisible to git here exactly as it is to `git status` anywhere else. This
+# checkout is written by nothing but this function, so the case that has to be caught is an
+# interrupted one — and that moves the stat.
+index_mirror() {
+    local mirror="$1" tree="$2" commit
+    if ! commit="$(index_mirror_git -c user.name='sprag index gates' \
+        -c user.email='index-gates@invalid' \
+        commit-tree "$tree" -m 'the bytes a commit of this index would carry')"; then
+        return 1
+    fi
+
+    if [ -e "$mirror/.git" ]; then
+        index_mirror_git -C "$mirror" checkout --detach --force --quiet "$commit" || return 1
+    else
+        rm -rf "$mirror"
+        # ⚠⚠ A WORKTREE WHOSE DIRECTORY SOMEBODY DELETED STAYS REGISTERED, and `add` then refuses
+        # a path it believes it already holds. This lives under `target/`, which is a build cache
+        # and the first thing anybody empties when a disk fills up, so that is the ordinary case
+        # rather than an exotic one.
+        index_mirror_git worktree prune
+        index_mirror_git worktree add --detach --quiet "$mirror" "$commit" || return 1
+    fi
+
+    index_mirror_git -C "$mirror" diff-files --quiet || return 1
+
+    printf '%s' "$mirror"
+}
+
+# `git`, with the environment `git commit` hands its hooks CUT — register item 965, reached by a
+# different road.
+#
+# ⛔⛔⛔⛔⛔ MEASURED BY DRIVING A REAL COMMIT, AND NOTHING IN THIS REPOSITORY'S SUITE COULD HAVE
+# FOUND IT. `git commit` exports `GIT_INDEX_FILE` (and `GIT_DIR`) to its hooks, RELATIVE to the
+# repository root, and every command above would resolve them against whatever directory it is
+# handed. So `worktree add` went looking for `<checkout>/.git/index` — and in a linked worktree
+# `.git` is a FILE:
+#
+#     fatal: .git/index: index file open failed: Not a directory
+#
+# The gate then refused a commit that was perfectly fine, which is the *fails closed* half working
+# and the *is right* half not.
+#
+# ⚠⚠ THE SUITE IS BLIND TO THIS BY CONSTRUCTION. `hooks_judge_the_bytes_being_published` runs each
+# hook through `sprag_gate::ambient::cut`, which removes exactly these variables before the hook
+# starts — it has to, or a sandbox would write into the operator's index (item 965's own defect).
+# Every case there was green while this was broken. What found it was driving `git commit` for real
+# in a throwaway workspace, and that is the reason to keep doing that.
+#
+# ⚠⚠⚠ IT CANNOT BE CUT FOR THE WHOLE HOOK, which is why this is a wrapper rather than a line at the
+# top of the file: `rust_gates_run` asks `git write-tree`, and THAT call must read exactly the index
+# git is about to commit. The same variable is load-bearing three lines up and poison here.
+index_mirror_git() {
+    env -u GIT_INDEX_FILE -u GIT_DIR -u GIT_WORK_TREE -u GIT_OBJECT_DIRECTORY git "$@"
+}
+
 # rustfmt --check the given paths as `rev` holds them.
 #
 #   $1   label for the messages — the calling hook's name
@@ -181,6 +287,7 @@ workflow_gate() {
 # a command, because a command is the thing this file does not have.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     echo "content-gate.sh is a LIBRARY, not a command: it is sourced by pre-commit and pre-push." >&2
-    echo "It offers fmt_gate / workflow_gate, each taking <label> <rev> <path>... from a hook." >&2
+    echo "It offers fmt_gate / workflow_gate, each taking <label> <rev> <path>... from a hook," >&2
+    echo "and index_mirror <root> <tree>, which lays the committed bytes out for the Rust gates." >&2
     exit 2
 fi

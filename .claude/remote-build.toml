@@ -98,12 +98,20 @@ peak_gb_per_task = 2
 # `"${BX}"` call site in `.githooks/` sends a command that is not here AND that the site divides by
 # its reading, which is what keeps a row from being a number nobody uses.
 [routed]
-# `.githooks/pre-commit`'s lint lane, exactly as the hook composes it from `$lint_and_doc` and
-# `$ratchets`. ⚠ The inner quotes are SINGLE and that is this table's doing: the gate's reader takes
-# TOML basic strings and a `"` inside a value truncates it, so the hook was changed to spell the
-# same word in a way both sides can hold. A change to either spelling is now a mismatch somebody
-# reads rather than a divergence nobody sees.
-precommit = "cargo clippy --workspace --all-targets -- -D warnings && RUSTDOCFLAGS='-D warnings' CARGO_TARGET_DIR=target/doc-gate cargo doc --workspace --no-deps --document-private-items && cargo test -p sprag-gate && cargo test -p sprag-rpc --test pins && cargo test -p sprag-tui --test gpu_free && cargo test -p sprag-client --test gpu_free"
+# `.githooks/pre-commit`'s lint lane, exactly as the hook composes it from `$lint_and_doc`.
+# ⚠ The inner quotes are SINGLE and that is this table's doing: the gate's reader takes TOML basic
+# strings and a `"` inside a value truncates it, so the hook was changed to spell the same word in a
+# way both sides can hold. A change to either spelling is now a mismatch somebody reads rather than
+# a divergence nobody sees.
+#
+# ⛔⛔⛔⛔⛔ THIS ROW USED TO CARRY THE RATCHET LANE TOO, AND IT WAS SPLIT ON 2026-09-10 — register
+# item 1011. The two legs stopped being one command when they stopped having one SUBJECT: clippy and
+# the rustdoc gate now compile a checkout of the INDEX (what the commit will carry), while the
+# ratchet lane still runs in the working tree. A single row cannot describe two commands run in two
+# places, and the wrapper is handed each of them separately, so each is declared and measured
+# separately — which is the shape the block above already argued for when it refused to fold a
+# 6.5GB rustdoc reading into a scalar.
+precommit = "cargo clippy --workspace --all-targets -- -D warnings && RUSTDOCFLAGS='-D warnings' CARGO_TARGET_DIR=target/doc-gate cargo doc --workspace --no-deps --document-private-items"
 
 # ⛔⛔⛔⛔⛔ ITS READING LIVES HERE AND NOT IN `[peak_measured]`, AND THE ARITHMETIC IS WHY.
 #
@@ -135,7 +143,41 @@ precommit = "cargo clippy --workspace --all-targets -- -D warnings && RUSTDOCFLA
 # selects NOTHING: `-e` means every process and it overrides `-C` — measured 2026-09-06, 772 pids
 # against 771 for a bare `ps -e`, while `ps -o pid= -C rustdoc` correctly answered 0. Register item
 # 932 carries three readings taken that way and retracted the same day.
-precommit_cmd = "cargo clippy --workspace --all-targets -- -D warnings && RUSTDOCFLAGS='-D warnings' CARGO_TARGET_DIR=target/doc-gate cargo doc --workspace --no-deps --document-private-items && cargo test -p sprag-gate && cargo test -p sprag-rpc --test pins && cargo test -p sprag-tui --test gpu_free && cargo test -p sprag-client --test gpu_free"
+# ⛔⛔⛔⛔⛔ THE NUMBER BELOW WAS **NOT** RE-TAKEN WHEN THE COMMAND WAS SPLIT, AND THAT IS DELIBERATE
+# — register item 1011. The 2026-09-06 reading ran the COMBINED command and its worst process was
+# `rustdoc … sprag_gui`, **in the doc leg**, which is inside the text above. Dropping the ratchet
+# clauses cannot raise what the doc leg peaked at, so this row still records a peak that was
+# actually observed while running this command. Narrowing `_cmd` to the leg that produced the number
+# is not a re-measurement and must not be mistaken for one.
+#
+# ⚠⚠⚠ IT WAS RE-TAKEN FOUR TIMES ON 2026-09-10 AND NOT ONE RUN REPRODUCED IT. Same host, same
+# instrument, `rustc 1.98.1`, all four green:
+# | compiler cache | target/doc-gate | PEAK_KB | worst process |
+# |---|---|---|---|
+# | sccache on  | warm | (not taken) | |
+# | sccache off | warm | 2237448 | rustdoc … sprag_gui |
+# | sccache off | cold | 1053516 | rustdoc … sprag_mcp |
+# | sccache on  | cold | 1004088 | rustdoc … sprag_promotable |
+#
+# ⛔ **THE WORST PROCESS IS A DIFFERENT CRATE EVERY TIME, WHICH IS THE FINDING.** `measure-peak`
+# samples `/proc` on an interval and only records a process it catches ALIVE; rustdoc processes here
+# are short and eight run at once, so a run's answer is a LOWER BOUND that depends on what the
+# sampler happened to see. A reading that names `sprag_promotable` as the workspace's heaviest
+# rustdoc is not a measurement of the peak, it is a measurement of the sampling.
+#
+# ⇒ ⚠⚠ SO THE BOUND IS NOT LOWERED ON THIS EVIDENCE. Taking 1004088 would take this lane from ~2
+# jobs to ~20 on today's host, and the block above names that direction of wrong by its own scar —
+# *too LOW packs a host past its RAM, the swap storm of 2026-08-19, load 29 with 82% of the CPU
+# idle.* Keeping a peak that was observed is the answer that cannot be wrong in that direction.
+#
+# ⚠ TWO CONFOUNDS FOUND WHILE MEASURING, BOTH OLDER THAN THIS ROUND, both now written down rather
+# than left in a scratch log: ⑴ this command hard-codes `CARGO_TARGET_DIR=target/doc-gate`, which
+# OVERRIDES the cold directory `measure-peak` creates — so the instrument's central promise, *a cold
+# target directory, because a warm one skips the work whose peak is the answer*, has never applied
+# to the doc leg; ⑵ `~/.cargo/config.toml` sets `rustc-wrapper = "sccache"`, so a cold target
+# directory is not a cold COMPILE either — the ratchet lane read 191208 kB with it on (the worst
+# process was a test binary) against 1267736 kB with it off. Neither is this item's to fix.
+precommit_cmd = "cargo clippy --workspace --all-targets -- -D warnings && RUSTDOCFLAGS='-D warnings' CARGO_TARGET_DIR=target/doc-gate cargo doc --workspace --no-deps --document-private-items"
 precommit_kb = 9260688
 precommit_date = "2026-09-06"
 precommit_host = "the 31GiB workstation, 32 cores, rustc stable, cold CARGO_TARGET_DIR"
@@ -152,6 +194,38 @@ precommit_worst = "rustdoc --crate-type bin --crate-name sprag_gui, in the doc l
 # repository is developed on. The instrument now PRINTS `MEASURED_PLATFORM` beside the number, so
 # the next reading is copied rather than derived.
 precommit_platform = "Linux"
+
+# ⛔⛔⛔⛔⛔ `.githooks/pre-commit`'s RATCHET LANE — register item 1011, and it is a second row rather
+# than a second number because it is a second COMMAND, handed to the wrapper on its own.
+#
+# Item 784 chose these four: the tests whose INPUT IS THE TREE, which are the ones an unrelated
+# crate's commit can turn red. They run in the WORKING TREE and not in the index checkout the lint
+# lane above compiles, and `rust-gates.sh`'s note on the call site carries the measurement that says
+# why that is still owed rather than fixed.
+#
+# ⚠ Taken with this repository's own instrument, on a green run:
+#
+#     RUSTC_WRAPPER= bash crates/sprag-gate/tests/doubles/declared-verify/measure-peak ratchets
+#     -> RUN_STATUS=0  PEAK_KB=1267736  PEAK_WORST=rustc --crate-name sce_build
+#
+# ⛔⛔⛔ `RUSTC_WRAPPER=` IS PART OF THE READING AND NOT A CONVENIENCE. `~/.cargo/config.toml` sets
+# `rustc-wrapper = "sccache"` *"to share compiled crates across every target/ directory on this
+# box"*, so `measure-peak`'s cold `CARGO_TARGET_DIR` is a cold CACHE DIRECTORY and not a cold
+# COMPILE: with the wrapper on, the same command answered **191208 kB** and named a TEST BINARY as
+# its worst process, because nothing large was compiled at all. A bound taken that way would be a
+# measurement of the cache's state on the day, and the first cache miss would run this lane at
+# ~100× the parallelism its own work allows.
+#
+# ⚠ CORROBORATED RATHER THAN TRUSTED ALONE: `[peak_measured] build_kb` is 1204328 for `cargo test
+# --workspace --no-run`, taken on another machine in 2026-08 — 5% away from this, with a peak in the
+# same family (`rustc --crate-name sce_build`). Two instruments, two hosts, two dates, one answer.
+ratchets = "cargo test -p sprag-gate && cargo test -p sprag-rpc --test pins && cargo test -p sprag-tui --test gpu_free && cargo test -p sprag-client --test gpu_free"
+ratchets_cmd = "cargo test -p sprag-gate && cargo test -p sprag-rpc --test pins && cargo test -p sprag-tui --test gpu_free && cargo test -p sprag-client --test gpu_free"
+ratchets_kb = 1267736
+ratchets_date = "2026-09-10"
+ratchets_host = "the 31GiB workstation, 32 cores, rustc 1.98.1, cold CARGO_TARGET_DIR, RUSTC_WRAPPER unset"
+ratchets_worst = "rustc --crate-name sce_build, in the first cargo test clause"
+ratchets_platform = "Linux"
 
 [commands]
 # What the machine has to produce before anything can be judged.
