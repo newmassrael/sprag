@@ -691,9 +691,14 @@ impl Rust {
                 // hands its argument through unchanged makes an empty argument an empty payload,
                 // and one that wraps it does not. Which argument to look at comes from the callee's
                 // own signature, so a helper that takes the machine first is read correctly.
-                let handing = if reached.1.handing == Handing::Nothing {
+                let takes_payload = arguments(params).len() > event_at(params, event_type) + 1;
+                let handing = if reached.1.handing == Handing::Nothing || !takes_payload {
+                    // ⚠ A helper with NO parameter after the event cannot carry one whatever it
+                    // calls — `reviewed(read, event)` raises literals of its own — and `Nothing` is
+                    // the honest word for that. `Composes` would be the permissive one, said about
+                    // a helper that has nothing to compose.
                     Handing::Nothing
-                } else if forwarded(body, &reached.0, reached.1.event_at) {
+                } else if forwarded(body, &reached.0, reached.1.event_at, params) {
                     Handing::Forwards
                 } else {
                     Handing::Composes
@@ -709,6 +714,51 @@ impl Rust {
             }
             if !grew {
                 break;
+            }
+        }
+
+        // ⚠⚠⚠⚠⚠ THE ENVELOPE'S OWN CONSTRUCTORS, which the closure above CANNOT reach — register
+        // item 1026. `Raise::carrying(event, data)` calls no door: it builds a value the driver
+        // hands over some lines later, so no body of it reaches `raise_external`. It was therefore
+        // classed by the ROAD IT IS ON — `Squeezed::handed` answered `Composes` for anything spelled
+        // `Raise::…` — which is the permissive answer given to a function nobody read. It does not
+        // compose: `Self { data: Some(data.to_string()) }` RENDERS its argument and hands it over
+        // whole, so a constant `null` there is a nil `_event.data` that read as carrying.
+        if let Some(envelope) = &envelope {
+            for (name, params, body) in &defined {
+                if raisers.contains_key(name) {
+                    continue;
+                }
+                let Some(built) = constructed(body, envelope) else {
+                    continue;
+                };
+                let at = event_at(params, event_type);
+                let handing = match arguments(params)
+                    .get(at + 1)
+                    .and_then(|param| param.split(american_colon()).next())
+                    .map(str::trim)
+                {
+                    // It takes no payload at all, so nothing it makes can carry one — the
+                    // `From<AiLoopEvent>` conversion, which sets `data: None` by construction.
+                    None | Some("") => Handing::Nothing,
+                    Some(carried) => {
+                        if built
+                            .iter()
+                            .any(|value| carried_name(value) == Some(carried))
+                        {
+                            Handing::Forwards
+                        } else {
+                            Handing::Composes
+                        }
+                    }
+                };
+                raisers.insert(
+                    name.clone(),
+                    Raiser {
+                        handing,
+                        event_at: at,
+                    },
+                );
             }
         }
 
@@ -1268,7 +1318,12 @@ impl Squeezed {
         }
         let carries = match (handing, payload.as_deref()) {
             (_, None) | (Handing::Nothing, _) => false,
-            (Handing::Forwards, Some(beside)) => !beside.is_empty() && beside != "\"\"",
+            // ⚠⚠ WHAT IS FORWARDED REACHES THE MACHINE AS `_event.data`, so the caller's emptiness
+            // is the machine's — and `Value::Null` is empty in the way that MATTERS (item 1026),
+            // not merely textually. `""` and a constant null are the same defect in two spellings.
+            (Handing::Forwards, Some(beside)) => {
+                !beside.is_empty() && beside != "\"\"" && !nil(beside)
+            }
             (Handing::Composes, Some(_)) => true,
         };
         Some(self.site(at, through, payload, carries))
@@ -1434,24 +1489,151 @@ fn calls(body: &str, name: &str) -> bool {
 /// `&serde_json::json!({…}).to_string()`, where an empty argument still leaves a key behind. That
 /// is the whole difference between `carried(&mut engine, event, "")`, which is the defect, and
 /// `reflected(&mut engine, event, "")`, which is not.
-fn forwarded(body: &str, callee: &str, event_at: usize) -> bool {
+fn forwarded(body: &str, callee: &str, event_at: usize, params: &str) -> bool {
+    // ⚠⚠⚠⚠⚠ ITS OWN PARAMETER, AND ANY OF ITS CALLS — register item 1026, and the first draft got
+    // BOTH halves wrong. It read the FIRST call to the callee and asked only whether that call's
+    // payload was some identifier. Measured on `ai_loop.rs`'s `from_working(left, data)`: its first
+    // three calls are `carried(&mut engine, &host, AiLoopEvent::Start, "")` — a LITERAL — and the
+    // fourth is `carried(&mut engine, &host, left, data)`, which hands the helper's own argument
+    // straight through. The reader stopped at the first, called the helper a composer, and every
+    // site through it counted as carrying whatever it was given, `""` included.
+    let own: Vec<String> = arguments(params)
+        .iter()
+        .filter_map(|param| param.split(american_colon()).next())
+        .map(|name| name.trim().to_owned())
+        .collect();
     let needle = format!("{callee}(");
-    let Some(at) = body
-        .match_indices(&needle)
-        .map(|(at, _)| at)
-        .find(|at| *at == 0 || !is_ident(body[..*at].chars().next_back().unwrap_or(' ')))
-    else {
-        return false;
-    };
-    let call = balanced(body, at + needle.len() - 1);
-    let Some(payload) = arguments(call.trim_start_matches('(').trim_end_matches(')'))
-        .into_iter()
-        .nth(event_at + 1)
-    else {
-        return false;
-    };
-    let name = payload.trim_start_matches(['&', '*']);
-    !name.is_empty() && name.chars().all(is_ident)
+    let mut at = 0;
+    while let Some(hit) = body[at..].find(&needle) {
+        let start = at + hit;
+        at = start + needle.len();
+        if start != 0 && is_ident(body[..start].chars().next_back().unwrap_or(' ')) {
+            continue;
+        }
+        let call = balanced(body, start + needle.len() - 1);
+        let Some(payload) = arguments(call.trim_start_matches('(').trim_end_matches(')'))
+            .into_iter()
+            .nth(event_at + 1)
+        else {
+            continue;
+        };
+        // ⚠ The payload must be one of THIS helper's parameters. A literal handed to a raiser says
+        // nothing about what the helper does with what IT was given, and reading any identifier as
+        // forwarding would call a local built two lines up the caller's own payload.
+        if carried_name(&payload).is_some_and(|name| own.iter().any(|param| param == name)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether a payload expression is a CONSTANT NULL — the JSON `null`, however this workspace
+/// spells it.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is `carries: false` and not `keys_of` answering an empty set
+///
+/// The two are different defects and each has a claim of its own. `json!({})` reaches the datamodel
+/// as an OBJECT: `_event.data.x` is `undefined`, no error is raised, and the document's guard is
+/// quietly false — item 477's shape, which *the driver sends less than the document reads* owns.
+/// A constant null reaches it as NIL: indexing it THROWS, W3C SCXML 3.8 abandons the rest of the
+/// block and 3.12.2 drops the error unless something answers it — which is item 507's own subject,
+/// the state half-entered in the voice of one that worked.
+///
+/// ⚠⚠ So a nil payload is reported as a BARE RAISE, by the claim named for bare raises, once —
+/// rather than as *no keys* by one claim and *unreadable* by another, which is how it read before.
+fn nil(expr: &str) -> bool {
+    /// Every spelling of the constant this workspace can write. ⚠ A null arriving in a VARIABLE is
+    /// past a text scan, and that residue is the module header's rather than a hole here.
+    ///
+    /// ⚠⚠ A BARE `Null` IS DELIBERATELY NOT HERE. `AiLoopEvent::Null` is an EVENT of this machine —
+    /// the pump's *nothing happened* — and a needle that ended on `::Null` would read that word as
+    /// a null payload wherever a table pairs two events.
+    const SPELT: [&str; 4] = [
+        "Value::Null",
+        "json!(null)",
+        "serde_json::json!(null)",
+        "\"null\"",
+    ];
+    let bare = expr.trim().trim_start_matches(['&', '*']);
+    let bare = bare.strip_suffix(".to_string()").unwrap_or(bare);
+    SPELT
+        .iter()
+        .any(|spelt| bare == *spelt || bare.ends_with(&format!("::{spelt}")))
+}
+
+/// The FIELD VALUES of the `Envelope { … }` or `Self { … }` `body` builds, when it builds one.
+///
+/// ⚠ A constructor is read for what it puts in its fields, because that is what the machine will be
+/// handed. The two spellings are both here because a constructor inside `impl Raise` writes `Self`
+/// and one outside it writes the type — and a reader that knew only one would call the other a
+/// function that builds nothing, which is the permissive answer.
+fn constructed(body: &str, envelope: &str) -> Option<Vec<String>> {
+    let at = [format!("{envelope}{{"), "Self{".to_owned()]
+        .iter()
+        .filter_map(|needle| body.find(needle).map(|at| at + needle.len() - 1))
+        .min()?;
+    let fields = balanced(body, at);
+    Some(
+        arguments(fields.trim_start_matches('{').trim_end_matches('}'))
+            .into_iter()
+            .filter_map(|field| {
+                field
+                    .split_once(american_colon())
+                    .map(|(_, it)| it.to_owned())
+            })
+            .collect(),
+    )
+}
+
+/// The identifier a payload expression IS, once the adapters that only MOVE it are stripped —
+/// [`None`] when the expression builds something instead.
+///
+/// # ⚠⚠⚠⚠⚠ Why SERIALISING is moving, and what reading it as building cost — register item 1026
+///
+/// This decides [`Handing`], and [`Handing`] decides whether an empty thing beside an event is a
+/// bare raise. It used to accept a BARE identifier only, so `review.rs`'s
+///
+/// ```text
+/// fn raise(&mut self, event: ContextReviewEvent, data: &Value) {
+///     self.machine.raise_external(event, &data.to_string(), "");
+/// }
+/// ```
+///
+/// was read as COMPOSING — `&data.to_string()` is not a bare name — and a composer's argument is an
+/// INGREDIENT, so anything beside the event counted as carrying. **Measured 2026-09-11 by putting a
+/// read on `read.none` in the second document**: `self.raise(EVENT, &Value::Null)` then went to the
+/// machine as the JSON `null`, `_event.data.why` indexed nil — W3C SCXML 3.8's abandoned block —
+/// and `no_data_carrying_event_is_raised_with_its_data`, the claim named for exactly that, stayed
+/// GREEN. Only the coverage pin spoke, and it called the site *unreadable* rather than *bare*.
+///
+/// ⚠⚠ `data.to_string()` does not build a payload; it RENDERS one. What reaches `_event.data` is
+/// what the caller handed over, so the caller's emptiness is the machine's emptiness — which is
+/// what [`Handing::Forwards`] means and what this now answers.
+///
+/// ⚠ THE ADAPTERS ARE NAMED, and anything else reads as building. That is the permissive direction,
+/// so it is not left to trust: [`Rust::raisers`] is PINNED by this crate's gate, and a helper that
+/// changes class is announced rather than absorbed.
+fn carried_name(expr: &str) -> Option<&str> {
+    /// What can stand around a payload without changing what reaches the machine.
+    const MOVED: [&str; 3] = [".to_string()", ".to_owned()", ".clone()"];
+    let mut rest = expr.trim();
+    loop {
+        let before = rest;
+        rest = rest.trim_start_matches(['&', '*']);
+        if let Some(inner) = rest
+            .strip_prefix("Some(")
+            .and_then(|open| open.strip_suffix(')'))
+        {
+            rest = inner;
+        }
+        for tail in MOVED {
+            rest = rest.strip_suffix(tail).unwrap_or(rest);
+        }
+        if rest == before {
+            break;
+        }
+    }
+    (!rest.is_empty() && rest.chars().all(is_ident)).then_some(rest)
 }
 
 /// One argument list split at the commas that separate ITS OWN arguments.
@@ -1911,6 +2093,7 @@ mod tests {
     fn the_envelopes_own_conversion_carries_nothing_and_is_read_as_a_bare_raise() {
         let rust = "use x::AiLoopEvent;\n\
                     impl From<AiLoopEvent> for Raise { fn from(event: AiLoopEvent) -> Self { Self { event, data: None } } }\n\
+                    impl Raise { fn carrying(event: AiLoopEvent, data: serde_json::Value) -> Self { Self { event, data: Some(data.to_string()) } } }\n\
                     fn one() -> Raise { AiLoopEvent::TurnDone.into() }\n\
                     fn two() -> Raise { Raise::from(AiLoopEvent::Judge) }\n\
                     fn three() -> Raise { Raise::carrying(AiLoopEvent::Judge, json!({\"done\": true})) }";
@@ -1932,6 +2115,74 @@ mod tests {
             sites.iter().filter(|site| site.carries).count() == 1,
             "⚠⚠⚠ only the one built through the envelope's CARRYING constructor has data — the \
              other two are the driver's version of the fifteen: {sites:#?}",
+        );
+
+        // ⚠⚠⚠⚠⚠ AND THE CONSTRUCTOR IS CLASSED BY WHAT IT DOES — register item 1026. It stores
+        // `Some(data.to_string())`, which RENDERS its argument and hands it over whole, so it
+        // FORWARDS. Read as composing — which is what the road it sits on used to say — a constant
+        // null handed to it would count as carrying, and that is the nil this module exists for.
+        assert_eq!(
+            read.raisers().get("carrying").map(|raiser| raiser.handing),
+            Some(Handing::Forwards),
+            "⚠⚠⚠⚠ the envelope's carrying constructor puts its argument in `_event.data` \
+             unchanged. Classed `Composes`, ANYTHING beside the event reads as data — which is how \
+             `&Value::Null` stayed green: {:?}",
+            read.raisers(),
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A CONSTANT NULL FORWARDED TO THE MACHINE IS A BARE RAISE** — register item 1026,
+    /// and the shape `review.rs` writes: a helper that renders its argument, handed the JSON `null`.
+    ///
+    /// The document then indexes nil, which W3C SCXML 3.8 abandons the block for and 3.12.2 drops
+    /// the error of — and before this the claim named for that stayed green, because the helper was
+    /// read as COMPOSING and a composer's argument is an ingredient.
+    #[test]
+    fn a_helper_that_renders_its_payload_forwards_it_and_a_constant_null_is_bare() {
+        let rust = "use x::AiLoopEvent;\n\
+                    fn raise(m: &mut E, event: AiLoopEvent, data: &Value) { m.raise_external(event, &data.to_string(), \"\"); }\n\
+                    fn wraps(m: &mut E, event: AiLoopEvent, standing: &str) { m.raise_external(event, &json!({\"done\": standing}).to_string(), \"\"); }\n\
+                    fn nothing(m: &mut E) { raise(m, AiLoopEvent::TurnDone, &Value::Null); }\n\
+                    fn something(m: &mut E) { raise(m, AiLoopEvent::Judge, &json!({\"done\": true})); }\n\
+                    fn built(m: &mut E) { wraps(m, AiLoopEvent::ReflectNone, \"\"); }";
+        let sources = [source("a.rs", rust)];
+        let read = Rust::of(&sources, &machine());
+
+        assert_eq!(
+            read.raisers().get("raise").map(|raiser| raiser.handing),
+            Some(Handing::Forwards),
+            "⚠⚠⚠⚠⚠ `&data.to_string()` RENDERS the payload, it does not build one: what reaches \
+             `_event.data` is what the caller handed over. Read as composing, the caller's \
+             emptiness stops being the machine's: {:?}",
+            read.raisers(),
+        );
+        assert_eq!(
+            read.raisers().get("wraps").map(|raiser| raiser.handing),
+            Some(Handing::Composes),
+            "⚠⚠ and a helper that really does build an object around its argument is still a \
+             composer — an empty argument there still leaves its key behind: {:?}",
+            read.raisers(),
+        );
+
+        let carrying: BTreeMap<String, BTreeSet<String>> = ["turn.done", "judge", "reflect.none"]
+            .into_iter()
+            .map(|event| (event.to_owned(), BTreeSet::from(["done".to_owned()])))
+            .collect();
+        let sites = spelled(&sources, &carrying, &read);
+        let carried: BTreeMap<&str, bool> = sites
+            .iter()
+            .map(|site| (site.event.as_str(), site.carries))
+            .collect();
+        assert_eq!(
+            carried,
+            BTreeMap::from([
+                ("turn.done", false),
+                ("judge", true),
+                ("reflect.none", true)
+            ]),
+            "⚠⚠⚠⚠⚠ the null is the BARE one and the other two are not. A gate that cannot see \
+             this reports the nil as *a payload it could not read*, which is a coverage number \
+             moving rather than the defect being named: {sites:#?}",
         );
     }
 

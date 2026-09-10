@@ -41,7 +41,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use sprag_gate::payload::{
-    Driven, Rust, Spelled, data_carrying, driven, indirect, named, spelled, tolerant,
+    Driven, Handing, Rust, Spelled, data_carrying, driven, indirect, named, spelled, tolerant,
     variant_of_event,
 };
 use sprag_gate::sources::{Source, Statechart, rust_sources, statecharts, workspace_root};
@@ -76,6 +76,24 @@ struct Machine {
     envelope: bool,
     /// The files the walk must reach, or the needle has gone blind and every claim is vacuous.
     raised_in: &'static [&'static str],
+    /// Every callee that hands one of this machine's events on, and what it does with a payload.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the CLASSIFICATION is pinned — register item 1026, and rule 6
+    ///
+    /// [`Handing`] decides whether an empty thing beside an event is a bare raise, and
+    /// [`Handing::Composes`] is the answer that says *no defect here*: a composer's argument is an
+    /// ingredient, so anything beside the event counts as data. It is also the DEFAULT — a helper
+    /// whose payload argument this reader cannot recognise as forwarded is read as composing —
+    /// and a permissive default nobody asserts is exactly the escape hatch rule 6 is about.
+    ///
+    /// Measured: `review.rs`'s `raise` sat in that default for as long as it existed, and the day
+    /// the second document read a key off an event it raises with `&Value::Null`, the claim named
+    /// for nil payloads stayed green. Nothing said the classification had been guessed.
+    ///
+    /// ⚠⚠ So it is written down: a helper ARRIVING here with `Composes` is a round deciding that
+    /// this one really does build its payload, in the same edit as the helper. A helper CHANGING
+    /// class is the reader having learnt or forgotten a shape, and both want a person.
+    raisers: &'static [(&'static str, Handing)],
     /// `(state, event)` pairs where a BARE raise of a data-carrying event is harmless.
     tolerant: &'static [(&'static str, &'static str)],
     /// The driver's indirect hand-offs — `(function, the name converted)`.
@@ -161,6 +179,26 @@ const MACHINES: &[Machine] = &[
             ("stopping", "turn.done"),
         ],
         indirect: &[("pumping", "other"), ("reflect", "ended")],
+        // ⚠⚠⚠ `reflected` IS THE ONLY COMPOSER LEFT IN THIS WORKSPACE, and it earns the word: its
+        // body is `carried(…, &json!({"standing": standing}).to_string())`, so an empty `standing`
+        // still leaves the key `standing` behind and the raise is not bare. Register item 1026
+        // measured the other three that used to sit beside it — `from_working` and `raise` FORWARD
+        // (each hands its own argument straight to a door) and `reviewed` takes no payload at all —
+        // and each was a permissive answer given to a function nobody had read.
+        raisers: &[
+            ("carried", Handing::Forwards),
+            ("carrying", Handing::Forwards),
+            ("from", Handing::Nothing),
+            ("from_working", Handing::Forwards),
+            ("process_event", Handing::Nothing),
+            ("raise_external", Handing::Forwards),
+            ("reflected", Handing::Composes),
+            ("reviewed", Handing::Nothing),
+            ("through", Handing::Forwards),
+            ("walk", Handing::Nothing),
+            ("walk_carrying", Handing::Forwards),
+            ("walked", Handing::Nothing),
+        ],
     },
     Machine {
         // ⚠⚠⚠⚠⚠ THE SECOND MACHINE, and the whole of register item 1025. `review.rs` drives it:
@@ -181,6 +219,18 @@ const MACHINES: &[Machine] = &[
         // a transition that reads `_event.data` itself, so no state tolerates a bare one.
         tolerant: &[],
         indirect: &[],
+        // ⛔⛔⛔⛔⛔ `raise` IS THE WHOLE OF REGISTER ITEM 1026. Its body is
+        // `self.machine.raise_external(event, &data.to_string(), "")` — it RENDERS the caller's
+        // payload and hands it over whole — and it was read as COMPOSING because `&data.to_string()`
+        // is not a bare name. Under that reading `self.raise(EVENT, &Value::Null)` counted as
+        // carrying, and the day this document reads a key off such an event the machine indexes nil
+        // while the claim named for nil stays green. Measured, by doing exactly that.
+        raisers: &[
+            ("process_event", Handing::Nothing),
+            ("raise", Handing::Forwards),
+            ("raise_external", Handing::Forwards),
+            ("walked", Handing::Nothing),
+        ],
     },
     Machine {
         // ⚠⚠ `datamodel="null"`: this machine's events cannot carry data at all, so every pin here
@@ -195,6 +245,13 @@ const MACHINES: &[Machine] = &[
         raised_in: &[],
         tolerant: &[],
         indirect: &[],
+        // ⚠ THE TWO ENGINE DOORS AND NOTHING ELSE: this machine's driver writes no helper that
+        // takes one of its events. The doors are the RUNTIME's API, so this line is also where a
+        // rename upstream is announced for this machine.
+        raisers: &[
+            ("process_event", Handing::Nothing),
+            ("raise_external", Handing::Forwards),
+        ],
     },
     Machine {
         // ⚠⚠ `datamodel="null"` as well — see `orchestration.scxml` one entry up.
@@ -207,6 +264,11 @@ const MACHINES: &[Machine] = &[
         raised_in: &[],
         tolerant: &[],
         indirect: &[],
+        // ⚠ The two doors, as one entry up: `session.rs` raises through `process_event` alone.
+        raisers: &[
+            ("process_event", Handing::Nothing),
+            ("raise_external", Handing::Forwards),
+        ],
     },
 ];
 
@@ -556,12 +618,21 @@ fn no_data_carrying_event_is_handed_on_without_its_data() {
 /// ⚠ Only payloads written DOWN are read: `brief`'s is assembled a screen away and handed over in a
 /// variable, and [`Rust::keys_of`] answers [`None`] rather than guessing. A claim that read an
 /// unreadable payload as empty would be a red about nothing.
+///
+/// ⚠⚠ And only sites that CARRY, on the coverage pin's terms and for its reason (item 1026): *the
+/// driver sends less than the document reads* is about a payload that is THERE and short. One that
+/// is not there at all is a bare raise, and the claim above owns it — saying it twice, once in the
+/// wrong words, is what this population avoids.
 #[test]
 fn every_payload_the_driver_writes_down_carries_the_keys_the_document_reads() {
     for reading in readings() {
         let mut short = Vec::new();
         let mut read = 0usize;
-        for site in reading.sites.iter().filter(|site| site.shipping) {
+        for site in reading
+            .sites
+            .iter()
+            .filter(|site| site.shipping && site.carries)
+        {
             let Some(keys) = site
                 .payload
                 .as_deref()
@@ -685,12 +756,25 @@ fn every_key_the_driver_puts_on_an_event_is_one_the_document_reads() {
 ///
 /// ⚠ The FIRST number falling is the other alarm: sites went away, or the reader went blind to a
 /// shape it used to follow, and those two are indistinguishable from here.
+///
+/// # ⚠⚠⚠⚠ It counts the sites that CARRY, and register item 1026 is why
+///
+/// A BARE raise has no payload for this to be about, and asking *could the scan read it* of one
+/// gives the wrong answer in the right shape: measured on the mutation that opened 1026, this pin
+/// reported `review.rs`'s `&Value::Null` as *a payload this scan cannot follow*. It follows it
+/// perfectly — it is the JSON `null`, and what is wrong with it is that it is NIL, which is
+/// [`no_data_carrying_event_is_handed_on_without_its_data`]'s subject and now its refusal. Two
+/// claims red on one site, one of them describing it wrongly, is worse than one that names it.
 #[test]
 fn how_much_of_each_driver_these_claims_can_read_is_what_they_could_read_before() {
     for reading in readings() {
         let mut read = 0usize;
         let mut opaque = Vec::new();
-        for site in reading.sites.iter().filter(|site| site.shipping) {
+        for site in reading
+            .sites
+            .iter()
+            .filter(|site| site.shipping && site.carries)
+        {
             if site
                 .payload
                 .as_deref()
@@ -998,6 +1082,62 @@ fn the_states_that_tolerate_a_bare_raise_are_the_ones_the_driver_was_written_aga
         "⚠⚠⚠ no machine in this workspace has a state that tolerates a bare raise, which would \
          make `OuterLoop::reflect`'s `ended.into()` a live defect rather than a permitted one. \
          Either the pins were emptied or `tolerant` stopped reading documents",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT EACH HELPER DOES WITH A PAYLOAD IS PINNED, BECAUSE `Composes` IS THE ANSWER THAT
+/// MEANS «NO DEFECT HERE»** — register item 1026, and rule 6 asked of this file's own reader.
+///
+/// # The default, and what it cost
+///
+/// [`Handing`] is what turns an empty thing beside an event into a bare raise or into nothing at
+/// all, and it is decided from the CALLEE's shape: a helper that hands its payload argument on
+/// unchanged FORWARDS, and one this reader cannot recognise as doing so COMPOSES — which reads as
+/// *an ingredient*, so anything beside the event counts as data. The second is the default, and a
+/// permissive default nobody writes down is an exemption with nobody's name on it.
+///
+/// `review.rs`'s `raise` — `raise_external(event, &data.to_string(), "")` — sat in it. Measured by
+/// putting one read on `read.none` in the second document: `self.raise(EVENT, &Value::Null)` sent
+/// the JSON `null`, the document indexed nil, and
+/// [`no_data_carrying_event_is_handed_on_without_its_data`] stayed GREEN. It is `Forwards` now, and
+/// this is what says so out loud.
+///
+/// ⚠⚠ A helper ARRIVING with `Composes` is a round deciding that it really does build its payload;
+/// make that decision in the same edit as the helper. A helper CHANGING class is the reader having
+/// learnt or forgotten a shape. ⚠ The two engine doors are here too — they are the RUNTIME's API,
+/// and the day one is renamed this line is where it is announced.
+#[test]
+fn what_each_helper_does_with_a_payload_is_what_it_was_measured_doing() {
+    // ⚠ EVERY machine before refusing, rather than the first one that moved: these four sets
+    // overlap — `raise_external` is in all of them — so a change to the reader moves all four at
+    // once, and a refusal naming one would send the next reader looking for four separate causes.
+    let mut moved = Vec::new();
+    for reading in readings() {
+        let measured: BTreeMap<&str, Handing> = reading
+            .rust
+            .raisers()
+            .iter()
+            .map(|(name, raiser)| (name.as_str(), raiser.handing))
+            .collect();
+        let pinned: BTreeMap<&str, Handing> = reading.pinned.raisers.iter().copied().collect();
+        if measured != pinned {
+            moved.push(format!(
+                "  {}\n    measured {measured:?}\n    pinned   {pinned:?}",
+                reading.machine.document(),
+            ));
+        }
+    }
+    assert!(
+        moved.is_empty(),
+        "⛔⛔⛔⛔⛔ HOW AN EVENT REACHES ITS MACHINE HAS MOVED, and `Composes` is the reading under \
+         which an empty payload is not a defect.\n\
+         A NEW helper: decide, here, whether it builds a payload or hands one over — the second is \
+         `Forwards`, and only then does `\"\"` or a constant null read as the bare raise it is.\n\
+         A CHANGED one: this reader started or stopped recognising a shape, and every `carries` in \
+         this file moved with it.\n\
+         GONE: the closure lost a helper it used to reach, and the sites that go through it are no \
+         longer judged at all.\n{}",
+        moved.join("\n"),
     );
 }
 
