@@ -266,28 +266,25 @@ rust_gates_run() {
         fi
     ) || return 1
 
-    # ⛔⛔⛔⛔⛔ AND THE RATCHET LANE STAYS IN THE WORKING TREE, WHICH IS A DEBT AND NOT A DESIGN.
+    # ⛔⛔⛔⛔⛔ AND THE RATCHET LANE COMPILES THE INDEX TOO, SINCE 2026-09-10 — register item 1014.
     #
-    # It used to ride on the line above, `&&`-joined, so moving that line moved this one too — and
-    # moving it was MEASURED to be wrong for a reason that has nothing to do with which bytes are
-    # right. This lane is `cargo test`, and two of its targets are ABOUT THE REPOSITORY THEY STAND
-    # IN: `scratch-guard.sh`'s selftest asserts *the live form calls this repository the caller's
-    # own*, and from a linked worktree the guard answers *the scratch git dir is not the scratch
-    # directory own* instead, because it compares against `<dir>/.git` and a worktree's is a FILE
-    # pointing elsewhere. **2 of 9 targets red at the commit that tried it.** Those arms are right;
-    # the guard has no notion of a linked worktree, and teaching it one is a change to the thing
-    # that stops a harness deleting somebody's repository (register item 792) — not a change to
-    # make in passing while paying a different item.
+    # It stayed on the disk for one round, and the reason was measured rather than assumed: two of
+    # its targets are ABOUT THE REPOSITORY THEY STAND IN, and a checkout of the index is a LINKED
+    # WORKTREE. `scratch-guard.sh` compared a scratch's git dir against `<dir>/.git`, which is a
+    # clone's layout — in a worktree that path is a FILE pointing elsewhere, so every worktree read
+    # as *an ancestor repository would answer for it* and the selftest scored 18/19 from inside one
+    # against 19/19 outside. Item 1014 taught that guard the second layout; it now scores 23/23 in
+    # both, and this lane can stand where the bytes are.
     #
-    # ⚠⚠ SO WHAT IS OWED HERE IS STATED RATHER THAN HIDDEN: this lane still compiles the disk, and
-    # a commit can still carry test bytes nothing ran. Item 1011's own done-when named clippy and
-    # the rustdoc gate, which is what moved; the rest is its own item, with this measurement.
-    #
-    # ⚠ A SECOND WRAPPER CALL, where there used to be one. The comment that said the two travel
-    # together so the tree is synced once was true while they had ONE subject; they now have two
-    # different trees, and a single sync could not have served both.
-    echo "rust-gates: the ratchet lane, on the WORKING TREE — see this function's note ..." >&2
+    # ⚠⚠ IT IS STILL A SECOND WRAPPER CALL WITH A ROW OF ITS OWN, and rejoining it to the lane
+    # above would be a regression rather than tidying. The two peaks differ SEVENFOLD — 9,260,688 kB
+    # against 1,267,736 kB — and one `[routed]` row would bound the tests by the doc gate's peak:
+    # 2 jobs where its own reading allows 17. That is the *too HIGH* failure `.claude/remote-build.
+    # toml` names beside the swap storm, and it is the reason that file argued for per-command rows
+    # in the first place. Same subject now; still two commands, because they cost different things.
+    echo "rust-gates: the ratchet lane, on the INDEX as well — register item 1014 ..." >&2
     (
+        cd "$mirror" || exit 1
         rust_gates_bound_ratchet_lane
         if [ -n "${BX:-}" ] && [ -x "${BX}" ]; then
             "${BX}" --label pre-commit-ratchets -- bash -c "$ratchets"

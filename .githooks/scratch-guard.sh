@@ -27,19 +27,22 @@
 set -uo pipefail
 
 # WHY a harness must NOT run, or empty when nothing is wrong -- a pure function of
-# three strings, so every case can be handed to it.
+# four strings, so every case can be handed to it.
 #
 # `$1` the git dir the scratch repository reports; `$2` the scratch directory's
-# own PHYSICAL path; `$3` the caller's git dir, or empty where it has none.
+# own PHYSICAL path; `$3` the caller's git dir, or empty where it has none;
+# `$4` the git dir the scratch directory DECLARES as its own, or empty where it
+# declares none -- see `scratch_guard_own_git_dir`, which is what reads it.
 #
 # ⚠⚠ THE ORDER IS THE POINT. *No git dir at all* and *a git dir belonging to
 # somebody else* are different failures with different remedies, and a caller
 # that got one sentence for both would not know which it had.
 scratch_guard_refusal() {
-    local scratch_git scratch_dir caller_git
+    local scratch_git scratch_dir caller_git scratch_own
     scratch_git="${1:-}"
     scratch_dir="${2:-}"
     caller_git="${3:-}"
+    scratch_own="${4:-}"
     if [ -z "$scratch_git" ] || [ -z "$scratch_dir" ]; then
         printf 'the scratch repository reports no git dir of its own\n'
         return 0
@@ -48,7 +51,23 @@ scratch_guard_refusal() {
     # one side was logical, and a symlinked TMPDIR is a normal thing there, not a
     # finding. What it still catches is a scratch whose git dir belongs to an
     # ANCESTOR -- a directory that was never `git init`-ed at all.
-    if [ "$scratch_git" != "${scratch_dir}/.git" ]; then
+    #
+    # ⛔⛔⛔⛔⛔ IT USED TO SPELL THE RIGHT-HAND SIDE AS `${scratch_dir}/.git`, AND
+    # THAT IS A CLONE'S LAYOUT AND NOT GIT'S -- register item 1014. In a LINKED
+    # WORKTREE `.git` is a **file** holding `gitdir: <path>`, and the repository's
+    # real git dir is `<main>/.git/worktrees/<name>`; the two can never be equal,
+    # so every linked worktree read as *an ancestor repository would answer for
+    # it* however properly it had been created. MEASURED 2026-09-10 by running
+    # this file's own selftest from one: **18/19, and the arm that failed is the
+    # live one**, against 19/19 in the main worktree.
+    #
+    # ⚠⚠ NARROWER, NOT LOOSER, and that matters because this is the clause that
+    # keeps a harness out of somebody else's tree. The right-hand side is now what
+    # the directory ITSELF declares rather than what a clone would have declared,
+    # so a directory that was never `git init`-ed still declares NOTHING, still
+    # mismatches, and is still refused with this same sentence. The six fixture
+    # pairs below pass `${scratch_dir}/.git` and their answers do not move.
+    if [ "$scratch_git" != "$scratch_own" ]; then
         printf 'the scratch git dir is not the scratch directory own -- %s\n' \
                "an ancestor repository would answer for it"
         return 0
@@ -171,7 +190,50 @@ scratch_guard_check() {
     caller_git="$(git rev-parse --absolute-git-dir 2>/dev/null || true)"
     scratch_git="$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null || true)"
     scratch_dir="$(cd "$dir" 2>/dev/null && pwd -P || true)"
-    scratch_guard_refusal "$scratch_git" "$scratch_dir" "$caller_git"
+    scratch_guard_refusal "$scratch_git" "$scratch_dir" "$caller_git" \
+        "$(scratch_guard_own_git_dir "$scratch_dir")"
+}
+
+# THE GIT DIR A DIRECTORY DECLARES AS ITS OWN, physically, or EMPTY where it
+# declares none -- register item 1014.
+#
+# ⛔⛔⛔⛔⛔ `.git` HAS TWO LAYOUTS AND THIS FILE KNEW ONE. In a clone it is a
+# DIRECTORY. In a linked worktree it is a FILE holding `gitdir: <path>`, and that
+# path is the worktree's own git dir -- exclusively its own, with its own index
+# and its own HEAD, which is exactly the property the clause above is asking
+# about. Reading only the first layout made every linked worktree look like a
+# directory nobody had ever `git init`-ed.
+#
+# ⚠ PHYSICAL, because the clause compares against `git rev-parse
+# --absolute-git-dir`, which answers physically -- the macOS `/var` -> `/private/var`
+# pair at the top of this file is the whole reason that comparison is careful.
+# `cd` + `pwd -P` is how the rest of this file spells that.
+#
+# ⚠⚠ EMPTY IS AN ANSWER AND NOT A FAILURE: a directory that declares no git dir
+# of its own is the ancestor case, and the caller REFUSES on it. So every path
+# out of here that cannot answer answers empty, and nothing here may invent one.
+scratch_guard_own_git_dir() {
+    local dir pointer
+    dir="${1:-}"
+    [ -n "$dir" ] || return 0
+    if [ -d "$dir/.git" ]; then
+        (cd "$dir/.git" 2>/dev/null && pwd -P) || true
+        return 0
+    fi
+    [ -f "$dir/.git" ] || return 0
+    # ⛔ `: *` AND NOT `: \+` -- register item 1006. `\+` is a GNU extension to a
+    # basic regular expression and BSD reads it as a literal `+`, so on macOS this
+    # would match nothing and every worktree would go back to being refused -- the
+    # very platform whose symlinked TMPDIR this file already carries a scar from.
+    pointer="$(sed -n 's/^gitdir: *//p' "$dir/.git" 2>/dev/null | head -1)"
+    [ -n "$pointer" ] || return 0
+    # ⚠ git writes an absolute path when the worktree was added by absolute path
+    # and a relative one otherwise; a relative pointer is relative to the file.
+    case "$pointer" in
+        /*) ;;
+        *) pointer="$dir/$pointer" ;;
+    esac
+    (cd "$pointer" 2>/dev/null && pwd -P) || true
 }
 
 # THE GIT DIR THIS CLONE'S MARKERS BELONG IN, or EMPTY where there is none.
@@ -239,14 +301,14 @@ scratch_guard_append() {
 }
 
 scratch_guard_selftest() {
-    local pass fail said
+    local pass fail said wt_tmp wt_own
     pass=0
     fail=0
 
     # ⛔ THE PAIR THAT REFUSED ON macOS, driven directly. `/var` is a symlink to
     # `/private/var` there, so git answers physically and `pwd` answered
     # logically. With both sides physical this must be SILENT.
-    said="$(scratch_guard_refusal '/private/var/x/.git' '/private/var/x' '/repo/.git')"
+    said="$(scratch_guard_refusal '/private/var/x/.git' '/private/var/x' '/repo/.git' '/private/var/x/.git')"
     if [ -z "$said" ]; then
         echo "  ok    a scratch under a symlinked TMPDIR is not a finding"
         pass=$((pass + 1))
@@ -256,7 +318,7 @@ scratch_guard_selftest() {
     fi
     # ⚠ And the logical/physical pair itself, so the reason `pwd -P` is written
     # that way is a PREDICATE rather than a sentence in a comment.
-    said="$(scratch_guard_refusal '/private/var/x/.git' '/var/x' '/repo/.git')"
+    said="$(scratch_guard_refusal '/private/var/x/.git' '/var/x' '/repo/.git' '/var/x/.git')"
     if [ -n "$said" ]; then
         echo "  ok    a logical path against a physical git dir is refused"
         pass=$((pass + 1))
@@ -266,7 +328,7 @@ scratch_guard_selftest() {
     fi
 
     # ⛔ The case no harness in this tree can produce, which is why it is here.
-    said="$(scratch_guard_refusal '/repo/.git' '/repo' '/repo/.git')"
+    said="$(scratch_guard_refusal '/repo/.git' '/repo' '/repo/.git' '/repo/.git')"
     case "$said" in
         *"IS the caller"*)
             echo "  ok    a scratch that is the caller's own repository is refused"
@@ -276,7 +338,7 @@ scratch_guard_selftest() {
     esac
 
     # ⚠ An uninitialised scratch answers with an ANCESTOR's git dir.
-    said="$(scratch_guard_refusal '/repo/.git' '/repo/scratch' '/elsewhere/.git')"
+    said="$(scratch_guard_refusal '/repo/.git' '/repo/scratch' '/elsewhere/.git' '')"
     case "$said" in
         *"not the scratch directory own"*)
             echo "  ok    an ancestor's git dir is refused"
@@ -285,8 +347,34 @@ scratch_guard_selftest() {
             fail=$((fail + 1)) ;;
     esac
 
+    # ⛔⛔⛔⛔⛔ THE LINKED WORKTREE, WHICH THIS FILE READ AS AN ANCESTOR'S FOR AS
+    # LONG AS IT EXISTED -- register item 1014. Its `.git` is a FILE, so the old
+    # right-hand side `${scratch_dir}/.git` could never equal what git reports,
+    # and a worktree created entirely properly was refused every time.
+    said="$(scratch_guard_refusal '/repo/.git/worktrees/wt' '/scratch/wt' '/elsewhere/.git' '/repo/.git/worktrees/wt')"
+    if [ -z "$said" ]; then
+        echo "  ok    a linked worktree is its own repository, not an ancestor's"
+        pass=$((pass + 1))
+    else
+        echo "  FAIL  a properly created linked worktree was refused: $said"
+        fail=$((fail + 1))
+    fi
+    # ⛔⛔ AND THE PROTECTION IS STILL THERE FOR IT, which is the half that makes
+    # the arm above safe to have. Teaching this clause about worktrees must not
+    # teach it to hand one over: a worktree that IS the caller is the same danger
+    # as a clone that is -- item 792's `rm -rf` does not care which layout it is
+    # deleting -- and it gets the same sentence.
+    said="$(scratch_guard_refusal '/repo/.git/worktrees/wt' '/scratch/wt' '/repo/.git/worktrees/wt' '/repo/.git/worktrees/wt')"
+    case "$said" in
+        *"IS the caller"*)
+            echo "  ok    a linked worktree that IS the caller is still refused"
+            pass=$((pass + 1)) ;;
+        *)  echo "  FAIL  the caller's own worktree said: '$said'"
+            fail=$((fail + 1)) ;;
+    esac
+
     # ⚠ Nothing at all is its OWN sentence, not folded into the one above.
-    said="$(scratch_guard_refusal '' '' '/repo/.git')"
+    said="$(scratch_guard_refusal '' '' '/repo/.git' '')"
     case "$said" in
         *"no git dir of its own"*)
             echo "  ok    a scratch with no git dir keeps its own words"
@@ -296,7 +384,7 @@ scratch_guard_selftest() {
     esac
 
     # ⚠ A caller with NO repository must not make every scratch look like it.
-    said="$(scratch_guard_refusal '/tmp/s/.git' '/tmp/s' '')"
+    said="$(scratch_guard_refusal '/tmp/s/.git' '/tmp/s' '' '/tmp/s/.git')"
     if [ -z "$said" ]; then
         echo "  ok    an empty caller git dir refuses nothing"
         pass=$((pass + 1))
@@ -315,6 +403,57 @@ scratch_guard_selftest() {
         *)  echo "  FAIL  the live form said: '$said'"
             fail=$((fail + 1)) ;;
     esac
+
+    # ⛔⛔⛔⛔⛔ AND THE READER, DRIVEN ON A REAL WORKTREE — register item 1014.
+    #
+    # The two string arms above are strings: nothing in them says this file can
+    # actually FIND a worktree's git dir, and `gitdir: <path>` is a FILE FORMAT
+    # rather than something to assume — git writes it absolute or relative
+    # depending on how the worktree was added. So a `git worktree` is made here
+    # and asked. Without this arm the pure pair would go green over a reader that
+    # answers empty for every worktree on earth, which is the old behaviour
+    # wearing a new argument.
+    #
+    # ⛔ THE SCRATCH IS CHECKED IN THE STATEMENT THAT TAKES IT — register item
+    # 792, the rule this whole file exists for: `mktemp` exits 127 when it is not
+    # on PATH, the variable is then EMPTY, and the `rm -rf` below would be handed
+    # `/linked`.
+    wt_tmp="$(mktemp -d "${TMPDIR:-/tmp}/scratch-guard-worktree.XXXXXX" 2>/dev/null)" || wt_tmp=""
+    if [ -z "$wt_tmp" ] || [ ! -d "$wt_tmp" ]; then
+        echo "  FAIL  no scratch directory could be made for the worktree arms"
+        fail=$((fail + 2))
+    else
+        (
+            cd "$wt_tmp" || exit 1
+            git init -q main || exit 1
+            cd main || exit 1
+            git config user.email selftest@example.invalid
+            git config user.name "scratch-guard selftest"
+            printf 'x\n' >file
+            git add file
+            git commit -q -m "fixture"
+            git worktree add -q --detach ../linked HEAD
+        ) >/dev/null 2>&1
+        wt_own="$(scratch_guard_own_git_dir "$(cd "$wt_tmp/linked" 2>/dev/null && pwd -P || true)")"
+        case "$wt_own" in
+            */worktrees/linked)
+                echo "  ok    a real linked worktree declares its own git dir, and it is found"
+                pass=$((pass + 1)) ;;
+            *)  echo "  FAIL  a real linked worktree's own git dir read as '$wt_own'"
+                fail=$((fail + 1)) ;;
+        esac
+        # ⚠ THE WHOLE DECISION, not just the reader — this is the sentence that was
+        # actually wrong, and the one a harness standing in a worktree acts on.
+        said="$(scratch_guard_check "$wt_tmp/linked")"
+        case "$said" in
+            *"not the scratch directory own"*)
+                echo "  FAIL  the live form still calls a real linked worktree an ancestor's"
+                fail=$((fail + 1)) ;;
+            *)  echo "  ok    the live form does not call a real linked worktree an ancestor's"
+                pass=$((pass + 1)) ;;
+        esac
+        rm -rf "$wt_tmp"
+    fi
 
     # ⛔⛔⛔⛔⛔ THE AMBIENT-ENVIRONMENT ARMS — register item 965, and they are
     # driven as a PURE function for the reason this whole file exists: the

@@ -569,9 +569,11 @@ const ON_DISK_BODY: &str = "fn on_disk() {}\n";
 /// every gate green and carry Rust that nothing had ever compiled. That is register item 213's
 /// shape exactly: one rule, two spellings, and only the cheap one fixed.
 ///
-/// ⚠⚠ **WHAT THESE CASES DO NOT COVER, so a green run is not misread: the RATCHET LANE.** It still
-/// compiles the disk, and `rust-gates.sh`'s note on it carries the measurement that says why moving
-/// it is its own piece of work rather than one more line here.
+/// ⚠⚠ **ALL THREE ARE COVERED SINCE 2026-09-10** — item 1011 moved clippy and the rustdoc gate,
+/// item 1014 the ratchet lane, and the case below asserts each of them BY NAME rather than asserting
+/// that "cargo" saw the right bytes. Three legs with one claim is one leg's worth of evidence: the
+/// round that moved the first two left the third reading the disk, and a joint assertion would have
+/// been green throughout.
 ///
 /// ⚠⚠⚠ **DRIVEN END TO END BEFORE IT WAS WRITTEN**, outside this harness and with a real cargo,
 /// because a defect measured only through a double is a claim about the double. 2026-09-10: stage
@@ -623,15 +625,21 @@ fn the_rust_gates_compile_the_staged_bytes_and_not_the_file_on_disk() {
          asserted separately, because one of the two could be left behind in silence:\n{invoked}",
     );
 
-    // ⛔⛔ AND THE REMAINDER IS PINNED HERE RATHER THAN DESCRIBED. The ratchet lane still runs in
-    // the working tree, and `rust-gates.sh`'s note says why that is its own piece of work. Writing
-    // it down as prose would leave nothing to notice the day it changes; asserting it means the
-    // round that moves the lane has to come here and say so.
+    // ⛔⛔ AND THE RATCHET LANE, WHICH THIS ASSERTION HELD AS A DEBT FOR ONE ROUND — register item
+    // 1014. It used to require `cargo-saw test fn on_disk() {}`: the lane really did compile the
+    // disk, and pinning that as a RED rather than describing it in prose is what made the round
+    // that moved it come here and say so. It has moved; the assertion is inverted rather than
+    // deleted, because *the tests run on the committed bytes* is now the claim worth defending.
     assert!(
-        invoked.contains("cargo-saw test fn on_disk() {}"),
-        "the ratchet lane is NOT fixed by item 1011 and is supposed to have seen the working \
-         tree's copy. If this failed because the lane finally moved onto the index, that is good \
-         news and this assertion is the thing to update:\n{invoked}",
+        invoked.contains("cargo-saw test fn staged() {}"),
+        "the ratchet lane compiles the index too since item 1014, so it must have been given \
+         `fn staged` — the same bytes clippy and the rustdoc gate were given, and the ones this \
+         commit carries:\n{invoked}",
+    );
+    assert!(
+        !invoked.contains("cargo-saw test fn on_disk() {}"),
+        "and no leg may still be reading the working tree's copy, which nobody is committing:\n\
+         {invoked}",
     );
     sandbox.done();
 }
