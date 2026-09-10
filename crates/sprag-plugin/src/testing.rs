@@ -3849,8 +3849,17 @@ mod tests {
     /// # ⚠ The two controls, without which a constant passes
     ///
     /// * the asking pane MUST read `Blocked`, or a supervisor that never blocks anything is green;
-    /// * with BOTH panes quiet neither may read `Blocked`, or a supervisor that blocks everything
-    ///   the moment it has ever seen a dialog is green on the arm above by accident.
+    /// * a pane in a workspace where nothing has EVER shown a dialog must not read `Blocked`, or a
+    ///   supervisor that blocks everything is green on the claim above by accident.
+    ///
+    /// # ⛔⛔⛔ The order of the two spawns is load-bearing, and it was wrong once
+    ///
+    /// [`menu_peer`] paints its menu the instant it starts. The first version of this arm spawned
+    /// both panes up front and then took the second control, which therefore RACED that first draw:
+    /// **7 failures in 25 runs on unmodified source**, every one at that control. The asking pane is
+    /// now spawned only after the control has been taken, so at that line no dialog has existed in
+    /// this workspace at all and there is no window to lose. ⚠ A gate about a race that is itself a
+    /// race certifies nothing — which is the very thing this item is about, met in my own arm.
     #[test]
     fn one_panes_dialog_is_not_another_panes_verdict() {
         use crate::access::PaneAccess;
@@ -3870,30 +3879,37 @@ mod tests {
                 .expect("spawn a pane")
         };
 
-        // ⚠ The QUIET pane is spawned first and never asks anything. `cat` holds the pane open
-        // without painting, which is what *a peer that has stopped to ask nothing* looks like.
+        // ⚠ The QUIET pane never asks anything. `cat` holds it open without painting, which is what
+        // *a peer that has stopped to ask nothing* looks like.
         let quiet = spawn("stty -echo; printf 'QUIET-READY\\n'; exec cat".to_owned());
-        let asking = spawn(super::menu_peer("numbers"));
-
         let access = super::supervised_asking(&workspace);
         super::started(&access, quiet, "QUIET-READY");
 
-        // ⚠⚠ THE CONTROL THAT MUST COME FIRST: before any dialog exists, neither pane is blocked.
-        // Taken BEFORE the menu, because after it this supervisor's clock cannot be un-stamped.
         let blocked = |pane| {
             access
                 .supervision()
                 .and_then(|supervisor| supervisor.pane_agent_state(pane).seen())
                 .is_some_and(|seen| seen.state == sprag_detect::AgentState::Blocked)
         };
+
+        // ⛔⛔⛔⛔⛔ **THE CONTROL IS TAKEN WHILE THE ASKING PEER DOES NOT YET EXIST, AND THAT
+        // ORDERING IS THE WHOLE OF ITS DETERMINISM.** Both panes were spawned up front in the first
+        // version of this arm, and `menu_peer` PAINTS ITS MENU AS SOON AS IT STARTS — so this
+        // control raced the peer's first draw and failed **7 runs in 25** on unmodified source.
+        // A gate about a race that is itself a race certifies nothing, which is precisely what this
+        // whole item is about. Nothing in this workspace has ever painted a dialog at this line,
+        // so there is no window to lose.
         assert!(
-            !blocked(quiet) && !blocked(asking),
-            "⚠⚠ THE CONTROL: with nothing asking, no pane may read `Blocked` — otherwise the arm \
-             below is green about a supervisor that blocks everything. quiet={:?} asking={:?}",
+            !blocked(quiet),
+            "⚠⚠ THE CONTROL: nothing in this workspace has ever shown a dialog, so no pane may \
+             read `Blocked` — otherwise the claim below is green about a supervisor that blocks \
+             everything. quiet={:?}",
             access.pane_collapsed(quiet),
-            access.pane_collapsed(asking),
         );
 
+        // ⚠ ONLY NOW the second pane, which paints its menu on start. `awaiting_the_menu` is what
+        // makes its arrival a fact rather than a hope.
+        let asking = spawn(super::menu_peer("numbers"));
         super::awaiting_the_menu(&access, asking);
 
         assert!(
