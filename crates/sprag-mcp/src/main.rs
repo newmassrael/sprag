@@ -506,9 +506,11 @@ fn tools_list() -> Value {
                     ⚠⚠ AND HOW EACH PANE WAS BORN AND WHO IS LIVING IN IT: a pane the daemon \
                     re-ran out of a snapshot says `revived`, and one holding an AI conversation \
                     names it under `conversation` — with the run that conversation asked for, when \
-                    there is one. Read the pair before closing anything: `revived` with NO driver \
-                    is an orphan (an agent holding context no run is using), while a pane naming a \
-                    conversation is somebody's live work whatever the runs say. \
+                    there is one. Read all three before closing anything: a pane that is `revived`, \
+                    has NO driver AND names a conversation is an orphan — an agent holding context \
+                    no run is using — while a pane naming a conversation is somebody's live work \
+                    whatever the runs say. ⚠ `revived` alone means only that the daemon re-ran it; \
+                    most revived panes are ordinary shells. \
                     Call this first to learn which number is which pane.",
                 "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
             },
@@ -4725,10 +4727,18 @@ fn pane_summary(
     //
     // ⚠ Present only when true, the panes slot's own rule: a line on every pane a person opened
     // would be reporting that the daemon had restarted, which the daemon knows without asking.
+    // ⛔⛔⛔ AND THE SENTENCE SAYS ONLY WHAT THIS KEY KNOWS — measured by running this build against
+    // a live daemon, which is the one thing the fixtures could not do. The first draft ended *"with
+    // no driver line below it is an orphan, an agent holding context no run is using"*, and the
+    // field's first revived pane was a **`/bin/bash`** running the loop's watcher: no agent, no
+    // context, nothing orphaned. The orphan reading needs THREE facts — revived, no driver, and a
+    // conversation — and the row publishes all three for a reader to weigh. Asserting it on the
+    // strength of one is this workspace's *claim wider than the measurement* on a line an agent
+    // acts on.
     if pane.revived {
         out.push_str(
-            "      revived: the daemon re-ran this pane out of a snapshot, unasked — with no \
-             driver line below it is an orphan, an agent holding context no run is using\n",
+            "      revived: the daemon re-ran this pane out of a snapshot rather than anybody \
+             asking for it\n",
         );
     }
     // ⛔⛔⛔⛔⛔ **AND WHETHER A RUN IS DRIVING IT RIGHT NOW** — register item 1018, and the question
@@ -12437,6 +12447,35 @@ mod tests {
             !orphan.contains("asked for run"),
             "⚠⚠ AND THIS ONE ASKED FOR NOTHING: `borne_by` is absent, so the line must not invent a \
              run. Measured on the live daemon: 0 of 6 panes carry it: {orphan}",
+        );
+
+        // ── A REVIVED SHELL, WHICH IS WHAT THE FIELD ACTUALLY HANDED BACK ──
+        //
+        // ⛔⛔⛔⛔⛔ **THIS ARM WAS WRITTEN BY RUNNING THE BUILD AGAINST A LIVE DAEMON**, and it is
+        // the one thing the fixtures above could not have told me. The first draft of the line
+        // ended *"with no driver line below it is an orphan, an agent holding context no run is
+        // using"* — and the first revived pane on the machine was a **`/bin/bash`** running the
+        // loop's watcher. No agent, no context, nothing orphaned: measured 3 of 6 panes revived and
+        // every one of them a shell.
+        //
+        // ⇒ The orphan reading needs THREE facts (revived, no driver, a conversation) and the row
+        // publishes all three for a reader to weigh. A line that asserted it on the strength of one
+        // is a claim wider than its measurement, on a row an agent acts on.
+        let revived_shell = render(&PaneInfo {
+            command: "/bin/bash".to_owned(),
+            revived: true,
+            ..base.clone()
+        });
+        assert!(
+            revived_shell.contains("revived: the daemon re-ran this pane out of a snapshot"),
+            "a revived shell still says it was revived: {revived_shell}",
+        );
+        assert!(
+            !revived_shell.contains("orphan") && !revived_shell.contains("agent holding"),
+            "⛔⛔⛔ ITEM 1021: `revived` alone is not an orphan and the row must not say it is. \
+             Measured on the live daemon: the three revived panes were all SHELLS — no agent, no \
+             context, nothing anybody could act on — and a sentence that called them orphans would \
+             teach its reader to dismiss the line on the pane where it is true: {revived_shell}",
         );
 
         // ── A PANE WHOSE CONVERSATION ASKED FOR A RUN — `borne_by`'s first reader anywhere ──
