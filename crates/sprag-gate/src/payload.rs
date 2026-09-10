@@ -36,7 +36,25 @@
 //!   helper is seen rather than walked past;
 //! * the SITES are read through the names each file reaches the event type by
 //!   ([`crate::loop_shape::reaching`]), so an alias or a glob import teaches the needle instead of
-//!   blinding it.
+//!   blinding it;
+//! * and the MACHINE the other four are asked about is itself derived
+//!   ([`driven`](crate::payload::driven)) — see below.
+//!
+//! # ⚠⚠⚠⚠⚠ The fifth derivation, and the hole it closed — register item 1025
+//!
+//! Everything above was derived, and all of it was aimed at ONE machine: the event type was the
+//! constant `"AiLoopEvent"` and the document was `ai_loop.scxml`, paired by nothing but the fact
+//! that both were spelled in this file. So `context_review.scxml` — driven by `review.rs`, reading
+//! `_event.data` off three of its events — was not passing these rules. It was outside their
+//! POPULATION, which is the quietest exemption a gate can have: no refusal names it, no pin counts
+//! it, and item 1024's coverage number was measured over the first pair alone without ever saying
+//! so.
+//!
+//! The pairing is now a value ([`Driven`](crate::payload::Driven)) and the SET of them is walked
+//! for: every `.scxml` under `crates/`, kept when this workspace's SHIPPING Rust spells the event
+//! type SCE generates from its stem. That is the gate's reach stated as a predicate — a machine no
+//! shipping line names events of is one no static reader of raises could have judged anyway — and
+//! it is what makes a third document arrive as a red rather than as somebody remembering.
 //!
 //! # ⚠⚠ What a text scan can and cannot claim here
 //!
@@ -49,16 +67,109 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::loop_shape::{self, STATE_TYPE};
-use crate::sources::Source;
+use crate::loop_shape;
+use crate::sources::{Source, Statechart};
 
-/// The generated event type the driver and its fixtures name events through.
+/// One machine this workspace DRIVES: a document, and the generated types its driver names the
+/// machine's words through.
 ///
-/// ⚠ GENERATED from the document by SCE, like [`STATE_TYPE`] beside it: the names are the
-/// compiler's business and adding an event breaks every exhaustive match until a person has looked.
-/// What no compiler checks is whether a raise carries the data the document reads — that is this
-/// module's whole subject.
-pub const EVENT_TYPE: &str = "AiLoopEvent";
+/// # ⚠⚠⚠⚠⚠ Why the two types are DERIVED from the stem rather than carried beside it
+///
+/// SCE generates `AiLoopEvent` and `AiLoopState` from `ai_loop.scxml`, `ContextReviewEvent` and
+/// `ContextReviewState` from `context_review.scxml`: the rule is the file stem in camel case with
+/// the word appended, and it is the code generator's, not this crate's. Spelling the two names
+/// beside the path would be a second copy of a rule that already exists — the thing that drifts —
+/// and this crate has no dependency on SCE to ask. So the rule is applied, and
+/// [`crate::payload::driven`] KEEPS ONLY the documents whose event type this workspace's shipping
+/// Rust actually spells: if the generator's naming ever changes, every machine leaves the
+/// population at once and the gate that pins the population says so.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Driven {
+    document: String,
+    event_type: String,
+    state_type: String,
+}
+
+impl Driven {
+    /// The pair SCE's naming rule makes of one statechart, whether or not anything drives it.
+    #[must_use]
+    pub fn of(chart: &Statechart) -> Self {
+        let camel = variant_of_event(chart.stem());
+        Self {
+            document: chart.file.clone(),
+            event_type: format!("{camel}Event"),
+            state_type: format!("{camel}State"),
+        }
+    }
+
+    /// The document, relative to the workspace root.
+    #[must_use]
+    pub fn document(&self) -> &str {
+        &self.document
+    }
+
+    /// The generated event type the driver and its fixtures name events through.
+    ///
+    /// ⚠ GENERATED from the document by SCE, like [`Driven::state_type`] beside it: the names are
+    /// the compiler's business and adding an event breaks every exhaustive match until a person has
+    /// looked. What no compiler checks is whether a raise carries the data the document reads —
+    /// that is this module's whole subject.
+    #[must_use]
+    pub fn event_type(&self) -> &str {
+        &self.event_type
+    }
+
+    /// The generated state type, which is the other half of this machine's vocabulary — a word of
+    /// it standing beside an event is a second FACT rather than that event's data.
+    #[must_use]
+    pub fn state_type(&self) -> &str {
+        &self.state_type
+    }
+}
+
+/// Every machine in `charts` this workspace's SHIPPING Rust raises events into.
+///
+/// # ⚠⚠⚠⚠⚠ What "drives" means here, said as a predicate — register item 1025
+///
+/// *Some line of [`Source::product`] spells the event type SCE generates from the stem.* Not *the
+/// file exists* — this workspace carries thirteen `.scxml` and seven of them are `probe_*`, written
+/// to ask the ENGINE a question and driven only from `#[cfg(test)]`. Not *`build.rs` compiles it*
+/// either: `debt_loop.scxml` and `unclaimed_loop.scxml` are compiled machines that no Rust raises a
+/// single event into — they are read as DOCUMENTS, for the decisions their `<data>` holds.
+///
+/// ⚠⚠ The predicate is exactly this module's own reach, which is why it is the right one: every
+/// claim built on [`spelled`] is about a place the event is WRITTEN DOWN in shipping code, so a
+/// machine no shipping line names events of has no site for any of them to be about. Widening the
+/// population past that would buy a set of claims that are green because they are empty — register
+/// item 498's shape, and rule 6's.
+#[must_use]
+pub fn driven(sources: &[Source], charts: &[Statechart]) -> Vec<Driven> {
+    charts
+        .iter()
+        .map(Driven::of)
+        .filter(|machine| {
+            sources.iter().any(|source| {
+                source
+                    .product
+                    .iter()
+                    .any(|(_, line)| spells(line, &machine.event_type))
+            })
+        })
+        .collect()
+}
+
+/// Whether `text` names `name` as a WHOLE identifier rather than as part of a longer one.
+///
+/// ⚠ `AiLoopEvent` is a prefix of nothing today, but `Driven` builds its needle by APPENDING to a
+/// stem — so `probe_send_type` would answer to `ProbeSendTypeEvent` and a plain `contains` would
+/// let a longer generated name claim a shorter document's population.
+fn spells(text: &str, name: &str) -> bool {
+    text.match_indices(name).any(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + name.len()..].chars().next();
+        !before.is_some_and(is_ident) && !after.is_some_and(is_ident)
+    })
+}
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // The DOCUMENT half: which events carry data, and which keys.
@@ -450,6 +561,8 @@ pub struct Spelled {
 /// What this workspace's Rust says about raising, read once so every claim below shares it.
 #[derive(Debug)]
 pub struct Rust {
+    /// The machine this reading is about — every needle below is spelled off it.
+    driven: Driven,
     /// Every callee that hands an event to a machine, and what it does with a payload.
     raisers: BTreeMap<String, Raiser>,
     /// The type the driver wraps an event in when it has a payload to attach — discovered as the
@@ -489,8 +602,14 @@ impl Rust {
     /// ⚠ The two seeds are the RUNTIME's API and are spelled rather than derived — this crate takes
     /// no dependencies, so the engine's source is not on the road. They are asserted PRESENT by the
     /// gate, so a rename upstream is announced rather than absorbed.
+    ///
+    /// ⚠⚠ `driven` is what the closure grows AROUND: a helper is a raiser of THIS machine when its
+    /// signature takes THIS machine's event type. `review.rs`'s `fn raise(&mut self, event:
+    /// ContextReviewEvent, data: &Value)` and `outer.rs`'s `Raise::carrying` are each invisible to
+    /// the other's reading, which is right — they hand events to different machines.
     #[must_use]
-    pub fn of(sources: &[Source]) -> Self {
+    pub fn of(sources: &[Source], driven: &Driven) -> Self {
+        let event_type = driven.event_type();
         let mut strings: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for source in sources {
             // ⚠⚠⚠ A CONSTANT IS RECORDED UNDER BOTH ITS NAMES — `WIRE_KEY` and
@@ -523,20 +642,16 @@ impl Rust {
         let mut defined: Vec<(String, String, String)> = Vec::new();
         let mut envelope = None;
         for source in sources {
-            if !source
-                .code
-                .iter()
-                .any(|(_, line)| line.contains(EVENT_TYPE))
-            {
+            if !source.code.iter().any(|(_, line)| spells(line, event_type)) {
                 continue;
             }
             let text = Squeezed::of(source);
             if envelope.is_none() {
-                envelope = text.after(&format!("implFrom<{EVENT_TYPE}>for"));
+                envelope = text.after(&format!("implFrom<{event_type}>for"));
             }
             for (name, params, body) in text.functions() {
                 bodies.entry(name.clone()).or_default().push(body.clone());
-                if params.contains(EVENT_TYPE) {
+                if spells(&params, event_type) {
                     defined.push((name, params, body));
                 }
             }
@@ -587,7 +702,7 @@ impl Rust {
                     name.clone(),
                     Raiser {
                         handing,
-                        event_at: event_at(params),
+                        event_at: event_at(params, event_type),
                     },
                 );
                 grew = true;
@@ -598,11 +713,18 @@ impl Rust {
         }
 
         Self {
+            driven: driven.clone(),
             raisers,
             envelope,
             strings,
             bodies,
         }
+    }
+
+    /// The machine this reading is about.
+    #[must_use]
+    pub fn driven(&self) -> &Driven {
+        &self.driven
     }
 
     /// Every callee that hands an event to a machine, and what it does with a payload.
@@ -845,7 +967,7 @@ pub fn spelled(
         .collect();
     let mut found = Vec::new();
     for source in sources {
-        let reaching = loop_shape::reaching(&source.code, EVENT_TYPE);
+        let reaching = loop_shape::reaching(&source.code, rust.driven().event_type());
         if reaching.paths.is_empty() {
             continue;
         }
@@ -887,10 +1009,14 @@ pub fn spelled(
 /// Only [`Source::product`] is read: a fixture converting something is not a driver hand-off.
 /// Measured 2026-08-21 — the whole workspace has exactly two, both in the loop's driver.
 #[must_use]
-pub fn indirect(sources: &[Source]) -> BTreeSet<(String, String)> {
+pub fn indirect(sources: &[Source], driven: &Driven) -> BTreeSet<(String, String)> {
     let mut found = BTreeSet::new();
     for source in sources {
-        if !source.product.iter().any(|(_, l)| l.contains(EVENT_TYPE)) {
+        if !source
+            .product
+            .iter()
+            .any(|(_, l)| spells(l, driven.event_type()))
+        {
             continue;
         }
         let text = Squeezed::of_lines(&source.product);
@@ -1013,16 +1139,94 @@ impl Squeezed {
             && (at == len || !is_ident(self.chars[at - len - 1]))
     }
 
+    /// The `{…}` block this event is the ENTIRE content of, and where the call argument holding
+    /// that block ends — [`None`] when the event is not written that way.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why one raise CHOOSING between two events had to be readable — register item 1025
+    ///
+    /// `review.rs` writes the shape this reader would otherwise skip in silence:
+    ///
+    /// ```text
+    /// self.raise(
+    ///     if into.is_empty() { ContextReviewEvent::WriteSkipped } else { ContextReviewEvent::WriteDone },
+    ///     &Value::Null,
+    /// );
+    /// ```
+    ///
+    /// Neither variant is followed by `,` or `)` — each is followed by `}` — so [`Squeezed::handed`]
+    /// answered [`None`] for both and neither site existed for any claim in this module. Nothing was
+    /// wrong there on the day this was written: the document reads no key off either event. **That
+    /// is exactly what makes it worth reading** — a blind spot found by the document changing rather
+    /// than by the reader is item 453's *green forever in the voice of a working one*, and this
+    /// shape is the one place this workspace's raises bump into it.
+    ///
+    /// # ⚠⚠⚠ Why the rule is STRUCTURAL and names no keyword
+    ///
+    /// A [`Squeezed`] file has no spaces, so `if into` is `ifinto` and `else if` is `elseif`: the
+    /// keyword is simply not recoverable, and a reader that hunted for one would be matching
+    /// identifiers. What IS recoverable is the bracketing — the event is the whole of a `{…}`, and
+    /// that block sits inside an argument list. Both halves of the shipped shape satisfy it, and so
+    /// would a `match` used the same way, which is the same fact about the code.
+    ///
+    /// ⚠⚠ It stays narrow where it matters: the event must be the ENTIRE content of the block. A
+    /// match ARM's event stands to the LEFT of `=>` and a list's has `,` or `]` after it, so the
+    /// mentions [`spelled`] declines on purpose stay declined.
+    ///
+    /// ⚠ ONE LEVEL, stated rather than implied: a choice nested inside another block — an arm body
+    /// inside a `match` that is itself an argument — is past this, and reads as no site at all. The
+    /// residue is the module header's: what this crate can claim is about spellings, and every
+    /// raise this workspace writes today is one hop from its argument list.
+    fn chosen(&self, at: usize, after: usize) -> Option<(usize, usize)> {
+        // ⚠ `at` is where the VARIANT starts, so the block's `{` is on the far side of whatever
+        // path reaches it — `{AiLoopEvent::TurnDone}` and a glob-imported `{TurnDone}` alike.
+        let mut head = at;
+        while head > 0 && (is_ident(self.chars[head - 1]) || self.chars[head - 1] == ':') {
+            head -= 1;
+        }
+        if head == 0 || self.chars[head - 1] != '{' || self.chars.get(after) != Some(&'}') {
+            return None;
+        }
+        // Where the ARGUMENT ends — past whatever else the choice is written with (`else {…}`, a
+        // second `if`), so the payload read below is the call's NEXT argument rather than the other
+        // half of this one.
+        let mut depth = 0usize;
+        let mut walk = after + 1;
+        while walk < self.chars.len() {
+            match self.chars[walk] {
+                '"' => {
+                    walk += 1;
+                    while walk < self.chars.len() && self.chars[walk] != '"' {
+                        walk += if self.chars[walk] == '\\' { 2 } else { 1 };
+                    }
+                }
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                }
+                ',' if depth == 0 => break,
+                _ => {}
+            }
+            walk += 1;
+        }
+        (walk < self.chars.len()).then_some((head - 1, walk))
+    }
+
     /// What is done with the event named at `at`, or [`None`] when nothing is.
     fn handed(&self, at: usize, variant: &str, rust: &Rust) -> Option<Spelled> {
-        let after = at + variant.chars().count();
+        let spelled_at = at + variant.chars().count();
         // ⚠ THE ENVELOPE'S OWN CONVERSION, which carries no data by construction — `impl
         // From<AiLoopEvent> for Raise` sets `data: None`. It is the driver's way of committing the
         // same defect the fifteen fixtures committed with `process_event`.
-        if self.starts(after, ".into()") {
+        if self.starts(spelled_at, ".into()") {
             return Some(self.site(at, ".into()".to_owned(), None, false));
         }
-        let (opener, callee) = self.enclosing(at)?;
+        // ⚠ A raise may CHOOSE its event, and then the argument is the choice rather than the
+        // event — so both ends move together or the payload read below is the wrong neighbour.
+        let (from, after) = self.chosen(at, spelled_at).unwrap_or((at, spelled_at));
+        let (opener, callee) = self.enclosing(from)?;
         if self.chars.get(opener) != Some(&'(') {
             return None;
         }
@@ -1054,8 +1258,8 @@ impl Squeezed {
         // A neighbour that is another word of the machine's vocabulary is a second FACT, not this
         // event's data — see this function's own doc.
         if payload.as_deref().is_some_and(|beside| {
-            beside.contains(&format!("{EVENT_TYPE}::"))
-                || beside.contains(&format!("{STATE_TYPE}::"))
+            beside.contains(&format!("{}::", rust.driven().event_type()))
+                || beside.contains(&format!("{}::", rust.driven().state_type()))
         }) {
             return None;
         }
@@ -1296,10 +1500,10 @@ fn arguments(list: &str) -> Vec<String> {
 ///
 /// ⚠ Read from the signature rather than assumed: the engine takes the event first and every
 /// fixture helper in this workspace takes the machine first, so there is no convention to assume.
-fn event_at(params: &str) -> usize {
+fn event_at(params: &str, event_type: &str) -> usize {
     arguments(params)
         .iter()
-        .position(|param| param.contains(EVENT_TYPE))
+        .position(|param| spells(param, event_type))
         .unwrap_or_default()
 }
 
@@ -1435,6 +1639,93 @@ mod tests {
         }
     }
 
+    fn chart(file: &str, text: &str) -> Statechart {
+        Statechart {
+            file: file.to_owned(),
+            text: text.to_owned(),
+        }
+    }
+
+    /// The pair every fixture below is written against, made the way the walk makes it — so a
+    /// change to SCE's naming rule reaches these cases rather than being spelled around here.
+    fn machine() -> Driven {
+        Driven::of(&chart("crates/sprag-plugin/src/ai_loop.scxml", ""))
+    }
+
+    /// ⚠⚠⚠⚠⚠ **THE PAIR IS THE GENERATOR'S RULE, APPLIED — not a table.** Register item 1025's
+    /// first claim: a document whose stem is read wrong pairs with types nothing spells, and every
+    /// claim about that machine then passes on an empty set.
+    #[test]
+    fn a_machine_is_named_off_its_documents_stem_the_way_the_generator_names_it() {
+        for (file, event, state) in [
+            (
+                "crates/sprag-plugin/src/ai_loop.scxml",
+                "AiLoopEvent",
+                "AiLoopState",
+            ),
+            (
+                "crates/sprag-plugin/src/context_review.scxml",
+                "ContextReviewEvent",
+                "ContextReviewState",
+            ),
+            (
+                "crates/sprag-plugin/src/session.scxml",
+                "SessionEvent",
+                "SessionState",
+            ),
+        ] {
+            let named = Driven::of(&chart(file, ""));
+            assert_eq!(
+                (named.event_type(), named.state_type()),
+                (event, state),
+                "SCE spells the types of {file} this way, and a needle built any other way finds \
+                 nothing while reading exactly like one that found nothing to complain about",
+            );
+        }
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AND THE POPULATION IS WHAT SHIPPING RUST RAISES INTO** — a document nothing drives
+    /// is not a machine this reader can judge, and a `#[cfg(test)]` mention is not driving.
+    #[test]
+    fn a_document_is_driven_when_shipping_rust_spells_its_events_and_not_when_a_test_does() {
+        let charts = [
+            chart("crates/p/src/ai_loop.scxml", ""),
+            chart("crates/p/src/context_review.scxml", ""),
+            chart("crates/p/src/probe_parallel.scxml", ""),
+            chart("crates/p/src/debt_loop.scxml", ""),
+        ];
+        let mut proving = source(
+            "b.rs",
+            "fn t(e: &mut E) { e.process_event(ProbeParallelEvent::Tick); }",
+        );
+        proving.product.clear();
+        let sources = [
+            source(
+                "a.rs",
+                "use x::AiLoopEvent;\nfn go(e: &mut E) { e.process_event(AiLoopEvent::Judge); }",
+            ),
+            source(
+                "c.rs",
+                "fn raise(e: &mut E, event: ContextReviewEvent) { e.process_event(event); }",
+            ),
+            proving,
+        ];
+
+        assert_eq!(
+            driven(&sources, &charts)
+                .iter()
+                .map(|machine| machine.document().to_owned())
+                .collect::<Vec<_>>(),
+            [
+                "crates/p/src/ai_loop.scxml".to_owned(),
+                "crates/p/src/context_review.scxml".to_owned()
+            ],
+            "⚠⚠⚠ `probe_parallel` is spelled only where a test drives it and `debt_loop` is \
+             spelled nowhere: a population that took either in would buy claims that are green \
+             because they are empty",
+        );
+    }
+
     /// ⚠⚠⚠ **BOTH SHAPES THE DOCUMENT USES**, and the one it must not be read as using.
     #[test]
     fn an_event_carries_data_when_its_own_transition_reads_one_or_the_state_it_enters_does() {
@@ -1565,6 +1856,28 @@ mod tests {
             // ⚠ DECLINED — the same bare word in a file that never reaches the event type. A
             // `TurnDone` nothing imported is somebody else's word.
             ("fn go(e: &mut E) { e.process_event(TurnDone); }", 0, 0),
+            // ⚠⚠⚠⚠⚠ ONE RAISE CHOOSING BETWEEN TWO EVENTS — register item 1025, and `review.rs`
+            // writes exactly this. BOTH branches are sites, and the payload is the call's next
+            // argument rather than the other branch.
+            (
+                "use x::AiLoopEvent;\nfn go(e: &mut E, empty: bool) { carried(e, if empty { AiLoopEvent::TurnDone } else { AiLoopEvent::Judge }, DATA); }\nfn carried(e: &mut E, event: AiLoopEvent, data: &str) { e.raise_external(event, data, \"\"); }",
+                2,
+                2,
+            ),
+            // ⚠⚠ AND THE SAME CHOICE HANDED ON BARE IS THE DEFECT, on both branches — which is the
+            // whole point of being able to read the shape at all.
+            (
+                "use x::AiLoopEvent;\nfn go(e: &mut E, empty: bool) { carried(e, if empty { AiLoopEvent::TurnDone } else { AiLoopEvent::Judge }, \"\"); }\nfn carried(e: &mut E, event: AiLoopEvent, data: &str) { e.raise_external(event, data, \"\"); }",
+                2,
+                0,
+            ),
+            // ⚠ AND THE RULE IS PER BRANCH: a branch that is not a bare event is not a site, and
+            // the one beside it still is.
+            (
+                "use x::AiLoopEvent;\nfn go(e: &mut E, empty: bool) { carried(e, if empty { chosen(k) } else { AiLoopEvent::Judge }, DATA); }\nfn carried(e: &mut E, event: AiLoopEvent, data: &str) { e.raise_external(event, data, \"\"); }",
+                1,
+                1,
+            ),
         ];
 
         let carrying: BTreeMap<String, BTreeSet<String>> = ["turn.done", "judge", "reflect.none"]
@@ -1575,7 +1888,7 @@ mod tests {
         let mut wrong = Vec::new();
         for (rust, owed, owed_carrying) in table {
             let sources = [source("a.rs", rust)];
-            let sites = spelled(&sources, &carrying, &Rust::of(&sources));
+            let sites = spelled(&sources, &carrying, &Rust::of(&sources, &machine()));
             let carried = sites.iter().filter(|site| site.carries).count();
             if sites.len() != *owed || carried != *owed_carrying {
                 wrong.push(format!(
@@ -1602,7 +1915,7 @@ mod tests {
                     fn two() -> Raise { Raise::from(AiLoopEvent::Judge) }\n\
                     fn three() -> Raise { Raise::carrying(AiLoopEvent::Judge, json!({\"done\": true})) }";
         let sources = [source("a.rs", rust)];
-        let read = Rust::of(&sources);
+        let read = Rust::of(&sources, &machine());
         assert_eq!(
             read.envelope(),
             Some("Raise"),
@@ -1631,7 +1944,7 @@ mod tests {
                     fn costs(&self) -> Value { json!({\"context\": 1, \"unreadable\": false}) }\n\
                     fn go() { let _ = json!({STANDING: 1}); }";
         let sources = [source("a.rs", rust)];
-        let read = Rust::of(&sources);
+        let read = Rust::of(&sources, &machine());
         assert_eq!(
             read.keys_of("TURN"),
             Some(BTreeSet::from(["context".to_owned(), "cold".to_owned()])),
@@ -1672,7 +1985,7 @@ mod tests {
                     pub const WIRE_KEY: &'static str = \"raised\";\n\
                     }";
         let sources = [source("a.rs", rust)];
-        let read = Rust::of(&sources);
+        let read = Rust::of(&sources, &machine());
 
         assert_eq!(
             read.keys_of("json!({Readiness::WIRE_KEY: 1, Turn::WIRE_KEY: 2})"),
@@ -1716,7 +2029,7 @@ mod tests {
                     pub(in crate::plugin) const COST_KEY: &'static str = \"cost_bound\";\n\
                     }";
         let sources = [source("a.rs", rust)];
-        let read = Rust::of(&sources);
+        let read = Rust::of(&sources, &machine());
         assert_eq!(
             read.keys_of(
                 "json!({Brief::STALL_AFTER_KEY: 1, Brief::MARKS_KEY: 2, Brief::COST_KEY: 3})"
@@ -1764,7 +2077,7 @@ mod tests {
     #[test]
     fn a_key_is_only_a_key_at_the_top_of_the_object() {
         let sources = [source("a.rs", "")];
-        let read = Rust::of(&sources);
+        let read = Rust::of(&sources, &machine());
         let keys = read
             .keys_of(
                 "json!({\"done\":heard.said(),\"checked\":match c.wire_str(){Some(w)=>serde_json::Value::from(w),None=>serde_json::Value::Bool(false),},})",
@@ -1788,7 +2101,7 @@ mod tests {
                     fn bare(e: &mut E, event: AiLoopEvent) { e.process_event(event); }\n\
                     fn renders(raised: AiLoopEvent) -> String { format!(\"{raised:?}\") }";
         let sources = [source("a.rs", rust)];
-        let raisers = Rust::of(&sources).raisers().clone();
+        let raisers = Rust::of(&sources, &machine()).raisers().clone();
         let handing = |name: &str| raisers.get(name).map(|raiser| raiser.handing);
         assert_eq!(handing("process_event"), Some(Handing::Nothing));
         assert_eq!(handing("raise_external"), Some(Handing::Forwards));

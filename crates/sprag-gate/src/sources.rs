@@ -491,7 +491,7 @@ pub(crate) fn code_lines(text: &str) -> Vec<(usize, String)> {
 pub fn rust_sources() -> Vec<Source> {
     let root = workspace_root();
     let mut paths = Vec::new();
-    walk(&root.join("crates"), &mut paths);
+    walk(&root.join("crates"), "rs", &mut paths);
     paths.sort();
     assert!(
         paths.len() > 100,
@@ -552,6 +552,75 @@ pub fn rust_sources() -> Vec<Source> {
         }
     }
     sources
+}
+
+/// One statechart document this workspace carries.
+///
+/// ⚠ The TEXT is carried rather than the path alone, because every reader of one in this crate
+/// wants the document itself and a second `read_to_string` at each call site is a second chance to
+/// point at the wrong file — which is the failure [`workspace_root`] exists to refuse.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Statechart {
+    /// Relative to the workspace root, so a gate's message is a path a person can open.
+    pub file: String,
+    /// The document, verbatim.
+    pub text: String,
+}
+
+impl Statechart {
+    /// The file's stem — `ai_loop` for `crates/sprag-plugin/src/ai_loop.scxml`.
+    ///
+    /// ⚠ The stem is the name the code generator works from, so it is what every generated type of
+    /// this machine is spelled off ([`crate::payload::Driven`]).
+    #[must_use]
+    pub fn stem(&self) -> &str {
+        self.file
+            .rsplit('/')
+            .next()
+            .unwrap_or(&self.file)
+            .strip_suffix(".scxml")
+            .unwrap_or_default()
+    }
+}
+
+/// Every `.scxml` file under `crates/`, with its text.
+///
+/// # ⚠⚠⚠⚠⚠ Why the SET is walked for rather than listed — register item 1025
+///
+/// A gate about *the document a driver raises into* had one document spelled into it, so the second
+/// one this workspace drives was not outside the gate's rules — it was outside its POPULATION, and
+/// a population nobody counts is the quietest exemption there is. The walk is what makes a third
+/// document arrive as a fact rather than as somebody remembering.
+///
+/// # Panics
+///
+/// When the tree cannot be read, or when the walk found no documents at all. A probe pointed at
+/// nothing must never read as clean.
+#[must_use]
+pub fn statecharts() -> Vec<Statechart> {
+    let root = workspace_root();
+    let mut paths = Vec::new();
+    walk(&root.join("crates"), "scxml", &mut paths);
+    paths.sort();
+    assert!(
+        !paths.is_empty(),
+        "this workspace's machines are written as `.scxml` documents and the walk found none, \
+         which means it is pointed somewhere else — and a probe pointed at nothing must never read \
+         as clean",
+    );
+    paths
+        .into_iter()
+        .map(|path| {
+            let file = path
+                .strip_prefix(&root)
+                .unwrap_or(&path)
+                .display()
+                .to_string();
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|why| panic!("{file} is a statechart of this workspace: {why}"));
+            Statechart { file, text }
+        })
+        .collect()
 }
 
 /// Every file the source at `file` declares as a module that exists ONLY under `#[cfg(test)]`,
@@ -867,7 +936,7 @@ fn char_literal(chars: &[char], at: usize) -> Option<usize> {
     (chars.get(at + width - 1) == Some(&'\'')).then_some(width)
 }
 
-fn walk(dir: &Path, into: &mut Vec<PathBuf>) {
+fn walk(dir: &Path, extension: &str, into: &mut Vec<PathBuf>) {
     let entries = std::fs::read_dir(dir)
         .unwrap_or_else(|why| panic!("{} is this workspace's source: {why}", dir.display()));
     for entry in entries {
@@ -877,8 +946,8 @@ fn walk(dir: &Path, into: &mut Vec<PathBuf>) {
             if path.file_name().is_some_and(|name| name == "target") {
                 continue;
             }
-            walk(&path, into);
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            walk(&path, extension, into);
+        } else if path.extension().is_some_and(|ext| ext == extension) {
             into.push(path);
         }
     }
