@@ -119,6 +119,42 @@ loop_read_gap
 # the design — reading first makes it one.
 pushed_refs="$(cat)"
 
+# ── Did git hand this hook a push at all? — register item 1030.
+#
+# ⛔⛔⛔⛔⛔ **MEASURED, BECAUSE THE COMMENT THIS REPLACES WAS A GUESS AND THE GUESS WAS WRONG.**
+# The gates below used to read an empty ref list as *"something IS being published and nobody knows
+# what"* and refuse. On 2026-09-11 git was asked directly, with a hook that printed what it was
+# handed:
+#
+# ```text
+# $ git -c core.hooksPath=<a hook that dumps stdin> push --dry-run origin main
+# ARGS: origin git@github.com:newmassrael/sprag.git
+# TOTAL LINES: 0
+# ```
+#
+# Git writes ONE LINE PER REF IT IS ABOUT TO UPDATE. It writes none in exactly one situation: there
+# is nothing to update — `Everything up-to-date`. So an empty list is not an unknown, it is git
+# stating that this push publishes nothing.
+#
+# ⚠⚠ WHAT THE GUESS COST, measured the same day: `git push origin main` on an up-to-date branch was
+# REFUSED, naming `bash .githooks/rust-gates.sh --clear` — and no run of that command could clear
+# it, because the walk answering NO was counting refs, not reading the stamp. That is item 1030's
+# wall on the most ordinary command in this repository, and it made a no-op push exit 1.
+#
+# ⚠⚠⚠ THIS IS NOT THE UNKNOWN CASE AND MUST NOT BECOME IT. A ref git DID name and this clone cannot
+# resolve is still refused, by `content_gates_over_pushed_range` and by every walk below — that is
+# the case where content is being published and nobody can read it, and it is the one item 480's
+# stance was actually about. What is waived here is a push with no refs in it at all.
+git_handed_no_refs() {
+    local local_ref local_sha remote_ref remote_sha
+    while read -r local_ref local_sha remote_ref remote_sha; do
+        : "$local_ref" "$remote_ref" "$remote_sha"
+        [ -n "$local_sha" ] || continue
+        return 1
+    done <<<"$pushed_refs"
+    return 0
+}
+
 # ── The identities this push would publish. FIRST among the gates, because it
 # is the only failure here that a revert does not undo: the remote is public
 # and a push does not un-publish.
@@ -239,7 +275,15 @@ pushed_range_touches() {
             owed=0
         fi
     done <<<"$pushed_refs"
-    [ "$saw_ref" -eq 0 ] || owed=0
+    # ⛔⛔⛔⛔⛔ **A PUSH GIT NAMED NO REFS IN IS NOT OWED, AND THIS LINE SAID THE OPPOSITE** —
+    # register item 1030. It read an empty list as *I was told nothing* and charged the gate for it,
+    # on the stance stated at the top of this walk. That stance is right for a ref this hook cannot
+    # resolve and wrong here, and the difference was measured rather than argued on 2026-09-11: git
+    # writes one line per ref it is about to update and writes NONE only when there is nothing to
+    # update, so an empty list is git saying this push publishes nothing — see `git_handed_no_refs`
+    # for the transcript. Charging a gate to it made `git push` on an up-to-date branch refuse,
+    # naming a command that could not clear it.
+    [ "$saw_ref" -eq 0 ] || owed=1
     return "$owed"
 }
 
@@ -265,10 +309,12 @@ hook_suite_is_owed() { pushed_range_touches $HOOK_PATHS; }
 # correctness: a missing stamp, a ref this clone cannot resolve, an empty stdin. And EVERY pushed
 # tip must match, not one of them — a push carrying two branches carries two trees.
 #
-# ⚠⚠ A DELETION ANSWERS NO HERE TOO, deliberately: it carries no tree, so no stamp can be about it.
-# That is not where the deletion case is decided — `pushed_range_compiles_nothing` decides it, at
-# the call site, BEFORE this refusal is reached. Item 480 paid for learning that a refusal is not
-# free, and putting the waiver in here would hide it inside the thing being waived.
+# ⚠⚠ A DELETION IS SKIPPED HERE, not answered NO — register item 1030, and this line inherited the
+# `return 1` its sibling had. It carries no tree, so no stamp can be about it AND no stamp can be
+# refuted by it; letting it decide for the whole push made a mixed push unclearable by any run of
+# `--clear-hooks` or `--clear-pixel`. The deletion-only case is still not decided here — `saw_ref`
+# counts only tree-carrying refs, so this walk still answers NO for it and `pushed_range_touches`
+# still says such a push is not owed either gate, which is where that case has always been settled.
 push_gate_cleared_every_pushed_tip() {
     local stamp="$1" cleared saw_ref=0 local_ref local_sha remote_ref remote_sha carried
     shift
@@ -280,7 +326,7 @@ push_gate_cleared_every_pushed_tip() {
         : "$local_ref" "$remote_ref" "$remote_sha"
         case "$local_sha" in
             *[!0]*) ;;
-            *) return 1 ;;
+            *) continue ;;
         esac
         saw_ref=1
         carried="$(paths_tree_of "$local_sha" "$@")" || return 1
@@ -373,10 +419,105 @@ content_gates_over_pushed_range() {
     return "$status"
 }
 
+# ── What ONE rev is, in the terms a stamp holds it — register item 1030.
+#
+#   $1    the rev
+#   $2..  the paths the gate reads; NONE means the whole tree
+#
+# The Rust gates stamp a whole tree; a path-scoped gate stamps `paths_tree_of`'s line. Both are
+# spelled once here so the question *would that command write what this push needs* is asked in the
+# same words the stamping itself uses.
+stamped_identity_of() {
+    local rev="$1"
+    shift
+    if [ "$#" -eq 0 ]; then
+        git rev-parse --verify --quiet "${rev}^{tree}"
+    else
+        paths_tree_of "$rev" "$@"
+    fi
+}
+
+# ── One line per tree-carrying tip: the identity a stamp would have to hold for it.
+#
+#   $@  the paths the gate reads; NONE means the whole tree
+#
+# Deletions are absent from the answer for the reason they are absent from the walks above: they
+# carry no tree, so there is no identity to hold.
+#
+# ⚠⚠⚠ A TIP THIS CLONE CANNOT READ ANSWERS NON-ZERO, and the caller then says nothing — which is
+# right, and is NOT a second decision about that push. `pre-push` refuses it far above here, naming
+# the sha it could not read, and `a_push_carrying_a_ref_this_clone_cannot_read_is_refused` is what
+# holds that. ⛔ A guard for it was written HERE first and deleted: the mutation that breaks it left
+# every case green, because this line is not reached for such a push — and a branch that cannot be
+# entered reads exactly like a live rule (register item 1005's own finding, met again).
+pushed_identities() {
+    local local_ref local_sha remote_ref remote_sha ident
+    while read -r local_ref local_sha remote_ref remote_sha; do
+        [ -n "$local_sha" ] || continue
+        : "$local_ref" "$remote_ref" "$remote_sha"
+        case "$local_sha" in
+            *[!0]*) ;;
+            *) continue ;;
+        esac
+        ident="$(stamped_identity_of "$local_sha" "$@")" || return 1
+        printf '%s\n' "$ident"
+    done <<<"$pushed_refs"
+}
+
+# ── When the command a refusal names CANNOT change its answer, say what does — register item 1030.
+#
+#   $1    the rev the clearing verb will stamp — what the person has checked out
+#   $2..  the paths the gate reads; NONE means the whole tree
+#
+# ⛔⛔⛔⛔⛔ **ITEM 480 WROTE THE HALF THAT MAKES A REFUSAL USABLE — *"a refusal whose remedy is not
+# a command is a wall"* — AND THIS IS THE HALF IT DID NOT REACH.** A command that cannot change the
+# answer is that same wall wearing the remedy's clothes: the person runs it, waits minutes, and
+# meets the same words. Three shapes of it were measured on 2026-09-11, all producible by `git push`
+# and none of them reachable by any run of any verb:
+#
+# | the push | why the command cannot listen |
+# |---|---|
+# | a deletion alongside a real ref | REPAIRED above — a deletion is no longer evidence against a stamp |
+# | two branches at once | a stamp holds ONE identity and this push needs two |
+# | a tip that is not what is checked out | every verb stamps what is checked out, so the run writes a value about a different tree |
+#
+# ⚠⚠ THE LAST TWO ARE STILL REFUSALS, AND CORRECTLY SO — nothing here waives a gate. What they must
+# stop doing is naming a command that will come back with the same sentence. So the shape is read
+# and the remedy that DOES listen is spelled: split the push, or clear it where you are pushing
+# from.
+#
+# ⚠ Silent when the named command would work, which is the common case: the stamp is simply missing
+# or stale for the tree in hand, and the caller's own line is already the whole remedy.
+name_a_remedy_that_listens() {
+    local stamping_rev="$1" identities distinct count needed writes
+    shift
+    identities="$(pushed_identities "$@")" || return 0
+    [ -n "$identities" ] || return 0
+    distinct="$(printf '%s\n' "$identities" | sort -u)"
+    count="$(printf '%s\n' "$distinct" | wc -l | tr -d ' ')"
+    if [ "$count" -gt 1 ]; then
+        echo "pre-push: ⚠ THAT COMMAND CANNOT CLEAR THIS PUSH (register item 1030): it stamps ONE \
+version of what that gate reads, and these refs carry $count different ones. Running it writes a \
+value for one of them and this refusal comes back for the rest." >&2
+        echo "pre-push: what does work — push the refs one at a time, and clear each:" >&2
+        echo "pre-push:     git push origin <one ref>" >&2
+        return 0
+    fi
+    needed="$(printf '%s\n' "$distinct")"
+    writes="$(stamped_identity_of "$stamping_rev" "$@")" || return 0
+    [ "$needed" != "$writes" ] || return 0
+    echo "pre-push: ⚠ THAT COMMAND CANNOT CLEAR THIS PUSH (register item 1030): it stamps what you \
+have CHECKED OUT, and this push publishes a different tree — so the run would write a value about \
+something else and this refusal would come back unchanged." >&2
+    echo "pre-push: what does work — stand where you are pushing from, then clear:" >&2
+    echo "pre-push:     git checkout <the ref this push carries>   # or commit what you have staged" >&2
+}
+
 # ── How this hook refuses a gate it will not run — register item 1005.
 #
 #   $1  what the gate is, in the words a person meeting the refusal needs
 #   $2  the verb of `rust-gates.sh` that clears it
+#   $3.. the paths that gate reads, so the remedy named is one that listens — register item 1030
 #
 # ⚠⚠ **THE REFUSAL NAMES A COMMAND, which is what stops it being a wall** — item 480's own
 # sentence, and the half that made its repair usable. Unlike the Rust gates' stamp, which
@@ -385,11 +526,15 @@ content_gates_over_pushed_range() {
 # printing it is not a courtesy.
 refuse_unstamped_push_gate() {
     local what="$1" verb="$2"
+    shift 2
     echo "pre-push: REFUSED — this push would spend an open GitHub connection on the $what, and a \
 gate that outlasts the remote's idle timeout loses the push after passing (register item 480: \
 7m15s, SIGPIPE 141, the ref unmoved; register item 1005 is this gate's share of it)." >&2
     echo "pre-push: run it outside the connection and push again:" >&2
     echo "pre-push:     bash .githooks/rust-gates.sh $verb" >&2
+    # ⚠⚠ Both scoped verbs stamp `paths_tree_of HEAD <their paths>`, so HEAD is the rev to ask
+    # whether that run would write what this push needs — register item 1030.
+    name_a_remedy_that_listens HEAD "$@"
 }
 
 # ── Were clippy and the rustdoc gate already run, by `pre-commit`, on exactly what this push
@@ -412,9 +557,29 @@ gate that outlasts the remote's idle timeout loses the push after passing (regis
 #
 # ⚠⚠⚠⚠ EVERY UNKNOWN ANSWERS NO, which is the direction that costs minutes rather than correctness —
 # the same stance the pixel walk above takes, inverted because the risk here is skipping rather than
-# running. A ref this clone cannot resolve, an empty stdin, a deletion-only push, a missing stamp:
-# all of them run the gates. ⚠ And EVERY pushed tip must match, not one of them: a push carrying two
-# branches has two trees, and only the last commit made here can have been stamped.
+# running. A ref this clone cannot resolve, a deletion-only push, a missing stamp: all of them run
+# the gates. ⚠ And EVERY pushed tip must match, not one of them: a push carrying two branches has
+# two trees, and only the last commit made here can have been stamped.
+#
+# ⛔⛔⛔⛔⛔ **A DELETION IS NOT AN UNKNOWN — IT IS A KNOWN NOTHING** — register item 1030, and this
+# line used to `return 1` for it. The difference is the whole item. An unknown is a ref that IS
+# publishing content nobody here can read, and answering NO to it costs minutes. A deletion
+# publishes no content at all: there is no tree, so there is nothing for a stamp to be about, and
+# saying NO to it says nothing about the other refs in the same push.
+#
+# ⚠⚠ WHAT THAT COST, measured 2026-09-11: a MIXED push — one branch advanced, one branch deleted —
+# was refused, naming `bash .githooks/rust-gates.sh --clear`, **and no run of that command could
+# ever clear it**. The stamp was already correct for the tree being published; the deletion made
+# this walk answer NO regardless of what the stamp said, so the person typed a multi-minute command
+# and met the same words. Item 480 wrote *"a refusal whose remedy is not a command is a wall"* — a
+# command that cannot change the answer is that wall wearing the remedy's clothes.
+#
+# ⚠⚠⚠ AND NOTHING IS LOOSENED BY IT, which was the question item 1030 asked to be answered FIRST.
+# 480 required every tip to match because *a push carrying two branches has two trees* — an argument
+# about refs that CARRY a tree, and a deletion is not one. The set of trees compared against the
+# stamp is byte-for-byte the set compared before: `saw_ref` still counts only tree-carrying refs, so
+# a deletion-only push still answers NO here and is decided where it was always decided, by
+# `pushed_range_compiles_nothing` at the call site.
 rust_gates_cleared_every_pushed_tip() {
     local stamp cleared saw_ref=0 local_ref local_sha remote_ref remote_sha tip_tree git_dir
     git_dir="$(git rev-parse --git-dir)" || return 1
@@ -425,11 +590,9 @@ rust_gates_cleared_every_pushed_tip() {
     while read -r local_ref local_sha remote_ref remote_sha; do
         [ -n "$local_sha" ] || continue
         : "$local_ref" "$remote_ref" "$remote_sha"
-        # A deletion pushes an all-zero sha and carries no tree — nothing to compile, and nothing
-        # this stamp can be about either.
         case "$local_sha" in
             *[!0]*) ;;
-            *) return 1 ;;
+            *) continue ;;
         esac
         saw_ref=1
         tip_tree="$(git rev-parse --verify --quiet "${local_sha}^{tree}")" || return 1
@@ -547,7 +710,13 @@ if [ -f Cargo.toml ]; then
     # three lints rode through several commits; **this line never did**, so the push gate went on
     # printing findings and exiting 0 for everything an amend or a `--no-verify` slipped past
     # pre-commit — which is precisely the hole this second run exists to close.
-    if rust_gates_cleared_every_pushed_tip; then
+    if git_handed_no_refs; then
+        # ⛔ FIRST, because it is the only branch here that is about there being no push at all —
+        # register item 1030. The three below all read a ref list; this one is git saying there is
+        # none, which it does exactly when nothing is being published.
+        echo "pre-push: git named no ref to update — this push publishes nothing, so there is \
+nothing for any gate here to be about" >&2
+    elif rust_gates_cleared_every_pushed_tip; then
         echo "pre-push: clippy, the rustdoc gate and the ratchet lane already passed on this exact \
 tree — skipping" >&2
     elif pushed_range_compiles_nothing; then
@@ -598,6 +767,11 @@ rustdoc gates nor the ratchet lane:" >&2
         echo "pre-push:     cargo test -p sprag-gate && cargo test -p sprag-rpc --test pins && cargo test -p sprag-tui --test gpu_free && cargo test -p sprag-client --test gpu_free" >&2
         echo "pre-push: run them outside the connection and push again:" >&2
         echo "pre-push:     bash .githooks/rust-gates.sh --clear" >&2
+        # ⚠⚠ AND WHETHER THAT COMMAND CAN ACTUALLY REACH THIS PUSH — register item 1030. `--clear`
+        # stamps the tree it compiled, which is a mirror of THIS CLONE'S INDEX (register item 1011),
+        # so the index is the rev to ask. A tip that is not what is staged, or two tips at once, is
+        # refused by a command that would write a value about something else.
+        name_a_remedy_that_listens "$(git write-tree 2>/dev/null || echo HEAD)"
         exit 1
     fi
 
@@ -630,7 +804,8 @@ rustdoc gates nor the ratchet lane:" >&2
             echo "pre-push: the hook suite has cleared these hooks — not spending the connection \
 on it" >&2
         else
-            refuse_unstamped_push_gate "suite that drives these hooks" "--clear-hooks"
+            # shellcheck disable=SC2086  # deliberate word-split pathspec, as everywhere else
+            refuse_unstamped_push_gate "suite that drives these hooks" "--clear-hooks" $HOOK_PATHS
             exit 1
         fi
     fi
@@ -640,8 +815,9 @@ on it" >&2
             echo "pre-push: the pixel smoke has cleared what this tree paints — not spending the \
 connection on it" >&2
         else
+            # shellcheck disable=SC2086  # deliberate word-split pathspec, as everywhere else
             refuse_unstamped_push_gate "pixel smoke, which builds three crates in release" \
-                "--clear-pixel"
+                "--clear-pixel" $PIXEL_PATHS
             exit 1
         fi
     fi

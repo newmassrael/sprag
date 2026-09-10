@@ -150,6 +150,14 @@ struct Sandbox {
     log: PathBuf,
     /// Tools taken off this sandbox's PATH entirely, by name.
     hidden: Vec<String>,
+    /// Whether [`Sandbox::finish`] stamps `HEAD^{tree}` as Rust-gate-cleared before every push.
+    ///
+    /// ⚠⚠⚠ ON for every case that is about something else, which is nearly all of them — see the
+    /// note in [`Sandbox::finish`]. A case that is about the STAMPS themselves turns it off with
+    /// [`Sandbox::stamps_are_mine`], because a fixture that rewrites the stamp before each run
+    /// erases what the previous run's remedy just wrote — and *did the remedy take* is exactly the
+    /// question `every_refusal_this_push_hook_gives_names_a_remedy_that_listens` asks.
+    auto_stamp: std::cell::Cell<bool>,
 }
 
 impl Sandbox {
@@ -163,6 +171,7 @@ impl Sandbox {
             log: dir.join("invocations"),
             dir,
             hidden: Vec::new(),
+            auto_stamp: std::cell::Cell::new(true),
         };
         std::fs::create_dir_all(&sandbox.bin).expect("create the sandbox's PATH directory");
 
@@ -319,8 +328,18 @@ impl Sandbox {
     /// the copy that drifts is the one that makes a gate pass while the real stamp never matches —
     /// which is this whole file's subject, one level up.
     fn stamp_push_gate(&self, stamp: &str, paths: &[&str]) {
+        self.stamp_push_gate_at("HEAD", stamp, paths);
+    }
+
+    /// The same stamp, for a rev that is not `HEAD` — register item 1030.
+    ///
+    /// ⚠⚠⚠ THE SWEEP NEEDS IT BECAUSE THE DEFECT IS ABOUT WHICH REV A STAMP IS ABOUT. Every
+    /// `rust-gates.sh` verb stamps what the runner has checked out, so a push of some other tip is
+    /// cleared only by standing there first — and a fixture that could stamp only `HEAD` could not
+    /// carry out that remedy, which is the thing being measured.
+    fn stamp_push_gate_at(&self, rev: &str, stamp: &str, paths: &[&str]) {
         let script = format!(
-            ". \"$PWD/.githooks/content-gate.sh\"; paths_tree_of HEAD {}",
+            ". \"$PWD/.githooks/content-gate.sh\"; paths_tree_of {rev} {}",
             paths.join(" "),
         );
         let mut command = Command::new("bash");
@@ -340,6 +359,32 @@ impl Sandbox {
         );
         std::fs::write(self.dir.join(".git").join(stamp), out.stdout)
             .unwrap_or_else(|why| panic!("write {stamp}: {why}"));
+    }
+
+    /// Stop [`Sandbox::finish`] stamping the Rust gates before each push, and clear what it wrote.
+    ///
+    /// For a case whose subject IS the stamps: from here on this sandbox holds exactly the stamps
+    /// the case put there.
+    fn stamps_are_mine(&self) {
+        self.auto_stamp.set(false);
+        for stamp in [
+            "sprag-rust-gates-passed",
+            "sprag-hook-suite-passed",
+            "sprag-pixel-smoke-passed",
+        ] {
+            let _ = std::fs::remove_file(self.dir.join(".git").join(stamp));
+        }
+    }
+
+    /// Stamp the Rust gates as having cleared `rev`'s whole tree — what `--clear` writes when it is
+    /// run standing on `rev`.
+    fn stamp_rust_gates_at(&self, rev: &str) {
+        let tree = self.git(&["rev-parse", &format!("{rev}^{{tree}}")]);
+        std::fs::write(
+            self.dir.join(".git").join("sprag-rust-gates-passed"),
+            format!("{tree}\n"),
+        )
+        .expect("write the Rust-gate stamp");
     }
 
     /// Run a hook the way git runs it: from the work tree, with the refs (if any) on stdin.
@@ -410,9 +455,10 @@ impl Sandbox {
             // runs this suite, so under `git commit -- <pathspec>` a child of its own would inherit
             // an ABSOLUTE `GIT_INDEX_FILE` naming the index git is about to commit, which outranks
             // `current_dir` and would land a sandbox's read in the operator's repository.
-            if let Ok(tree) = sprag_gate::ambient::git_in(&self.dir)
-                .args(["rev-parse", "HEAD^{tree}"])
-                .output()
+            if self.auto_stamp.get()
+                && let Ok(tree) = sprag_gate::ambient::git_in(&self.dir)
+                    .args(["rev-parse", "HEAD^{tree}"])
+                    .output()
                 && tree.status.success()
             {
                 let stamp = self.dir.join(".git").join("sprag-rust-gates-passed");
@@ -1472,6 +1518,469 @@ fn a_deletion_is_not_refused_by_either_push_gate() {
         !reached_the_pixel_smoke(&told) && !reached_the_hook_suite(&told),
         "and nothing may be RUN for it either: {told}",
     );
+    assert!(
+        told.contains("carries no tree to compile"),
+        "⚠⚠⚠ AND IT MUST STILL BE DECIDED WHERE THE CODE SAYS IT IS DECIDED — register item 1030. \
+         The stamp walks skip a deletion rather than answer NO to it, and if `saw_ref` ever started \
+         counting one, this push would be waved through by a STAMP READER claiming a tree it does \
+         not carry was cleared. Same exit, different reason, and the reason is the rule: {told}",
+    );
+    sandbox.done();
+}
+
+/// ⛔⛔⛔⛔⛔ **A DELETION PUSHED ALONGSIDE A REAL REF NO LONGER REFUSES THE REAL ONE** — register
+/// item 1030, and this is the shape that item was opened for.
+///
+/// # What it was, measured 2026-09-11 by driving this repository's own hook
+///
+/// The stamp was CORRECT for the tree being published — `.git/sprag-rust-gates-passed` equalled
+/// `git rev-parse HEAD^{tree}` — and `main` alone passed. Adding one deletion line to the same
+/// stdin turned it into a refusal naming `bash .githooks/rust-gates.sh --clear`, **which could not
+/// clear it**: the walk answered NO because of the deletion, whatever the stamp said, so the person
+/// pays a multi-minute command and meets the same sentence. Item 480 wrote *"a refusal whose remedy
+/// is not a command is a wall"*; this was the wall wearing the remedy's clothes.
+///
+/// ⚠ The sweep below holds the general property. This arm holds the measured shape, so a reader
+/// meeting the register entry finds the case it names.
+#[test]
+fn a_deletion_pushed_alongside_a_real_ref_does_not_refuse_the_real_one() {
+    let sandbox = Sandbox::new("push-mixed-deletion");
+    sandbox.write("crates/sprag-host/base.rs", FORMATTED);
+    sandbox.git(&["add", "crates/sprag-host/base.rs"]);
+    let base = sandbox.commit("base");
+
+    sandbox.write("crates/sprag-host/more.rs", FORMATTED);
+    sandbox.git(&["add", "crates/sprag-host/more.rs"]);
+    let head = sandbox.commit("a change the Rust gates are owed for");
+
+    let mixed = format!(
+        "{}refs/heads/gone {ABSENT} refs/heads/gone {base}\n",
+        ref_line(&head, &base),
+    );
+    let run = sandbox.run("pre-push", Some(&mixed), None);
+    let told = said(&run);
+    assert!(
+        run.status.success(),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 1030: the tree being published is exactly the one the stamp \
+         cleared, and one deletion line in the same push refused it — naming a command that writes \
+         that same stamp and so cannot change this answer: {told}",
+    );
+    sandbox.done();
+}
+
+/// ⚠⚠⚠ **THE CONTROL, AND WITHOUT IT THE ARM ABOVE IS SATISFIED BY A HOOK THAT WAVED THROUGH ANY
+/// PUSH CARRYING A DELETION.** What item 1030 asked to be measured FIRST is what a deletion leaving
+/// the stamp judgment loosens — and the answer has to be *nothing*: every ref that carries a tree
+/// is still compared, so a real ref the gates have not cleared is refused whether or not a deletion
+/// rides along with it.
+#[test]
+fn a_deletion_does_not_carry_an_uncleared_ref_through_with_it() {
+    let sandbox = Sandbox::new("push-mixed-uncleared");
+    sandbox.write("crates/sprag-host/base.rs", FORMATTED);
+    sandbox.git(&["add", "crates/sprag-host/base.rs"]);
+    let base = sandbox.commit("base");
+
+    sandbox.write("crates/sprag-host/more.rs", FORMATTED);
+    sandbox.git(&["add", "crates/sprag-host/more.rs"]);
+    let head = sandbox.commit("a change the Rust gates are owed for");
+    sandbox.stamps_are_mine();
+
+    let mixed = format!(
+        "{}refs/heads/gone {ABSENT} refs/heads/gone {base}\n",
+        ref_line(&head, &base),
+    );
+    let run = sandbox.run("pre-push", Some(&mixed), None);
+    let told = said(&run);
+    assert!(
+        !run.status.success(),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 1030: nothing has cleared this tree and the push carried it \
+         anyway, because a deletion was in the same list. That is the loosening the item asked to \
+         be measured before the repair, and the repair must not be it: {told}",
+    );
+    sandbox.done();
+}
+
+/// ⛔⛔⛔⛔⛔ **A PUSH GIT NAMED NO REFS IN IS NOT REFUSED** — register item 1030's second face, and
+/// the one that fires on the most ordinary command in this repository.
+///
+/// # ⚠⚠⚠ It replaces an arm that asserted the opposite, and the premise is what changed
+///
+/// `a_push_with_no_refs_on_stdin_is_refused_rather_than_waived` read an empty list as *"something
+/// IS being published and nobody knows what"* and required the refusal. That premise was a guess,
+/// and `git_hands_a_pre_push_hook_no_refs_when_it_has_nothing_to_publish` below is the measurement
+/// that replaces it: git writes one line per ref it is about to update, and none only when there is
+/// nothing to update. So an empty list is git saying this push publishes nothing.
+///
+/// ⚠⚠ WHAT THE GUESS COST, measured 2026-09-11: `git push origin main` on an up-to-date branch was
+/// REFUSED, naming `bash .githooks/rust-gates.sh --clear` — a command that cannot clear it, because
+/// the walk was counting refs and not reading the stamp. A no-op push exited 1.
+///
+/// ⚠ WHAT IS NOT WAIVED is the case item 480's stance was actually about — a ref git DID name and
+/// this clone cannot read. `a_push_carrying_a_ref_this_clone_cannot_read_is_refused` holds that.
+#[test]
+fn a_push_git_named_no_refs_in_is_not_refused() {
+    let sandbox = Sandbox::new("push-no-refs-passes");
+    sandbox.write(".githooks/some-gate.sh", "#!/bin/sh\nexit 0\n");
+    sandbox.write("crates/sprag-gui/paint.rs", FORMATTED);
+    sandbox.git(&["add", ".githooks/some-gate.sh", "crates/sprag-gui/paint.rs"]);
+    sandbox.commit("a tree every gate here would be owed for, had anything been pushed");
+    sandbox.stamps_are_mine();
+
+    let run = sandbox.run("pre-push", None, None);
+    let told = said(&run);
+    assert!(
+        run.status.success(),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 1030: git names one ref per ref it will update and named none, \
+         which it does only when there is nothing to update. Refusing that makes `git push` fail on \
+         an up-to-date branch, and the command the refusal named could never clear it: {told}",
+    );
+    assert!(
+        !reached_the_pixel_smoke(&told) && !reached_the_hook_suite(&told),
+        "and nothing may be RUN for a push that publishes nothing either: {told}",
+    );
+    sandbox.done();
+}
+
+/// ⚠⚠⚠ **AND A REF GIT DID NAME THAT THIS CLONE CANNOT READ IS STILL REFUSED** — item 480's stance,
+/// kept where it is real. This is the case that one above is NOT: something is being published and
+/// nobody here can say what. The two were one branch until register item 1030 measured them apart.
+#[test]
+fn a_push_carrying_a_ref_this_clone_cannot_read_is_refused() {
+    let sandbox = Sandbox::new("push-unreadable-ref");
+    sandbox.write("crates/sprag-host/base.rs", FORMATTED);
+    sandbox.git(&["add", "crates/sprag-host/base.rs"]);
+    let base = sandbox.commit("base");
+
+    // A local sha this repository has never held: git named a ref, and the content behind it is
+    // unreachable from here.
+    let stranger = "1111111111111111111111111111111111111111";
+    let run = sandbox.run("pre-push", Some(&ref_line(stranger, &base)), None);
+    let told = said(&run);
+    assert!(
+        !run.status.success(),
+        "⛔⛔⛔ a push naming content this clone cannot resolve must not pass: that is the case \
+         item 480's *every unknown answers no* was written for, and it is the one register item \
+         1030 kept while waiving the empty list: {told}",
+    );
+    sandbox.done();
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT GIT ACTUALLY HANDS THIS HOOK WHEN THERE IS NOTHING TO PUSH** — register item
+/// 1030, and this arm exists because the sentence it checks used to live in a comment.
+///
+/// The repair above rests on one fact about git, not about this repository: **git writes one ref
+/// line per ref it is about to update, and writes none when there is none.** A fact in prose is a
+/// fact nobody re-measures, and this repository has been wrong about exactly this comment once
+/// already — so the fact is asked of git, here, every run, with a real remote and a real push.
+///
+/// ⚠ The hook under test is not involved: a recording hook stands in for it, because the subject is
+/// git's side of the contract. What the real hook does with an empty list is the arm above.
+#[test]
+fn git_hands_a_pre_push_hook_no_refs_when_it_has_nothing_to_publish() {
+    let sandbox = Sandbox::new("push-git-contract");
+    sandbox.write("crates/sprag-host/base.rs", FORMATTED);
+    sandbox.git(&["add", "crates/sprag-host/base.rs"]);
+    sandbox.commit("base");
+
+    // A remote of this sandbox's own, so the push is real and reaches nothing outside it.
+    let remote = sandbox.dir.join("remote.git");
+    sandbox.git(&[
+        "init",
+        "--quiet",
+        "--bare",
+        remote.to_str().expect("a utf-8 path"),
+    ]);
+    sandbox.git(&[
+        "remote",
+        "add",
+        "origin",
+        remote.to_str().expect("a utf-8 path"),
+    ]);
+
+    // A hook that records how many ref lines it was handed, and refuses so nothing is published
+    // by the measurement itself.
+    let counted = sandbox.dir.join("ref-lines");
+    sandbox.write(
+        "recording-hooks/pre-push",
+        "#!/usr/bin/env bash\nn=0\nwhile IFS= read -r line; do\n  [ -n \"$line\" ] && \
+         n=$((n+1))\ndone\nprintf '%s\\n' \"$n\" >>\"$REF_LINE_LOG\"\nexit 1\n",
+    );
+    let hooks = sandbox.dir.join("recording-hooks");
+    let hook = hooks.join("pre-push");
+    let mut mode = std::fs::metadata(&hook)
+        .expect("the recording hook")
+        .permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut mode, 0o755);
+    std::fs::set_permissions(&hook, mode).expect("make the recording hook executable");
+
+    let push = |sandbox: &Sandbox, refspec: &str| {
+        let mut command = sprag_gate::ambient::git_in(&sandbox.dir);
+        command
+            .args([
+                "-c",
+                &format!("core.hooksPath={}", hooks.display()),
+                "push",
+                "origin",
+                refspec,
+            ])
+            .env("HOME", &sandbox.dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("REF_LINE_LOG", &counted);
+        command.output().expect("git on PATH")
+    };
+
+    // First push: git has a ref to update, so it names one — and the recording hook refuses, which
+    // leaves the remote empty and the branch still ahead.
+    push(&sandbox, "HEAD:refs/heads/main");
+    let named = std::fs::read_to_string(&counted).unwrap_or_default();
+    assert_eq!(
+        named.trim(),
+        "1",
+        "⚠⚠⚠ THE CONTROL: git must name the ref it is about to update, or the arm below is \
+         measuring a hook that is never handed anything. It said: {named:?}",
+    );
+
+    // Now publish it for real, with no hook in the way, and push the same thing again.
+    sandbox.git(&["push", "--quiet", "origin", "HEAD:refs/heads/main"]);
+    let _ = std::fs::remove_file(&counted);
+    let run = push(&sandbox, "HEAD:refs/heads/main");
+    let named = std::fs::read_to_string(&counted).unwrap_or_default();
+    assert_eq!(
+        named.trim(),
+        "0",
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 1030: this is the fact the empty-list branch in `pre-push` rests \
+         on — git hands a hook NO ref lines when there is nothing to update. If git ever names a \
+         ref here, that branch is waiving a push that publishes something, and it must be taken \
+         out. git said {named:?}, and the push said: {}",
+        said(&run),
+    );
+    sandbox.done();
+}
+
+/// A ref line in the shapes `git push` actually produces — register item 1030.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Pushed {
+    /// The tip the pusher has checked out, which is what every clearing verb stamps.
+    Head,
+    /// A tip that is NOT what is checked out, and carries a different tree.
+    Older,
+    /// `git push --delete`: an all-zero local sha, and no tree at all.
+    Deletion,
+}
+
+impl Pushed {
+    /// The rev this ref publishes; `None` for a deletion, which publishes nothing.
+    fn tip<'a>(self, head: &'a str, older: &'a str) -> Option<&'a str> {
+        match self {
+            Pushed::Head => Some(head),
+            Pushed::Older => Some(older),
+            Pushed::Deletion => None,
+        }
+    }
+
+    /// The line git would write for it.
+    fn line(self, slot: usize, base: &str, older: &str, head: &str) -> String {
+        let name = if slot == 0 {
+            "refs/heads/main"
+        } else {
+            "refs/heads/side"
+        };
+        match self {
+            Pushed::Head => format!("{name} {head} {name} {older}\n"),
+            Pushed::Older => format!("{name} {older} {name} {base}\n"),
+            Pushed::Deletion => format!("{name} {ABSENT} {name} {base}\n"),
+        }
+    }
+}
+
+/// The remedy this hook offers when one stamp cannot cover a push — register item 1030.
+const SPLIT_REMEDY: &str = "push the refs one at a time";
+
+/// The remedy it offers when the clearing verb would stamp something other than what is pushed.
+const STAND_REMEDY: &str = "stand where you are pushing from";
+
+/// Carry out whatever the hook's refusal tells a person to do, until the push goes through.
+///
+/// ⛔⛔⛔⛔⛔ **THE REMEDY IS EXECUTED, NOT MATCHED.** A case asserting that a refusal *contains*
+/// the word `--clear` is satisfied by a refusal that names a command which cannot change its own
+/// answer, and that is precisely what register item 1030 is: three shapes where the named command
+/// wrote a value about something else and the same sentence came back. So this does what the
+/// message says — and only what the message says — and the assertion is that the push then passes.
+///
+/// ⚠⚠ WHICH REV THE COMMAND IS RUN FROM IS TAKEN FROM THE MESSAGE TOO. Every `rust-gates.sh` verb
+/// stamps what the runner has checked out, so a bare *run this command* means running it where you
+/// are, and only the sentence naming [`STAND_REMEDY`] licenses standing somewhere else. A hook that
+/// stops printing that line therefore has this walk stamp `HEAD`, meet the same refusal, and go red
+/// — which is the notice a person needs.
+fn carry_out_until_it_passes(
+    sandbox: &Sandbox,
+    shape: &[Pushed],
+    base: &str,
+    older: &str,
+    head: &str,
+) -> Result<(), String> {
+    let stdin: String = shape
+        .iter()
+        .enumerate()
+        .map(|(slot, kind)| kind.line(slot, base, older, head))
+        .collect();
+    let refs = if shape.is_empty() {
+        None
+    } else {
+        Some(stdin.as_str())
+    };
+
+    let mut last = String::new();
+    for _ in 0..8 {
+        let run = sandbox.run("pre-push", refs, None);
+        last = said(&run);
+        if run.status.success() {
+            return Ok(());
+        }
+        if last.contains(SPLIT_REMEDY) {
+            // ⚠⚠ AND THE RECURSION IS BOUNDED BY THIS LINE RATHER THAN BY A COUNTER: each level
+            // is handed strictly fewer refs, and a push of ONE cannot be told to split — that is
+            // an error, not a deeper level. A `depth` parameter was carried here until clippy
+            // pointed out it was read only to be passed on, which is what a redundant guard looks
+            // like from the outside.
+            if shape.len() < 2 {
+                return Err(format!(
+                    "the hook told a push of {} ref(s) to be split, which is not something anybody \
+                     can do: {last}",
+                    shape.len(),
+                ));
+            }
+            for one in shape {
+                carry_out_until_it_passes(sandbox, std::slice::from_ref(one), base, older, head)?;
+            }
+            return Ok(());
+        }
+        let named = ["--clear-hooks", "--clear-pixel", "--clear"]
+            .into_iter()
+            .find(|verb| last.contains(&format!("rust-gates.sh {verb}")));
+        let Some(verb) = named else {
+            return Err(format!(
+                "the refusal named neither a command nor a split, which is the wall item 480 \
+                 forbade: {last}",
+            ));
+        };
+        // ⚠ DISTINCT tips, because two refs at the same commit are one place to stand — which is
+        // the same counting the hook does when it decides whether one stamp can cover the push.
+        let mut tips: Vec<&str> = shape
+            .iter()
+            .filter_map(|kind| kind.tip(head, older))
+            .collect();
+        tips.sort_unstable();
+        tips.dedup();
+        let from = if last.contains(STAND_REMEDY) {
+            match tips.as_slice() {
+                [only] => *only,
+                _ => {
+                    return Err(format!(
+                        "the hook said to stand where this push comes from, and it comes from {} \
+                         places: {last}",
+                        tips.len(),
+                    ));
+                }
+            }
+        } else {
+            "HEAD"
+        };
+        match verb {
+            "--clear" => sandbox.stamp_rust_gates_at(from),
+            "--clear-hooks" => {
+                sandbox.stamp_push_gate_at(from, "sprag-hook-suite-passed", &[".githooks"]);
+            }
+            "--clear-pixel" => sandbox.stamp_push_gate_at(
+                from,
+                "sprag-pixel-smoke-passed",
+                &["crates/sprag-gui", "crates/sprag-grid"],
+            ),
+            _ => unreachable!("the list above is the list matched here"),
+        }
+    }
+    Err(format!(
+        "the remedy was carried out eight times over and the refusal did not move: {last}",
+    ))
+}
+
+/// ⛔⛔⛔⛔⛔ **EVERY REFUSAL THIS HOOK CAN GIVE MUST NAME A REMEDY THAT LISTENS** — register item
+/// 1030, and this is the general property the three arms above are instances of.
+///
+/// # Where the population comes from, rather than a hand-picked list
+///
+/// A ref line git can write is one of three things: the tip you have checked out, some other tip,
+/// or a deletion. The shapes are then every push of nought, one or two of those — thirteen — and a
+/// case is not chosen, it is enumerated. Item 1030 was found by asking *item 1005's fourth
+/// done-when* at one more site; a list of shapes somebody thought of would have missed it the same
+/// way.
+///
+/// ⚠⚠ **AND TWO IS ENOUGH, WHICH IS AN ARGUMENT AND NOT A BUDGET.** Every walk in `pre-push` is a
+/// fold over the ref list, and each branch any of them takes is decided by two things: how many
+/// refs carry a tree — none, one, or more than one — and whether those trees are all the same. Two
+/// ref lines realise every combination of both; a third adds a longer list and no new branch. The
+/// day a walk starts caring about ref ORDER or about a count above two, this reasoning is what
+/// stops being true, and the sentence is here so that is noticed rather than assumed.
+///
+/// # What is measured, and why it is not `contains`
+///
+/// Each shape starts from a tree nothing has cleared. The hook is run; if it refuses, whatever it
+/// told the person to do is DONE — the stamp that command would write, from the rev the message
+/// says to run it in, or the split it asks for — and it is run again. A shape passes when the push
+/// goes through. A shape FAILS when the remedy is carried out and the same refusal comes back,
+/// which is the exact defect item 1030 names: a command that is there and does not listen.
+#[test]
+fn every_refusal_this_push_hook_gives_names_a_remedy_that_listens() {
+    let sandbox = Sandbox::new("push-remedy-sweep");
+    sandbox.write(".githooks/some-gate.sh", "#!/bin/sh\nexit 0\n");
+    sandbox.write("crates/sprag-gui/paint.rs", FORMATTED);
+    sandbox.git(&["add", ".githooks/some-gate.sh", "crates/sprag-gui/paint.rs"]);
+    let base = sandbox.commit("base");
+
+    sandbox.write(".githooks/some-gate.sh", "#!/bin/sh\nexit 0 # older\n");
+    sandbox.write(
+        "crates/sprag-gui/paint.rs",
+        "fn paint() {}\n\nfn older() {}\n",
+    );
+    sandbox.git(&["add", ".githooks/some-gate.sh", "crates/sprag-gui/paint.rs"]);
+    let older = sandbox.commit("a tip that is not what is checked out");
+
+    sandbox.write(".githooks/some-gate.sh", "#!/bin/sh\nexit 0 # head\n");
+    sandbox.write(
+        "crates/sprag-gui/paint.rs",
+        "fn paint() {}\n\nfn head() {}\n",
+    );
+    sandbox.git(&["add", ".githooks/some-gate.sh", "crates/sprag-gui/paint.rs"]);
+    let head = sandbox.commit("the tip that is checked out");
+
+    let alphabet = [Pushed::Head, Pushed::Older, Pushed::Deletion];
+    let mut shapes: Vec<Vec<Pushed>> = vec![Vec::new()];
+    shapes.extend(alphabet.iter().map(|one| vec![*one]));
+    for first in alphabet {
+        shapes.extend(alphabet.iter().map(|second| vec![first, *second]));
+    }
+    assert_eq!(
+        shapes.len(),
+        13,
+        "⚠ the population is every push of nought, one or two ref lines over three kinds — a count \
+         that changes means the enumeration below stopped being the enumeration it claims",
+    );
+
+    let mut walls = Vec::new();
+    for shape in &shapes {
+        sandbox.stamps_are_mine();
+        if let Err(why) = carry_out_until_it_passes(&sandbox, shape, &base, &older, &head) {
+            walls.push(format!("{shape:?} — {why}"));
+        }
+    }
+    assert!(
+        walls.is_empty(),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 1030: these pushes are refused by a message whose remedy does not \
+         reach them. Item 480 wrote *a refusal whose remedy is not a command is a wall*; a command \
+         that cannot change the answer is that wall with the remedy's clothes on, and a person \
+         meeting one pays minutes to be told the same thing again.\n\n{}",
+        walls.join("\n\n"),
+    );
     sandbox.done();
 }
 
@@ -1500,9 +2009,9 @@ fn a_push_that_changes_no_hook_passes_without_owing_the_hook_suite() {
     sandbox.done();
 }
 
-/// ⚠⚠⚠ **NO REFS AT ALL IS NOT WAVED THROUGH.** A hook run by hand, a git that fed nothing, a
-/// stream some tool upstream had already drained: the failure this guards is a change going
-/// unlooked-at, so not knowing has to mean *do not pass*.
+/// ⚠⚠⚠ **A PUSH THIS HOOK CANNOT DESCRIBE IS NOT WAVED THROUGH.** The failure this guards is a
+/// change going unlooked-at, so not knowing has to mean *do not pass*, and the refusal has to name
+/// the command that clears it — register item 480.
 ///
 /// # ⛔⛔⛔ It asserted the PIXEL SMOKE until register item 480, and the answer got stronger
 ///
@@ -1511,29 +2020,51 @@ fn a_push_that_changes_no_hook_passes_without_owing_the_hook_suite() {
 /// push hook refuses a tree those gates have not cleared — and a push whose refs it cannot read is
 /// a push it cannot say that about, so it is REFUSED before anything expensive begins.
 ///
-/// ⚠⚠ That is the same stance one notch further, not a retreat from it: the old answer let the push
-/// proceed if the gates passed, and this one does not let it proceed at all. What must never happen
-/// is the third thing — a quiet pass — and that is what is asserted.
+/// # ⛔⛔⛔⛔⛔ IT WAS AN EMPTY REF LIST UNTIL REGISTER ITEM 1030, AND THAT WAS THE WRONG SUBJECT
+///
+/// This case used to stage *no refs at all* and call it *a push nobody can describe*. Git was then
+/// asked what it actually sends, and the answer was that an empty list is git DESCRIBING the push:
+/// nothing is being updated. Two different situations had been sharing one branch, and the one this
+/// case is about — content being published that nobody here can read — is staged by naming a sha
+/// this clone has never held. `a_push_git_named_no_refs_in_is_not_refused` holds the other, and
+/// `git_hands_a_pre_push_hook_no_refs_when_it_has_nothing_to_publish` is what separates them.
 #[test]
-fn a_push_with_no_refs_on_stdin_is_refused_rather_than_waived() {
+fn a_push_this_hook_cannot_describe_is_refused_rather_than_waived() {
     let sandbox = Sandbox::new("push-no-refs");
     sandbox.write("crates/sprag-host/base.rs", FORMATTED);
     sandbox.git(&["add", "crates/sprag-host/base.rs"]);
-    sandbox.commit("base");
+    let base = sandbox.commit("base");
 
-    let run = sandbox.run("pre-push", None, None);
+    let stranger = "2222222222222222222222222222222222222222";
+    let run = sandbox.run("pre-push", Some(&ref_line(stranger, &base)), None);
     let told = said(&run);
     assert!(
         !run.status.success(),
-        "⛔⛔⛔ an unresolvable push must not pass: this hook could not read a single ref, so it \
+        "⛔⛔⛔ an unresolvable push must not pass: this hook cannot read the ref git named, so it \
          cannot say the tree being published has been through any gate — and a push nobody can \
          describe is the one most likely to carry work nothing has seen: {told}",
     );
     assert!(
-        told.contains("rust-gates.sh --clear"),
-        "⚠⚠⚠ AND THE REFUSAL MUST NAME THE COMMAND THAT CLEARS IT — register item 480. A refusal \
-         whose remedy is not a command is a wall, and the stamp this hook reads is written by the \
-         COMMIT hook, so there is nothing else a person could type: {told}",
+        told.contains(stranger),
+        "⚠⚠⚠ AND THE REFUSAL MUST NAME THE REF IT COULD NOT READ — register item 480's *a refusal \
+         whose remedy is not a command is a wall*, applied to the one refusal here that no stamp \
+         can lift. Nothing a person types clears an unreadable sha, so what they need instead is \
+         WHICH sha it was; a refusal that withholds it leaves them re-running a push to find out: \
+         {told}",
+    );
+    // ⛔⛔⛔⛔⛔ **AND IT IS NOT TOLD TO GO AND STAND ON THE SHA IT CANNOT READ** — register item
+    // 1030, and this arm is the ONLY thing holding that.
+    //
+    // `STAND_REMEDY` is the remedy for a tip this clone HAS and has not checked out. Offered for a
+    // sha that is not here at all it would be the very defect item 1030 is about, written by the
+    // repair for it. A guard against that was written into `name_a_remedy_that_listens` first and
+    // DELETED: the mutation that breaks it left every case green, because this push is refused by
+    // the identity walk long before that line is reached. A branch nothing can enter reads exactly
+    // like a live rule, so it went — and the property is asserted here instead, where it will go
+    // red the day that ordering changes and the advice becomes reachable.
+    assert!(
+        !told.contains(STAND_REMEDY),
+        "the push was told to stand somewhere it cannot stand: {told}",
     );
     sandbox.done();
 }
