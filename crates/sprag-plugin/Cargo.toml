@@ -45,6 +45,18 @@ sce-rust-lua = { workspace = true }
 # (measured 2026-08-31: 131 untracked entries, 414 tests failed). `scratch_root()` asserts
 # `is_absolute` where the root is taken and panics naming the variable instead.
 sprag-scratch = { workspace = true }
+# ⛔⛔⛔ WHO DERIVES THE TEMPLATE'S CLAIMS — register item 1035. `LoopKind::CLAIMED` is a table in
+# Rust of the `<data>` `ai_loop.scxml` says are a KIND's to author, and the template publishes that
+# list in its own comments. A second parser of the claim sentence living HERE is exactly the drift
+# the pin exists to notice, so the derivation stays where it already is
+# (`sprag_gate::authored::claims`) and this crate's gate calls it.
+#
+# ⚠ DEV-ONLY, and it takes no dependencies of its own — the same line `sprag-terminal`, `sprag-tui`,
+# `sprag-mcp` and `sprag-host` already carry. ⚠⚠ The document is reached by `include_str!` rather
+# than by a walk of the tree: a test that read the file at RUN time would be one an unrelated
+# crate's commit can turn red (register item 784's population), and the compiler already tracks this
+# edge exactly.
+sprag-gate = { workspace = true }
 # ⚠⚠⚠⚠⚠ THE COMPILER OF `ai_loop.scxml`, AS A DEV DEPENDENCY TOO — register item 547.
 #
 # It is already this crate's BUILD dependency (above), and a build dependency cannot be driven by a

@@ -38,6 +38,36 @@
 
   ══════════════════════════════════════════════════════════════════════════
 
+  ⛔⛔⛔⛔⛔ WHAT "INHERITS THE TEMPLATE'S OWN VALUES" ACTUALLY COSTS, AND WHERE
+  THE LINE IS — register item 1035, which asked this question of this file.
+
+  `ai_loop.scxml` writes, beside several of its `<data>`, "IT IS THE KIND'S TO
+  AUTHOR" — and beside one of them, "not a bound a template other repositories
+  copy can choose on their behalf". Ten of those clauses are declared nowhere
+  here, so what a run of this kind is bounded by is: reference and
+  working_rules, max_turns and reflect_every, reaim_max, stall_after_steps,
+  reask_max, hold_within_ms, reflect_after_refusals and context_ceiling —
+  every one of them from the template. Measured: reaim_max is 1 there, and a
+  run of this kind therefore re-aims itself ONCE and then registers what it
+  finds, which is a policy nobody in the tree it is working in wrote down.
+
+  ⚠⚠ SO THE INHERITANCE IS A DESIGN AND NOT A DEFAULT, and this paragraph is
+  where that is said out loud. A document with no decisions is the honest
+  answer for a tree that has written none; what would be dishonest is the
+  MIDDLE — a document deciding a few of those ten and taking the rest from the
+  template in silence, because an author who decided some never learnt the
+  rest were theirs. `LoopKind::over` refuses exactly that, naming the clauses
+  left out, and the two ends stay legal: all of them, or none.
+
+  ⚠ THE LIST ABOVE IS NOT MAINTAINED BY HAND. `LoopKind::CLAIMED` holds it
+  beside the reader that answers each clause,
+  `what_the_template_claims_for_a_kind_is_what_this_builds_door_asks_for` pins
+  that table against the template's own comments, and
+  `what_the_kind_that_decides_nothing_leaves_to_the_template_is_named` goes red
+  the day this file's answer moves either way.
+
+  ══════════════════════════════════════════════════════════════════════════
+
   ⚠⚠ WHAT THIS FILE IS NOT. It is not a second topology, for the reason the
   kind beside it gives at length: a KIND is a datamodel, and what separates one
   from another is consents, standing instructions and prompt wording, never the

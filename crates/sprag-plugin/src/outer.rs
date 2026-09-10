@@ -22427,6 +22427,132 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
+    /// 🎯🎯🎯🎯🎯 **A BRIEF THAT NAMES NONE OF THE TEMPLATE'S CLAIMS IS TAKEN, AND THE RUN IS
+    /// BOUNDED BY THE TEMPLATE'S OWN NUMBERS** — register item 1035's premise, measured here
+    /// rather than argued from the `.or_else` chain in [`OuterLoop::brief`].
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why this is not what the document beside those numbers says happens
+    ///
+    /// `ai_loop.scxml` writes, above `reaim_max`: *"AND AN ABSENT VALUE IS REFUSED AT THE DOOR,
+    /// never silently unbounded … A policy whose absence means 'do whatever you like' is the escape
+    /// hatch that disables its own gate"*, and, two sentences on, *"IT IS THE KIND'S TO AUTHOR …
+    /// **not a bound a template other repositories copy can choose on their behalf**"*. Both
+    /// sentences are true of a TEMPLATE that dropped the key. Neither is true of a KIND that did:
+    /// while `<data id="reaim_max" expr="1"/>` stands, the fall-through never reaches
+    /// `Briefed::NotHeld` and the template answers for the document every time.
+    ///
+    /// **This brief is the unclaimed kind's answer**, which is `None` for all ten of
+    /// [`crate::kind::LoopKind::CLAIMED`] — the document four consuming repositories run under
+    /// (register item 1034 named them). What it must show is that the run STARTS and is bounded by
+    /// numbers nobody in a consuming tree wrote.
+    ///
+    /// ⚠⚠ THE VALUES ARE READ BACK OUT OF THE DATAMODEL and not off the `Brief`, because the
+    /// question is what the RUN is bounded by. A brief that carried `None` and a datamodel holding
+    /// the template's number are the same three lines of Rust and opposite facts about a run.
+    ///
+    /// ⚠ The numbers are compared to the DOCUMENT's own text rather than pinned as literals here:
+    /// pinning `1` would make this gate agree with itself the day the template changes, and what
+    /// must hold is *the run took whatever that file says*, which is the defect either way.
+    #[test]
+    fn a_kind_that_decides_none_of_the_templates_claims_runs_on_the_templates_own_numbers() {
+        /// The template's own value for `id`, as its `<data>` spells it.
+        fn shipped(id: &str) -> String {
+            let document = include_str!("ai_loop.scxml");
+            let opener = format!("<data id=\"{id}\" expr=\"");
+            let at = document
+                .find(&opener)
+                .unwrap_or_else(|| panic!("the template declares {id}"))
+                + opener.len();
+            document[at..]
+                .split_once('"')
+                .unwrap_or_else(|| panic!("{id}'s declaration closes its expression"))
+                .0
+                .to_string()
+        }
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = quiet_pane();
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        let mut loops = OuterLoop::new(Arc::clone(&lua), pane, &spec(None))
+            .expect("the document's datamodel must carry its authored strings");
+
+        // ⚠⚠ EVERY CLAIMED PART IS `None`, which is exactly what `plugins.rs` builds from
+        // `LoopKind::unclaimed`: `opt_count(map, …)?.or_else(|| kind.…())` with a caller who named
+        // none and a document that decides none. The three parts that are NOT claimed and NOT
+        // declinable at this door (the north star, the milestone, the reference) are the caller's
+        // own, and an unclaimed launch really does supply them.
+        let briefed = loops.brief(&Brief {
+            north_star: "prove a silent document is answered by the template".to_string(),
+            milestone: "start at all".to_string(),
+            reference: "register item 1035".to_string(),
+            closing_rules: None,
+            working_rules: None,
+            unverified_rules: None,
+            context_ceiling: None,
+            reflect_after_refusals: None,
+            reaim_max: None,
+            stall_after_steps: None,
+            progress_marks: None,
+            milestone_check: None,
+            successor_check: None,
+            reask_max: None,
+            service: None,
+            max_turns: None,
+            reflect_every: None,
+            screen_rules: None,
+            may_answer: None,
+            await_person_ms: None,
+            handback_still_ms: None,
+            hold_within_ms: None,
+            ready_timeout_ms: None,
+            turn_within_ms: None,
+        });
+        assert_eq!(
+            briefed,
+            Briefed::Took,
+            "⛔⛔⛔⛔⛔ ITEM 1035's PREMISE: a document deciding none of the template's claims must \
+             be TAKEN, or this item is about nothing and the four repositories running under \
+             `unclaimed_loop.scxml` would already be refused at the door. If this ever becomes a \
+             refusal it is a decision somebody made, and the gates over `LoopKind::CLAIMED` are \
+             where it belongs — not here, as a surprise",
+        );
+
+        assert_eq!(
+            loops.authored_count(REAIM_MAX),
+            Some(Counted::Of(
+                shipped(REAIM_MAX)
+                    .parse()
+                    .expect("the template ships a number")
+            )),
+            "⛔⛔⛔⛔⛔ ITEM 1035: what this run is bounded by must be the TEMPLATE's own re-aim \
+             cap, read back out of the datamodel — that is the finding, and a different number \
+             here means the fall-through changed and this gate is measuring something else. \
+             Nobody in a consuming tree wrote that cap, no caller can name it (it is deliberately \
+             not a wire key), and the document's own comment beside it says it is *not a bound a \
+             template other repositories copy can choose on their behalf*",
+        );
+        assert_eq!(
+            loops.authored_count("max_turns"),
+            Some(Counted::Of(
+                shipped("max_turns")
+                    .parse()
+                    .expect("the template ships a number")
+            )),
+            "⚠⚠⚠ and the budget, the same way — the number three live runs of register item 1034 \
+             ended `capped` on",
+        );
+        assert_eq!(
+            loops.authored_number("context_ceiling"),
+            Some(shipped("context_ceiling").parse().expect("a number")),
+            "⚠⚠⚠⚠ and the ceiling, whose shipped value is the ZERO register item 492 spent a round \
+             getting one run out of: every deciding edge of `reviewing` is guarded on \
+             `context_ceiling > 0`, so a silent document does not get a cautious ceiling — it gets \
+             a state that never decides",
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
     /// ⚠⚠⚠ **THE LOOP MUST NOT CONVERGE ON ITS OWN INSTRUCTION, NOR ON AN OLD TURN'S MARKER.**
     ///
     /// ⚠⚠⚠⚠ **A REPLY THAT DOES NOT END IN A NEWLINE IS STILL AN ANSWER, ONCE THE PEER HAS GONE**

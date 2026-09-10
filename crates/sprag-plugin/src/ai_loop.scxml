@@ -1510,6 +1510,18 @@
       that cannot say how long its own run may be. A policy whose absence means
       "do whatever you like" is the escape hatch that disables its own gate.
 
+      ⛔⛔⛔ THAT SENTENCE IS ABOUT THIS FILE AND NOT ABOUT A KIND, and the
+      difference is register item 1035. `OuterLoop::brief` resolves the cap as
+      "the caller's, else the kind's, else THIS document's own", so the refusal
+      above is reachable only by deleting the `<data>` two lines down. A KIND
+      that says nothing is never refused here — it gets the 1 below, and
+      nothing in the run says the number came from a file its tree copied from.
+      What answers that is `LoopKind::over`, one layer out: a kind document may
+      decide every clause this file claims or none of them, and the middle -
+      some decided, the rest taken from here in silence - is refused naming the
+      ones left out. "None of them" is `unclaimed_loop.scxml`, whose own header
+      lists what it is therefore bounded by.
+
       ⚠⚠ AND IT IS THE KIND'S TO AUTHOR, like `max_turns` and `reflect_every`.
       How far a run may wander from the checkpoint a person gave it is a rule
       about how work is done in a particular repository, not a bound a template

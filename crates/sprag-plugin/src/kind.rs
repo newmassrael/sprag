@@ -210,6 +210,15 @@ impl KindDocument for Engine<crate::sm::unclaimed_loop::UnclaimedLoopPolicy> {
     }
 }
 
+/// One clause the loop template says is a KIND's to author: the `<data>`'s own id, and the reader
+/// that answers whether a given document decides it — register item 1035.
+///
+/// ⚠⚠ **THE PAIR IS THE POINT AND NOT A CONVENIENCE.** [`LoopKind::CLAIMED`]'s whole argument is
+/// that an id cannot be listed without a reader beside it: a bare list would need a `match` to
+/// reach the accessors, a `match` has a catch-all arm, and an id that fell into it would answer
+/// *nothing claims that* and pass — which is the escape hatch this workspace's rule 6 is about.
+pub type Claimed = (&'static str, fn(&LoopKind) -> bool);
+
 /// One loop kind's authored decisions, read off its own document.
 ///
 /// It holds the script SESSION rather than the values, for the reason `pump` re-reads the template
@@ -259,6 +268,20 @@ pub enum NoKind {
     /// runs under this repository's* is exactly the escape hatch that made a checker pointed at
     /// this repository's record the judge of everybody's work.
     Unknown(String),
+    /// 🎯🎯🎯🎯🎯 **THE DOCUMENT ANSWERS SOME OF THE CLAUSES THE TEMPLATE SAYS ARE A KIND'S AND
+    /// NOT THE REST** — register item 1035, and [`LoopKind::CLAIMED`] carries the whole argument.
+    ///
+    /// ⚠⚠ It is the rule [`LoopKind::unverified_rules`] states one clause over — *a half-authored
+    /// decision is the state this type exists to make unrepresentable* — reaching the class the
+    /// template publishes. The clauses it names are the ones an author has to add, because *one of
+    /// your clauses is missing* sends an author to a file and *your rules were ignored* sends them
+    /// nowhere.
+    HalfAuthored {
+        /// The claims this document DOES answer, so a refusal shows what it read as deciding.
+        authored: Vec<&'static str>,
+        /// The claims it answers nothing for, which the template would then answer on its behalf.
+        unauthored: Vec<&'static str>,
+    },
 }
 
 impl std::fmt::Display for NoKind {
@@ -286,6 +309,22 @@ impl std::fmt::Display for NoKind {
                  clause that failed left the driver with whatever the datamodel happened to hold, \
                  and a run started on that would run under decisions nobody authored",
             ),
+            Self::HalfAuthored {
+                authored,
+                unauthored,
+            } => write!(
+                f,
+                "this loop kind's document decides {} and says nothing about {} — and the template \
+                 says of every one of them that it is the KIND's to author, *not a bound a \
+                 template other repositories copy can choose on their behalf*. A clause left out \
+                 here is not declined: the template's own value stands in for it silently, so a \
+                 run would be bounded by a number nobody in this tree wrote and nothing would say \
+                 so. Author the clauses named, or author NONE of them and name the {:?} kind, \
+                 which is the document that holds no decisions on purpose",
+                authored.join(", "),
+                unauthored.join(", "),
+                LoopKind::UNCLAIMED,
+            ),
         }
     }
 }
@@ -306,6 +345,109 @@ impl LoopKind {
     /// see. It is also what the argument's published grammar is built from, so the list a client is
     /// shown and the list the door accepts cannot drift.
     pub const KINDS: &'static [&'static str] = &[Self::DEBT, Self::UNCLAIMED];
+
+    /// 🎯🎯🎯🎯🎯 **EVERY CLAUSE `ai_loop.scxml` SAYS IS A KIND'S TO AUTHOR, AND THE READER THAT
+    /// ANSWERS IT** — register item 1035.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What a clause left out actually does, measured
+    ///
+    /// `unclaimed_loop.scxml` declares three `<data>` and none of these ten. Measured 2026-09-11 by
+    /// `grep -c` over both documents: `debt_loop.scxml` names `reaim_max` 3 times, `max_turns` 4,
+    /// `context_ceiling` 2, `reflect_every` 2 — and the unclaimed document names each of them ZERO
+    /// times. **A clause a kind leaves out is not declined.** `OuterLoop::brief` resolves each one
+    /// as *the caller's, else the kind's, else the template's own* — so what a silent document
+    /// actually gets is `ai_loop.scxml`'s `reaim_max=1`, `max_turns=40`, `reflect_every=8` and
+    /// `context_ceiling=0`, and nothing anywhere says the number came from there.
+    ///
+    /// ⚠⚠ The template argues against exactly that beside the number it ships: *"a rule about how
+    /// work is done in a particular repository, **not a bound a template other repositories copy
+    /// can choose on their behalf**"*, and, two sentences up, *"AND AN ABSENT VALUE IS REFUSED AT
+    /// THE DOOR, never silently unbounded"*. The second sentence is true only of a template that
+    /// dropped the key: while `<data id="reaim_max" expr="1"/>` stands, the fall-through never
+    /// reaches the refusal and a kind's silence is answered by the template every time.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the rule is ALL-OR-NOTHING and not *every kind must author every clause*
+    ///
+    /// [`unclaimed`](Self::unclaimed) exists to hold NO decisions — *"a run started under it gets
+    /// the template's own values and the caller's own arguments and nothing else"* — and register
+    /// item 848 built it because the alternative was every tree's run being judged by this
+    /// repository's checker. That is the one place where *undeclared means the template's* is a
+    /// design and not a defect, so a document answering NONE of these is legal and its borrowed
+    /// clauses are named rather than refused.
+    ///
+    /// What is refused is the MIDDLE: a document that decided some of them has an author who was
+    /// deciding, and the clauses they did not reach are the ones they never learned they had.
+    /// ⚠ It is [`unverified_rules`](Self::unverified_rules)' own rule, quoted: *a document that
+    /// fills one and not the other is REFUSED here, and the caller's own refusal names which clause
+    /// is missing.* That rule stood on the screening pair alone while ten clauses beside it took a
+    /// template's value in silence, which is register item 1035.
+    ///
+    /// # ⚠⚠⚠⚠ Why a TABLE of readers and not a list of ids
+    ///
+    /// The population is the template's, and the answer is a reader's. A bare list of ids would
+    /// need a `match` to reach the accessors, and a `match` has a catch-all arm — which is the
+    /// escape hatch rule 6 is about: an id added to the list with no reader beside it would answer
+    /// *nothing claims that* and pass. Pairing each id with its reader means a clause cannot be
+    /// added here without one.
+    ///
+    /// ⚠⚠ **THE IDS ARE THE TEMPLATE'S AND A GATE SAYS SO.** `sprag_gate::authored::claims` derives
+    /// them from `ai_loop.scxml`'s own comments and
+    /// `every_clause_the_template_claims_for_a_kind_is_one_this_build_asks_a_kind_for` pins this
+    /// table against that derivation, so a claim the template acquires tomorrow cannot arrive here
+    /// quietly. ⚠ `max_turns` and `reflect_every` are on this table though `claims` does not return
+    /// them: they are the EXEMPLARS every claim sentence points at (*"like `max_turns` and
+    /// `reflect_every`"*), which is the template asserting they are a kind's too.
+    pub const CLAIMED: &'static [Claimed] = &[
+        ("reference", |kind| kind.reference().is_some()),
+        ("working_rules", |kind| kind.working_rules().is_some()),
+        ("max_turns", |kind| kind.turn_budget().is_some()),
+        ("reflect_every", |kind| kind.reflect_every().is_some()),
+        ("reaim_max", |kind| kind.reaim_max().is_some()),
+        ("stall_after_steps", |kind| {
+            kind.stall_after_steps().is_some()
+        }),
+        ("reask_max", |kind| kind.reask_max().is_some()),
+        ("hold_within_ms", |kind| kind.hold_within_ms().is_some()),
+        ("reflect_after_refusals", |kind| {
+            kind.reflect_after_refusals().is_some()
+        }),
+        ("context_ceiling", |kind| kind.context_ceiling().is_some()),
+    ];
+
+    /// 🎯🎯🎯 **WHICH OF [`CLAIMED`](Self::CLAIMED) THIS DOCUMENT ANSWERS NOTHING FOR** — the
+    /// clauses the loop template would answer on its behalf, in the table's own order.
+    ///
+    /// ⚠⚠ It is what the run's `unclaimed` kind BORROWS, and naming it is the point: a document
+    /// that decides nothing is legal, and a run of it is bounded by numbers written in a file
+    /// nobody in that tree owns. An empty answer is a document that decided all of them.
+    ///
+    /// ⚠ ANSWERED BY THE READERS AND NOT BY THE DOCUMENT'S TEXT, deliberately. A `<data>` declared
+    /// and left empty reads exactly as one nobody declared (`probe_absent` measured it), so *what
+    /// this document decides* is only ever a question about what a reader gets back — and a text
+    /// scan would answer about a third thing that no run can tell apart.
+    #[must_use]
+    pub fn unauthored(&self) -> Vec<&'static str> {
+        Self::CLAIMED
+            .iter()
+            .filter(|(_, answers)| !answers(self))
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// The other half of [`unauthored`](Self::unauthored) — which of [`CLAIMED`](Self::CLAIMED)
+    /// this document does decide.
+    ///
+    /// ⚠ Both are published because a refusal that names only what is missing cannot say WHY the
+    /// document is being held to the rest, and *this document already decided these seven* is the
+    /// half that makes the demand legible.
+    #[must_use]
+    pub fn authored_claims(&self) -> Vec<&'static str> {
+        Self::CLAIMED
+            .iter()
+            .filter(|(_, answers)| answers(self))
+            .map(|(id, _)| *id)
+            .collect()
+    }
 
     /// 🎯🎯🎯🎯🎯 **THE KIND A RUN NAMED, RESOLVED TO ITS DOCUMENT** — register item 848, and the
     /// only road a run should reach a kind by.
@@ -386,19 +528,42 @@ impl LoopKind {
     }
 
     /// The half every kind's constructor shares: take the session the document evaluated its
-    /// clauses into, or refuse a document that opened none.
+    /// clauses into, refuse a document that opened none, and refuse one that authored only some of
+    /// what the template says is a kind's.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the second refusal is HERE and not at the daemon's door — register item 1035
+    ///
+    /// This is the one line every kind document passes through, and it is the line an EXTERNAL
+    /// document will pass through too: register item 1034's whole subject is that a consuming tree
+    /// cannot own its own kind today, and its done-when asks that *1035's red rule reach an
+    /// external document with the same force*. A check written at the wire would reach the two
+    /// documents this build compiles in and nothing else — which is the shape item 1025 names, a
+    /// rule whose POPULATION is smaller than its subject.
     fn over(
         machine: Box<dyn KindDocument + Send>,
         named: &'static str,
         script: Arc<dyn IScriptEngine>,
     ) -> Result<Self, NoKind> {
         let session = machine.session_id().ok_or(NoKind::NoDatamodel)?;
-        Ok(Self {
+        let kind = Self {
             machine,
             named,
             script,
             session,
-        })
+        };
+        // ⚠⚠ BOTH HALVES ARE READ, because the rule is about the MIDDLE and neither half alone can
+        // say where a document sits: all of them is an author who finished, none of them is the
+        // `unclaimed` shape item 848 built on purpose, and some of them is an author who never
+        // learned the rest were theirs.
+        let unauthored = kind.unauthored();
+        let authored = kind.authored_claims();
+        if !authored.is_empty() && !unauthored.is_empty() {
+            return Err(NoKind::HalfAuthored {
+                authored,
+                unauthored,
+            });
+        }
+        Ok(kind)
     }
 
     /// **WHICH DIALOGS A RUN OF THIS KIND MAY ANSWER**, or [`None`] for a kind that answers none.
@@ -2237,5 +2402,333 @@ mod tests {
             "⚠⚠ the needle stopped seeing this repository's own kind, so the assertion above is \
              green about a document nobody read: {mine:?}",
         );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THIS REPOSITORY'S KIND LEAVES NONE OF THE TEMPLATE'S CLAIMS TO THE TEMPLATE**
+    /// — register item 1035, and the assertion the mutation ⑵ of that item is measured against.
+    ///
+    /// # What a clause left out would actually do
+    ///
+    /// `OuterLoop::brief` resolves each of [`LoopKind::CLAIMED`] as *the caller's, else the kind's,
+    /// else the template's own*, and `ai_loop.scxml` ships a value for every one of them. So a
+    /// clause deleted from `debt_loop.scxml` does not become *declined* and does not reach any of
+    /// the four refusals `brief` holds — it becomes `reaim_max = 1`, or `max_turns = 40`, or
+    /// `context_ceiling = 0`, written in a file this repository copied from and nobody here
+    /// decided. **The failure reads as safe from every direction**, which is why it needs a gate
+    /// rather than a reviewer.
+    ///
+    /// ⚠⚠ THE NAMES ARE PRINTED AND NOT ONLY COUNTED: a count that fell by one sends a reader to
+    /// diff two documents, and the id sends them to the line.
+    /// ⚠⚠ **THE RESULT IS TAKEN BY HAND AND NOT THROUGH [`debt`]**, which is not style: the door
+    /// refuses a half-authored document before a reader can ask it anything, so a helper that
+    /// `expect`s would report this defect as *the debt kind's document must open a script session*
+    /// — a sentence about a build, for a clause an author deleted. Naming the wrong part in a
+    /// refusal is what register item 264 measured the cost of.
+    #[test]
+    fn this_repositorys_kind_authors_every_clause_the_template_says_is_a_kinds() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let kind = match LoopKind::debt(lua) {
+            Ok(kind) => kind,
+            Err(refused) => panic!(
+                "⛔⛔⛔⛔⛔ ITEM 1035: {refused}\n\
+                 ⚠ Each clause named there is one `ai_loop.scxml` says is the KIND's to author — \
+                 *not a bound a template other repositories copy can choose on their behalf* — and \
+                 this repository's own document now says nothing about it. That is not a decline: \
+                 `OuterLoop::brief` falls through to the template, so a run of this kind would be \
+                 bounded by the number in the file this repository copied FROM",
+            ),
+        };
+        assert_eq!(
+            kind.unauthored(),
+            Vec::<&str>::new(),
+            "⛔⛔⛔ ITEM 1035, AT THE OTHER END OF THE DOOR'S RULE: this document now decides NONE \
+             of the template's claims, so it opened as the `unclaimed` shape does — legally, and \
+             as a completely different kind of run. Every bound above is `ai_loop.scxml`'s",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **EVERY `<data>` THE TEMPLATE SAYS IS A KIND'S IS ONE THIS DOOR ASKS A KIND
+    /// FOR** — register item 1035, and the pin that keeps [`LoopKind::CLAIMED`] from being a second
+    /// author of a list `ai_loop.scxml` publishes in its own comments.
+    ///
+    /// # Refused from both sides, on the item-494 gate's own reason one crate over
+    ///
+    /// MORE in the template than at the door: a `<data>` acquired the claim, and until the door
+    /// asks for it a kind may leave it out — which is not a decline, it is the template's own value
+    /// standing in for a decision nobody made. Add it to the table WITH its reader, in one commit.
+    ///
+    /// FEWER: either a claim was withdrawn, or this build is holding kinds to a clause the template
+    /// no longer asks anybody to author — the same defect pointing the other way.
+    ///
+    /// ⚠⚠ **THE EXEMPLARS ARE MEMBERS THOUGH `claims` DOES NOT RETURN THEM**, and that is the one
+    /// place the two lists legitimately differ. Every claim sentence reads *"like `max_turns` and
+    /// `reflect_every`"* — a comparison that ASSERTS those two are a kind's to author, which is why
+    /// they are the exemplars; `claims` leaves them out because they make no claim of their own,
+    /// not because the template exempts them. `debt_loop.scxml` authors both.
+    ///
+    /// # ⚠⚠⚠ Why `include_str!` and not a read of the tree
+    ///
+    /// Register item 784's population is *tests whose input is the TREE*, because an unrelated
+    /// crate's commit can turn one red — and this workspace answers that by running them all in the
+    /// commit hook's lane. A `workspace_root().join(…)` here would put this crate's whole suite in
+    /// that lane for a property it does not need: the template is compiled into this crate already,
+    /// so the edge is one the COMPILER tracks, and a run-time read could only be less exact.
+    #[test]
+    fn what_the_template_claims_for_a_kind_is_what_this_builds_door_asks_for() {
+        let template = include_str!("ai_loop.scxml");
+        let mut claimed: Vec<String> = sprag_gate::authored::claims(template)
+            .into_iter()
+            .map(|claim| claim.id)
+            .collect();
+        claimed.extend(
+            sprag_gate::authored::EXEMPLARS
+                .iter()
+                .map(|id| (*id).to_owned()),
+        );
+        claimed.sort();
+        claimed.dedup();
+
+        let mut asked: Vec<String> = LoopKind::CLAIMED
+            .iter()
+            .map(|(id, _)| (*id).to_owned())
+            .collect();
+        asked.sort();
+
+        assert_eq!(
+            asked, claimed,
+            "⛔⛔⛔⛔⛔ ITEM 1035: THE TEMPLATE AND THE DOOR DISAGREE ABOUT WHAT A KIND IS ASKED TO \
+             DECIDE.\n\
+             MORE in the template: a `<data>` acquired the claim *it is the KIND's to author* and \
+             `LoopKind::CLAIMED` does not ask for it — so a kind may leave it out and get the \
+             template's own value in silence, which is the whole of this item.\n\
+             FEWER in the template: this build is refusing documents over a clause the template no \
+             longer says is theirs.\n\
+             ⚠ The table pairs each id with the reader that answers it, so adding one is adding a \
+             reader — an id with no reader would answer *nothing claims that* and pass.",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AND EVERY CLAUSE THE DOOR ASKS FOR IS ONE A DOCUMENT CAN REALLY ANSWER** — the half
+    /// the pin above cannot see.
+    ///
+    /// A table entry whose reader answered [`None`] for EVERY document would make the door's rule
+    /// unsatisfiable: no kind could author all of them, so every kind that decided anything would
+    /// be refused and the only legal document left would be one that decides nothing — the escape
+    /// hatch this item is about, arriving through the gate built to close it.
+    ///
+    /// ⚠ It is `kind_sources`' *a probe pointed at nothing must never read as clean*, one axis
+    /// over: a rule nobody can satisfy and a rule nobody breaks look alike from outside.
+    #[test]
+    fn every_clause_the_door_asks_for_is_one_this_repositorys_document_answers() {
+        let kind = debt();
+        assert_eq!(
+            kind.authored_claims().len(),
+            LoopKind::CLAIMED.len(),
+            "⚠⚠⚠⚠⚠ ITEM 1035: the door asks for a clause no document in this workspace answers, \
+             so its all-or-nothing rule could only ever be satisfied by a document that decides \
+             NOTHING. Either a reader in the table reaches the wrong id, or `debt_loop.scxml` \
+             stopped authoring it. Answered {:?}, unanswered {:?}",
+            kind.authored_claims(),
+            kind.unauthored(),
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **AND WHAT EVERY KIND THIS BUILD CAN START A RUN UNDER LEAVES TO THE TEMPLATE IS
+    /// NAMED** — register item 1035's ⑶, which asks first whether *undeclared means the template's*
+    /// is ever a design.
+    ///
+    /// # It is, and refusing it would be refusing the answer register item 848 built
+    ///
+    /// [`LoopKind::unclaimed`] exists to hold NO decisions: a run in a tree that has written no
+    /// kind of its own must not be judged by THIS repository's checker, so its document declares
+    /// three clauses and decides none of the ten the template claims. **So what is owed there is
+    /// the NAMING**, and this is where the workspace holds it — every clause listed below is a
+    /// bound four consuming repositories' runs take from `ai_loop.scxml` (register item 1034 named
+    /// them: `watching-zenoh`, `pinion`, `scxml-core-engine`, `mnemosyne`), and `reaim_max = 1` is
+    /// the one that item measured at the far end, where a run stops at every milestone and a person
+    /// re-launches it.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the POPULATION is walked and not one document named
+    ///
+    /// Register item 1025's finding. A pin on `unclaimed_loop.scxml` alone would leave a THIRD kind
+    /// arriving outside the rule rather than breaking it — and *deciding nothing* is precisely the
+    /// state a new kind is born in, so the document this gate would miss is the likeliest one there
+    /// is. [`LoopKind::KINDS`] is the population the wire itself publishes, so a kind a caller can
+    /// name is a kind this measures.
+    ///
+    /// ⚠ IT IS AN EQUALITY AND NOT A FLOOR, on `every_number_the_loop_invites_a_kind_to_author`'s
+    /// own reason: FEWER is a document quietly acquiring a decision for four trees at once, and
+    /// MORE is a claim arriving that nobody in those trees has heard of. Both want a person.
+    /// ⚠⚠ The door has already made each row an END of the rule — all of the claims or none — so
+    /// what this adds is WHICH end each kind is at, and what the *none* end is standing on.
+    #[test]
+    fn what_each_kind_leaves_to_the_template_is_named() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let measured: Vec<(&str, Vec<&str>)> = LoopKind::KINDS
+            .iter()
+            .map(|word| {
+                // ⚠⚠ Through `named`, which is the road a RUN reaches a kind by — so a kind this
+                // build publishes and cannot open is a red here rather than at somebody's launch.
+                let kind = match LoopKind::named(word, Arc::clone(&lua)) {
+                    Ok(kind) => kind,
+                    Err(refused) => panic!(
+                        "⛔⛔⛔ ITEM 1035, kind {word:?}: {refused}\n\
+                         ⚠ A kind may decide every clause the template says is a kind's or none of \
+                         them. The middle is refused because an author who decided some never \
+                         learnt the rest were theirs — and for the document four repositories \
+                         share, adding one is this build deciding it for every tree that has \
+                         written no kind of its own, which is register item 1034's subject",
+                    ),
+                };
+                (*word, kind.unauthored())
+            })
+            .collect();
+
+        assert_eq!(
+            measured,
+            vec![
+                (LoopKind::DEBT, Vec::new()),
+                (
+                    LoopKind::UNCLAIMED,
+                    vec![
+                        "reference",
+                        "working_rules",
+                        "max_turns",
+                        "reflect_every",
+                        "reaim_max",
+                        "stall_after_steps",
+                        "reask_max",
+                        "hold_within_ms",
+                        "reflect_after_refusals",
+                        "context_ceiling",
+                    ],
+                ),
+            ],
+            "⛔⛔⛔ ITEM 1035: WHAT A KIND OF THIS BUILD LEAVES TO `ai_loop.scxml` MOVED.\n\
+             A ROW APPEARED — a third kind, and this pin is where somebody says out loud what its \
+             runs are bounded by. A kind born deciding nothing is the ordinary case, and it is \
+             exactly the one a pin over ONE document would have missed.\n\
+             A ROW SHRANK — a document acquired a decision. For `unclaimed` that is this build \
+             deciding a bound for every tree that has written no kind of its own (register item \
+             1034), which is not a value to add quietly.\n\
+             A ROW GREW — the template claims a clause these runs are now taking from it, and \
+             nobody in those trees has heard of it.\n\
+             ⚠ `debt` is the control: an empty list beside a full one is what says the reader can \
+             tell the two ends apart at all",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **AND THE REFUSAL IN BETWEEN IS REACHABLE** — register item 1035, and the half
+    /// neither gate above can answer.
+    ///
+    /// # Why a double and not a third document
+    ///
+    /// Both documents this build compiles in sit at an END of the rule — one decides all ten, the
+    /// other decides none — so every assertion about the MIDDLE would be about an arm nothing
+    /// reaches, which is register items 706 and 482's shape: *a green gate then means the refusal
+    /// was never run rather than that the refusal is right*. A third `.scxml` would need codegen
+    /// and a policy type (register item 1034's whole finding), and it would still only be one
+    /// sample of a shape this rule has to hold for every document a consuming tree ever writes.
+    ///
+    /// ⚠⚠ The double is the REAL unclaimed document with ONE clause answered, so the nine `None`s
+    /// are the file's own and not a fixture's — and the session every script-side reader reads
+    /// through is that document's own session, opened the way the constructor opens it.
+    #[test]
+    fn a_document_that_decides_some_of_the_templates_claims_is_refused_naming_the_rest() {
+        /// The unclaimed document, answering `reference` and nothing else.
+        struct Halfway(Box<dyn KindDocument + Send>);
+
+        impl KindDocument for Halfway {
+            fn session_id(&self) -> Option<String> {
+                self.0.session_id()
+            }
+            fn reference(&self) -> Option<String> {
+                Some("the one clause this author reached".to_string())
+            }
+            fn closing_rules(&self) -> Option<String> {
+                self.0.closing_rules()
+            }
+            fn working_rules(&self) -> Option<String> {
+                self.0.working_rules()
+            }
+            fn unanswered_rule(&self) -> Option<String> {
+                self.0.unanswered_rule()
+            }
+            fn unreadable_rule(&self) -> Option<String> {
+                self.0.unreadable_rule()
+            }
+            fn unwell_rule(&self) -> Option<String> {
+                self.0.unwell_rule()
+            }
+            fn works_in(&self) -> Option<String> {
+                self.0.works_in()
+            }
+            fn stands_in(&self) -> Option<String> {
+                self.0.stands_in()
+            }
+            fn keeps(&self) -> Option<String> {
+                self.0.keeps()
+            }
+            fn hold_within_ms(&self) -> Option<i64> {
+                self.0.hold_within_ms()
+            }
+            fn reflect_every(&self) -> Option<i64> {
+                self.0.reflect_every()
+            }
+            fn context_ceiling(&self) -> Option<i64> {
+                self.0.context_ceiling()
+            }
+            fn reflect_after_refusals(&self) -> Option<i64> {
+                self.0.reflect_after_refusals()
+            }
+        }
+
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let opened = crate::document::opened(
+            crate::sm::unclaimed_loop::UnclaimedLoopPolicy::new(Arc::clone(&lua)),
+            &crate::act::Serving::new(),
+        )
+        .expect("the unclaimed document initialises");
+        // ⚠ `expect_err` is out of reach: a `LoopKind` holds an engine and is not `Debug`, so the
+        // refusal is taken by hand — which also lets the OPENED case carry its own sentence.
+        let Err(refused) = LoopKind::over(
+            Box::new(Halfway(Box::new(opened))),
+            LoopKind::UNCLAIMED,
+            lua,
+        ) else {
+            panic!(
+                "⛔⛔⛔⛔⛔ ITEM 1035: a document that decided ONE of the template's claims opened, \
+                 and the other nine are now `ai_loop.scxml`'s — chosen for this tree by a file it \
+                 copied from, with nothing anywhere saying so",
+            );
+        };
+        let NoKind::HalfAuthored {
+            authored,
+            unauthored,
+        } = &refused
+        else {
+            panic!("the refusal must be the half-authored one and not another door: {refused:?}");
+        };
+        assert_eq!(
+            authored,
+            &["reference"],
+            "⚠⚠ and it must name what the document DID decide, because *your document is \
+             half-authored* is only actionable beside the half that was written",
+        );
+        assert_eq!(
+            unauthored.len(),
+            LoopKind::CLAIMED.len() - 1,
+            "⚠⚠⚠ and every remaining claim must be named, not a representative one: an author \
+             sent to add `max_turns` and then refused again for `reaim_max` learns the rule one \
+             clause per attempt. Read {unauthored:?}",
+        );
+        let said = refused.to_string();
+        for missing in unauthored {
+            assert!(
+                said.contains(missing),
+                "⚠ a refusal that names a clause in its type and not in its sentence reaches a \
+                 person as *your rules were ignored*, which sends them nowhere: {said}",
+            );
+        }
     }
 }
