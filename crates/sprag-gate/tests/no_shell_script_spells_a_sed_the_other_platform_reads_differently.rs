@@ -44,31 +44,40 @@ use sprag_gate::shell::{commands_named, shell_sources};
 use std::path::PathBuf;
 use std::process::Command;
 
-/// One `sed` command this tree spells, and where.
+/// The programs whose spellings this judges, each with a stand-in that owns the rule for it.
+///
+/// ⚠⚠ TWO, since register item 1007, and the reason they are one gate rather than two: `sed` and
+/// `grep` hand the same text to the same `regcomp`, so *what BSD reads differently* is one fact
+/// about basic regular expressions. `bre-rule.sh` is where that fact is spelled; each stand-in adds
+/// only what is true of its own argv (which words are patterns) and, for `sed`, the label rule that
+/// belongs to script parsing rather than to regular expressions.
+const JUDGED: [&str; 2] = ["sed", "grep"];
+
+/// One command this tree spells, and where.
 #[derive(Debug, Clone)]
 struct Spelled {
     /// Relative to the workspace root, so a message is a path a person can open.
     file: String,
     /// One-indexed, the way an editor counts.
     line: usize,
-    /// What the shell would hand the child, `sed` itself included.
+    /// What the shell would hand the child, the program itself included.
     argv: Vec<String>,
 }
 
-/// The double that owns the rule.
-fn strict_sed() -> PathBuf {
+/// The stand-in that owns the rule for `program`.
+fn strict(program: &str) -> PathBuf {
     Doubles::of(env!("CARGO_MANIFEST_DIR"))
         .set("declared-selftest")
-        .program("sed")
+        .program(program)
 }
 
-/// What the double says about one argv: `Ok(())`, or everything it said when it refused.
+/// What the stand-in says about one argv: `Ok(())`, or everything it said when it refused.
 ///
 /// ⚠ `SPRAG_SED_SCAN_ONLY` stops it before it execs anything. The subject here is the SPELLING; a
 /// script lifted out of source text still carries its `${variables}` and running it would fail for
 /// reasons that are nobody's defect.
 fn verdict_on(argv: &[String]) -> Result<(), String> {
-    let program = strict_sed();
+    let program = strict(&argv[0]);
     let mut run = Command::new(&program);
     run.env("SPRAG_SED_SCAN_ONLY", "1");
     for word in argv.iter().skip(1) {
@@ -87,24 +96,26 @@ fn verdict_on(argv: &[String]) -> Result<(), String> {
     ))
 }
 
-/// Every `sed` command spelled in this tree's shell, whole-line comments dropped.
+/// Every judged command spelled in this tree's shell, whole-line comments dropped.
 fn spellings() -> Vec<Spelled> {
     let mut found = Vec::new();
     for source in shell_sources() {
         for (line, text) in source.code() {
-            for argv in commands_named(&text, "sed") {
-                found.push(Spelled {
-                    file: source.file.clone(),
-                    line,
-                    argv,
-                });
+            for program in JUDGED {
+                for argv in commands_named(&text, program) {
+                    found.push(Spelled {
+                        file: source.file.clone(),
+                        line,
+                        argv,
+                    });
+                }
             }
         }
     }
     found
 }
 
-/// ⛔⛔⛔⛔⛔ **THE RATCHET.** Every `sed` command in the tree, judged by the strict `sed`.
+/// ⛔⛔⛔⛔⛔ **THE RATCHET.** Every judged command in the tree, judged by its own stand-in.
 #[test]
 fn no_shell_script_spells_a_sed_the_other_platform_reads_differently() {
     let offenders: Vec<(Spelled, String)> = spellings()
@@ -114,11 +125,11 @@ fn no_shell_script_spells_a_sed_the_other_platform_reads_differently() {
 
     assert!(
         offenders.is_empty(),
-        "⛔ ITEM 1006: {} `sed` command(s) in this tree are spelled in a way BSD reads differently, \
-         and this is where it is caught because nothing runs the script they live in. Reproduce \
-         any one of them with:\n  SPRAG_SED_SCAN_ONLY=1 {} <the argv below>\n{}",
+        "⛔ ITEMS 1006 AND 1007: {} command(s) in this tree are spelled in a way BSD reads \
+         differently, and this is where it is caught because nothing runs the script they live \
+         in. Reproduce any one of them with:\n  SPRAG_SED_SCAN_ONLY=1 \
+         crates/sprag-gate/tests/doubles/declared-selftest/<program> <the argv below>\n{}",
         offenders.len(),
-        strict_sed().display(),
         offenders
             .iter()
             .map(|(one, why)| format!("  {}:{} — {:?}\n{}", one.file, one.line, one.argv, why))
@@ -145,12 +156,14 @@ fn the_walk_reaches_scripts_no_declared_selftest_ever_runs() {
         .flat_map(|source| judged.iter().filter(|one| one.file == source.file))
         .collect();
     assert!(
-        judged.len() > 25,
-        "a scan that found only {} `sed` command(s) has stopped matching — this workspace's shell \
-         spelled 32 of them on 2026-09-10, {} in scripts nothing drives, and a probe that reads \
-         nothing must never read as clean. ⚠ The floor is 25 rather than 31 because the two ways \
-         this scan has actually broken are big: judging only the declared scripts left 21, and a \
-         splitter blind to `\"$( … )\"` left 24. Judged: {:?}",
+        judged.len() > 100,
+        "a scan that found only {} command(s) has stopped matching — this workspace's shell spelled \
+         121 of them on 2026-09-10 (32 `sed`, 89 `grep`), {} in scripts nothing drives, and a \
+         probe that reads nothing must never read as clean. ⚠ The floor is 100 because every way \
+         this scan has actually broken took a big bite: judging only the declared scripts left 21, \
+         a splitter blind to `\"$( … )\"` left 24, and judging `sed` alone left 32. If the tree \
+         really did lose that many, lower the floor IN THE SAME EDIT and say which script went. \
+         Judged: {:?}",
         judged.len(),
         undriven.len(),
         judged
@@ -160,10 +173,10 @@ fn the_walk_reaches_scripts_no_declared_selftest_ever_runs() {
     );
     assert!(
         !undriven.is_empty(),
-        "⛔ ITEM 1006: every `sed` command this gate judged lives in a script that declares a \
-         `--selftest`, so all of them were already being driven under the strict sed and this \
-         ratchet is measuring nothing new. Either the walk has narrowed, or the two populations \
-         have converged and this gate can go. Judged: {} command(s) in {} file(s).",
+        "⛔ ITEM 1006: every command this gate judged lives in a script that declares a \
+         `--selftest`, so all of them were already being driven under the strict stand-ins and \
+         this ratchet is measuring nothing new. Either the walk has narrowed, or the two \
+         populations have converged and this gate can go. Judged: {} command(s) in {} file(s).",
         judged.len(),
         judged
             .iter()
@@ -184,6 +197,37 @@ fn the_walk_reaches_scripts_no_declared_selftest_ever_runs() {
 /// every hook in this repository into a wall.
 #[test]
 fn the_scan_only_verdict_refuses_and_admits_the_two_spellings_it_was_measured_on() {
+    // ⛔ THE `grep` HALF FIRST — register item 1007, and it is driven with the tree's OWN pattern.
+    // Measured 2026-09-10 with a FreeBSD grep(1) built on a FreeBSD regex(3): this counts 2 under
+    // GNU and 0 under BSD, in an instrument whose entire output is counts.
+    let refused_grep = verdict_on(&[
+        "grep".to_owned(),
+        "-ac".to_owned(),
+        r"^error\[\|could not compile".to_owned(),
+    ]);
+    assert!(
+        refused_grep.is_err(),
+        "⛔ ITEM 1007: the strict grep ADMITTED `\\|`, the GNU extension a BSD regex(3) reads as a \
+         literal `|`. `grep -c` then counts ZERO on that platform and 0 is indistinguishable from \
+         *nothing went wrong* — which is precisely what `probe-unrun-crates` excluded an \
+         explanation with.",
+    );
+    let admitted_grep = verdict_on(&[
+        "grep".to_owned(),
+        "-ac".to_owned(),
+        "-e".to_owned(),
+        r"^error\[".to_owned(),
+        "-e".to_owned(),
+        "could not compile".to_owned(),
+    ]);
+    assert!(
+        admitted_grep.is_ok(),
+        "⛔ ITEM 1007: the strict grep REFUSED `-e A -e B`, the POSIX spelling both implementations \
+         answer 2 to (measured 2026-09-10). A rule that refuses the repair leaves nothing that can \
+         be written, saying:\n{}",
+        admitted_grep.unwrap_err(),
+    );
+
     let refused = verdict_on(&[
         "sed".to_owned(),
         "-n".to_owned(),

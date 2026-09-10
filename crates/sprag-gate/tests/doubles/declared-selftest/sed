@@ -55,39 +55,28 @@ say_unportable() {
     exit 2
 }
 
-# ⛔⛔⛔⛔⛔ AND THE SECOND SPELLING THAT IS SILENT ON THE OTHER PLATFORM --
-# register item 1006. `\|`, `\+` and `\?` are GNU extensions to a BASIC regular
-# expression; a BSD regex(3) reads each as the LITERAL character, matches
-# nothing, and says NOTHING.
-#
-# ⚠⚠ MEASURED 2026-09-10 against a FreeBSD regex(3) built from source beside the
-# sed, and the measurement is what chose these three rather than a longer list:
-#   silent: \| \+ \?          -- a literal, no error, a different answer
-#   loud:   \b \B \w \W \s \S -- BSD refuses the expression outright
-#   SAME:   \< \> \t \n \{ \( -- both read them the same way
-# Only the silent three can be green on Linux and wrong on macOS, which is the
-# whole shape these doubles exist for. The loud six announce themselves and are
-# left out deliberately; guessing would have put \< and \> on the list, and the
-# measurement says they belong on neither.
-#
-# ⚠ THE RESIDUE, STATED: the scan reads the WHOLE script, so a `\|` on the
-# REPLACEMENT side of an `s` command -- where it is not a regular expression at
-# all -- would be refused for a reason that is not true. Nothing in this tree
-# spells one (measured 2026-09-10: the only offender anywhere was
-# `rust-gates.sh`), and separating the two sides needs a parser this cannot be.
-# The remedy if it ever bites is a bracket: `[|]` says the same thing.
-say_gnu_escape() {
+# ⛔⛔⛔⛔⛔ THE SECOND RULE IS NOT SPELLED HERE -- register item 1007. `\|`, `\+`
+# and `\?` are GNU extensions to a BASIC regular expression, and that is one fact
+# about `regcomp` rather than a fact about sed: the `grep` beside this file hands
+# the same text to the same library. So the rule lives ONCE, in `bre-rule.sh`,
+# and both stand-ins source it. A copy in each is the drift this workspace keeps
+# paying for -- and it would drift in the direction that matters, because only
+# one of the two copies would be the one a hook actually meets.
+bre_program="sed (the POSIX double)"
+bre_remedy="Write the POSIX spelling: \\| as a bracket or two s commands, \\+ as
+  X[X]* (X twice), and \\? as \\(X\\)\\{0,1\\}."
+
+sed_here="${0%/*}"
+[ "$sed_here" != "$0" ] || sed_here=.
+[ -f "$sed_here/bre-rule.sh" ] || {
     printf '%s\n' \
-        "sed (the POSIX double): REFUSING a script BSD sed reads differently:" \
-        "  $1" \
-        "  '$2' is a GNU extension to a BASIC regular expression. A BSD regex(3)" \
-        "  reads it as the literal character '$3', so this matches nothing there," \
-        "  exits 0, and the caller acts on an empty answer -- which is how a" \
-        "  refusal ends up naming the wrong cause. Write the POSIX spelling:" \
-        "  \\| as two -e scripts or a bracket, \\+ as X[X]* (X twice), \\? as" \
-        "  \\(X\\)\\{0,1\\}. Register item 1006." >&2
+        "sed (the POSIX double): the shared rule is not beside me." \
+        "  looked in: $sed_here/bre-rule.sh (from \$0=$0)" \
+        "  This stand-in enforces nothing without it, and passing quietly is the" \
+        "  one thing it must never do. Register item 1007." >&2
     exit 2
 }
+. "$sed_here/bre-rule.sh"
 
 # Refuse $1 when a label or branch is followed by more script on the same line.
 scan_script() {
@@ -105,28 +94,17 @@ scan_script() {
             :[0-9A-Za-z_-]* | b[0-9A-Za-z_-]* | t[0-9A-Za-z_-]*) say_unportable "$1" ;;
         esac
     done
-    # ⚠ ONLY IN A BASIC REGULAR EXPRESSION. Under `-E` those three characters are
-    # operators unescaped and `\+` is a literal on BOTH platforms, so the rule
-    # would be refusing a spelling that is portable. The flag is read off argv
-    # below rather than assumed.
-    [ "$sed_ere" -eq 0 ] || return 0
-    case "$1" in
-        *'\|'*) say_gnu_escape "$1" '\|' '|' ;;
-    esac
-    case "$1" in
-        *'\+'*) say_gnu_escape "$1" '\+' '+' ;;
-    esac
-    case "$1" in
-        *'\?'*) say_gnu_escape "$1" '\?' '?' ;;
-    esac
+    # ⚠ The shared rule reads `bre_extended` for itself; the flag is set below off
+    # argv rather than assumed.
+    bre_scan "$1"
 }
 
 # ⚠ TWO PASSES, because `-E` may be spelled AFTER the script it governs and a
 # one-pass scan would judge that script under the wrong grammar.
-sed_ere=0
+bre_extended=0
 for sed_arg in "$@"; do
     case "$sed_arg" in
-        -E | -r | --regexp-extended) sed_ere=1 ;;
+        -E | -r | --regexp-extended) bre_extended=1 ;;
     esac
 done
 

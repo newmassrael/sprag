@@ -206,6 +206,22 @@ fn every_exemption_is_still_load_bearing() {
 ///
 /// ⚠ Asked of git rather than of the working tree, because the working tree's bit can be right on
 /// the machine that added the file and absent everywhere else.
+///
+/// # ⛔⛔⛔⛔⛔ A DOUBLES DIRECTORY HOLDS TWO KINDS OF FILE, and the mode has to say which
+///
+/// Register item 1007 put a SOURCED LIBRARY in one — `declared-selftest/bre-rule.sh`, the one
+/// spelling of what a BSD `regex(3)` reads differently, which the `sed` and `grep` stand-ins beside
+/// it both `.` into themselves. Nothing execs it, and marking it `100755` would make its mode claim
+/// something untrue.
+///
+/// ⇒ The split is a PREDICATE and not an exemption: **a shebang is how a file declares itself a
+/// program**, and the rule runs in both directions. A file that declares itself must arrive
+/// runnable; a file that does not must not claim it is. Measured 2026-09-10, every one of the other
+/// 22 doubles carries a shebang, so this is exactly as strict as the one-way rule it replaces for
+/// every file that rule was written for.
+///
+/// ⚠ The second direction is what keeps the first from being an escape hatch — without it, dropping
+/// a shebang would be a way to land a `100644` program that this gate no longer looks at.
 #[test]
 fn every_tracked_double_is_executable_in_the_index() {
     // ⚠ THROUGH `ambient::git_in`, register item 965: `pre-commit` runs this suite, and under a
@@ -239,12 +255,24 @@ fn every_tracked_double_is_executable_in_the_index() {
         doubles.len(),
     );
     for (mode, path) in doubles {
-        assert_eq!(
-            mode, "100755",
-            "⚠ {path} is a double a suite EXECUTES and the index carries it as {mode}. On a fresh \
-             checkout it arrives without the bit and every case that uses it fails for the wrong \
-             reason.",
-        );
+        let declares_itself_a_program = std::fs::read_to_string(workspace_root().join(path))
+            .is_ok_and(|text| text.starts_with("#!"));
+        if declares_itself_a_program {
+            assert_eq!(
+                mode, "100755",
+                "⚠ {path} declares itself a program with a shebang and the index carries it as \
+                 {mode}. On a fresh checkout it arrives without the bit and every case that uses \
+                 it fails for the wrong reason.",
+            );
+        } else {
+            assert_eq!(
+                mode, "100644",
+                "⚠ {path} carries no shebang, so it is a file another double SOURCES rather than \
+                 one anything execs — and the index carries it as {mode}. A mode that claims a \
+                 library is a program invites the next reader to run it and get silence. Give it a \
+                 shebang if it really is one.",
+            );
+        }
     }
 }
 

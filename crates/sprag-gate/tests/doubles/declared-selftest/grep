@@ -1,0 +1,108 @@
+#!/bin/sh
+# A `grep` THAT REFUSES THE GNU-ONLY SPELLINGS -- the stand-in that lets a Linux
+# runner measure what BSD `grep` does, for register item 1007.
+#
+# ⛔ WHY IT IS TRACKED RATHER THAN WRITTEN. Register item 467: a file a process
+# holds open for writing cannot be executed, and this workspace's harness forks
+# from threads. So this is a file the repository carries, reached through
+# `sprag_gate::doubles`, exactly like the `sed` beside it.
+#
+# ⚠ The real `grep` arrives by name in the environment rather than being searched
+# for: this stand-in sits AT THE FRONT of `PATH`, so `command -v grep` here would
+# find this script and exec itself forever.
+#
+# ⛔⛔⛔⛔⛔ A REFUSAL, NOT AN EMULATION, AND THE REASON IS DIFFERENT FROM sed's.
+# GNU sed has `--posix`, which really does turn its regular-expression grammar
+# off; GNU grep has NO SUCH FLAG (`POSIXLY_CORRECT` does not touch `\|`, measured
+# 2026-09-10). So there is nothing to make strict — only a spelling to refuse.
+#
+# ⚠⚠ WHAT WAS MEASURED, and it is the whole reason this file exists. FreeBSD's
+# grep(1) was built here against a FreeBSD regex(3) and asked the tree's own two
+# patterns. Ten ordinary questions -- literals, anchors, brackets, classes, `.`,
+# `*`, `-E`, two `-e`, `-v`, `-a` -- gave the SAME answer as GNU. Only these
+# differed:
+#   grep -ac '^ *Running \|^ *Doc-tests '   GNU 2, BSD 0
+#   grep -ac '^error\[\|could not compile'  GNU 2, BSD 0
+# and the repair, `-e A -e B`, gives 2 on BOTH. ⇒ The `\|` was silently counting
+# ZERO on the other platform, in three instruments whose whole output is counts.
+#
+# ⚠ WHAT THIS DOES NOT CLAIM. `-P`, `--color`, `-z` and the rest of GNU grep's
+# surface are untouched here; this is about ONE rule, the basic-regular-expression
+# one, shared with the `sed` beside it and spelled once in `bre-rule.sh`.
+
+bre_program="grep (the POSIX double)"
+bre_remedy="Write the POSIX spelling: -e A -e B for alternation, X[X]* for \\+,
+  and \\(X\\)\\{0,1\\} for \\?."
+
+grep_here="${0%/*}"
+[ "$grep_here" != "$0" ] || grep_here=.
+[ -f "$grep_here/bre-rule.sh" ] || {
+    printf '%s\n' \
+        "grep (the POSIX double): the shared rule is not beside me." \
+        "  looked in: $grep_here/bre-rule.sh (from \$0=$0)" \
+        "  This stand-in enforces nothing without it, and passing quietly is the" \
+        "  one thing it must never do. Register item 1007." >&2
+    exit 2
+}
+. "$grep_here/bre-rule.sh"
+
+# ⚠ TWO PASSES, because `-E`/`-F` may be spelled AFTER the pattern they govern
+# and a one-pass scan would judge that pattern under the wrong grammar.
+bre_extended=0
+for grep_arg in "$@"; do
+    case "$grep_arg" in
+        -E | -F | -P | --extended-regexp | --fixed-strings | --perl-regexp) bre_extended=1 ;;
+        # The bundled short forms this repository actually spells, e.g. `-ac`.
+        -*E* | -*F* | -*P*) bre_extended=1 ;;
+    esac
+done
+
+# Which arguments are PATTERNS: every `-e` value, or the first non-option when no
+# `-e` and no `-f` was given. Everything else is an option or an input file.
+grep_expect=""
+grep_seen_pattern=0
+for grep_arg in "$@"; do
+    if [ "$grep_expect" = pattern ]; then
+        bre_scan "$grep_arg"
+        grep_expect=""
+        continue
+    fi
+    if [ "$grep_expect" = file ]; then
+        grep_expect=""
+        continue
+    fi
+    case "$grep_arg" in
+        -e | --regexp)
+            grep_expect=pattern
+            grep_seen_pattern=1
+            ;;
+        --regexp=*)
+            bre_scan "${grep_arg#--regexp=}"
+            grep_seen_pattern=1
+            ;;
+        -f | --file)
+            grep_expect=file
+            grep_seen_pattern=1
+            ;;
+        --file=*)
+            grep_seen_pattern=1
+            ;;
+        -*) ;;
+        *)
+            if [ "$grep_seen_pattern" -eq 0 ]; then
+                bre_scan "$grep_arg"
+                grep_seen_pattern=1
+            fi
+            ;;
+    esac
+done
+
+# ⛔ SCAN-ONLY, so the rule above has exactly ONE implementation and TWO
+# populations reach it: the runtime one (a hook under test) and the static one
+# (item 1006's gate, which walks every shell file in the tree and hands the argv
+# it finds to this program). The caller there wants the VERDICT, not the search.
+if [ "${SPRAG_SED_SCAN_ONLY:-0}" = 1 ]; then
+    exit 0
+fi
+
+exec "${SPRAG_REAL_GREP:?the real grep must be named in SPRAG_REAL_GREP}" "$@"

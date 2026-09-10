@@ -29,7 +29,9 @@ CARGO_TARGET_DIR="$cold" sh -c "$cmd" > "$out" 2>&1
 echo "RUN_STATUS=$?"
 
 echo "=== what sweep-coverage said ==="
-grep -a 'sweep-coverage:\|the sweep reached' "$out" | tail -2
+# ⛔ TWO `-e` AND NOT `\|` -- register item 1007: a BSD regex reads `\|` as a literal, so this
+# section would print NOTHING on that platform under a heading promising what sweep-coverage said.
+grep -a -e 'sweep-coverage:' -e 'the sweep reached' "$out" | tail -2
 
 for leg in /tmp/sprag-verify-1.log /tmp/sprag-verify-2.log; do
     [ -f "$leg" ] || continue

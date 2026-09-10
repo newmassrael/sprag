@@ -103,9 +103,15 @@ fi
 # when something else went wrong is a question nobody asks on the day it matters.
 for leg in /tmp/sprag-verify-1.log /tmp/sprag-verify-2.log; do
     [ -f "$leg" ] || continue
-    started=$(grep -ac '^ *Running \|^ *Doc-tests ' "$leg")
+    # ⛔⛔⛔⛔⛔ TWO `-e` AND NOT `\|` -- register item 1007. `\|` is a GNU extension to a BASIC
+    # regular expression, and a BSD `regex(3)` reads it as the LITERAL character: measured
+    # 2026-09-10 with a FreeBSD grep(1) built on a FreeBSD regex(3), these two patterns count 2
+    # under GNU and **0** under BSD, while `-e A -e B` counts 2 under both. A count that silently
+    # becomes 0 is the worst possible failure for THESE numbers in particular, because 0 here reads
+    # as *the leg started nothing* -- the exact confusion item 624 built this block to end.
+    started=$(grep -ac -e '^ *Running ' -e '^ *Doc-tests ' "$leg")
     reported=$(grep -ac '^test result:' "$leg")
-    errors=$(grep -ac '^error\[\|could not compile' "$leg")
+    errors=$(grep -ac -e '^error\[' -e 'could not compile' "$leg")
     echo "LEG_${leg##*/} STARTED=$started REPORTED=$reported COMPILE_ERRORS=$errors"
 done
 sort -rn "$peaks" | head -1 | while IFS=$'\t' read -r kb line; do

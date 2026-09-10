@@ -203,11 +203,15 @@ fn sed_takes_gnu_alternation() -> bool {
         .unwrap_or(false)
 }
 
-/// The absolute path of the real `sed`, so a shim can call it without calling itself.
-fn real_sed() -> Option<String> {
+/// The absolute path of the real `program`, so a shim can call it without calling itself.
+///
+/// ⚠ Two of them now — register item 1007 put a `grep` in the same doubles directory, and that
+/// directory goes on `PATH` WHOLE. A stand-in with nothing to exec would take down every declared
+/// selftest at once, so both names are set together or neither is.
+fn real_program(program: &str) -> Option<String> {
     Command::new("sh")
         .arg("-c")
-        .arg("command -v sed")
+        .arg(format!("command -v {program}"))
         .output()
         .ok()
         .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
@@ -267,9 +271,13 @@ fn environments(scratch: &Path) -> (Vec<Environment>, String) {
     // ⚠ The subject is only looked up when there is something to make strict — a machine whose own
     // `sed` already refuses the extension needs no double, and asking for one would read as though
     // the environment were missing rather than unnecessary.
-    let strict_subject = if sed_is_gnu { real_sed() } else { None };
+    let strict_subject = if sed_is_gnu {
+        real_program("sed").zip(real_program("grep"))
+    } else {
+        None
+    };
     let mut shim_built = false;
-    if let Some(sed) = strict_subject {
+    if let Some((sed, grep)) = strict_subject {
         // ⛔ THE STRICT `sed` IS A TRACKED DOUBLE, NOT A FILE THIS SUITE WRITES — register item
         // 467, whose gate refused the first draft of this block by name: a program a process holds
         // open for writing cannot be executed, and this harness forks from threads. `program` also
@@ -277,16 +285,23 @@ fn environments(scratch: &Path) -> (Vec<Environment>, String) {
         // of as the hook refusing.
         let doubles = Doubles::of(env!("CARGO_MANIFEST_DIR")).set("declared-selftest");
         let _ = doubles.program("sed");
+        let _ = doubles.program("grep");
         envs.push((
-            "a POSIX sed".to_owned(),
+            "a POSIX sed and grep".to_owned(),
             vec![
                 (
                     "PATH".to_owned(),
                     doubles.ahead_of_inherited().to_string_lossy().into_owned(),
                 ),
-                // ⚠ The double sits at the FRONT of that PATH, so it cannot look its own subject up
-                // by name — it would exec itself. It is named instead.
+                // ⚠ The doubles sit at the FRONT of that PATH, so neither can look its own subject
+                // up by name — it would exec itself. Both are named instead.
+                //
+                // ⛔⛔⛔ AND BOTH, ALWAYS. The directory goes on `PATH` whole, so adding item 1007's
+                // `grep` made every `grep` in every declared selftest go through a stand-in too. A
+                // stand-in with nothing to exec refuses, and five harnesses would have gone red at
+                // once for a reason none of them is about.
                 ("SPRAG_REAL_SED".to_owned(), sed),
+                ("SPRAG_REAL_GREP".to_owned(), grep),
             ],
         ));
         shim_built = true;
@@ -305,7 +320,7 @@ fn strict_sed() -> (PathBuf, Vec<(String, String)>) {
     }
     let doubles = Doubles::of(env!("CARGO_MANIFEST_DIR")).set("declared-selftest");
     let program = doubles.program("sed");
-    let real = real_sed().expect(
+    let real = real_program("sed").expect(
         "this machine's sed takes the GNU alternation, so `command -v sed` must find the program \
          the double stands in front of",
     );
@@ -351,7 +366,8 @@ fn asking_sed(
 
 /// ⛔⛔⛔⛔⛔ **AND THE STRICT `sed` IS A MEASUREMENT, NOT A NAME** — register item 1001.
 ///
-/// [`environments`] injects a `sed` and calls the environment *a POSIX sed*. Until this test
+/// [`environments`] injects a `sed` (and, since item 1007, a `grep`) and calls the environment
+/// *a POSIX sed and grep*. Until this test
 /// existed nothing anywhere asked whether that injection changed a single answer, and measured
 /// 2026-09-10 it changed ONE of the two differences it names and not the other:
 ///
@@ -394,7 +410,7 @@ fn the_strict_sed_shows_the_differences_it_is_named_for() {
         alternation.trim(),
         "x",
         "⛔ ITEM 799: {at} answered `x` to a BRE whose `\\|` only means alternation under GNU. \
-         The environment this suite calls *a POSIX sed* is then the same environment as *as \
+         The environment this suite calls *a POSIX sed and grep* is then the same as *as \
          configured*, and the marker that went invisible on macOS would go unmeasured here again.",
     );
 
