@@ -370,6 +370,33 @@ pub fn met_while(reason: &str) -> Option<&'static str> {
 /// was never this loop's to run.
 pub const RED: &str = "@red:";
 
+/// ⛔⛔⛔⛔⛔ **THE EVIDENCE THAT LAST JUDGED A PLATFORM-MARKED [`RED`]**:
+/// `@judged: @macos <run-id> <commit>` — register item 989.
+///
+/// # ⛔⛔⛔ What a platform claim was, before this
+///
+/// Item 949 made a `@macos` red WRITABLE and item 973 built the command that can retire one
+/// (`north-star --elsewhere`). **Nothing called it.** So a claim about a platform this instrument is
+/// not could stand for ever with no record of ever having been checked, and the default run said so
+/// every round in a sentence with no consequence: *"N claim(s) are about another platform, so this
+/// linux run did not judge them"*. A standing notice is not a gate — measured on this repository
+/// 2026-09-10, `.githooks/hosted-read.sh` printed *"206 round(s) published since a hosted result was
+/// read"* on two consecutive pushes of the session that then did nothing about it.
+///
+/// ⇒ So the obligation moves off the ROUND and onto the LEDGER LINE, where a predicate can hold it:
+/// a claim that names a platform must name the hosted run that last judged it, and the default run
+/// reds until it does. That is register item 989's ⑵ — *what reds when nobody calls* — answered
+/// where nobody has to remember anything.
+///
+/// # ⚠⚠⚠ THE RESIDUE, STATED RATHER THAN HIDDEN
+///
+/// This makes the evidence EXIST. It does not make it FRESH: a line written once goes on satisfying
+/// this for ever, and a reader has to look at the run id to see how old it is. A freshness rule
+/// needs a boundary ("no more than one push behind"), which is a separate decision and a separate
+/// item. What is bought here is that *never checked* and *checked at run N* stop being the same
+/// silence.
+pub const JUDGED: &str = "@judged:";
+
 /// ⛔⛔⛔⛔⛔ **THE PLATFORMS A [`RED`] CLAIM MAY BE ABOUT** — register item 949.
 ///
 /// # ⛔⛔⛔ Why a closed set and not whatever `std::env::consts::OS` says
@@ -546,6 +573,71 @@ pub enum RedUnread {
     Platform,
     /// Empty, or a token `cargo test` must not be handed.
     Argv,
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT A [`JUDGED`] LINE RECORDS** — register item 989: which platform's own report
+/// last judged this claim, in which hosted run, at which commit of this tree.
+///
+/// ⚠⚠ THE COMMIT IS NOT DECORATION. It is the half a machine here can check, exactly as
+/// [`Reading::paid_commits`] checks the id on a `paid` mark: item 902 already paid for the
+/// difference between a well-formed mark and a true one, and evidence nobody can resolve is a
+/// claim wearing evidence's clothes. The RUN id is what a person follows; the commit is what
+/// [`Reading::judged_commits`] puts to the repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Judged {
+    /// The platform whose own report answered — must be the one the claim is about.
+    pub on: Platform,
+    /// The hosted run whose job log was read, as the CI names it.
+    pub run: String,
+    /// The commit of this tree that run was for.
+    pub at: String,
+}
+
+/// Why a [`JUDGED`] line could not be read — see [`Judged::parse`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JudgedUnread {
+    /// No leading `@word`, or one this reader has no [`Platform`] for.
+    Platform,
+    /// The run id or the commit is missing, or carries a character neither could have.
+    Fields,
+}
+
+impl Judged {
+    /// Read a [`JUDGED`] line's value: `@<platform> <run-id> <commit>`.
+    ///
+    /// # Errors
+    ///
+    /// [`JudgedUnread::Platform`] where the platform is absent or unspellable — absent is refused
+    /// rather than defaulted to *here*, because evidence that does not say which platform answered
+    /// is evidence about nothing. [`JudgedUnread::Fields`] where the run id or commit is missing or
+    /// is not made of the characters an id is made of.
+    pub fn parse(value: &str) -> Result<Self, JudgedUnread> {
+        let mut words = value.split_whitespace();
+        let named = words.next().ok_or(JudgedUnread::Platform)?;
+        let on = named
+            .strip_prefix('@')
+            .and_then(Platform::parse)
+            .ok_or(JudgedUnread::Platform)?;
+        let (Some(run), Some(at)) = (words.next(), words.next()) else {
+            return Err(JudgedUnread::Fields);
+        };
+        if words.next().is_some() {
+            return Err(JudgedUnread::Fields);
+        }
+        // ⚠ The same closed-set discipline `safe_argument` keeps one type up, for the same reason:
+        // these two words are printed back to a reader as something to follow, and a value that
+        // could be anything is one nobody can tell a typo from.
+        if !(run.chars().all(|at| at.is_ascii_alphanumeric())
+            && at.chars().all(|at| at.is_ascii_alphanumeric()))
+        {
+            return Err(JudgedUnread::Fields);
+        }
+        Ok(Self {
+            on,
+            run: run.to_owned(),
+            at: at.to_owned(),
+        })
+    }
 }
 
 impl RedClaim {
@@ -866,6 +958,10 @@ pub struct Item {
     /// is one this machine may not refute, and until that rode along it could not be written at
     /// all. See [`RedClaim`].
     pub red: Option<RedClaim>,
+    /// ⛔⛔⛔⛔⛔ **THE EVIDENCE THAT LAST JUDGED ITS [`Item::red`]**, if it states any — register
+    /// item 989. [`None`] for every item that states none, which is what
+    /// [`Fault::UnjudgedRed`] is about for the ones that owe it.
+    pub judged: Option<Judged>,
     /// ⛔⛔⛔ **THE SENTENCE THAT FOLLOWS [`PARENT`]'s VALUE**, kept rather than dropped once the
     /// number is read — register item 920. It comes off the SAME block that settled
     /// [`Item::parent`], so a superseded block cannot explain a mark that beat it. [`None`] where
@@ -1051,6 +1147,56 @@ pub enum Fault {
         number: u32,
         /// The line as written.
         line: String,
+    },
+    /// ⛔⛔⛔⛔⛔ **A PLATFORM-MARKED [`RED`] WITH NO RECORD OF EVER HAVING BEEN JUDGED** — register
+    /// item 989, and the consequence the standing notice never had.
+    ///
+    /// A claim naming a platform is one the instrument cannot put to the suite where it runs. Item
+    /// 973 built the command that judges it from that platform's own report; nothing called it, and
+    /// a round that does not call judges on a claim that may have stopped being true. So the claim
+    /// must carry the run that last answered it, and this is what says so until it does.
+    ///
+    /// ⚠ An UNQUALIFIED claim owes nothing here: every default run puts it to the suite, so its
+    /// evidence is the run you are reading.
+    UnjudgedRed {
+        /// The item that made the claim.
+        number: u32,
+        /// The platform the claim names.
+        on: Platform,
+    },
+    /// ⛔⛔⛔ **A [`JUDGED`] LINE THIS READER CANNOT READ** — register item 989, and rule 6 at the
+    /// place the evidence is stated. Left silent it would mean *no evidence*, which is the fault
+    /// above wearing a line that looks like a discharge of it.
+    UnreadJudged {
+        /// The item that wrote it.
+        number: u32,
+        /// The line as written.
+        line: String,
+    },
+    /// ⛔⛔⛔⛔⛔ **EVIDENCE ABOUT THE WRONG PLATFORM** — register item 989, and a SEPARATE fault
+    /// from [`UnreadJudged`](Self::UnreadJudged) because the line is perfectly well formed and the
+    /// author is sent somewhere else: a `@linux` report says nothing about a `@macos` claim, and
+    /// accepting it would let one platform's green discharge every other platform's obligation.
+    JudgedElsewhere {
+        /// The item that wrote it.
+        number: u32,
+        /// The platform the claim is about.
+        claimed: Platform,
+        /// The platform the evidence came from.
+        judged: Platform,
+    },
+    /// ⛔⛔⛔⛔⛔ **EVIDENCE NAMING A COMMIT THIS TREE DOES NOT HAVE** — register item 989, and
+    /// register item 902's finding at the line that now discharges an obligation: a mark nobody
+    /// checks is a claim, and evidence nobody can resolve is the absence of it with a citation
+    /// attached. Raised by [`Reading::judged_commits`], which is the only thing here entitled to
+    /// ask the repository.
+    JudgedCommitUnresolved {
+        /// The item that wrote it.
+        number: u32,
+        /// The commit its evidence names.
+        id: String,
+        /// The run its evidence names, so a reader can go and look.
+        run: String,
     },
     /// An item names a parent section A does not have. **A chain that leaves the ledger cannot be
     /// walked**, so the depth of everything below it is unknown rather than zero.
@@ -1360,6 +1506,45 @@ impl fmt::Display for Fault {
                  refuse",
                 line.trim(),
                 Platform::spellings(),
+            ),
+            Self::UnjudgedRed { number, on } => write!(
+                f,
+                "item {number} claims a red on {} and names no `{JUDGED}` line, so nothing says \
+                 that claim has EVER been put to {}'s own report. Judge it — `north-star \
+                 --elsewhere <ledger> {} <that job's log>` — and record what answered: \
+                 `{JUDGED} @{} <run-id> <commit>`. A claim this instrument cannot check where it \
+                 runs and that carries no evidence is one nothing has ever falsified",
+                on.word(),
+                on.word(),
+                on.word(),
+                on.word(),
+            ),
+            Self::UnreadJudged { number, line } => write!(
+                f,
+                "item {number}: `{}` is not a `{JUDGED}` line this reader can read. It is \
+                 `{JUDGED} @<platform> <run-id> <commit>`, the platform one of {} — evidence \
+                 nobody can read is the absence of evidence wearing its clothes",
+                line.trim(),
+                Platform::spellings(),
+            ),
+            Self::JudgedElsewhere {
+                number,
+                claimed,
+                judged,
+            } => write!(
+                f,
+                "item {number} claims a red on {} and its evidence came from {}. A report from \
+                 one platform answers nothing about another, so this discharges no obligation — \
+                 judge it against {}'s own job log",
+                claimed.word(),
+                judged.word(),
+                claimed.word(),
+            ),
+            Self::JudgedCommitUnresolved { number, id, run } => write!(
+                f,
+                "item {number} says run {run} judged its red at commit {id}, which this tree \
+                 cannot resolve. Evidence naming a commit nobody has is the absence of evidence \
+                 with a citation attached — the finding a `paid` mark's id is checked for",
             ),
             Self::DanglingParent { number, named } => write!(
                 f,
@@ -2192,6 +2377,7 @@ impl Reading {
         Ok(Screenings {
             deferrals: self.deferred_unread(cap),
             paid_commits: self.paid_commits(commits)?,
+            judged_commits: self.judged_commits(commits)?,
             backlog_owners: self.backlog_owners(),
         })
     }
@@ -2376,6 +2562,42 @@ impl Reading {
         }
         Ok(Screening {
             label: "paid commits",
+            found: "unresolved",
+            judged,
+            faults,
+        })
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE COMMITS A [`JUDGED`] LINE NAMES** — register item 989, [`Self::paid_commits`]'s
+    /// shape one claim over.
+    ///
+    /// Evidence that a claim was judged at a commit this tree does not have is a claim wearing
+    /// evidence's clothes — item 902's finding, and the reason a `paid` mark's id is put to the
+    /// repository rather than believed. The same rule, at the line that now discharges an
+    /// obligation.
+    ///
+    /// # Errors
+    ///
+    /// A sentence naming why the repository could not be ASKED — never why one id failed. The split
+    /// [`Self::paid_commits`] keeps, for the reason recorded there.
+    pub fn judged_commits(&self, commits: &dyn Commits) -> Result<Screening, String> {
+        let mut judged = 0;
+        let mut faults = Vec::new();
+        for item in &self.items {
+            let Some(evidence) = &item.judged else {
+                continue;
+            };
+            judged += 1;
+            if !commits.resolves(&evidence.at)? {
+                faults.push(Fault::JudgedCommitUnresolved {
+                    number: item.number,
+                    id: evidence.at.clone(),
+                    run: evidence.run.clone(),
+                });
+            }
+        }
+        Ok(Screening {
+            label: "judged reds",
             found: "unresolved",
             judged,
             faults,
@@ -2615,6 +2837,11 @@ fn parent_value(line: &str) -> Option<&str> {
 /// The value of a [`RED`] line, by the same whole-line rule [`mark_value`] holds.
 fn red_value(line: &str) -> Option<&str> {
     line.trim_start().strip_prefix(RED)
+}
+
+/// The value of a [`JUDGED`] line, by the same whole-line rule [`mark_value`] holds.
+fn judged_value(line: &str) -> Option<&str> {
+    line.trim_start().strip_prefix(JUDGED)
 }
 
 /// The value of an [`OWNER`] line, by the same whole-line rule [`mark_value`] holds.
@@ -3064,6 +3291,8 @@ pub struct Screenings {
     pub deferrals: Screening,
     /// [`Tag::Paid`] marks whose named commit this tree cannot resolve — register item 902.
     pub paid_commits: Screening,
+    /// [`JUDGED`] evidence naming a commit this tree cannot resolve — register item 989.
+    pub judged_commits: Screening,
     /// Backlogs whose declared owner is no longer open — register item 937.
     pub backlog_owners: Screening,
 }
@@ -3074,13 +3303,14 @@ impl Screenings {
     /// `Self` makes a fourth screening a compile error in **this one place**, and everything that
     /// prints or judges a screening walks it through here.
     #[must_use]
-    pub fn each(&self) -> [&Screening; 3] {
+    pub fn each(&self) -> [&Screening; 4] {
         let Self {
             deferrals,
             paid_commits,
+            judged_commits,
             backlog_owners,
         } = self;
-        [deferrals, paid_commits, backlog_owners]
+        [deferrals, paid_commits, judged_commits, backlog_owners]
     }
 
     /// Whether every gate here found nothing. ⚠ The verdict `north-star.rs` reads — see this
@@ -3323,6 +3553,7 @@ pub fn read(text: &str) -> Reading {
         let mut parent = None;
         let mut reason = None;
         let mut red = None;
+        let mut judged = None;
         // ⛔⛔⛔⛔⛔ THE COMMIT IDS THE MARK LINE NAMES — register item 902, collected in the same
         // walk and settled by the same topmost-block rule the mark itself is, because an id read
         // off a block whose mark lost the tie would be evidence for a claim this item is not
@@ -3338,6 +3569,7 @@ pub fn read(text: &str) -> Reading {
             let mut parents: Vec<Parent> = Vec::new();
             let mut reasons: Vec<String> = Vec::new();
             let mut reds: Vec<RedClaim> = Vec::new();
+            let mut judgements: Vec<Judged> = Vec::new();
             let mut owned: Vec<&'static str> = Vec::new();
             for line in body {
                 if let Some(value) = parent_value(line) {
@@ -3391,6 +3623,21 @@ pub fn read(text: &str) -> Reading {
                         }),
                     }
                 }
+                // ⛔⛔⛔⛔⛔ AND THE EVIDENCE THAT LAST JUDGED IT — register item 989. Read here
+                // beside the claim it is about, and gathered per block for the same reason the
+                // claim is: a superseded block's evidence must not discharge the block that beat
+                // it.
+                if let Some(value) = judged_value(line) {
+                    match Judged::parse(value) {
+                        Ok(found) => judgements.push(found),
+                        Err(JudgedUnread::Platform | JudgedUnread::Fields) => {
+                            faults.push(Fault::UnreadJudged {
+                                number: *number,
+                                line: (*line).to_string(),
+                            });
+                        }
+                    }
+                }
                 if let Some(value) = severity_value(line) {
                     match Severity::parse(value) {
                         Some(found) => severities.push(found),
@@ -3440,6 +3687,11 @@ pub fn read(text: &str) -> Reading {
             // about a number owning several blocks. Register item 843.
             if red.is_none() {
                 red = reds.first().cloned();
+                // ⚠ IN THE SAME BREATH AS THE CLAIM IT DISCHARGES — register item 989, and the
+                // rule `reason` follows one field over: evidence gathered a step later could come
+                // off a block whose claim lost the tie, and would then vouch for a claim it was
+                // never written about.
+                judged = judgements.first().cloned();
             }
             // ⚠⚠ AND SO DOES THE OWNERSHIP CLAIM — register item 939, by the same rule and for the
             // same reason: a superseded block claiming a backlog the block that beat it does not
@@ -3492,11 +3744,41 @@ pub fn read(text: &str) -> Reading {
             parent,
             reason,
             red,
+            judged,
             commits,
             owns,
             names_the_loop,
             reads_as_closed,
         });
+    }
+
+    // ⛔⛔⛔⛔⛔ AND A PLATFORM-MARKED CLAIM MUST NAME WHAT LAST JUDGED IT — register item 989.
+    //
+    // Judged here rather than inside the block walk because it is a statement about the ITEM as it
+    // ended up: the claim and the evidence are each settled by the topmost block that states one,
+    // and only after that is *this claim has no evidence* a true sentence.
+    //
+    // ⚠ OPEN items only, for the reason `red_claims` reads open items only: a paid item's red is
+    // history and nothing is going to judge it again.
+    for item in &items {
+        if item.tag != Some(Tag::Open) {
+            continue;
+        }
+        let Some(RedClaim { on: Some(on), .. }) = item.red else {
+            continue;
+        };
+        match &item.judged {
+            None => faults.push(Fault::UnjudgedRed {
+                number: item.number,
+                on,
+            }),
+            Some(evidence) if evidence.on != on => faults.push(Fault::JudgedElsewhere {
+                number: item.number,
+                claimed: on,
+                judged: evidence.on,
+            }),
+            Some(_) => {}
+        }
     }
 
     // ⚠ The chain is judged AFTER every item is known: a parent may be filed below its child, and
@@ -5367,6 +5649,185 @@ mod tests {
         );
     }
 
+    /// A ledger whose standing red is about ANOTHER platform — the population register item 989 is
+    /// about, since a claim this instrument can put to the suite here needs no recorded evidence.
+    fn with_a_macos_red(evidence: &str) -> String {
+        with_a_standing_red().replace(
+            "@red: -p sprag-gate --lib north_star",
+            &format!("@red: @macos -p sprag-gate --lib north_star{evidence}"),
+        )
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A CLAIM THIS HOST CANNOT JUDGE MUST NAME WHAT LAST JUDGED IT** — register item
+    /// 989, and the consequence a standing notice never had.
+    ///
+    /// # ⛔⛔⛔ What the notice was worth, measured
+    ///
+    /// The default run has printed *"N claim(s) are about another platform, so this linux run did
+    /// not judge them: 952 970"* every round since item 949, and item 973 built the command that
+    /// can answer it. Nothing called that command. A sibling report in this repository shows what a
+    /// printed number is worth on its own: `.githooks/hosted-read.sh` printed *"206 round(s)
+    /// published since a hosted result was read"* on two consecutive pushes of the session that
+    /// wrote this, and neither push did anything about it.
+    ///
+    /// ⚠⚠⚠⚠⚠ **BOTH ARMS, OR THIS IS A CONSTANT.** A reading that faulted every platform claim
+    /// would be unsatisfiable — there would be no way to be green and the gate would be turned off
+    /// within a round. So the arm that MATTERS is the second: evidence discharges it.
+    #[test]
+    fn a_platform_marked_red_owes_evidence_and_naming_it_discharges_that() {
+        let bare = read(&with_a_macos_red(""));
+        assert_eq!(
+            bare.faults,
+            vec![Fault::UnjudgedRed {
+                number: 898,
+                on: Platform::Macos,
+            }],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 989: a claim about a platform this instrument is not, with \
+             nothing saying it was ever put to that platform's report, is a red nothing has ever \
+             falsified — and it was a printed note with no consequence",
+        );
+        let evidenced = read(&with_a_macos_red(
+            "\n     @judged: @macos 34418336302 dbd4d825",
+        ));
+        assert_eq!(
+            evidenced.faults,
+            Vec::new(),
+            "⚠⚠⚠ THE ARM THAT MAKES IT A GATE AND NOT A BAN: naming the run that judged it is a \
+             discharge, so there is a way to be green and it is the way that does the work",
+        );
+        assert_eq!(
+            evidenced
+                .items
+                .iter()
+                .find(|it| it.number == 898)
+                .unwrap()
+                .judged,
+            Some(Judged {
+                on: Platform::Macos,
+                run: "34418336302".to_owned(),
+                at: "dbd4d825".to_owned(),
+            }),
+            "⚠ and the evidence is READ rather than merely tolerated — the run and the commit are \
+             what a reader follows and what the repository is asked about",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE POPULATION IS ONLY THE CLAIMS THIS HOST CANNOT PUT** — register item 989.
+    ///
+    /// An UNQUALIFIED claim is put to the suite by every default run, so its evidence is the run
+    /// you are reading and demanding a line would be ceremony. A PAID item's red is history and
+    /// [`Reading::red_claims`] does not even carry it. Both are asserted because a gate that fired
+    /// on them would be one whose author had not asked what it was for.
+    #[test]
+    fn an_unqualified_or_closed_red_owes_no_evidence() {
+        assert_eq!(
+            read(&with_a_standing_red()).faults,
+            Vec::new(),
+            "⚠⚠ THE CONTROL: the claim every default run puts to the suite here owes nothing — a \
+             reading that faulted it would be demanding a record of the run being read",
+        );
+        let closed = with_a_macos_red("").replace(
+            "898. ⛔ **An ordinary item that is RED**\n     @ns: open",
+            "898. ✅ **An ordinary item that WAS red**\n     @ns: paid `deadbee`",
+        );
+        assert_eq!(
+            read(&closed).faults,
+            Vec::new(),
+            "⛔⛔ AND A PAID ITEM'S RED IS HISTORY: nothing is going to judge it again, and \
+             `red_claims` does not carry it — a fault here would make every closed item owe a \
+             hosted read for ever",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVIDENCE FROM ANOTHER PLATFORM DISCHARGES NOTHING** — register item 989.
+    ///
+    /// A `@linux` report says nothing about a `@macos` claim. Accepted, it would let one platform's
+    /// green satisfy every other platform's obligation — which is the tolerance item 949 spent a
+    /// round removing from the other direction, arriving through the evidence line instead.
+    ///
+    /// ⚠ And a line this reader cannot READ is its own fault, because left silent it would be
+    /// *no evidence* wearing a line that looks like a discharge of it — rule 6 where the ledger
+    /// states its evidence.
+    #[test]
+    fn evidence_about_the_wrong_platform_or_in_no_readable_shape_is_refused() {
+        assert_eq!(
+            read(&with_a_macos_red(
+                "\n     @judged: @linux 34418336302 dbd4d825"
+            ))
+            .faults,
+            vec![Fault::JudgedElsewhere {
+                number: 898,
+                claimed: Platform::Macos,
+                judged: Platform::Linux,
+            }],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 989: a linux report answers nothing about a macos claim, and \
+             a reader handed *unreadable* about a well-formed line edits the wrong thing",
+        );
+        for broken in [
+            "@judged: 34418336302 dbd4d825",
+            "@judged: @osx 34418336302 dbd4d825",
+            "@judged: @macos 34418336302",
+            "@judged: @macos 34418336302 dbd4d825 and-a-word-too-many",
+            "@judged: @macos 34418336302 dbd4d82!",
+        ] {
+            let reading = read(&with_a_macos_red(&format!("\n     {broken}")));
+            assert!(
+                reading
+                    .faults
+                    .iter()
+                    .any(|fault| matches!(fault, Fault::UnreadJudged { number: 898, .. })),
+                "⛔⛔⛔ RULE 6: `{broken}` is not a discharge — a line nobody can read must not \
+                 be able to satisfy the obligation the readable one satisfies",
+            );
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE COMMIT IT NAMES IS PUT TO THE REPOSITORY** — register item 989, and
+    /// register item 902's finding at the line that now discharges an obligation.
+    ///
+    /// A `paid` mark's id is checked because a mark nobody checks is a claim. This line is stronger
+    /// than a mark — it silences a gate — so believing its citation would hand every author a
+    /// one-line way to turn the gate off.
+    #[test]
+    fn evidence_naming_a_commit_this_tree_cannot_resolve_is_a_fault() {
+        struct Says(bool);
+        impl Commits for Says {
+            fn resolves(&self, _id: &str) -> Result<bool, String> {
+                Ok(self.0)
+            }
+        }
+        let reading = read(&with_a_macos_red(
+            "\n     @judged: @macos 34418336302 dead1234",
+        ));
+        let missing = reading
+            .judged_commits(&Says(false))
+            .expect("the repository answered");
+        assert_eq!(
+            missing.judged, 1,
+            "⚠⚠ THE POPULATION IS STATED, so *asked and clean* and *never asked* are different \
+             lines — register item 924's rule, which every screening here is written under",
+        );
+        assert_eq!(
+            missing.faults,
+            vec![Fault::JudgedCommitUnresolved {
+                number: 898,
+                id: "dead1234".to_owned(),
+                run: "34418336302".to_owned(),
+            }],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 989: evidence citing a commit nobody has is the absence of \
+             evidence with a citation attached, and it would silence the gate above",
+        );
+        let present = reading
+            .judged_commits(&Says(true))
+            .expect("the repository answered");
+        assert_eq!(
+            (present.judged, present.faults.as_slice()),
+            (1, [].as_slice()),
+            "⚠⚠ THE CONTROL: a citation this tree CAN resolve passes, so the arm above is about \
+             resolution and not about the line existing",
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **A FAILURE NO CLAIM HOLDS IS NAMED, AND A HELD ONE IS NOT** — register item 998,
     /// and the population [`Reading::standing_reds`] cannot reach.
     ///
@@ -6050,6 +6511,13 @@ mod tests {
             // arm is the gate working a second time: adding the variant would not compile until
             // its author answered here, which is what register item 903 bought.
             | Fault::PaidCommitUnresolved { .. }
+            // ⚠⚠ Register item 989's four name ONE item each, and their messages carry it along
+            // with the platform, the line or the run — a reader has one place to go in every case.
+            // These arms are the same gate working a third time.
+            | Fault::UnjudgedRed { .. }
+            | Fault::UnreadJudged { .. }
+            | Fault::JudgedElsewhere { .. }
+            | Fault::JudgedCommitUnresolved { .. }
             // ⚠ Register item 939's first fault is about ONE line, which its message quotes.
             | Fault::UnknownOwned { .. } => None,
             // ⛔ AND ITS SECOND ONE DOES CARRY A SET — register item 939. The items claiming a
