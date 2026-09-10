@@ -75,6 +75,28 @@
 //! small real accumulation — **they are the same number.** They are not the same SHAPE, and
 //! [`the_storm_does_not_scale_with_its_own_length`] is the guard that asks about the shape.
 //!
+//! # ⛔⛔⛔⛔⛔ AND THE CONSTANT WAS STILL THE VERDICT, SO IT WENT ON PRODUCING UNREADABLE REDS
+//!
+//! Register item 508, opened 2026-08-20 and left unclassified for three weeks as *a flake*. The
+//! paragraph above already knew a bound could not answer macOS; the three extreme guards ended at
+//! one anyway. MEASURED over **13 consecutive macOS runs** (2026-09-10, `f16dbe15`..`86df071f`, the
+//! job logs read through `gh api …/jobs/<id>/logs`):
+//!
+//! * `rapid_extreme_resize_does_not_accumulate_prompts` — **1 red in 13**, at `ADDED 5 (bound 4)`;
+//! * every other guard in this file — **13 green in 13**, including
+//!   [`the_storm_does_not_scale_with_its_own_length`] **in the very run that was red**, driving the
+//!   IDENTICAL widths.
+//!
+//! So the discriminating guard said *not the defect* on the one run the constant called it, and 12
+//! of 13 runs of the same tree agreed with the discriminating one. ⇒ The bound is now a SCREEN and
+//! not a verdict: [`extreme_storm_guard`] drives one sweep, and only when that goes over does it ask
+//! the doubled storm the question the number cannot answer. The common path costs what it always
+//! did; a pass that needed the second stage prints its sample so the rate stays countable.
+//!
+//! ⚠ **This is not a widened bound.** Widening admits a real accumulation that happens to be small
+//! — every number in that region is undecidable by construction, which is what the paragraph above
+//! measured. The screen is unchanged; what changed is what happens when it is exceeded.
+//!
 //! These need a real `/bin/bash`; they are integration tests, not unit tests.
 //! (Char-agnostic mechanism precision is pinned by the deterministic unit tests in
 //! `sprag-vt`; these are the end-to-end smoke against the real shell.)
@@ -185,6 +207,23 @@ fn added_ceiling(steps: usize) -> usize {
     steps / 16
 }
 
+/// The cheap first look: is this sweep's contribution under the bound?
+///
+/// ⚠ A predicate rather than an inline `<=` because [`extreme_storm_guard`] branches on it and
+/// [`the_two_stage_verdict_answers_both_ways`] drives it without a terminal.
+fn within_bound(added: usize, bound: usize) -> bool {
+    added <= bound
+}
+
+/// ⚠⚠⚠⚠⚠ **THE QUESTION A BOUND CANNOT ANSWER** — did the additions FOLLOW the storm?
+///
+/// One spelling of the rule, used by [`the_storm_does_not_scale_with_its_own_length`] and by every
+/// extreme guard's second stage. The defect stacks one copy per resize step, so it grows with the
+/// sweep; a shell whose redisplay lands a prompt on a fresh row once or twice does not.
+fn scaled_with_the_storm(added_short: usize, added_long: usize) -> bool {
+    added_long > added_short + SCALE_SLACK
+}
+
 /// Block until the screen's damage stamp holds steady for `quiet` (bash has
 /// finished redrawing), or `cap` elapses. Bash's redraw is asynchronous (PTY →
 /// reader thread → emulator), so a guard must wait on settle, never a fixed sleep.
@@ -271,21 +310,82 @@ fn drag_sweep(
     prompt_count(session).saturating_sub(before)
 }
 
+/// ⛔⛔⛔⛔⛔ **THE EXTREME STORM, JUDGED IN TWO STAGES — register item 508.**
+///
+/// # What a fixed bound decided, and what it could not
+///
+/// Every extreme guard used to end at `added <= steps / 16`. MEASURED across **13 consecutive
+/// macOS runs** (2026-09-10, `f16dbe15`..`86df071f`): one of them was red, at **`ADDED 5` against
+/// `bound 4`** — one over — and in that same run
+/// [`the_storm_does_not_scale_with_its_own_length`], which drives the IDENTICAL widths, was
+/// **green**. So the discriminating guard said *not the defect* on the very run the constant said
+/// *the defect*, and 12 of 13 runs of this same tree agreed with the discriminating one.
+///
+/// [`added_ceiling`]'s own header already says why: *"nothing in a bound can say whether that 3 is
+/// a fifteen-year-older bash leaving a couple of prompts behind or a small real accumulation — the
+/// two are the same number"*. The bound stayed the verdict anyway, so a number it cannot interpret
+/// was a red on a platform this tree cannot reproduce, and it was read as a flake for three weeks.
+///
+/// # ⇒ So the bound stays as a SCREEN and stops being the verdict
+///
+/// Under the bound, one sweep and done — the common path costs exactly what it always did (this box
+/// answers **0** on all of them). Over it, the guard drives the SAME storm at double the length and
+/// asks the only question that separates the regimes. Under the defect the arithmetic is not close:
+/// ~39 additions at 78 steps against ~78 at 156.
+///
+/// ⚠⚠ **A PASS THAT NEEDED THE SECOND STAGE SAYS SO, ON STDERR.** A silent pass would hide the
+/// sample, and the rate is what the next round has to read — the three weeks this sat as *a flake*
+/// were three weeks of nobody having the numbers.
+///
+/// ⚠ Not a widened bound: widening admits a real accumulation that happens to be small, and every
+/// number in that region is undecidable by construction. This asks a different question instead.
+fn extreme_storm_guard(input: &[u8], case: &str) {
+    let widths = drag_widths(80, 4);
+    let bound = added_ceiling(widths.len());
+    let added = drag_sweep(
+        &bash_session(80, 24),
+        input,
+        &widths,
+        24,
+        Duration::from_millis(55),
+    );
+    if within_bound(added, bound) {
+        return;
+    }
+
+    // ⚠ Built by SWEEPING TWICE rather than by halving the step, for the reason
+    // `the_storm_does_not_scale_with_its_own_length` gives: the two storms must differ in LENGTH
+    // and in nothing else.
+    let long: Vec<u16> = widths.iter().chain(widths.iter()).copied().collect();
+    let doubled = drag_sweep(
+        &bash_session(80, 24),
+        input,
+        &long,
+        24,
+        Duration::from_millis(55),
+    );
+    assert!(
+        !scaled_with_the_storm(added, doubled),
+        "⚠⚠⚠ THE ADDITIONS FOLLOWED THE STORM ({case}): {} steps ADDED {added}, {} steps ADDED \
+         {doubled}. That is the resize-stale shape — one copy per resize step — and not a shell \
+         leaving a prompt or two behind",
+        widths.len(),
+        long.len(),
+    );
+    eprintln!(
+        "resize_accumulation: {case} went over the screen ({added} > {bound}) and the doubled \
+         storm did not follow it ({doubled} over {} steps) — register item 508, and this line is \
+         the sample the rate is counted from",
+        long.len(),
+    );
+}
+
 /// Regression guard: the rapid extreme storm with SHORT ASCII input on the line.
 /// bash's input redraw splits the line with `CR LF` at exact-fill widths; without
 /// the resize-redraw soft-wrap fix the per-width copies stacked (≈16-44 prompts).
 #[test]
 fn rapid_extreme_resize_with_typed_input_does_not_accumulate() {
-    let session = bash_session(80, 24);
-    let widths = drag_widths(80, 4);
-    let bound = added_ceiling(widths.len());
-    let n = drag_sweep(&session, b"echo hi", &widths, 24, Duration::from_millis(55));
-    assert!(
-        n <= bound,
-        "a RAPID extreme resize with typed input ADDED {n} prompts over {} steps \
-         (bound {bound}) — the resize-stale bug (typed-input case)",
-        widths.len(),
-    );
+    extreme_storm_guard(b"echo hi", "typed input");
 }
 
 /// Regression guard: the same storm with KOREAN wide-char input (`안녕하세요`) —
@@ -294,21 +394,9 @@ fn rapid_extreme_resize_with_typed_input_does_not_accumulate() {
 /// smoke that the bound holds for them, complementing the char-agnostic unit tests.
 #[test]
 fn rapid_extreme_resize_with_wide_char_input_does_not_accumulate() {
-    let session = bash_session(80, 24);
-    let widths = drag_widths(80, 4);
-    let bound = added_ceiling(widths.len());
-    let n = drag_sweep(
-        &session,
+    extreme_storm_guard(
         "\u{c548}\u{b155}\u{d558}\u{c138}\u{c694}".as_bytes(), // 안녕하세요
-        &widths,
-        24,
-        Duration::from_millis(55),
-    );
-    assert!(
-        n <= bound,
-        "a RAPID extreme resize with Korean input ADDED {n} prompts over {} steps \
-         (bound {bound}) — the resize-stale bug (wide-char input case)",
-        widths.len(),
+        "wide-char input",
     );
 }
 
@@ -447,8 +535,11 @@ fn the_storm_does_not_scale_with_its_own_length() {
         Duration::from_millis(55),
     );
 
+    // ⚠ Through [`scaled_with_the_storm`] — register item 508. The rule was spelled here and again
+    // inside every extreme guard's second stage, and two spellings of one rule is item 213 in this
+    // repository's own history: `pre-commit` gained `-D warnings` and `pre-push` never did.
     assert!(
-        added_long <= added_short + SCALE_SLACK,
+        !scaled_with_the_storm(added_short, added_long),
         "⚠⚠⚠ THE STORM'S CONTRIBUTION SCALED WITH THE STORM: {} steps ADDED {added_short}, and \
          {} steps ADDED {added_long}. That is the shape of the resize-stale bug — one copy per \
          resize step — and it is the reading a fixed bound cannot distinguish from a shell that \
@@ -467,14 +558,50 @@ fn the_storm_does_not_scale_with_its_own_length() {
 /// overwrites the old prompt in place. Kept as a guard against regression.
 #[test]
 fn rapid_extreme_resize_does_not_accumulate_prompts() {
-    let session = bash_session(80, 24);
-    let widths = drag_widths(80, 4);
-    let bound = added_ceiling(widths.len());
-    let added = drag_sweep(&session, b"", &widths, 24, Duration::from_millis(55));
+    extreme_storm_guard(b"", "bare prompt");
+}
+
+/// ⚠⚠⚠ **THE TWO-STAGE VERDICT, DRIVEN WITHOUT A TERMINAL** — register item 508, and the arm that
+/// keeps [`extreme_storm_guard`] from being a shape nobody checked.
+///
+/// The guard above cannot exercise its own second stage here: this box adds **0** on every sweep at
+/// every step gap from 1 ms to 90 ms, so the escalation runs on macOS and nowhere else. A predicate
+/// nothing drives is a predicate that stops being true quietly — so the decision is a pure function
+/// of two numbers and both regimes are put to it, using the numbers this repository actually
+/// measured rather than invented ones.
+#[test]
+fn the_two_stage_verdict_answers_both_ways() {
+    let bound = added_ceiling(drag_widths(80, 4).len());
+    assert_eq!(bound, 4, "the 78-step storm's screen is a sixteenth of it");
+
+    // This box, every run: nothing to escalate.
+    assert!(within_bound(0, bound), "zero additions is under any screen");
+    // The macOS reading that opened item 508: `ADDED 5 (bound 4)` — one over, so the screen does
+    // NOT settle it and the second stage is what decides.
     assert!(
-        added <= bound,
-        "a RAPID extreme resize ADDED {added} prompts over {} steps (bound {bound}) — \
-         the resize-stale bug",
-        widths.len(),
+        !within_bound(5, bound),
+        "5 over a screen of 4 must escalate"
+    );
+
+    // …and what the second stage then said, in both regimes. A shell leaving a prompt or two
+    // behind answers about the same at double the length; the defect answers about double.
+    assert!(
+        !scaled_with_the_storm(5, 5),
+        "⚠ the same count at double the length is a shell settling, not an accumulation — \
+         calling that red is what made this file's macOS red unreadable for three weeks",
+    );
+    assert!(
+        !scaled_with_the_storm(5, 7),
+        "SCALE_SLACK is measurement noise and must be inside the verdict, not outside it",
+    );
+    assert!(
+        scaled_with_the_storm(5, 8),
+        "one past the slack is growth, and the verdict has to say so or the slack is a bound again",
+    );
+    assert!(
+        scaled_with_the_storm(39, 78),
+        "⛔ THE DEFECT ITSELF: ~39 additions over 78 steps and ~78 over 156 is one copy per resize \
+         step. If this arm ever passes, the second stage has stopped being able to fail and every \
+         extreme guard above it is a screen with nothing behind it",
     );
 }
