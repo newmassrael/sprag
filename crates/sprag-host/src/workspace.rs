@@ -2965,6 +2965,21 @@ impl WorkspaceExternal {
                 // ⚠ ONLY runs that are still RUNNING count. A finished run's `driving` still names
                 // the pane it drove — which is item 540's whole point, asked of history — and
                 // reading it here would say somebody is driving a pane nobody is.
+                //
+                // ⛔⛔⛔⛔⛔ **AND THE READER IS `plugins`' AND NOT THIS SITE'S** — register item
+                // 1018, and the defect a third spelling of one question hid for a fortnight. This
+                // read `run.progress.driving` — the LOCAL CELL — and a run driven in a process of
+                // its own never touches that cell (item 662). `run-driver-process` has defaulted to
+                // `on` since 2026-08-25, so **every run in the field is that kind of run**, and the
+                // surface item 595 built to answer *is anybody driving me* answered NOBODY about
+                // every pane a live loop was driving.
+                //
+                // ⚠⚠ Measured on this machine's own loop daemon: run 289 `running` at 101
+                // iterations, its prompts landing in a `claude` pane a person was watching, and
+                // `sprag panes` marked no pane in the session driven. The runs slot said the pane
+                // (it reads the report first); this one said nobody. A key whose live arm can never
+                // be true is a constant, and a watcher who read it learnt nothing — which is why
+                // watchers went on reading the screen.
                 let driven: std::collections::HashSet<u64> = self
                     .runs
                     .as_ref()
@@ -2972,8 +2987,40 @@ impl WorkspaceExternal {
                         crate::lock(runs)
                             .snapshot()
                             .iter()
-                            .filter(|run| matches!(run.state, crate::runs::RunState::Running))
-                            .filter_map(|run| run.progress.driving.map(|pane| pane.0))
+                            .filter_map(|run| {
+                                crate::plugins::pane_a_run_is_driving(run).map(|pane| pane.0)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                // ⛔⛔⛔⛔⛔ **AND WHICH RUN HAS ENDED ON A PANE NOBODY IS DRIVING NOW** — register
+                // item 1018, the half `driven` cannot reach.
+                //
+                // An absent `driven` is three worlds at once: a pane nobody ever drove, a pane a
+                // person opened, and a pane whose run has ended while the agent in it goes on
+                // working. Measured from outside on 2026-09-10 — run 283 died and its pane worked,
+                // committed and pushed for two and a half hours, woken by its own background jobs —
+                // and the only reader that could tell the three apart was a person going through a
+                // transcript by hand.
+                //
+                // ⚠⚠ THE LAST ENDING WINS. `snapshot` is in submission order, so a later run that
+                // drove the same pane overwrites an earlier one's entry: what a watcher needs is the
+                // run whose death left this pane, not the first one ever to touch it.
+                //
+                // ⚠ A pane in `driven` is REMOVED below rather than filtered here, because the two
+                // sets are built from one snapshot and doing it at the stamp keeps the exclusion
+                // where a reader of the row can see it.
+                let left_by: std::collections::HashMap<u64, u64> = self
+                    .runs
+                    .as_ref()
+                    .map(|runs| {
+                        crate::lock(runs)
+                            .snapshot()
+                            .iter()
+                            .filter_map(|run| {
+                                crate::plugins::pane_a_run_has_left(run)
+                                    .map(|pane| (pane.0, run.id.0))
+                            })
                             .collect()
                     })
                     .unwrap_or_default();
@@ -3211,6 +3258,22 @@ impl WorkspaceExternal {
                         // gets skimmed past on the pane that matters.
                         if driven.contains(&p.id) {
                             entry[crate::wire::PANE_DRIVEN_KEY] = serde_json::json!(true);
+                        }
+                        // ⛔⛔⛔⛔⛔ **AND WHOSE DEATH LEFT IT** — register item 1018, and the one
+                        // thing an absent key above cannot say.
+                        //
+                        // ⚠⚠ EXCLUSIVE WITH THE KEY ABOVE, checked here where both are in hand: a
+                        // run that ended and a run that is driving can name the same pane (a loop
+                        // relaunched onto the pane its predecessor died on is the ordinary case),
+                        // and a row saying *your driver is alive* and *your driver is gone* at once
+                        // would be worse than the silence this replaces.
+                        //
+                        // ⚠ It says nothing about what the agent in the pane is DOING. The item's
+                        // third clause is that the reverse guess is wrong too — a quiet pane is not
+                        // a dead run, an agent may be thinking — so weighing the agent's state in
+                        // here would rebuild the inference this key exists to retire.
+                        else if let Some(run) = left_by.get(&p.id) {
+                            entry[crate::wire::PANE_LEFT_BY_KEY] = serde_json::json!(run);
                         }
                         // ⚠⚠⚠⚠⚠ **AND WHETHER THE DAEMON BROUGHT IT BACK RATHER THAN ANYBODY ASKING
                         // FOR IT** — register item 595, the half the key above cannot reach.
@@ -4505,6 +4568,245 @@ mod tests {
             "⛔⛔⛔ ITEM 595: this run is OVER and its pane is still here holding whatever the agent \
              left in it. Nobody is driving it, and a pane that says otherwise is the revived-agent \
              confusion wearing the fix's clothes",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A PANE ANSWERS ABOUT A DRIVER IN ANOTHER PROCESS, AND NAMES THE RUN WHOSE DEATH
+    /// LEFT IT** — register item 1018, and the two halves the gate above cannot reach.
+    ///
+    /// # ⛔⛔⛔ Why that gate was green while the field was broken
+    ///
+    /// It writes [`sprag_plugin::ProgressCell`] — the LOCAL CELL — and **a run driven in a process
+    /// of its own never touches that cell** (register item 662): what moves is
+    /// [`crate::runs::RunSummary::reported`]. [`crate::options::RUN_DRIVER_PROCESS`] has defaulted
+    /// to `on` since 2026-08-25, so *every run in the field is the kind the join could not see*, and
+    /// the join read the cell alone.
+    ///
+    /// Measured 2026-09-10 on this machine's own loop daemon: run 289 `running` at 101 iterations,
+    /// its prompts landing in a `claude` pane a person was watching, and `sprag panes` marked **no
+    /// pane in the session** driven. A key whose live arm can never be true is a CONSTANT — a
+    /// watcher who read it learnt nothing, so watchers went on reading the screen, and a run that
+    /// died went unseen for two and a half hours while the pane beside it worked, committed and
+    /// pushed.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The second half: an absence cannot say *your driver died*
+    ///
+    /// `driven` absent covers three worlds — a pane nobody ever drove, a pane a person opened, and a
+    /// pane whose run has ended — and only the last is a fault. [`crate::wire::PANE_LEFT_BY_KEY`] is
+    /// what separates them, and the two keys are asserted MUTUALLY EXCLUSIVE here because a row
+    /// saying *your driver is alive* and *your driver is gone* at once would be worse than the
+    /// silence it replaces.
+    ///
+    /// # ⚠⚠⚠ And the item's third clause: the answer never reads the pane
+    ///
+    /// This fixture installs **no agent registry at all**, so no row here carries an `agent` object
+    /// — and every arm below still returns a complete answer. That is the claim: a busy pane is not
+    /// evidence a run is alive and a quiet one is not evidence it is dead, so a driver answer
+    /// weighing what the pane is doing would rebuild the guess these keys exist to retire.
+    #[test]
+    fn a_pane_answers_about_a_driver_in_another_process_and_names_the_run_that_left_it() {
+        let reg = registry();
+        let runs = Arc::new(Mutex::new(crate::runs::RunRegistry::default()));
+        let scope = SessionScope::unscoped(&reg);
+        let channels = Arc::new(ChannelRegistry::default());
+        let mut ext = WorkspaceExternal::new(
+            Arc::clone(&reg),
+            scope,
+            channels,
+            crate::DaemonShared {
+                on_pane_exit: None,
+                attachments: None,
+                attention: None,
+                // ⚠ THE THIRD CLAUSE, STATED IN THE FIXTURE: no agent registry, so no row can carry
+                // a verdict about what a pane is doing — and the assertions below still pass.
+                agents: None,
+                samplers: sampler(),
+                spawn_driver: None,
+                seats_elsewhere: None,
+                panes_elsewhere: None,
+                runs: Some(Arc::clone(&runs)),
+            },
+        );
+        for _ in 0..2 {
+            ext.invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+                .expect("both panes are born the same way");
+        }
+
+        // ── A RUN WHOSE DRIVER IS SOMEWHERE ELSE ── its progress cell stays empty for ever, which
+        // is what `spawn_driven_run` files and what makes this fixture the field's shape rather
+        // than the sibling gate's.
+        let progress = sprag_plugin::ProgressCell::default();
+        let state = Arc::new(Mutex::new(crate::runs::RunState::Running));
+        let id = crate::lock(&runs).reserve();
+        crate::lock(&runs).submit(crate::runs::NewRun {
+            id,
+            label: "ai_loop pane=0".to_owned(),
+            plugin: crate::plugins::PluginName::AiLoop,
+            request: None,
+            overridden: None,
+            opened_by: None,
+            opened_by_session: None,
+            tree: None,
+            state: Arc::clone(&state),
+            run: Box::new(crate::runs::EndedRun::restored(false, None, None)),
+            progress: Arc::clone(&progress),
+        });
+        // ⚠⚠ THROUGH THE REAL DOOR, and in the report's own shape: `RunRegistry::report` is what a
+        // driver in another process calls, and `progress_from_report` reads the pane out of the
+        // nested object `REPORTED_BESIDE_KEY` names. A fixture that reached into the record would
+        // be asserting about a road no driver takes.
+        crate::lock(&runs)
+            .report(
+                id,
+                json!({
+                    crate::plugins::REPORTED_BESIDE_KEY: {
+                        crate::plugins::RUN_DRIVING_KEY: 0,
+                    }
+                }),
+            )
+            .expect("a running run takes its own driver's report");
+
+        assert_eq!(
+            crate::lock(&progress).driving,
+            None,
+            "⛔⛔⛔⛔⛔ THE PREMISE, AND WITHOUT IT THIS GATE IS THE SIBLING ABOVE: the local cell is \
+             EMPTY and stays empty, because a driver in another process never touches it (item \
+             662). If anything fills it in, the assertions below stop being about the report",
+        );
+        assert_eq!(
+            pane_entry(&mut ext, 0)[crate::wire::PANE_DRIVEN_KEY],
+            json!(true),
+            "⛔⛔⛔⛔⛔ ITEM 1018: a live run REPORTS that it is driving this pane and the pane says \
+             nobody is. `run-driver-process` has defaulted to `on` since 2026-08-25, so this is \
+             every run in the field: the key built to answer *is anybody driving me* answered NO \
+             about every driven pane there is, and a key whose live arm can never be true teaches \
+             its readers to go back to reading the screen",
+        );
+        assert_eq!(
+            pane_entry(&mut ext, 0).get(crate::wire::PANE_LEFT_BY_KEY),
+            None,
+            "⚠⚠⚠⚠⚠ AND THE TWO KEYS ARE EXCLUSIVE: this run is alive, so nothing may also say a run \
+             has left this pane. A row claiming both would be saying the driver is working and gone \
+             at once",
+        );
+        // ⚠ The row's own spelling of the verdict, which is a literal where it is stamped a few
+        // hundred lines up (`entry["agent"]`) and so is a literal here.
+        assert_eq!(
+            pane_entry(&mut ext, 0).get("agent"),
+            None,
+            "⚠⚠⚠ THE ITEM'S THIRD CLAUSE: the driver answer above is complete with NOTHING said \
+             about what the pane is doing. A busy pane is not evidence a run is alive and a quiet \
+             one is not evidence it is dead — an answer that needed the agent's state would be that \
+             guess with a key on it",
+        );
+        assert_eq!(
+            pane_entry(&mut ext, 1).get(crate::wire::PANE_DRIVEN_KEY),
+            None,
+            "⚠⚠⚠⚠⚠ THE CONTROL: born the same way into the same workspace, and no run reports it",
+        );
+        assert_eq!(
+            pane_entry(&mut ext, 1).get(crate::wire::PANE_LEFT_BY_KEY),
+            None,
+            "⚠⚠ AND NOTHING EVER DROVE IT, which is the third of the three worlds an absent \
+             `driven` used to cover — carried by silence, because a key on every shell in the \
+             workspace is noise on the common path",
+        );
+
+        // ── AND THE RUN DIES, WITH ITS PANE STILL THERE AND STILL BUSY ──
+        //
+        // ⚠⚠⚠⚠⚠ **THIS IS THE ARM THE ITEM WAS FILED ON.** Measured from outside on 2026-09-10:
+        // run 283 ended and the pane it had been driving went on working, committing and pushing
+        // for two and a half hours, woken by its own background jobs rather than by any driver.
+        // Nothing this daemon published said so, so the fault was found by a person reading a
+        // transcript.
+        *crate::lock(&state) = crate::runs::RunState::Done {
+            outcome: Box::new(sprag_plugin::Outcome {
+                state: sprag_plugin::OutcomeState::Converged,
+                iterations: 1,
+                cost: None,
+                failure: None,
+                stopped: None,
+                answered: 0,
+                screened: 0,
+                deferred: None,
+                unchecked: None,
+                unadmitted: None,
+                reask_capped: None,
+                reask_landed: None,
+                reask_landed_deepest: None,
+                deliveries: sprag_plugin::Deliveries::NONE,
+                checks: sprag_plugin::Checks::NONE,
+                banked: None,
+                briefed: None,
+                done_reason: None,
+            }),
+            output: None,
+            uncommitted: None,
+        };
+        assert_eq!(
+            pane_entry(&mut ext, 0).get(crate::wire::PANE_DRIVEN_KEY),
+            None,
+            "⛔⛔⛔ ITEM 595's arm, re-asked of a driver in another process: the run is over and its \
+             last report still names this pane, so a join without the state filter would certify \
+             the confusion the key was built to end",
+        );
+        assert_eq!(
+            pane_entry(&mut ext, 0)[crate::wire::PANE_LEFT_BY_KEY],
+            json!(id.0),
+            "⛔⛔⛔⛔⛔ ITEM 1018: nothing is driving this pane and the row must SAY SO AND NAME THE \
+             RUN. An absent `driven` is a pane nobody drove, a pane a person opened, and a pane \
+             whose driver died, and only the last is a fault — a watcher reading silence cannot act \
+             on it, which is why the one that mattered went unseen for two and a half hours",
+        );
+        assert_eq!(
+            pane_entry(&mut ext, 1).get(crate::wire::PANE_LEFT_BY_KEY),
+            None,
+            "⚠⚠⚠⚠⚠ THE CONTROL AGAIN, AND IT IS WHAT MAKES THE CLAIM ABOVE MEAN ANYTHING: this pane \
+             is undriven too, and no run ever drove it. A key on both would be reporting that a run \
+             ended, which the runs slot already says",
+        );
+
+        // ── AND A SUCCESSOR TAKES THE SAME PANE ── which is the ORDINARY case, not a corner: a loop
+        // is relaunched onto the pane its predecessor died on, so a dead run and a live one name
+        // one pane. The exclusion has to be made HERE, at the row, because both maps hold it.
+        let next_state = Arc::new(Mutex::new(crate::runs::RunState::Running));
+        let next = crate::lock(&runs).reserve();
+        crate::lock(&runs).submit(crate::runs::NewRun {
+            id: next,
+            label: "ai_loop pane=0".to_owned(),
+            plugin: crate::plugins::PluginName::AiLoop,
+            request: None,
+            overridden: None,
+            opened_by: None,
+            opened_by_session: None,
+            tree: None,
+            state: Arc::clone(&next_state),
+            run: Box::new(crate::runs::EndedRun::restored(false, None, None)),
+            progress: sprag_plugin::ProgressCell::default(),
+        });
+        crate::lock(&runs)
+            .report(
+                next,
+                json!({
+                    crate::plugins::REPORTED_BESIDE_KEY: {
+                        crate::plugins::RUN_DRIVING_KEY: 0,
+                    }
+                }),
+            )
+            .expect("the successor is running and takes its own driver's report");
+        assert_eq!(
+            pane_entry(&mut ext, 0)[crate::wire::PANE_DRIVEN_KEY],
+            json!(true),
+            "⚠⚠⚠⚠ A DEAD RUN DOES NOT MAKE A LIVE ONE INVISIBLE: the successor is driving this pane \
+             and the row says so",
+        );
+        assert_eq!(
+            pane_entry(&mut ext, 0).get(crate::wire::PANE_LEFT_BY_KEY),
+            None,
+            "⛔⛔⛔⛔⛔ AND THE TWO KEYS STAY EXCLUSIVE WHEN TWO RUNS NAME ONE PANE, which is what a \
+             relaunched loop IS. A row saying *your run is alive* and *your run has ended* at once \
+             is worse than the silence this pair replaces — a reader cannot act on it, and acting \
+             is the whole reason the second key exists",
         );
     }
 

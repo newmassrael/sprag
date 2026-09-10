@@ -5599,9 +5599,21 @@ fn pane_row(pane: &Value) -> String {
         ""
     };
     let driven = if pane[PANE_DRIVEN_KEY] == json!(true) {
-        "  (driven)"
+        "  (driven)".to_owned()
     } else {
-        ""
+        // ⛔⛔⛔⛔⛔ **AND WHOSE DEATH LEFT IT, WHICH `(driven)`'S ABSENCE COULD NOT SAY** — register
+        // item 1018. A blank here is a pane nobody ever drove, a pane a person opened, AND a pane
+        // whose run has ended while the agent in it goes on working; only the last is a fault and
+        // all three printed the same nothing. Measured from outside on 2026-09-10: run 283 died and
+        // its pane worked, committed and pushed for two and a half hours, and the reader who found
+        // it had to go through a transcript by hand.
+        //
+        // ⚠ It NAMES THE RUN rather than saying *undriven*, for `opened_by`'s reason one column
+        // over: the number is the join to `sprag runs`, which is where a reader goes next to learn
+        // how that run ended.
+        pane[sprag_host::wire::PANE_LEFT_BY_KEY]
+            .as_u64()
+            .map_or_else(String::new, |run| format!("  (left by run {run})"))
     };
     // ⛔⛔⛔⛔⛔ **AND WHO IS LIVING IN IT, WHICH IS WHAT A PERSON ABOUT TO CLOSE IT NEEDS** —
     // register item 865's ⑸.
@@ -11973,6 +11985,42 @@ mod tests {
             "⚠⚠⚠⚠⚠ THE CONTROL: a person opened this one and nothing is driving it, so both \
              markers must be ABSENT rather than negated — a row that marked every pane would be \
              reporting that the daemon had restarted: {plain:?}",
+        );
+
+        // ⛔⛔⛔⛔⛔ **AND THE FOURTH ROW, WHICH IS THE ONE A PERSON ACTS ON** — register item 1018.
+        //
+        // `plain` above and this pane print the same nothing today, and they are not the same
+        // thing: one is a pane nobody ever drove, the other is a pane whose RUN HAS ENDED while the
+        // agent in it goes on working. Measured from outside on 2026-09-10 — run 283 died and its
+        // pane worked, committed and pushed for two and a half hours — and the reader who found it
+        // had to go through a transcript by hand, because every surface printed the silence above.
+        let left = row(json!({sprag_host::wire::PANE_LEFT_BY_KEY: 283}));
+        assert!(
+            left.contains("(left by run 283)") && !left.contains("(driven)"),
+            "⛔⛔⛔ ITEM 1018: this pane's run is GONE and the row must say so and NAME it — a \
+             reader who sees the same blank as the control cannot tell an orphaned loop from \
+             somebody's own shell, and the number is the join to `sprag runs` where they learn how \
+             it ended: {left:?}",
+        );
+        assert!(
+            !plain.contains("left by"),
+            "⚠⚠⚠⚠⚠ THE CONTROL FOR IT, AND THE CLAIM IS EMPTY WITHOUT THIS ONE: no run ever drove \
+             the plain pane, so it must stay silent. A marker on every undriven pane would be \
+             reporting that shells exist: {plain:?}",
+        );
+        // ⚠⚠ AND IF BOTH EVER ARRIVE, THE LIVE ONE WINS AND THE ROW SAYS ONE THING. The host makes
+        // them exclusive, so this is the rendering's own answer to a daemon that did not — an older
+        // one, or a newer one with a defect — and *your driver is alive and gone at once* is the
+        // reading a person cannot act on.
+        let both = row(json!({
+            PANE_DRIVEN_KEY: true,
+            sprag_host::wire::PANE_LEFT_BY_KEY: 283,
+        }));
+        assert!(
+            both.contains("(driven)") && !both.contains("left by"),
+            "⚠⚠⚠⚠ A ROW NEVER SAYS BOTH: `(driven)` is *your run is alive* and `(left by run N)` is \
+             *your run has ended*, and printing the pair would be worse than the silence they \
+             replace: {both:?}",
         );
     }
 

@@ -5243,6 +5243,41 @@ pub const PANES_SLOT: &str = "panes";
 /// every shell in a workspace is noise on the common path, and noise is what gets skimmed past on
 /// the one pane it matters for.
 pub const PANE_DRIVEN_KEY: &str = "driven";
+/// The [`PANES_SLOT`] member naming **THE RUN THAT WAS DRIVING THIS PANE AND IS NO LONGER RUNNING**
+/// — the run id, present only when such a run last drove this pane and no live one drives it now.
+/// Register item 1018.
+///
+/// ⚠ *No longer running* and not *finished*: a run whose driver died (`RunState::Panicked`) and one
+/// a boot left `Interrupted` are both cases where nothing is stepping the pane, which is the fact
+/// this key is about. How a run stopped is the RUNS slot's answer, and the id here is the join to
+/// it.
+///
+/// # ⛔⛔⛔⛔⛔ An absent [`PANE_DRIVEN_KEY`] cannot say *your driver died*
+///
+/// That key is present when a run drives this pane and absent otherwise, and its absence covers
+/// three worlds a watcher must tell apart: a pane nobody ever drove, a pane a person opened for
+/// themselves, and **a pane whose run has ended while the agent in it goes on working**. Only the
+/// third is a fault, and it prints byte-identically to the other two.
+///
+/// Measured 2026-09-10 by a session watching this machine from outside: run 283 died and the pane it
+/// had been driving **went on working, committing and pushing for two and a half hours**. What kept
+/// waking that agent was its own background jobs, not a driver — and nothing any surface published
+/// said so, so the fault was found by reading a transcript by hand.
+///
+/// ⚠⚠ **IT IS MUTUALLY EXCLUSIVE WITH [`PANE_DRIVEN_KEY`] BY CONSTRUCTION**, which is what makes the
+/// pair a question with three answers rather than two keys a reader has to weigh: `driven` is *your
+/// run is alive*, this is *your run has ended and it was run N*, and neither is *nobody ever drove
+/// this pane*. A pane carrying both would be saying its driver is alive and gone at once.
+///
+/// ⚠⚠ **IT SAYS NOTHING ABOUT WHAT THE PANE IS DOING**, deliberately. The register item's own third
+/// clause is that the reverse inference is wrong too — a quiet pane is not a dead run, because an
+/// agent may be thinking — so consulting the agent's state here would rebuild the guess this key
+/// exists to replace. What the agent is doing is [`AGENT_FIELD`]'s answer, and a reader wanting the
+/// fault reads both.
+///
+/// ⚠ ABSENT rather than `null`, on [`PANE_DRIVEN_KEY`]'s stated terms: the answer is a claim when it
+/// is there, and a key on every shell in the workspace is noise on the common path.
+pub const PANE_LEFT_BY_KEY: &str = "left_by";
 /// The [`PANES_SLOT`] member saying **THE DAEMON RE-RAN THIS PANE OUT OF A SNAPSHOT** — register
 /// item 595, present only for a pane a restore gave birth to and absent for one a person or a run
 /// opened.

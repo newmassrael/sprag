@@ -495,8 +495,15 @@ fn tools_list() -> Value {
                     input-mode state: whether its app is tracking the MOUSE (DECSET \
                     1000/1002/1003 — clicks, drag, motion) and whether it is tracking \
                     FOCUS (DECSET 1004 — focus in/out), which the pane's on-screen text \
-                    does not show and tmux does not expose. Call this first to learn which \
-                    number is which pane.",
+                    does not show and tmux does not expose. \
+                    ⚠⚠ AND WHETHER A RUN IS DRIVING EACH PANE, which is the one thing the SCREEN \
+                    cannot tell you and the reason to ask here rather than read a pane: a busy \
+                    pane is not evidence that its loop is alive, and a quiet one is not evidence \
+                    that it is dead — an agent may simply be thinking. A pane whose run has ENDED \
+                    says so and names the run, so `nothing is driving this` is a claim you can act \
+                    on instead of a silence you have to guess at. list_runs cannot answer this for \
+                    somebody else's loop; it lists only the runs YOU started. \
+                    Call this first to learn which number is which pane.",
                 "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
             },
             {
@@ -3386,6 +3393,23 @@ struct PaneInfo {
     /// which is every pane a person made. Carried as the id rather than as a number because it is
     /// what the gate compares against ([`own_pane`] is an id too); it is rendered as a number.
     opened_by: Option<u64>,
+    /// **WHETHER A LIVE RUN IS DRIVING THIS PANE** — [`sprag_host::wire::PANE_DRIVEN_KEY`], register
+    /// items 595 and 1018.
+    ///
+    /// The one fact here that an agent supervising a loop cannot get any other way. `list_runs`
+    /// answers only about the runs THIS agent started, so a session watching somebody else's loop —
+    /// which is what a supervisor is — had no reading at all and fell back on the pane's SCREEN. A
+    /// busy screen is not evidence a run is alive, and on 2026-09-10 a run died while the pane it
+    /// had been driving worked, committed and pushed for two and a half hours.
+    driven: bool,
+    /// **WHICH RUN WAS DRIVING THIS PANE AND HAS ENDED** —
+    /// [`sprag_host::wire::PANE_LEFT_BY_KEY`], `None` when a live run drives it or none ever did.
+    ///
+    /// The half [`driven`](Self::driven) cannot reach: `false` there covers a pane nobody drove, a
+    /// pane a person opened, and a pane whose driver is gone, and only the last is a fault. Carried
+    /// as the run id because that id is the join to `list_runs` / `sprag runs`, where a reader goes
+    /// next to learn HOW it ended.
+    left_by: Option<u64>,
 }
 
 /// One pane's agent verdict as an agent reads it — the wire's own `agent` object, field for field.
@@ -4654,6 +4678,31 @@ fn pane_summary(
             }
         };
         out.push_str(&format!("      opened by: {who}\n"));
+    }
+    // ⛔⛔⛔⛔⛔ **AND WHETHER A RUN IS DRIVING IT RIGHT NOW** — register item 1018, and the question
+    // a supervising agent had no way to ask.
+    //
+    // `list_runs` answers about the runs THIS agent started, so a session watching somebody else's
+    // loop — which is what supervising IS — could read nothing here and fell back on the pane's
+    // screen. **A busy pane is not evidence that a run is alive, and a quiet one is not evidence
+    // that it is dead**: measured 2026-09-10, run 283 ended and the pane it had been driving went on
+    // working, committing and pushing for two and a half hours, woken by its own background jobs.
+    //
+    // ⚠⚠ THE ENDED ARM NAMES THE RUN AND SAYS WHAT IT MEANS, because the silence it replaces is
+    // what a reader kept mistaking for health. The id is the join to `list_runs` / `sprag runs`,
+    // which is where the reader goes next to learn how it ended.
+    //
+    // ⚠ Nothing is printed for a pane no run ever drove — every shell in a workspace carrying a
+    // driver line is noise on the common path, and noise is what gets skimmed past on the one pane
+    // it matters for. That is the panes slot's own presence-is-the-claim rule, kept here.
+    if pane.driven {
+        out.push_str("      driver: a run is driving this pane right now\n");
+    } else if let Some(run) = pane.left_by {
+        out.push_str(&format!(
+            "      driver: run {run} was driving this pane and has ENDED — nothing is driving it \
+             now, so whatever the agent in it is doing, no run asked for it (list_runs / `sprag \
+             runs` says how run {run} ended)\n"
+        ));
     }
     // The sibling AI, if the pane holds one (H3). Last because it is the only line here that is about
     // another agent rather than about a program: an agent scanning this list to find who needs a human
@@ -8575,6 +8624,18 @@ fn parse_pane_info(pane: &Value) -> PaneInfo {
         active: pane.get("active").and_then(Value::as_bool).unwrap_or(false),
         agent: parse_agent_info(pane),
         opened_by: pane.get("opened_by").and_then(Value::as_u64),
+        // ⚠⚠ THE WIRE'S OWN KEYS, not literals — register item 1018. This binary depends on
+        // `sprag-host` for the panes slot's vocabulary precisely so a rename over there cannot leave
+        // this surface quietly reading a key nobody writes any more, which is the failure mode the
+        // fact itself is about: a reader that always answers *nobody is driving* teaches its readers
+        // to stop asking.
+        driven: pane
+            .get(sprag_host::wire::PANE_DRIVEN_KEY)
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        left_by: pane
+            .get(sprag_host::wire::PANE_LEFT_BY_KEY)
+            .and_then(Value::as_u64),
     }
 }
 
@@ -11458,6 +11519,10 @@ mod tests {
             active: false,
             agent: None,
             opened_by: None,
+            // ⚠ No run drives these and none has left them: this gate is about resolving a NAME,
+            // and a driver line would be a fact it does not measure.
+            driven: false,
+            left_by: None,
         };
         let panes = vec![pane(10, "build"), pane(11, "build"), pane(12, "test")];
         assert_eq!(pane_by_name(&panes, "test").unwrap().1.id, 12);
@@ -11585,6 +11650,10 @@ mod tests {
             focus_tracking: false,
             images: vec![],
             agent: None,
+            // ⚠ Undriven, and never driven: this gate is about numbering rows, and a driver line
+            // on every one of them would be a claim it does not measure.
+            driven: false,
+            left_by: None,
         };
         // Three rows so the NUMBER and the ID cannot be confused (id 11 is the third pane), a
         // pane one window over, and a pane in none — the three answers this rendering has to tell
@@ -11647,6 +11716,10 @@ mod tests {
             images: Vec::new(),
             active: false,
             agent: None,
+            // ⚠ WHO ASKED FOR A PANE and WHO IS DRIVING IT are different questions — this gate is
+            // about the first, so it states the second rather than leaving it to a default.
+            driven: false,
+            left_by: None,
         };
         // The listing this rendering indexes into: pane 1 is host id 3, the opener.
         let listing = [PaneInfo {
@@ -11695,6 +11768,10 @@ mod tests {
             focus_tracking: true,
             images: vec![],
             agent: None,
+            // ⚠ The subject here is the pane's INPUT MODE, which nothing drives — stated so the
+            // fixture cannot be read as a claim about a driver.
+            driven: false,
+            left_by: None,
         };
         let dir = nobody_left_word("mouse-focus");
         let quiet = looking_in(&dir);
@@ -11896,6 +11973,10 @@ mod tests {
             focus_tracking: false,
             images: vec![],
             agent: None,
+            // ⚠ An ordinary shell: nobody drives it and nobody ever did, which is the common path
+            // this listing must stay quiet about.
+            driven: false,
+            left_by: None,
         };
         let claimed = PaneInfo {
             agent: Some(AgentInfo {
@@ -11968,6 +12049,152 @@ mod tests {
         assert!(
             !quiet.contains("agent:"),
             "a pane no manifest claims says nothing about an agent: {quiet}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A SUPERVISING AGENT CAN ASK WHETHER A PANE'S RUN IS ALIVE, AND WHOSE DEATH LEFT
+    /// IT** — register item 1018.
+    ///
+    /// # ⛔⛔⛔ Why an agent had no reading at all and fell back on the screen
+    ///
+    /// `list_runs` answers about the runs THIS agent started; a session watching somebody else's
+    /// loop — which is what supervising IS — gets nothing from it. So the only evidence a
+    /// supervisor had was the pane's TEXT, and **a busy pane is not evidence that a run is alive**:
+    /// measured 2026-09-10 from outside this machine, run 283 ended and the pane it had been
+    /// driving went on working, committing and pushing for two and a half hours, woken by its own
+    /// background jobs. The fault was found by a person reading a transcript.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The three rows are three, and the silent one carries the claim
+    ///
+    /// An undriven pane and one whose run has died printed the same nothing, and only the second is
+    /// a fault. The control here is the pane nobody ever drove: a line on that one would be a line
+    /// on every shell in the workspace, which is noise on the common path — and noise is what gets
+    /// skimmed past on the row that matters.
+    ///
+    /// # ⚠⚠⚠ And the item's third clause: the agent's state is a SEPARATE line
+    ///
+    /// A quiet pane is not a dead run either — an agent may be thinking — so these lines say
+    /// nothing about what the pane is doing and the verdict line says nothing about a driver. The
+    /// fixture below drives that: one pane reports `working` with a dead run, another says nothing
+    /// at all with a live one, and each prints both facts independently.
+    #[test]
+    fn the_listing_says_whether_a_run_is_driving_a_pane_and_names_the_run_that_left_it() {
+        let base = PaneInfo {
+            id: 3,
+            name: None,
+            title: String::new(),
+            command: "claude".to_owned(),
+            cols: 80,
+            rows: 24,
+            notification: None,
+            bell: 0,
+            opened_by: None,
+            active: false,
+            shell: None,
+            exit_status: None,
+            mouse: None,
+            focus_tracking: false,
+            images: vec![],
+            agent: None,
+            driven: false,
+            left_by: None,
+        };
+        let dir = nobody_left_word("run-liveness");
+        let no_word = looking_in(&dir);
+        let render = |pane: &PaneInfo| pane_summary(1, pane, &[], None, None, &no_word);
+
+        // ── FIRST, THE PARSE, BECAUSE A READER THAT MISSES THE KEY IS THE FAULT ITSELF ──
+        //
+        // ⚠⚠ This surface's whole defect class is a reader that always answers *nobody is driving*:
+        // the host published the fact and one reader looked in the wrong place, so the key taught
+        // its readers to stop asking. Built from the WIRE's own constants, which is what a rename
+        // over there has to move on both sides at once.
+        let row = |extra: Value| {
+            let mut pane = json!({"id": 3, "cols": 80, "rows": 24, "command": "claude"});
+            for (key, value) in extra.as_object().expect("an object of extra keys") {
+                pane[key] = value.clone();
+            }
+            parse_pane_info(&pane)
+        };
+        let parsed = row(json!({sprag_host::wire::PANE_DRIVEN_KEY: true}));
+        assert!(
+            parsed.driven && parsed.left_by.is_none(),
+            "⛔⛔⛔ ITEM 1018: the host says a run is driving this pane and the parse must carry it. \
+             A reader looking for a key nobody writes answers *nobody is driving* for ever, which \
+             is the constant this whole item is about: {parsed:?}",
+        );
+        let parsed = row(json!({sprag_host::wire::PANE_LEFT_BY_KEY: 283}));
+        assert_eq!(
+            (parsed.driven, parsed.left_by),
+            (false, Some(283)),
+            "⛔⛔⛔ AND THE RUN THAT LEFT IT, BY NUMBER: the id is the join to `list_runs`, where a \
+             reader goes next to learn HOW it ended",
+        );
+        let parsed = row(json!({}));
+        assert_eq!(
+            (parsed.driven, parsed.left_by),
+            (false, None),
+            "⚠⚠⚠⚠⚠ THE CONTROL FOR THE PARSE: the host says nothing about a driver for an ordinary \
+             pane, and *it did not say* must not become a claim on this side of the wire",
+        );
+
+        // ── A LIVE RUN, AND THE PANE SAYS NOTHING ABOUT ITSELF ── the reverse direction: silence on
+        // the screen is not a dead run, so the driver line must stand on the run alone.
+        let alive = render(&PaneInfo {
+            driven: true,
+            ..base.clone()
+        });
+        assert!(
+            alive.contains("driver: a run is driving this pane right now"),
+            "⛔⛔⛔ ITEM 1018: a supervising agent has no other way to ask this — `list_runs` \
+             answers only about its OWN runs — and without it the only evidence left is the pane's \
+             text, which is the guess this line retires: {alive}",
+        );
+        assert!(
+            !alive.contains("agent:"),
+            "⚠⚠⚠ AND IT DID NOT NEED THE PANE TO SAY ANYTHING: this row carries no verdict at all \
+             and the driver answer is still complete. A quiet pane is not a dead run: {alive}",
+        );
+
+        // ── A RUN THAT HAS ENDED, ON A PANE THAT IS STILL WORKING ── the arm the item was filed on.
+        let orphaned = render(&PaneInfo {
+            left_by: Some(283),
+            agent: Some(AgentInfo {
+                state: "working".to_owned(),
+                name: Some("claude".to_owned()),
+                rule: None,
+                source: Some("hook:claude".to_owned()),
+                build: Some(sprag_host::wire::BUILD.to_owned()),
+                seq: 5,
+                asking: None,
+            }),
+            ..base.clone()
+        });
+        assert!(
+            orphaned.contains("run 283 was driving this pane and has ENDED"),
+            "⛔⛔⛔⛔⛔ ITEM 1018: nothing is driving this pane and the listing must SAY SO AND NAME \
+             THE RUN. Silence here is what a watcher read as health for two and a half hours while \
+             the agent below it committed and pushed: {orphaned}",
+        );
+        assert!(
+            orphaned.contains("agent: state=working"),
+            "⚠⚠⚠⚠⚠ AND BOTH FACTS ARE ON THE ROW AT ONCE, which is the whole shape of the fault: \
+             the pane is WORKING and no run asked it to. A listing that showed one without the \
+             other leaves the reader making the inference this item is about: {orphaned}",
+        );
+        assert!(
+            !orphaned.contains("driving this pane right now"),
+            "⚠⚠⚠⚠ AND NEVER BOTH DRIVER SENTENCES: *your run is alive* and *your run has ended* on \
+             one row is worse than the silence they replace: {orphaned}",
+        );
+
+        // ── AND THE CONTROL, WITHOUT WHICH THE TWO ABOVE ARE DECORATION ──
+        let plain = render(&base);
+        assert!(
+            !plain.contains("driver:"),
+            "⚠⚠⚠⚠⚠ THE CONTROL: no run ever drove this pane, so the listing stays silent. A driver \
+             line on every pane would be a line on every shell in the workspace, and noise on the \
+             common path is what gets skimmed past on the one row that matters: {plain}",
         );
     }
 

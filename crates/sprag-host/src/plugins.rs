@@ -2654,6 +2654,69 @@ pub fn pane_named(map: &Map<String, Value>) -> Option<PaneId> {
     map.get(RUN_PANE_KEY).and_then(Value::as_u64).map(PaneId)
 }
 
+/// **WHICH PANE A RUN LAST SAID IT WAS DRIVING**, whatever state that run is in — [`None`] for a run
+/// that has never vouched for one.
+///
+/// # ⛔⛔⛔⛔⛔ The precedence is the whole content, and one surface did not keep it
+///
+/// A run driven in a process of its own **never touches the local progress cell** (register item
+/// 662): what moves is [`crate::runs::RunSummary::reported`]. `run-driver-process` has defaulted to
+/// `on` since 2026-08-25, so *every run in the field is that kind of run* — and a reader that
+/// consulted only the cell answers [`None`] about every pane a live loop is driving.
+///
+/// Measured 2026-09-10 on this machine's own loop daemon: run 289 `running`, 101 iterations, its
+/// prompts landing in a `claude` pane a person was watching, and `sprag panes` marked **no pane in
+/// the session** as driven. The runs slot said the pane; the panes slot said nobody. Register item
+/// 1018 — *a busy pane is not evidence that a run is alive, and neither is the reverse*.
+///
+/// ⚠⚠ **IT IS A FUNCTION AND NOT A THIRD SPELLING.** Three readers asked this question with two
+/// answers between them: `run_to_json`'s [`RUN_DRIVING_KEY`], `PluginsExternal::driven_pane`, and
+/// the panes-slot join in [`crate::workspace`]. The last was the one reading the cell alone, and the
+/// only reason nobody could see the divergence is that the expression was written out three times.
+pub fn pane_a_run_last_drove(run: &crate::runs::RunSummary) -> Option<PaneId> {
+    run.reported
+        .as_ref()
+        .map(progress_from_report)
+        .unwrap_or_default()
+        .driving
+        .or(run.progress.driving)
+}
+
+/// **WHICH PANE A RUN IS DRIVING RIGHT NOW** — [`pane_a_run_last_drove`] with the state filter that
+/// separates a live driver from a finished one's last reading.
+///
+/// ⚠⚠ THE FILTER IS THE CLAIM. A finished run's `driving` still names the pane it drove — register
+/// item 540 asked of history — so the answer without it is *the pane this run WAS driving*, which
+/// read as *somebody is driving this pane* would certify the very confusion register item 595 was
+/// built to end.
+///
+/// ⚠ The pair with [`pane_a_run_has_left`], and the two are the two halves of *is my run alive*: a
+/// pane one of them names is never named by the other about the same run.
+pub fn pane_a_run_is_driving(run: &crate::runs::RunSummary) -> Option<PaneId> {
+    matches!(run.state, RunState::Running)
+        .then(|| pane_a_run_last_drove(run))
+        .flatten()
+}
+
+/// **WHICH PANE A RUN WAS DRIVING WHEN IT ENDED**, or [`None`] while it is still running.
+///
+/// # ⛔⛔⛔⛔⛔ Absence cannot say *your driver died*, and that is the half register item 1018 is about
+///
+/// [`pane_a_run_is_driving`] answers *is anybody driving this pane*, and its absence covers three
+/// different worlds: a pane nobody ever drove, a pane a person opened, and **a pane whose run has
+/// ended while the agent in it goes on working**. Only the third is a fault, and a watcher reading
+/// an absent key cannot tell it from the other two — so watchers read the screen instead, which is
+/// how a dead run went unseen for two and a half hours on 2026-09-10 while the pane beside it went
+/// on working, committing and pushing.
+///
+/// ⚠⚠ A run's last reading is what makes this answerable at all: a finished run keeps the pane it
+/// drove, which is register item 540 working exactly as it was filed to.
+pub fn pane_a_run_has_left(run: &crate::runs::RunSummary) -> Option<PaneId> {
+    (!matches!(run.state, RunState::Running))
+        .then(|| pane_a_run_last_drove(run))
+        .flatten()
+}
+
 /// **THE ONE BUILDER, AND THE WORLD IS AN ARGUMENT** — register items 544 and 643.
 ///
 /// # ⚠⚠⚠⚠⚠ Why this is a free function and not a method
@@ -4033,16 +4096,14 @@ impl PluginsExternal {
     /// ⚠ THE DRIVER'S REPORT FIRST, then the local cell — the precedence every other key on the row
     /// keeps. For a run driven in another process the cell never moves (register item 662), so
     /// reading it first would answer about a pane the run has left.
+    ///
+    /// ⚠⚠ **AND THE PRECEDENCE IS [`pane_a_run_is_driving`]'S RATHER THAN THIS METHOD'S** — register
+    /// item 1018. It was spelled out here, again in [`run_to_json`], and a third time in the
+    /// panes-slot join, and the third copy read the cell alone: the surface built to answer *is
+    /// anybody driving me* said nobody about every pane in the field. Three spellings is what let
+    /// two of them agree while the third was wrong.
     fn driven_pane(&self, run: &crate::runs::RunSummary) -> Option<PaneId> {
-        if !matches!(run.state, RunState::Running) {
-            return None;
-        }
-        run.reported
-            .as_ref()
-            .map(progress_from_report)
-            .unwrap_or_default()
-            .driving
-            .or(run.progress.driving)
+        pane_a_run_is_driving(run)
     }
 
     fn read(&self, path: &str) -> Option<IntrospectValue> {
@@ -7673,7 +7734,12 @@ pub(crate) fn run_to_json(run: &RunSummary, seat: Option<u64>, look: LiveLook) -
     // ⚠⚠⚠⚠ AND WHICH PANE IT IS DRIVING — register item 540, present only once a step has said so,
     // which is `RUN_CEILING_KEY`'s presence-is-the-claim rule. ⚠ The NUMBER and not the label's
     // prose: a reader that had to parse `ai_loop pane=3` would be deriving a fact from a name.
-    if let Some(pane) = reported.driving.or(run.progress.driving) {
+    //
+    // ⚠⚠ THE UNFILTERED FORM, deliberately: this key is item 540 asked OF HISTORY, so a finished
+    // run still names the pane it drove and `pane_a_run_is_driving`'s state filter would erase
+    // exactly the answer `PANE_LEFT_BY_KEY` is built out of. Same precedence, one spelling — see
+    // `pane_a_run_last_drove`, register item 1018.
+    if let Some(pane) = pane_a_run_last_drove(run) {
         entry[RUN_DRIVING_KEY] = json!(pane.0);
     }
     entry
