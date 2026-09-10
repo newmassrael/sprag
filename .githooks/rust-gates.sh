@@ -66,6 +66,32 @@ rust_gates_stamp_path() {
     printf '%s\n' "$git_dir/sprag-rust-gates-passed"
 }
 
+# ── The other two gates a push must not spend its connection on — register item 1005.
+#
+# ⛔⛔⛔⛔⛔ ITEM 480 MOVED THE RUST GATES OUT AND SAID SO IN GENERAL TERMS: *the hook cannot spend
+# an open GitHub connection on a multi-minute gate*. Two gates stayed behind, and the gate that paid
+# 480 wrote them down in its own header rather than papering over them — `run_pixel_smoke`, which is
+# `cargo build --release` over three crates, and `run_hook_suite`, whose comment measured its SUITE
+# at under a second and not the BUILD underneath it, which is minutes on a cold tree.
+#
+# ⚠⚠ THEY ARE RARER THAN THE RUST GATES AND BITE THE SAME WAY. Each is owed only when a push
+# touches the paths it reads, so most pushes never reach them — and the push that does is the one
+# that pays 7m15s on an open ssh session and loses the ref after passing (item 456's measurement).
+#
+# ⚠⚠⚠ EACH STAMPS WHAT IT ACTUALLY READS, which is where this differs from 480 rather than copies
+# it. `paths_tree_of` in `content-gate.sh` carries that argument in full.
+pixel_smoke_stamp_path() {
+    local git_dir
+    git_dir="$(git rev-parse --git-dir)" || return 1
+    printf '%s\n' "$git_dir/sprag-pixel-smoke-passed"
+}
+
+hook_suite_stamp_path() {
+    local git_dir
+    git_dir="$(git rev-parse --git-dir)" || return 1
+    printf '%s\n' "$git_dir/sprag-hook-suite-passed"
+}
+
 # ⛔⛔⛔⛔⛔ THIS LANE CARRIES ITS OWN RAM BOUND, DERIVED FROM ITS OWN READING — register item 932.
 #
 # The wrapper divides a host's free RAM by `peak_gb_per_task` from `.claude/remote-build.toml`, and
@@ -336,6 +362,63 @@ ask for these gates again" >&2
     return 1
 }
 
+# ── The pixel smoke, run where a connection is not open — register item 1005.
+#
+# ⚠⚠ THE BODY IS `pre-push`'s, MOVED RATHER THAN REWRITTEN, down to the refusals: a gate that
+# quietly steps aside on a machine lacking its tools is absent exactly where nobody notices, and a
+# fresh XDG home because the smoke writes user config and a run that read the developer's would be
+# asserting about their machine.
+pixel_smoke_run() {
+    local home
+    if ! command -v xvfb-run >/dev/null 2>&1; then
+        echo "rust-gates: the pixel smoke needs xvfb-run — install xvfb" >&2
+        return 1
+    fi
+    if ! ls /usr/share/vulkan/icd.d/lvp_icd*.json >/dev/null 2>&1; then
+        echo "rust-gates: the pixel smoke needs the lavapipe Vulkan ICD — install \
+mesa-vulkan-drivers" >&2
+        return 1
+    fi
+    echo "rust-gates: cargo build --release (gui, host, tui) ..." >&2
+    if ! cargo build --release -p sprag-gui -p sprag-host -p sprag-tui; then
+        echo "rust-gates: the smoke set did not build" >&2
+        return 1
+    fi
+    # ⛔⛔⛔ THE SCRATCH IS CHECKED WHERE IT IS TAKEN — register item 792.
+    home="$(mktemp -d)" || return 1
+    mkdir -p "$home/config" "$home/data" "$home/state"
+    echo "rust-gates: pixel smoke ..." >&2
+    if ! XDG_CONFIG_HOME="$home/config" XDG_DATA_HOME="$home/data" XDG_STATE_HOME="$home/state" \
+        xvfb-run -a ./target/release/sprag-smoke; then
+        rm -rf "$home"
+        echo "rust-gates: the pixel smoke failed — the checks it prints are the diagnosis" >&2
+        return 1
+    fi
+    rm -rf "$home"
+}
+
+# ── Record what a path-scoped gate cleared.
+#
+#   $1  where the stamp goes
+#   $2  the line `paths_tree_of` answered, taken BEFORE the gate ran
+#
+# ⚠⚠⚠ THE READING IS TAKEN BEFORE THE WORK AND HANDED IN, for `rust_gates_stamp`'s reason exactly:
+# a second writer stages into this tree while a minute-scale gate runs (item 196), and a reading
+# taken afterwards would name content nothing had looked at.
+push_gate_stamp() {
+    local stamp="$1" cleared="$2"
+    if [ -n "$cleared" ] && [ -n "$stamp" ]; then
+        printf '%s\n' "$cleared" >"$stamp"
+        return 0
+    fi
+    if [ -n "$stamp" ]; then
+        rm -f "$stamp"
+    fi
+    echo "rust-gates: nothing was read in this run, so nothing was stamped and the push will ask \
+for this gate again" >&2
+    return 1
+}
+
 # ⛔⛔⛔⛔⛔ RUN DIRECTLY, THIS FILE DOES THE WORK — but only when it is ASKED BY NAME, and the
 # reason a bare invocation must not do it was found by a neighbouring gate rather than reasoned out.
 #
@@ -366,10 +449,35 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
             rust_gates_stamp || exit 1
             echo "rust-gates: cleared, and this tree is stamped — push again." >&2
             ;;
+        # ⚠⚠ ONE VERB EACH, AND EACH DOES BOTH IN ORDER — register item 1005, on `--clear`'s own
+        # terms. A verb that stamped without running would be the escape hatch that disables the
+        # gate it belongs to, which is this workspace's rule 6.
+        --clear-pixel)
+            cd "$(git rev-parse --show-toplevel)" || exit 1
+            # shellcheck source-path=SCRIPTDIR
+            . "$(dirname "${BASH_SOURCE[0]}")/content-gate.sh"
+            PIXEL_CLEARED="$(paths_tree_of HEAD crates/sprag-gui crates/sprag-grid)" || exit 1
+            pixel_smoke_run || exit 1
+            push_gate_stamp "$(pixel_smoke_stamp_path)" "$PIXEL_CLEARED" || exit 1
+            echo "rust-gates: the pixel smoke cleared what this tree paints — push again." >&2
+            ;;
+        --clear-hooks)
+            cd "$(git rev-parse --show-toplevel)" || exit 1
+            # shellcheck source-path=SCRIPTDIR
+            . "$(dirname "${BASH_SOURCE[0]}")/content-gate.sh"
+            HOOK_CLEARED="$(paths_tree_of HEAD .githooks)" || exit 1
+            echo "rust-gates: cargo test -p sprag-gate ..." >&2
+            cargo test -p sprag-gate || exit 1
+            push_gate_stamp "$(hook_suite_stamp_path)" "$HOOK_CLEARED" || exit 1
+            echo "rust-gates: the hook suite cleared these hooks — push again." >&2
+            ;;
         *)
             echo "rust-gates.sh runs clippy, the rustdoc gate and the ratchet lane, and stamps the \
-tree they cleared so a push need not run them inside its own connection (register item 480)." >&2
+tree they cleared so a push need not run them inside its own connection (register item 480). It \
+holds the pixel smoke and the hook suite on the same terms (register item 1005)." >&2
             echo "To clear this tree: bash .githooks/rust-gates.sh --clear" >&2
+            echo "What this tree paints: bash .githooks/rust-gates.sh --clear-pixel" >&2
+            echo "These hooks:           bash .githooks/rust-gates.sh --clear-hooks" >&2
             exit 2
             ;;
     esac

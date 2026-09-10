@@ -50,6 +50,46 @@
 #
 # Cost, measured on this tree: 239 files, 19M, ~95ms.
 
+# What a set of PATHS contains at one revision, as a line a stamp can hold.
+#
+#   $1    a commit-ish or a tree hash (`git write-tree`'s output does)
+#   $2..  the paths, exactly as the caller spells them
+#
+# ## ⛔⛔⛔⛔⛔ Why a path-scoped tree and not the whole one — register item 1005
+#
+# Item 480 stamped THE TIP TREE, which is right for gates that compile the
+# workspace: change anything and they owe another look. The pixel smoke and the
+# hook suite are not those. Each is owed only when a push touches the paths it
+# reads (`PIXEL_PATHS`, `HOOK_PATHS`), and a tip-tree stamp would go stale on
+# every unrelated commit — so a person would re-run a minute-scale gate to
+# publish a change it cannot see.
+#
+# ⚠⚠ That is not merely wasteful, it is the failure mode item 688 is about
+# wearing different clothes: a gate that charges every push is the gate that
+# gets waived, and this repository has already paid for one being waived. So
+# the stamp is scoped to what the gate actually reads.
+#
+# ## ⚠⚠ An ABSENT path is a value, not an error
+#
+# `.githooks` exists in every tree this repository has, but `PIXEL_PATHS` names
+# two crates and a tree could carry one and not the other. A missing path prints
+# `-`, so *the crate was deleted* and *the crate is unchanged* cannot compare
+# equal — which is the direction that costs a re-run rather than a waiver.
+#
+# Answers nonzero, having printed nothing, if this clone cannot be asked at all.
+paths_tree_of() {
+    local rev="$1" out="" path hash
+    shift
+    [ -n "$rev" ] || return 1
+    for path in "$@"; do
+        hash="$(git rev-parse --verify --quiet "${rev}:${path}")" || hash="-"
+        [ -n "$hash" ] || hash="-"
+        out="${out}${path}=${hash} "
+    done
+    [ -n "$out" ] || return 1
+    printf '%s\n' "$out"
+}
+
 # Lay out a whole tree and print where it went. The caller owns the directory
 # and must remove it.
 #

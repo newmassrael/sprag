@@ -310,6 +310,38 @@ impl Sandbox {
         self.git(&["rev-parse", "HEAD"])
     }
 
+    /// Stamp a path-scoped push gate as already cleared — register item 1005.
+    ///
+    /// # ⚠⚠⚠ It writes what the REPOSITORY writes, by calling the repository's own function
+    ///
+    /// The stamp `pre-push` compares against is `paths_tree_of`'s exact output, trailing space and
+    /// all. A fixture that spelled that format itself would be a second copy of it (item 213), and
+    /// the copy that drifts is the one that makes a gate pass while the real stamp never matches —
+    /// which is this whole file's subject, one level up.
+    fn stamp_push_gate(&self, stamp: &str, paths: &[&str]) {
+        let script = format!(
+            ". \"$PWD/.githooks/content-gate.sh\"; paths_tree_of HEAD {}",
+            paths.join(" "),
+        );
+        let mut command = Command::new("bash");
+        command.arg("-c").arg(script).current_dir(&self.dir);
+        for (name, value) in Sandbox::git_environment() {
+            command.env(name, value);
+        }
+        let out = command
+            .output()
+            .unwrap_or_else(|why| panic!("read {paths:?} through content-gate.sh: {why}"));
+        assert!(
+            out.status.success() && !out.stdout.is_empty(),
+            "⚠⚠⚠ THE FIXTURE COULD NOT READ WHAT IT MEANS TO STAMP: `paths_tree_of` answered \
+             nothing for {paths:?}. Every arm using this would then assert a refusal it caused \
+             itself.\n{}",
+            String::from_utf8_lossy(&out.stderr),
+        );
+        std::fs::write(self.dir.join(".git").join(stamp), out.stdout)
+            .unwrap_or_else(|why| panic!("write {stamp}: {why}"));
+    }
+
     /// Run a hook the way git runs it: from the work tree, with the refs (if any) on stdin.
     fn run(&self, hook: &str, refs_on_stdin: Option<&str>, report: Option<&str>) -> Output {
         let mut command = self.hook_command(hook);
@@ -1230,6 +1262,17 @@ fn a_push_whose_range_does_not_paint_passes_without_owing_the_pixel_smoke() {
 /// ⚠⚠⚠ **AND THE DECISION GOES THE OTHER WAY WHEN THE RANGE PAINTS.** Without this the case above
 /// would be satisfied by a hook that never ran the smoke at all — which is the state R349 shipped
 /// and eleven rounds did not notice.
+///
+/// # ⛔⛔⛔⛔⛔ It asserted the SMOKE ITSELF until register item 1005, and the answer got stronger
+///
+/// The smoke is `cargo build --release` over three crates, and `git push` opens its connection
+/// before this hook runs — so it was minutes spent on an open ssh session, which is the shape item
+/// 480 measured at 7m15s and SIGPIPE 141 with every gate PASSED. It is now REFUSED here and run by
+/// `rust-gates.sh --clear-pixel`, outside any connection.
+///
+/// ⚠⚠ That is the same stance one notch further, not a retreat: what is asserted is still that
+/// this push does not go through unlooked-at. The third thing — a quiet pass — is what must never
+/// happen, and it is what this arm holds.
 #[test]
 fn a_push_whose_range_paints_owes_the_pixel_smoke() {
     let sandbox = Sandbox::new("push-paint");
@@ -1244,9 +1287,60 @@ fn a_push_whose_range_paints_owes_the_pixel_smoke() {
     let run = sandbox.run("pre-push", Some(&ref_line(&head, &base)), None);
     let told = said(&run);
     assert!(
-        reached_the_pixel_smoke(&told),
-        "this push changes what the GUI paints and the smoke is the only gate that looks at \
-         pixels: {told}",
+        !run.status.success(),
+        "⛔⛔⛔ this push changes what the GUI paints and nothing has looked at the pixels, so it \
+         must not pass: {told}",
+    );
+    assert!(
+        !reached_the_pixel_smoke(&told),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 1005: it REACHED the smoke instead of refusing. That is \
+         `cargo build --release` over three crates inside an open GitHub connection, which is the \
+         7m15s that lost a push after every gate passed: {told}",
+    );
+    assert!(
+        told.contains("--clear-pixel"),
+        "⚠⚠⚠ AND THE REFUSAL MUST NAME THE COMMAND THAT CLEARS IT. Nothing writes this stamp as a \
+         side effect of committing, so a person meeting this refusal has nothing else to type: \
+         {told}",
+    );
+    sandbox.done();
+}
+
+/// ⛔⛔⛔⛔⛔ **AND A TREE THE SMOKE HAS CLEARED GOES THROUGH** — register item 1005, and without
+/// this arm the one above is satisfied by a hook that refuses every push that paints.
+///
+/// ⚠⚠ THE STAMP IS SCOPED TO WHAT THE GATE READS, which is where this differs from item 480's:
+/// that one stamps the tip tree, because gates compiling the workspace owe another look at any
+/// change. This one is owed only where `PIXEL_PATHS` moves, so a tip-tree stamp would go stale on
+/// every unrelated commit and charge minutes to publish a change the smoke cannot see — the cost
+/// that makes a gate get waived, which is item 688 wearing different clothes.
+#[test]
+fn a_push_whose_paint_the_smoke_already_cleared_is_not_refused() {
+    let sandbox = Sandbox::new("push-paint-cleared");
+    sandbox.write("crates/sprag-host/base.rs", FORMATTED);
+    sandbox.git(&["add", "crates/sprag-host/base.rs"]);
+    let base = sandbox.commit("base");
+
+    sandbox.write("crates/sprag-gui/paint.rs", FORMATTED);
+    sandbox.git(&["add", "crates/sprag-gui/paint.rs"]);
+    let head = sandbox.commit("a change under crates/sprag-gui");
+    sandbox.stamp_push_gate(
+        "sprag-pixel-smoke-passed",
+        &["crates/sprag-gui", "crates/sprag-grid"],
+    );
+
+    let run = sandbox.run("pre-push", Some(&ref_line(&head, &base)), None);
+    let told = said(&run);
+    assert!(
+        run.status.success(),
+        "⛔⛔⛔ THE SMOKE CLEARED EXACTLY THESE BYTES, and refusing anyway makes the refusal a wall \
+         rather than a gate — the stamp is the whole mechanism and this is the arm that reads it: \
+         {told}",
+    );
+    assert!(
+        !reached_the_pixel_smoke(&told),
+        "and it must not run the smoke either — a stamp that is read and then ignored costs the \
+         connection exactly what item 1005 is about: {told}",
     );
     sandbox.done();
 }
@@ -1280,10 +1374,103 @@ fn a_push_that_changes_a_hook_owes_the_suite_that_drives_hooks() {
     let run = sandbox.run("pre-push", Some(&ref_line(&head, &base)), None);
     let told = said(&run);
     assert!(
-        reached_the_hook_suite(&told),
+        !run.status.success(),
         "⛔⛔⛔ THIS PUSH EDITS A HOOK, and the only crate that can tell whether a hook still works \
-         is the one that drives it. Publishing without running it is what put a red on twenty-one \
-         pushes: {told}",
+         is the one that drives it. Publishing without it having run is what put a red on \
+         twenty-one pushes: {told}",
+    );
+    assert!(
+        !reached_the_hook_suite(&told),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 1005: it RAN the suite instead of refusing. The comment that \
+         used to justify running it here measured the SUITE at under a second — not the BUILD \
+         underneath it, which is minutes on a cold tree, spent on an open GitHub connection: \
+         {told}",
+    );
+    assert!(
+        told.contains("--clear-hooks"),
+        "⚠⚠⚠ AND THE REFUSAL MUST NAME THE COMMAND THAT CLEARS IT — a person who has just edited \
+         a hook has never run this suite outside a connection, so this is the only way through: \
+         {told}",
+    );
+    sandbox.done();
+}
+
+/// ⛔⛔⛔⛔⛔ **AND A HOOK THE SUITE HAS CLEARED GOES THROUGH** — register item 1005's other half,
+/// and without it the arm above is satisfied by a hook that refuses every push touching
+/// `.githooks` — including, note, every push this round itself makes.
+#[test]
+fn a_push_whose_hooks_the_suite_already_cleared_is_not_refused() {
+    let sandbox = Sandbox::new("push-hook-cleared");
+    sandbox.write("crates/sprag-host/base.rs", FORMATTED);
+    sandbox.git(&["add", "crates/sprag-host/base.rs"]);
+    let base = sandbox.commit("base");
+
+    sandbox.write(".githooks/some-gate.sh", "#!/bin/sh\nexit 0\n");
+    sandbox.git(&["add", ".githooks/some-gate.sh"]);
+    let head = sandbox.commit("a change under .githooks");
+    sandbox.stamp_push_gate("sprag-hook-suite-passed", &[".githooks"]);
+
+    let run = sandbox.run("pre-push", Some(&ref_line(&head, &base)), None);
+    let told = said(&run);
+    assert!(
+        run.status.success(),
+        "⛔⛔⛔ THE SUITE CLEARED EXACTLY THESE HOOKS and the push is still refused, which makes \
+         the stamp decorative and the refusal a wall: {told}",
+    );
+    assert!(
+        !reached_the_hook_suite(&told),
+        "and it must not run the suite either: {told}",
+    );
+    sandbox.done();
+}
+
+/// ⛔⛔⛔⛔⛔ **A DELETION IS NOT CHARGED FOR EITHER GATE** — register item 1005's fourth done-when,
+/// and item 480 paid to learn the rule it applies.
+///
+/// # What it cost there, and why each site owes the question again
+///
+/// While `pre-push` RAN its gates, a push nothing could be said about was answered conservatively:
+/// run them anyway. That was free — a gate over a tree that is not being published wastes time and
+/// refuses nothing. **A refusal is not free.** `git push --delete` publishes no content, its local
+/// sha is all zeros and there is no tree to stamp, so refusing it means a stale branch can never be
+/// removed.
+///
+/// # ⚠⚠⚠⚠⚠ WHERE THE PROPERTY IS DECIDED, measured rather than assumed
+///
+/// A waiver was written at both call sites first, on item 480's model. **Removing it changed
+/// nothing** — this arm stayed green — because `pushed_range_touches` `continue`s past an all-zero
+/// local sha, so a deletion-only push is NOT OWED and never reaches either refusal. The waiver was
+/// deleted: a branch that cannot be entered is a rule that reads exactly like a live one.
+///
+/// ⚠⚠ SO THIS ARM IS THE ONLY THING HOLDING IT, which is why it asserts the hook's exit rather than
+/// its wording. The day that walk starts calling a deletion owed, the refusal becomes reachable and
+/// this goes red — which is the notice a person needs, and the reason the property is not left to
+/// a comment in the walk.
+///
+/// ⚠ The stamp reader answers *no* for a deletion too, by construction: no tree, so no stamp can be
+/// about it. That is not a second decision — it is never consulted for one.
+#[test]
+fn a_deletion_is_not_refused_by_either_push_gate() {
+    let sandbox = Sandbox::new("push-delete-gates");
+    sandbox.write(".githooks/some-gate.sh", "#!/bin/sh\nexit 0\n");
+    sandbox.git(&["add", ".githooks/some-gate.sh"]);
+    sandbox.write("crates/sprag-gui/paint.rs", FORMATTED);
+    sandbox.git(&["add", "crates/sprag-gui/paint.rs"]);
+    let head = sandbox.commit("a tree that both gates would be owed for");
+
+    // The shape git sends for `git push --delete`: an all-zero LOCAL sha, and a remote that has
+    // the branch. Both gates would be owed if this carried a tree — and it carries none.
+    let run = sandbox.run("pre-push", Some(&ref_line(ABSENT, &head)), None);
+    let told = said(&run);
+    assert!(
+        run.status.success(),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 1005: a deletion was REFUSED. It publishes no content, so there \
+         is nothing for either gate to be about — and a branch that can never be removed is what \
+         item 480 measured this exact mistake costing: {told}",
+    );
+    assert!(
+        !reached_the_pixel_smoke(&told) && !reached_the_hook_suite(&told),
+        "and nothing may be RUN for it either: {told}",
     );
     sandbox.done();
 }

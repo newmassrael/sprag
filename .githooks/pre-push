@@ -252,17 +252,51 @@ hook_suite_is_owed() { pushed_range_touches $HOOK_PATHS; }
 
 # ── The suite that DRIVES these hooks, run when this push changes one — register item 688.
 #
-# ⚠⚠⚠ IT REFUSES RATHER THAN SKIPS WHERE CARGO IS MISSING, `run_pixel_smoke`'s stance verbatim: a
-# gate that quietly steps aside on the machine that lacks its tools is absent exactly where nobody
-# notices. This one is cheap — the suite it runs finished in under a second on both CI platforms —
-# so there is no latency argument for waiving it either.
-run_hook_suite() {
-    echo "pre-push: this push changes a hook — cargo test -p sprag-gate ..." >&2
-    if ! cargo test -p sprag-gate; then
-        echo "pre-push: the hook suite failed — a hook that breaks the crate that drives it must \
-not be published; register item 688 is what this gate exists for" >&2
-        return 1
-    fi
+# ── Has a path-scoped gate already cleared what every pushed tip carries? — register item 1005.
+#
+#   $1    the stamp file
+#   $2..  the paths that gate reads
+#
+# ⛔⛔⛔⛔⛔ THE SAME QUESTION ITEM 480 ASKS, SCOPED. Not *did this gate run recently* but **was THIS
+# CONTENT the content it cleared** — so an amend, a rebase, a second commit or a `--no-verify` all
+# fail to match, and only a run that saw these very bytes counts.
+#
+# ⚠⚠⚠⚠ EVERY UNKNOWN ANSWERS NO, which is the direction that costs minutes rather than
+# correctness: a missing stamp, a ref this clone cannot resolve, an empty stdin. And EVERY pushed
+# tip must match, not one of them — a push carrying two branches carries two trees.
+#
+# ⚠⚠ A DELETION ANSWERS NO HERE TOO, deliberately: it carries no tree, so no stamp can be about it.
+# That is not where the deletion case is decided — `pushed_range_compiles_nothing` decides it, at
+# the call site, BEFORE this refusal is reached. Item 480 paid for learning that a refusal is not
+# free, and putting the waiver in here would hide it inside the thing being waived.
+push_gate_cleared_every_pushed_tip() {
+    local stamp="$1" cleared saw_ref=0 local_ref local_sha remote_ref remote_sha carried
+    shift
+    [ -f "$stamp" ] || return 1
+    cleared="$(cat "$stamp")" || return 1
+    [ -n "$cleared" ] || return 1
+    while read -r local_ref local_sha remote_ref remote_sha; do
+        [ -n "$local_sha" ] || continue
+        : "$local_ref" "$remote_ref" "$remote_sha"
+        case "$local_sha" in
+            *[!0]*) ;;
+            *) return 1 ;;
+        esac
+        saw_ref=1
+        carried="$(paths_tree_of "$local_sha" "$@")" || return 1
+        [ "$carried" = "$cleared" ] || return 1
+    done <<<"$pushed_refs"
+    [ "$saw_ref" -eq 1 ]
+}
+
+pixel_smoke_cleared_every_pushed_tip() {
+    push_gate_cleared_every_pushed_tip "$(git rev-parse --git-dir)/sprag-pixel-smoke-passed" \
+        $PIXEL_PATHS
+}
+
+hook_suite_cleared_every_pushed_tip() {
+    push_gate_cleared_every_pushed_tip "$(git rev-parse --git-dir)/sprag-hook-suite-passed" \
+        $HOOK_PATHS
 }
 
 # ── The content gates over what this push actually publishes.
@@ -339,44 +373,23 @@ content_gates_over_pushed_range() {
     return "$status"
 }
 
-# Build the whole set in ONE release invocation and run the smoke under a fresh, isolated home.
+# ── How this hook refuses a gate it will not run — register item 1005.
 #
-# One invocation because the binaries must agree: the smoke drives a daemon and a terminal client
-# beside the GUI, and a set built piecemeal has bitten this project before (a stale daemon binary
-# cost four cycles). A fresh XDG home because the smoke writes user config, and a run that read the
-# developer's would be asserting about their machine.
-run_pixel_smoke() {
-    if ! command -v xvfb-run >/dev/null 2>&1; then
-        echo "pre-push: the pixel smoke needs xvfb-run — install xvfb" >&2
-        return 1
-    fi
-    if ! ls /usr/share/vulkan/icd.d/lvp_icd*.json >/dev/null 2>&1; then
-        echo "pre-push: the pixel smoke needs the lavapipe Vulkan ICD — install mesa-vulkan-drivers" >&2
-        return 1
-    fi
-
-    echo "pre-push: this push paints — cargo build --release (gui, host, tui) ..." >&2
-    if ! cargo build --release -p sprag-gui -p sprag-host -p sprag-tui; then
-        echo "pre-push: the smoke set did not build" >&2
-        return 1
-    fi
-
-    local home
-    # ⛔⛔⛔ THE SCRATCH IS CHECKED WHERE IT IS TAKEN — register item 792. An
-    # unchecked `mktemp` (127 when it is off PATH) leaves this empty, and the
-    # next line becomes `mkdir -p /config /data /state` with the smoke then
-    # pointed at them by `XDG_*`.
-    home="$(mktemp -d)" || return 1
-    mkdir -p "$home/config" "$home/data" "$home/state"
-    echo "pre-push: pixel smoke ..." >&2
-    if ! XDG_CONFIG_HOME="$home/config" XDG_DATA_HOME="$home/data" XDG_STATE_HOME="$home/state" \
-        xvfb-run -a ./target/release/sprag-smoke; then
-        rm -rf "$home"
-        echo "pre-push: the pixel smoke failed — the checks it prints are the diagnosis" >&2
-        return 1
-    fi
-    rm -rf "$home"
-    return 0
+#   $1  what the gate is, in the words a person meeting the refusal needs
+#   $2  the verb of `rust-gates.sh` that clears it
+#
+# ⚠⚠ **THE REFUSAL NAMES A COMMAND, which is what stops it being a wall** — item 480's own
+# sentence, and the half that made its repair usable. Unlike the Rust gates' stamp, which
+# `pre-commit` writes as a side effect of committing, nothing writes these two: a person who edits
+# a hook has never run the suite outside a connection, so the command is the ONLY way through and
+# printing it is not a courtesy.
+refuse_unstamped_push_gate() {
+    local what="$1" verb="$2"
+    echo "pre-push: REFUSED — this push would spend an open GitHub connection on the $what, and a \
+gate that outlasts the remote's idle timeout loses the push after passing (register item 480: \
+7m15s, SIGPIPE 141, the ref unmoved; register item 1005 is this gate's share of it)." >&2
+    echo "pre-push: run it outside the connection and push again:" >&2
+    echo "pre-push:     bash .githooks/rust-gates.sh $verb" >&2
 }
 
 # ── Were clippy and the rustdoc gate already run, by `pre-commit`, on exactly what this push
@@ -588,15 +601,49 @@ rustdoc gates nor the ratchet lane:" >&2
         exit 1
     fi
 
-    # ⚠⚠ BEFORE THE PIXEL SMOKE, which builds three crates in release. This one is seconds, and a
-    # push that is going to be refused should be refused before the expensive gate agrees with it —
-    # the ordering argument the content gates above are already built on.
+    # ⛔⛔⛔⛔⛔ **AND THESE TWO ARE REFUSED RATHER THAN RUN, ON THE SAME TERMS** — register item
+    # 1005, which is item 480's own done-when finished. That item said *the hook cannot spend an
+    # open GitHub connection on a multi-minute gate* and only the Rust gates were moved; these two
+    # stayed, and the gate that paid 480 wrote them into its own header rather than pretend
+    # otherwise. `run_pixel_smoke` was `cargo build --release` over three crates. `run_hook_suite`
+    # carried a comment measuring its SUITE at under a second — which is not its BUILD, and a cold
+    # tree pays minutes for that before a single test runs.
+    #
+    # ⛔⛔⛔⛔ **AND «A REFUSAL IS NOT FREE» WAS ASKED AGAIN HERE, WHICH IS ITEM 1005's FOURTH
+    # DONE-WHEN — the answer is that these two sites do not need the waiver, and that was MEASURED
+    # rather than assumed.** Item 480 had to wave a deletion through explicitly, because its chain
+    # is reached by every push. These two are reached only when `pushed_range_touches` says the
+    # range touches their paths — and that walk `continue`s past an all-zero local sha, so a
+    # deletion-only push is NOT OWED and never arrives here at all.
+    #
+    # ⚠⚠ A GUARD WAS WRITTEN HERE FIRST AND DELETED, because the mutation that removes it changes
+    # nothing: `a_deletion_is_not_refused_by_either_push_gate` stayed green with it gone, which is
+    # this repository's own test for whether a line is a rule or decoration. The property is real
+    # and is held by that arm; what is not real is a second place claiming to decide it.
+    #
+    # ⚠ THE RESIDUE, stated rather than discovered later: a MIXED push — one ref deleted, another
+    # carrying paint — is owed, and no stamp can cover a tip that has no tree, so it is refused
+    # until the two are pushed separately. That is item 480's behaviour exactly, inherited on
+    # purpose rather than diverged from here.
     if hook_suite_is_owed; then
-        run_hook_suite || exit 1
+        if hook_suite_cleared_every_pushed_tip; then
+            echo "pre-push: the hook suite has cleared these hooks — not spending the connection \
+on it" >&2
+        else
+            refuse_unstamped_push_gate "suite that drives these hooks" "--clear-hooks"
+            exit 1
+        fi
     fi
 
     if pixel_smoke_is_owed; then
-        run_pixel_smoke || exit 1
+        if pixel_smoke_cleared_every_pushed_tip; then
+            echo "pre-push: the pixel smoke has cleared what this tree paints — not spending the \
+connection on it" >&2
+        else
+            refuse_unstamped_push_gate "pixel smoke, which builds three crates in release" \
+                "--clear-pixel"
+            exit 1
+        fi
     fi
 fi
 
