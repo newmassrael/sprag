@@ -503,6 +503,12 @@ fn tools_list() -> Value {
                     says so and names the run, so `nothing is driving this` is a claim you can act \
                     on instead of a silence you have to guess at. list_runs cannot answer this for \
                     somebody else's loop; it lists only the runs YOU started. \
+                    ⚠⚠ AND HOW EACH PANE WAS BORN AND WHO IS LIVING IN IT: a pane the daemon \
+                    re-ran out of a snapshot says `revived`, and one holding an AI conversation \
+                    names it under `conversation` — with the run that conversation asked for, when \
+                    there is one. Read the pair before closing anything: `revived` with NO driver \
+                    is an orphan (an agent holding context no run is using), while a pane naming a \
+                    conversation is somebody's live work whatever the runs say. \
                     Call this first to learn which number is which pane.",
                 "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
             },
@@ -3410,6 +3416,35 @@ struct PaneInfo {
     /// as the run id because that id is the join to `list_runs` / `sprag runs`, where a reader goes
     /// next to learn HOW it ended.
     left_by: Option<u64>,
+    /// **WHETHER THE DAEMON RE-RAN THIS PANE OUT OF A SNAPSHOT** —
+    /// [`sprag_host::wire::PANE_REVIVED_KEY`], register items 595 and 1021.
+    ///
+    /// The other half of the orphan judgement [`driven`](Self::driven) makes possible. A restart
+    /// brings panes back ALIVE and runs back ENDED, so *nothing is driving this* is true of every
+    /// agent pane afterwards and cannot tell the conversation a person opened by hand from the one
+    /// the daemon revived unasked. `sprag panes` has printed `(revived)` beside `(driven)` since
+    /// item 595 precisely so a reader can form the pair; this surface published neither until item
+    /// 1018 and then only the first, so a supervising agent could see a missing driver and not the
+    /// birth that makes it an orphan.
+    revived: bool,
+    /// **WHICH RUN THIS PANE'S OCCUPANT ASKED FOR** — [`sprag_host::wire::PANE_BORNE_BY_KEY`],
+    /// `None` for a pane whose conversation asked for none. Register items 619 and 1021.
+    ///
+    /// ⚠⚠ **THIS SURFACE IS ITS FIRST READER ANYWHERE.** Measured 2026-09-10: the host has computed
+    /// the key on every pane list since item 619 and NO mouth read it — `sprag panes` does not print
+    /// it either, which refutes item 1021's own premise that the human surface carried all three.
+    /// It is worth more here than there: `list_runs` answers only about the runs THIS agent started,
+    /// so an agent looking at a sibling pane has no other way to learn that pane asked for a run,
+    /// while a person can read it off `sprag runs`'s own *asked for by pane N*.
+    borne_by: Option<u64>,
+    /// **WHICH CONVERSATION IS LIVING IN THIS PANE** — [`sprag_host::wire::PANE_SESSION_KEY`],
+    /// `None` for a pane that is not an agent's. Register items 865's ⑸ and 1021.
+    ///
+    /// The fact a reader needs before closing a pane. Two live Claude conversations died with a
+    /// window on 2026-09-03 after three checks that were all about runs and panes; the daemon held
+    /// this string the whole time. [`borne_by`](Self::borne_by) is COMPUTED from it, so a pane no
+    /// run claims still says somebody is in it — which is the case that cost the two.
+    session: Option<String>,
 }
 
 /// One pane's agent verdict as an agent reads it — the wire's own `agent` object, field for field.
@@ -4679,6 +4714,23 @@ fn pane_summary(
         };
         out.push_str(&format!("      opened by: {who}\n"));
     }
+    // ⛔⛔⛔⛔⛔ **AND HOW IT WAS BORN** — register items 595 and 1021, and the half that makes the
+    // driver line below actionable.
+    //
+    // A restart brings panes back ALIVE and runs back ENDED, so *nothing is driving this* is true
+    // of EVERY agent pane afterwards: on its own it cannot tell the conversation a person opened by
+    // hand from the one the daemon revived unasked, and only the second is holding context nobody
+    // asked for. `sprag panes` has printed `(revived)` beside `(driven)` since item 595 so a reader
+    // can form that pair; this surface had neither until item 1018 and then only the driver.
+    //
+    // ⚠ Present only when true, the panes slot's own rule: a line on every pane a person opened
+    // would be reporting that the daemon had restarted, which the daemon knows without asking.
+    if pane.revived {
+        out.push_str(
+            "      revived: the daemon re-ran this pane out of a snapshot, unasked — with no \
+             driver line below it is an orphan, an agent holding context no run is using\n",
+        );
+    }
     // ⛔⛔⛔⛔⛔ **AND WHETHER A RUN IS DRIVING IT RIGHT NOW** — register item 1018, and the question
     // a supervising agent had no way to ask.
     //
@@ -4703,6 +4755,28 @@ fn pane_summary(
              now, so whatever the agent in it is doing, no run asked for it (list_runs / `sprag \
              runs` says how run {run} ended)\n"
         ));
+    }
+    // ⛔⛔⛔⛔⛔ **AND WHO IS LIVING IN IT** — register items 865's ⑸, 619 and 1021, and the fact a
+    // reader needs BEFORE closing a pane.
+    //
+    // The three lines above are about the pane; this is about its OCCUPANT, and they come apart
+    // exactly where it matters. Two live Claude conversations died with a window on 2026-09-03
+    // after three checks that were all about runs and panes — the daemon had held this string
+    // throughout, and the first sign was `No agent named … is reachable` afterwards.
+    //
+    // ⚠⚠ AND WHAT THAT CONVERSATION ASKED FOR, folded onto the same line because it is COMPUTED
+    // from this string (`borne_by` is the join over it), so it can never arrive without it. This
+    // surface is that key's FIRST READER ANYWHERE — measured 2026-09-10, `sprag panes` does not
+    // print it either — and it is worth more here than there: `list_runs` answers only about the
+    // runs THIS agent started, so an agent looking at a sibling pane has no other way to learn that
+    // pane asked for a run, while a person reads it off `sprag runs`'s own *asked for by pane N*.
+    //
+    // ⚠ Absent for a shell, which is most of this listing.
+    if let Some(session) = &pane.session {
+        let asked = pane.borne_by.map_or_else(String::new, |run| {
+            format!(" — this pane asked for run {run}")
+        });
+        out.push_str(&format!("      conversation: {session}{asked}\n"));
     }
     // The sibling AI, if the pane holds one (H3). Last because it is the only line here that is about
     // another agent rather than about a program: an agent scanning this list to find who needs a human
@@ -8636,6 +8710,20 @@ fn parse_pane_info(pane: &Value) -> PaneInfo {
         left_by: pane
             .get(sprag_host::wire::PANE_LEFT_BY_KEY)
             .and_then(Value::as_u64),
+        // ⚠ THE WIRE'S KEYS AGAIN, on the two lines above's terms — register item 1021. All five
+        // of these are presence-is-the-claim over there, so an absent key reads as *this host says
+        // nothing* rather than as a negative, which is what `unwrap_or(false)` / `None` mean here.
+        revived: pane
+            .get(sprag_host::wire::PANE_REVIVED_KEY)
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        borne_by: pane
+            .get(sprag_host::wire::PANE_BORNE_BY_KEY)
+            .and_then(Value::as_u64),
+        session: pane
+            .get(sprag_host::wire::PANE_SESSION_KEY)
+            .and_then(Value::as_str)
+            .map(str::to_owned),
     }
 }
 
@@ -11519,10 +11607,14 @@ mod tests {
             active: false,
             agent: None,
             opened_by: None,
-            // ⚠ No run drives these and none has left them: this gate is about resolving a NAME,
-            // and a driver line would be a fact it does not measure.
+            // ⚠ No run drives these and none has left them, nothing revived them and nobody is
+            // living in them: this gate is about resolving a NAME, and every one of those lines
+            // would be a fact it does not measure.
             driven: false,
             left_by: None,
+            revived: false,
+            borne_by: None,
+            session: None,
         };
         let panes = vec![pane(10, "build"), pane(11, "build"), pane(12, "test")];
         assert_eq!(pane_by_name(&panes, "test").unwrap().1.id, 12);
@@ -11650,10 +11742,14 @@ mod tests {
             focus_tracking: false,
             images: vec![],
             agent: None,
-            // ⚠ Undriven, and never driven: this gate is about numbering rows, and a driver line
-            // on every one of them would be a claim it does not measure.
+            // ⚠ Undriven, never driven, not revived and holding nobody: this gate is about
+            // numbering rows, and any of those lines on every one of them would be a claim it does
+            // not measure.
             driven: false,
             left_by: None,
+            revived: false,
+            borne_by: None,
+            session: None,
         };
         // Three rows so the NUMBER and the ID cannot be confused (id 11 is the third pane), a
         // pane one window over, and a pane in none — the three answers this rendering has to tell
@@ -11716,10 +11812,16 @@ mod tests {
             images: Vec::new(),
             active: false,
             agent: None,
-            // ⚠ WHO ASKED FOR A PANE and WHO IS DRIVING IT are different questions — this gate is
-            // about the first, so it states the second rather than leaving it to a default.
+            // ⚠ WHO ASKED FOR A PANE, WHO IS DRIVING IT and WHO IS IN IT are three questions —
+            // this gate is about the first, so it states the others rather than leaving them to a
+            // default. ⚠⚠ `borne_by` is deliberately absent even though this fixture is about an
+            // opener: *the pane that opened this one* and *the run this pane's conversation asked
+            // for* are different facts, and a gate that set both would be inviting the conflation.
             driven: false,
             left_by: None,
+            revived: false,
+            borne_by: None,
+            session: None,
         };
         // The listing this rendering indexes into: pane 1 is host id 3, the opener.
         let listing = [PaneInfo {
@@ -11768,10 +11870,13 @@ mod tests {
             focus_tracking: true,
             images: vec![],
             agent: None,
-            // ⚠ The subject here is the pane's INPUT MODE, which nothing drives — stated so the
-            // fixture cannot be read as a claim about a driver.
+            // ⚠ The subject here is the pane's INPUT MODE, which nothing drives and nobody lives
+            // in — stated so the fixture cannot be read as a claim about either.
             driven: false,
             left_by: None,
+            revived: false,
+            borne_by: None,
+            session: None,
         };
         let dir = nobody_left_word("mouse-focus");
         let quiet = looking_in(&dir);
@@ -11973,10 +12078,13 @@ mod tests {
             focus_tracking: false,
             images: vec![],
             agent: None,
-            // ⚠ An ordinary shell: nobody drives it and nobody ever did, which is the common path
-            // this listing must stay quiet about.
+            // ⚠ An ordinary shell: nobody drives it, nobody ever did, nothing revived it and no
+            // conversation is in it — the common path this listing must stay quiet about.
             driven: false,
             left_by: None,
+            revived: false,
+            borne_by: None,
+            session: None,
         };
         let claimed = PaneInfo {
             agent: Some(AgentInfo {
@@ -12098,6 +12206,12 @@ mod tests {
             agent: None,
             driven: false,
             left_by: None,
+            // ⚠ The subject here is the DRIVER, and item 1021's three keys are held by their own
+            // gate. Stated rather than defaulted so this fixture makes no claim about them — and
+            // so a reader can see that the driver answer needs none of them.
+            revived: false,
+            borne_by: None,
+            session: None,
         };
         let dir = nobody_left_word("run-liveness");
         let no_word = looking_in(&dir);
@@ -12195,6 +12309,164 @@ mod tests {
             "⚠⚠⚠⚠⚠ THE CONTROL: no run ever drove this pane, so the listing stays silent. A driver \
              line on every pane would be a line on every shell in the workspace, and noise on the \
              common path is what gets skimmed past on the one row that matters: {plain}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A SUPERVISING AGENT CAN ASK HOW A PANE WAS BORN AND WHO IS LIVING IN IT** —
+    /// register item 1021, and the half `driver:` cannot reach.
+    ///
+    /// # ⛔⛔⛔ Why a missing driver is not yet a judgement
+    ///
+    /// A restart brings panes back ALIVE and runs back ENDED, so *nothing is driving this* becomes
+    /// true of EVERY agent pane at once. `sprag panes` has printed `(revived)` beside `(driven)`
+    /// since item 595 exactly so a reader can form the pair a person acts on — **`(revived)` with
+    /// no `(driven)` is the orphan**, an agent holding tokens and context nobody asked for. This
+    /// surface published neither until item 1018 and then only the driver, so an agent could see
+    /// the missing half of that pair and never the half that makes it mean something.
+    ///
+    /// # 📊 What was measured before any of this was written — item 1021's own ⑶
+    ///
+    /// The item said to check first whether these are *noise on the common path*, because `revived`
+    /// attaches to every agent pane after a restart. Measured on this machine's live loop daemon,
+    /// six panes over three windows:
+    ///
+    /// | key | panes carrying it | which |
+    /// |---|---|---|
+    /// | `revived` | 3 of 6 | the three **shells**, and not one agent pane |
+    /// | `session` | 3 of 6 | exactly the three agent panes |
+    /// | `borne_by` | **0 of 6** | none — the loop's runs record no asker |
+    ///
+    /// So it is not noise: half the rows, and the half that separates *the daemon re-ran this* from
+    /// *a run opened this*. ⚠ The `borne_by` zero has a measured cause rather than a defect behind
+    /// it — those runs are launched from a shell, so `opened_by` is unrecorded and
+    /// `opened_by_session` with it.
+    ///
+    /// # ⚠⚠ And the item's premise was wrong about where these live
+    ///
+    /// It said the human surface printed all three. It does not: `PANE_BORNE_BY_KEY` appears
+    /// nowhere in `sprag`'s CLI, so the host has computed that key on every pane list since item
+    /// 619 with **no reader anywhere**. This listing is its first — and the right home for it, for
+    /// a reason the CLI does not share: `list_runs` answers only about the runs the CALLER started,
+    /// so an agent looking at a sibling pane cannot learn what that pane asked for any other way,
+    /// while a person reads it off `sprag runs`'s own *asked for by pane N*.
+    #[test]
+    fn the_listing_says_how_a_pane_was_born_and_which_conversation_is_in_it() {
+        let base = PaneInfo {
+            id: 3,
+            name: None,
+            title: String::new(),
+            command: "claude".to_owned(),
+            cols: 80,
+            rows: 24,
+            notification: None,
+            bell: 0,
+            opened_by: None,
+            active: false,
+            shell: None,
+            exit_status: None,
+            mouse: None,
+            focus_tracking: false,
+            images: vec![],
+            agent: None,
+            driven: false,
+            left_by: None,
+            revived: false,
+            borne_by: None,
+            session: None,
+        };
+        let dir = nobody_left_word("pane-birth");
+        let no_word = looking_in(&dir);
+        let render = |pane: &PaneInfo| pane_summary(1, pane, &[], None, None, &no_word);
+
+        // ── THE PARSE FIRST, BECAUSE A READER THAT LOOKS FOR THE WRONG KEY IS THE WHOLE DEFECT ──
+        //
+        // ⚠⚠ Built from the WIRE's own constants, which is what a rename over there has to move on
+        // both sides at once. A surface that answered *nothing was revived, nobody is in here* for
+        // every pane would be item 1018's constant wearing three new names.
+        let row = |extra: Value| {
+            let mut pane = json!({"id": 3, "cols": 80, "rows": 24, "command": "claude"});
+            for (key, value) in extra.as_object().expect("an object of extra keys") {
+                pane[key] = value.clone();
+            }
+            parse_pane_info(&pane)
+        };
+        let parsed = row(json!({
+            sprag_host::wire::PANE_REVIVED_KEY: true,
+            sprag_host::wire::PANE_SESSION_KEY: "7a564435",
+            sprag_host::wire::PANE_BORNE_BY_KEY: 7,
+        }));
+        assert_eq!(
+            (parsed.revived, parsed.session.as_deref(), parsed.borne_by),
+            (true, Some("7a564435"), Some(7)),
+            "⛔⛔⛔ ITEM 1021: the host publishes all three and the parse must carry all three. A \
+             reader looking for a key nobody writes answers *nothing here* for ever: {parsed:?}",
+        );
+        let parsed = row(json!({}));
+        assert_eq!(
+            (parsed.revived, parsed.session.as_deref(), parsed.borne_by),
+            (false, None, None),
+            "⚠⚠⚠⚠⚠ THE CONTROL FOR THE PARSE: these are presence-is-the-claim keys, so *the host \
+             said nothing* must not become a claim on this side of the wire",
+        );
+
+        // ── A REVIVED PANE NOBODY IS DRIVING — the orphan, which is the pair a reader acts on ──
+        let orphan = render(&PaneInfo {
+            revived: true,
+            session: Some("7a564435".to_owned()),
+            ..base.clone()
+        });
+        assert!(
+            orphan.contains("revived: the daemon re-ran this pane out of a snapshot"),
+            "⛔⛔⛔ ITEM 1021: an agent that can see no driver still cannot tell a conversation a \
+             person opened from one the daemon revived unasked — and only the second is holding \
+             context nobody wanted: {orphan}",
+        );
+        assert!(
+            !orphan.contains("driver:"),
+            "⚠⚠⚠⚠⚠ AND THE PAIR IS WHAT MEANS SOMETHING: this row is an orphan precisely because \
+             the birth is stated and no driver is. A gate that asserted the birth alone would pass \
+             over a revived pane a live run had picked up: {orphan}",
+        );
+        assert!(
+            orphan.contains("conversation: 7a564435"),
+            "⛔⛔ AND WHO IS IN IT, which is the fact a reader needs BEFORE closing it — two live \
+             conversations died with a window on 2026-09-03 after three checks that were all about \
+             runs and panes: {orphan}",
+        );
+        assert!(
+            !orphan.contains("asked for run"),
+            "⚠⚠ AND THIS ONE ASKED FOR NOTHING: `borne_by` is absent, so the line must not invent a \
+             run. Measured on the live daemon: 0 of 6 panes carry it: {orphan}",
+        );
+
+        // ── A PANE WHOSE CONVERSATION ASKED FOR A RUN — `borne_by`'s first reader anywhere ──
+        let asker = render(&PaneInfo {
+            session: Some("8a5c5d59".to_owned()),
+            borne_by: Some(7),
+            ..base.clone()
+        });
+        assert!(
+            asker.contains("conversation: 8a5c5d59 — this pane asked for run 7"),
+            "⛔⛔⛔⛔⛔ ITEM 1021: the host has computed this key on every pane list since item 619 \
+             and NO mouth has ever read it — not even `sprag panes`. An agent cannot learn it any \
+             other way: `list_runs` answers only about the runs the caller started: {asker}",
+        );
+        assert!(
+            !asker.contains("revived:"),
+            "⚠⚠⚠ AND HOW IT WAS BORN IS A DIFFERENT QUESTION FROM WHAT IT ASKED FOR: this pane was \
+             opened by somebody, not revived, and a row that said otherwise would be reporting a \
+             restart that did not happen: {asker}",
+        );
+
+        // ── AND THE CONTROL, WITHOUT WHICH ALL OF THE ABOVE IS DECORATION ──
+        let shell = render(&base);
+        assert!(
+            !shell.contains("revived:") && !shell.contains("conversation:"),
+            "⚠⚠⚠⚠⚠ THE CONTROL: an ordinary shell was opened by a person, nothing revived it and \
+             nobody is living in it, so the listing stays silent. A line on every pane would be \
+             reporting that the daemon had restarted — which the daemon knows without asking a \
+             pane — and noise on the common path is what gets skimmed past on the row that \
+             matters: {shell}",
         );
     }
 
