@@ -1723,6 +1723,62 @@ impl Reading {
         Ok(found)
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE FAILURES NO CLAIM IN THIS LEDGER HOLDS** — register item 998, and
+    /// [`Reading::standing_reds`]'s population inverted.
+    ///
+    /// `standing_reds` asks, of each claim, *is this still true*. This asks, of each FAILURE, *does
+    /// anything here hold it* — and they are different questions over different populations, which
+    /// is why a ledger can be green on the first while a job is red. [`Reported`]'s own doc carries
+    /// the measurement that opened this item.
+    ///
+    /// The claims put are the ones this platform's report is entitled to answer: unqualified, or
+    /// marked for `here`. ⚠⚠ **A claim about ANOTHER platform cannot hold a failure here.** Letting
+    /// it would mean one `@macos` mark excusing a linux red of the same test, which is the tolerance
+    /// item 949 spent a round removing from the other direction.
+    ///
+    /// ⚠ Only OPEN items claim anything — [`Reading::red_claims`] filters on the mark — so a claim
+    /// whose item has been PAID stops holding its failure the moment it is marked. That is the
+    /// intended reading and it is what this item's own history is made of: item 975's red was held
+    /// by nothing because nothing could claim it, and once paid nothing should.
+    ///
+    /// # Errors
+    ///
+    /// A sentence naming why a claim could not be put to a name. **The whole answer is refused
+    /// rather than part of it**: the claim that could not be placed might be the one holding a
+    /// failure, so a partial set would name unclaimed reds that are claimed, and this instrument's
+    /// one irreversible instruction is *delete that line*.
+    pub fn unclaimed_failures(
+        &self,
+        report: &dyn Reported,
+        here: &str,
+    ) -> Result<Unclaimed, String> {
+        let asked: Vec<RedClaim> = self
+            .red_claims()
+            .into_iter()
+            .filter(|(_, claim)| !claim.on.is_some_and(|on| on.word() != here))
+            .map(|(_, claim)| claim)
+            .collect();
+        let reported = report.failures();
+        let mut unheld = Vec::new();
+        for failure in &reported {
+            let mut held = false;
+            for claim in &asked {
+                if report.accounts_for(&claim.argv, failure)? {
+                    held = true;
+                    break;
+                }
+            }
+            if !held {
+                unheld.push(failure.clone());
+            }
+        }
+        Ok(Unclaimed {
+            failures: unheld,
+            reported: reported.len(),
+            asked: asked.len(),
+        })
+    }
+
     /// 🎯🎯🎯🎯🎯 **HOW MANY STILL-OPEN DEBTS THIS ONE SITS UNDER** — register item 921, and the
     /// number [`Reading::deferred`] and [`Reading::takeable`] actually decide on.
     ///
@@ -2602,6 +2658,57 @@ pub trait Suite {
     /// that could not be run at all says nothing about any claim, and the difference is the whole
     /// of why this returns a [`Result`]. [`Commits::resolves`]' rule exactly.
     fn is_red(&self, names: &str) -> Result<bool, String>;
+}
+
+/// ⛔⛔⛔⛔⛔ **THE SAME EVIDENCE, ASKED THE OTHER WAY ROUND** — register item 998.
+///
+/// # ⛔⛔⛔ What [`Suite`] cannot ask, and what that cost
+///
+/// [`Suite::is_red`] walks the LEDGER's claims and puts each to the evidence, so its population is
+/// the set of claims. A failure **no claim mentions** is outside that population and therefore
+/// outside every count this instrument prints: measured 2026-09-09, `reds 2 claimed, 0 standing`
+/// stood while CI's `headless (linux)` was failing a test in this workspace, and feeding
+/// [`Reading::standing_reds`] the very log that carried that failure answered `0 standing` with
+/// rc=0. The red was found by a person reading the job at the round's start — which is a
+/// CONVENTION, the shape this workspace's rule 10 exists to refuse — and it had stood for eight
+/// hosted runs by then.
+///
+/// So this trait is the inverse enumeration: the evidence says what it FAILED, and the ledger is
+/// asked whether anything holds each one. It is a separate trait rather than two more methods on
+/// [`Suite`] because the suite that answers by RUNNING cargo cannot enumerate names at all — it
+/// knows one bit per selection — and a trait method it had to refuse would be a hole of its own.
+pub trait Reported {
+    /// Every test this report says FAILED, in the harness's own spelling and in the report's order.
+    fn failures(&self) -> Vec<String>;
+
+    /// Whether one [`RED`] claim's argv ACCOUNTS FOR `failure` — the same match
+    /// [`Suite::is_red`] makes, asked of one name instead of all of them.
+    ///
+    /// # Errors
+    ///
+    /// A sentence naming why that claim could not be put to a NAME. Never *no*: a claim this reader
+    /// cannot place might be the very one holding `failure`, so guessing `false` would invent an
+    /// unclaimed red and guessing `true` would excuse one.
+    fn accounts_for(&self, argv: &str, failure: &str) -> Result<bool, String>;
+}
+
+/// 🎯🎯🎯🎯🎯 **WHAT A PLATFORM REPORTED THAT THE LEDGER DOES NOT ACCOUNT FOR** — register item 998.
+///
+/// ⚠⚠ A NAMED STRUCT, for [`Reds`]' reason: the two numbers beside the names are what tell the two
+/// GREENS apart, and a caller that printed only the emptiness of `failures` would say *nothing is
+/// unclaimed* about a report that failed nothing and about a report whose every failure is held —
+/// which is this workspace's rule 5 asked of a zero.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Unclaimed {
+    /// The failures no applicable claim accounts for, in the report's own order.
+    pub failures: Vec<String>,
+    /// How many failures the report carried at all.
+    pub reported: usize,
+    /// How many of the ledger's claims this platform's report was entitled to answer — an
+    /// unqualified claim or one marked for this platform. ⚠ A claim about somewhere else is not
+    /// counted here and cannot hold a failure here, which is [`Reds::elsewhere`]'s rule in the one
+    /// direction it has to hold in: a `@macos` mark does not excuse a red on linux.
+    pub asked: usize,
 }
 
 /// Read the one line that declares a ratchet's floor, faulting when there is not exactly one or
@@ -5020,6 +5127,38 @@ mod tests {
         }
     }
 
+    /// A platform's report, answering from a table — [`Answers`]' counterpart for the question
+    /// [`Reading::unclaimed_failures`] puts.
+    ///
+    /// ⚠⚠ **THE MATCH RULE IS DELIBERATELY NOT RE-IMPLEMENTED HERE.** Which argv selects which name
+    /// is the reader's work and is gated where that reader lives (`bin/north-star.rs`); a second
+    /// spelling of it inside this fixture would make these arms pass while the two disagreed in
+    /// production. So the pairs are stated, and what is under test is the SET — which is this type's
+    /// own work.
+    struct Said {
+        failed: Vec<String>,
+        held: Vec<(String, String)>,
+        unplaceable: Vec<String>,
+    }
+
+    impl Reported for Said {
+        fn failures(&self) -> Vec<String> {
+            self.failed.clone()
+        }
+
+        fn accounts_for(&self, argv: &str, failure: &str) -> Result<bool, String> {
+            if self.unplaceable.iter().any(|one| one == argv) {
+                return Err(format!(
+                    "the claim `{argv}` names no test selection this reader can put to a name"
+                ));
+            }
+            Ok(self
+                .held
+                .iter()
+                .any(|(claim, name)| claim == argv && name == failure))
+        }
+    }
+
     /// A ledger shaped like the day item 843 was registered: one critical item standing, and an
     /// ORDINARY item that is red right now.
     fn with_a_standing_red() -> String {
@@ -5225,6 +5364,144 @@ mod tests {
                 elsewhere: Vec::new(),
             },
             "a claim naming no platform is a claim about wherever this runs, as it always was",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A FAILURE NO CLAIM HOLDS IS NAMED, AND A HELD ONE IS NOT** — register item 998,
+    /// and the population [`Reading::standing_reds`] cannot reach.
+    ///
+    /// # ⛔⛔⛔ The hole, measured before this was written
+    ///
+    /// `standing_reds` walks CLAIMS, so its answer is green about any failure nobody claimed.
+    /// Measured 2026-09-09: this instrument printed `reds 2 claimed, 0 standing` while CI's
+    /// `headless (linux)` failed a test of this workspace, and the same log fed to `--elsewhere`
+    /// answered `0 standing` with rc=0. The red had stood eight hosted runs and was found by a
+    /// person glancing at the job.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Both arms off ONE report, or this is a constant
+    ///
+    /// A reader that answered *unclaimed* for everything reds every job there is, claims and all; one
+    /// that answered *held* for everything is today's blindness with more code. So the report below
+    /// carries a failure a claim accounts for AND one nothing does, and both are asserted.
+    #[test]
+    fn a_reported_failure_no_claim_accounts_for_is_named_and_a_held_one_is_not() {
+        let reading = read(&with_a_standing_red());
+        let claim = "-p sprag-gate --lib north_star".to_owned();
+        let said = Said {
+            failed: vec![
+                "north_star::tests::a_held_one".to_owned(),
+                "rpc::tests::a_red_nobody_claimed".to_owned(),
+            ],
+            held: vec![(claim, "north_star::tests::a_held_one".to_owned())],
+            unplaceable: Vec::new(),
+        };
+        assert_eq!(
+            reading
+                .unclaimed_failures(&said, "linux")
+                .expect("every claim could be placed"),
+            Unclaimed {
+                failures: vec!["rpc::tests::a_red_nobody_claimed".to_owned()],
+                reported: 2,
+                asked: 1,
+            },
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 998: a failure the register does not account for must be \
+             NAMED — and the one it does must not be, or the answer is a constant that reds every \
+             job",
+        );
+        // ⚠⚠ AND THE TWO NUMBERS ARE WHAT TELL THE TWO GREENS APART — rule 5 asked of a zero. A
+        // report that failed nothing and a report whose every failure is held both have an empty
+        // `failures`, and a caller with only that cannot say which green it is printing.
+        let nothing_failed = Said {
+            failed: Vec::new(),
+            held: Vec::new(),
+            unplaceable: Vec::new(),
+        };
+        assert_eq!(
+            reading
+                .unclaimed_failures(&nothing_failed, "linux")
+                .expect("nothing to ask about"),
+            Unclaimed {
+                failures: Vec::new(),
+                reported: 0,
+                asked: 1,
+            },
+            "⚠⚠ a report with no failures is green with `reported` 0, which is a different \
+             sentence from *every failure is held* and must stay distinguishable from it",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A CLAIM ABOUT ANOTHER PLATFORM CANNOT HOLD A FAILURE HERE** — register item 998,
+    /// and [`Reds::elsewhere`]'s rule in the one direction that had not been asked.
+    ///
+    /// Item 949 bought *not here* for a platform mark and spent a round refusing to let it mean
+    /// *nowhere*. The inverse tolerance is the same defect pointing the other way: one `@macos` mark
+    /// excusing a LINUX red of the same test would make every such failure read as claimed, and this
+    /// whole count would be green again.
+    ///
+    /// ⚠⚠ THE MIRROR ARM IS WHAT KEEPS IT HONEST — on the platform the claim names, it holds.
+    #[test]
+    fn a_claim_marked_for_another_platform_holds_nothing_here() {
+        let ledger = with_a_standing_red().replace(
+            "@red: -p sprag-gate --lib north_star",
+            "@red: @macos -p sprag-gate --lib north_star",
+        );
+        let reading = read(&ledger);
+        let claim = "-p sprag-gate --lib north_star".to_owned();
+        let failure = "north_star::tests::a_test_of_that_module".to_owned();
+        let said = Said {
+            failed: vec![failure.clone()],
+            held: vec![(claim, failure.clone())],
+            unplaceable: Vec::new(),
+        };
+        assert_eq!(
+            reading
+                .unclaimed_failures(&said, "linux")
+                .expect("no claim applied, so none could refuse"),
+            Unclaimed {
+                failures: vec![failure.clone()],
+                reported: 1,
+                asked: 0,
+            },
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 998: a `@macos` claim must not excuse a LINUX red of the same \
+             test — `asked` is 0 here, and a reader that let it hold would report every such \
+             failure as somebody's",
+        );
+        assert_eq!(
+            reading
+                .unclaimed_failures(&said, "macos")
+                .expect("the claim was placed"),
+            Unclaimed {
+                failures: Vec::new(),
+                reported: 1,
+                asked: 1,
+            },
+            "⚠⚠ THE MIRROR: on the platform it names, that claim holds the failure — or the arm \
+             above would pass for a reader that held nothing anywhere",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A CLAIM THIS READER CANNOT PLACE REFUSES THE WHOLE ANSWER** — register item 998,
+    /// and this workspace's rule 6 at the one place this mode instructs an edit.
+    ///
+    /// The claim that could not be placed might be the very one holding a failure, so a partial set
+    /// would name unclaimed reds that are claimed. ⚠ And the direction matters: the refusal must not
+    /// be reachable only when the unplaceable claim is the LAST one asked, which a loop that kept
+    /// going and reported what it had would give.
+    #[test]
+    fn a_claim_that_cannot_be_placed_refuses_the_answer_rather_than_half_of_it() {
+        let reading = read(&with_a_standing_red());
+        let claim = "-p sprag-gate --lib north_star".to_owned();
+        let said = Said {
+            failed: vec!["rpc::tests::one".to_owned(), "rpc::tests::two".to_owned()],
+            held: Vec::new(),
+            unplaceable: vec![claim],
+        };
+        assert!(
+            reading
+                .unclaimed_failures(&said, "linux")
+                .is_err_and(|why| why.contains("no test selection")),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 998: a question this could not put must be a refusal naming \
+             why, never a list of unclaimed reds computed without the claim that may hold them",
         );
     }
 
