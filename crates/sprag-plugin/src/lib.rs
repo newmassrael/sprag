@@ -244,8 +244,8 @@ pub use outer::{
     AiLoopEvent, AiLoopSpec, AiLoopState, Arrivals, Authored, Brief, Briefed, Briefing, Counted,
     DeliveredByRoad, DoneReason, FoldsByReason, FoldsUnder, HOLD_TAKES_EFFECT, HOLD_WITHIN_KEY,
     INNER_SESSION_ENDS, Largest, LoopPlace, Made, NotResumed, NotScreenable, Noticed, Occasion,
-    OuterLoop, Pumped, ReflectReason, Retyped, STAND_DOWN_TAKES_EFFECT, SaidBySentence, SaidUnder,
-    Unasked, UnaskedRoad, Whose, WidthWithheld, refusal_in_words,
+    OuterLoop, Pumped, ReflectReason, Repeated, Retyped, STAND_DOWN_TAKES_EFFECT, SaidBySentence,
+    SaidUnder, Unasked, UnaskedRoad, Whose, WidthWithheld, refusal_in_words,
 };
 pub use pipe::{Pipe, PipeSpec};
 pub use plugin::{

@@ -751,6 +751,7 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                 unreadable,
                 checked,
                 made,
+                repeated,
                 service_said,
                 explained,
                 shown,
@@ -789,6 +790,17 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                 // is read off the agent's OWN record rather than off the screen it repaints.
                 let outcome = made
                     .and_then(sprag_plugin::Made::describe)
+                    .map(|said| format!(" — {said}"))
+                    .unwrap_or_default();
+                // ⛔⛔⛔⛔⛔ AND WHETHER THAT NUMBER IS THE LAST TURN'S NUMBER AGAIN — register item
+                // 993, and **this harness is where that item was born**: the owner was watching
+                // THIS line when they asked why the same prompt kept going in. What they were
+                // shown was `produced 184 tokens of output`, eleven times, with nothing saying the
+                // number had not moved — the clause above separates a turn that wrote from one
+                // that did not, and this one separates a run that is WORKING from one that is
+                // WAITING. ⚠ It stops no run: see `sprag_plugin::Repeated`.
+                let streak = repeated
+                    .and_then(sprag_plugin::Repeated::describe)
                     .map(|said| format!(" — {said}"))
                     .unwrap_or_default();
                 // ⛔⛔⛔⛔⛔ AND WHAT THE SERVICE SAID WHEN IT REFUSED THE TURN — register item 988,
@@ -884,7 +896,7 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                 step(
                     began,
                     &format!(
-                        "{from:?} --{raised:?}--> {to:?}{cause}{outcome}{refusal}{verdict}{admission}{evidence}{arrived}{unread}"
+                        "{from:?} --{raised:?}--> {to:?}{cause}{outcome}{streak}{refusal}{verdict}{admission}{evidence}{arrived}{unread}"
                     ),
                 );
                 walked.push((from, raised, to));

@@ -216,6 +216,9 @@ struct Learned<'a> {
     /// Whether the turn this pass ENDED produced anything — register item 719, and [`None`] on
     /// every pass that ended no turn.
     made: Option<crate::outer::Made>,
+    /// And whether it produced the SAME amount as the turn before it — register item 993, [`None`]
+    /// on every pass that ended no turn.
+    repeated: Option<crate::outer::Repeated>,
     /// What the SERVICE said when it refused the turn this pass ended — register item 988, and
     /// [`None`] wherever it refused nothing. The verdict is in `made`; this is what arrived.
     service_said: Option<&'a str>,
@@ -572,6 +575,7 @@ impl AiLoop {
             unreadable,
             checked,
             made,
+            repeated,
             service_said,
             explained,
             shown,
@@ -602,6 +606,19 @@ impl AiLoop {
         // say so too. ⚠ The unmeasured answer says nothing, and [`Made::describe`] holds why.
         if let Some(outcome) = made.and_then(crate::outer::Made::describe) {
             note = format!("{note} — {outcome}");
+        }
+        // ⛔⛔⛔⛔⛔ **AND WHETHER THAT NUMBER IS THE LAST TURN'S NUMBER AGAIN** — register item 993,
+        // appended to the verdict above rather than replacing it, which is the arrangement the
+        // service's own words two clauses down already use: *this turn produced 184 tokens* is one
+        // fact and *and so did the five before it* is another, and only the second one tells a
+        // person that the run has stopped getting anywhere.
+        //
+        // ⚠⚠ IT IS SILENT UNTIL THE STREAK IS WORTH READING — see [`crate::outer::Repeated`],
+        // which holds the threshold and the measured reason a sentence on every turn would be
+        // worse than none. So this clause appears on the turn the run has something to say and on
+        // no other, which is why it may sit on a line that is already long.
+        if let Some(streak) = repeated.and_then(crate::outer::Repeated::describe) {
+            note = format!("{note} — {streak}");
         }
         // ⛔⛔⛔⛔⛔ **AND WHAT THE SERVICE SAID WHEN IT REFUSED** — register item 988, appended to the
         // verdict above rather than replacing it, which is `explained`'s arrangement four clauses
@@ -1770,6 +1787,7 @@ impl Plugin for AiLoop {
                 unreadable,
                 checked,
                 made,
+                repeated,
                 service_said,
                 explained,
                 shown,
@@ -1835,6 +1853,7 @@ impl Plugin for AiLoop {
                         unreadable: unreadable.as_deref(),
                         checked,
                         made,
+                        repeated,
                         service_said: service_said.as_deref(),
                         explained: explained.as_deref(),
                         shown,
@@ -3911,6 +3930,207 @@ mod tests {
         assert!(
             !moving.iter().any(|note| note.contains(EMPTY)),
             "⚠⚠ and no turn of the moving arm may be called empty: {moving:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE WALK SAYS WHEN THE ANSWER HAS STOPPED CHANGING — AND STOPS NOTHING** —
+    /// register item 993, and the half its neighbour above cannot reach.
+    ///
+    /// # ⛔⛔⛔⛔ What a person was shown, and what they had to ask out loud
+    ///
+    /// `a_walk_says_which_turns_produced_nothing` separates a turn that WROTE from one that did
+    /// not. Measured 2026-09-09 on `run277.log`, that is not the question a waiting run raises:
+    /// **eleven judged turns in 110 seconds, every one of them `produced 184 tokens of output`**,
+    /// every one an ordinary turn, and the agent's single line on the pane was *"the release build
+    /// is running, waiting for the completion notice"*. Every clause on that walk was TRUE and the
+    /// run was getting nowhere. The owner watching the screen is what noticed, which is the
+    /// definition of an instrument that is missing.
+    ///
+    /// # ⚠⚠⚠ Three arms, and the second and third are what make the first mean anything
+    ///
+    /// | arm | the record grows by | what the walk must do |
+    /// | --- | --- | --- |
+    /// | ⭐ repeating | **the same amount every turn** | say so, once the streak is worth reading |
+    /// | ⭐⭐ moving (THE CONTROL) | a different amount every turn | **stay silent** |
+    /// | ⭐⭐⭐ the same run, after | — | **keep going** — no ending, no refusal, nothing stopped |
+    ///
+    /// **Without the control this gate passes on a reader that suspects every turn**, which is a
+    /// louder version of the same blindness. Without the third arm it passes on a reader that
+    /// answers by KILLING the run — and killing is the one thing the register forbids here, because
+    /// an agent waiting for its own build is doing the right thing. What the item asks for is the
+    /// wait counted as a COST (its pairing with item 983), not ended.
+    ///
+    /// ⚠ The two arms differ in ONE quantity — how much the session's record grows between turns —
+    /// and in nothing else: same peer, same brief, same number of turns, and the premises below
+    /// assert each of those rather than trusting the fixture.
+    #[test]
+    fn a_walk_says_when_the_answer_stopped_changing_and_stops_nothing() {
+        use crate::plugin::Plugin as _;
+
+        /// The clause the repeating arm owes. ⚠ Matched on the WORDS a person reads rather than on
+        /// a type, so a reader that computed the streak and rendered nothing is red here.
+        const SAID: &str = "JUDGED TURNS IN A ROW PRODUCING EXACTLY";
+        /// How much the repeating arm's session writes every single turn. ⚠ Not `1` and not a
+        /// number any other fixture here uses: a count that could be confused with the harness's
+        /// own would let a wrong reader look right.
+        const SAME: u64 = 184;
+        /// What the CONTROL writes, one per turn and never twice the same. ⚠ It must never
+        /// accidentally hold still: two equal neighbours here would make the control arm a second
+        /// copy of the subject, and this gate would agree with itself.
+        const MOVING: [u64; TURNS] = [184, 96, 231, 57, 148, 302, 73, 219, 111, 268];
+        /// How many turns each arm takes.
+        ///
+        /// ⚠⚠ **WITH MARGIN OVER [`crate::outer::Repeated::LOUD_AT`], and the margin is measured
+        /// rather than padded**: a session's FIRST judged turn has no earlier reading to compare
+        /// with, and this fixture's peer does not state a readable record until it has answered
+        /// once — so the first TWO turns of either arm are `Made::Unmeasured` and can start no
+        /// streak. A run that took exactly `LOUD_AT` turns would cross the threshold on its very
+        /// last one, and any future change costing the fixture one turn would make this gate go
+        /// quiet for a reason that is not the product's.
+        const TURNS: usize = 10;
+
+        /// Step one arm `TURNS` turns deep, growing its record by `growth[n]` after turn `n`, and
+        /// hand back every note it wrote plus whether the run was still moving at the end.
+        fn walk_of(record: &std::path::Path, growth: &[u64]) -> (Vec<String>, bool) {
+            let sample = crate::testing::MEASURED_HERE;
+            std::fs::write(record, sample.transcript())
+                .expect("the record its session starts with");
+
+            // ⚠ The peer answers far more prompts than this gate takes, so nothing it SAYS can end
+            // either arm — what ends them is this loop letting go.
+            let (workspace, pane) = standin_agent(99);
+            let access = crate::testing::supervised_writing(&workspace, record);
+            let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+                .expect("a well-briefed loop over a live pane starts");
+            let run = RunContext::uncancellable();
+            let mut walk: Vec<String> = Vec::new();
+            let mut turns = 0_usize;
+            let mut moving = true;
+            // ⚠⚠ STEPPED BY HAND, its neighbour's reason exactly: a session's record grows WHILE
+            // it works, and the only way to stage a controlled growth between turns is to be
+            // holding the loop between them.
+            while walk.len() < 120 && turns < growth.len() {
+                let step = match loops.step(&access, &run) {
+                    Ok(step) => step,
+                    // ⚠ A pane that stopped being readable is not this gate's subject and must not
+                    // be reported as *the run stopped* — it is the fixture failing, and the
+                    // premises below say so with the walk in hand.
+                    Err(_) => {
+                        moving = false;
+                        break;
+                    }
+                };
+                let Some(note) = step.note else {
+                    continue;
+                };
+                let ended = note.contains("--TurnDone-->");
+                walk.push(note);
+                if !ended {
+                    continue;
+                }
+                // ⚠⚠⚠ THE ONE THING THE ARMS DIFFER BY. Appended AFTER this turn has been judged
+                // and before the next one ends, which is where an agent's own writing lands.
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(record)
+                    .and_then(|mut file| {
+                        use std::io::Write as _;
+                        writeln!(
+                            file,
+                            "{}",
+                            sample.one_more_request(&format!("t{turns}"), growth[turns])
+                        )
+                    })
+                    .expect("the record the session is writing");
+                turns += 1;
+            }
+            // ⚠⚠⚠⚠ AND WHETHER THE RUN IS STILL GOING, which is the third arm's whole claim. A
+            // loop that has reached an ending answers `true` to `finished`, and the register's own
+            // instruction is that NOTHING here may put it there.
+            let still_running = moving && !loops.inner.finished();
+            access.lifecycle().expect("lifecycle").close(pane);
+            (walk, still_running)
+        }
+
+        // ⚠⚠ THROUGH THE SEAM AND NOT THROUGH `std::env::temp_dir()` — register items 794 and 795.
+        // The neighbouring fixtures above still mint their own names because they predate it, and
+        // copying one of them is what a ratchet in `sprag-gate` refused this round: a bare
+        // `temp_dir()` writes INTO this repository whenever `TMPDIR` is set-and-empty, and a
+        // hand-rolled per-run suffix is a name nothing can ever collect.
+        let home = sprag_scratch::scratch_for("sprag-walk-repeat", "records");
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("a directory to file the records in");
+        let same_at = home.join("what-the-waiting-session-said.jsonl");
+        let moving_at = home.join("what-the-working-session-said.jsonl");
+
+        let (repeating, repeating_ran_on) = walk_of(&same_at, &[SAME; TURNS]);
+        let (moving, _) = walk_of(&moving_at, &MOVING);
+        let _ = std::fs::remove_dir_all(&home);
+
+        let ended = |walk: &[String]| walk.iter().filter(|n| n.contains("--TurnDone-->")).count();
+
+        // ── ⛔⛔⛔ IT STOPS NOTHING, and this is asked FIRST ──
+        //
+        // ⚠⚠⚠⚠⚠ **BEFORE THE PREMISES, BECAUSE A RUN THIS READING KILLED IS ALSO A RUN THAT TOOK
+        // TOO FEW TURNS.** Asked after them, the turn-count premise below fires first and sends its
+        // reader to look at the FIXTURE — measured 2026-09-10, driving exactly that mutation. A
+        // refusal whose sentence names the wrong cause is this register's own recurring defect, so
+        // the claim that can explain the other one goes first.
+        assert!(
+            repeating_ran_on,
+            "⛔⛔⛔⛔⛔ THE RUN WAS STOPPED, AND THE REGISTER FORBIDS EXACTLY THAT. An agent waiting \
+             for its own build is doing the RIGHT thing, so a reading that ends a repeating run \
+             ends correct runs — item 993 pairs with 983 and asks for the wait to be COUNTED, never \
+             cut short. Whatever now routes on this streak must stop routing on it.\n  \
+             {repeating:?}",
+        );
+
+        // ── ⚠⚠ THE PREMISES, because each one alone makes a claim below vacuous ──
+        assert_eq!(
+            (ended(&repeating), ended(&moving)),
+            (TURNS, TURNS),
+            "⚠⚠⚠⚠ THE PREMISE FAILED: both arms must really end {TURNS} turns. An arm that ended \
+             fewer is quiet for a reason this gate is not about, and the control below would be \
+             agreeing with a run that never got far enough to repeat anything.\n  repeating \
+             {repeating:?}\n  moving {moving:?}",
+        );
+        // ⚠⚠ DERIVED FROM THE THRESHOLD AND NOT FROM WHAT THIS RUN HAPPENED TO DO. A number copied
+        // off one observation is an assertion fitted to its own measurement; what the claim below
+        // actually needs is enough PRODUCTIVE turns for a streak to reach `LOUD_AT` at all.
+        let productive = |walk: &[String]| {
+            walk.iter()
+                .filter(|note| note.contains("tokens of output"))
+                .count()
+        };
+        assert!(
+            productive(&repeating) >= crate::outer::Repeated::LOUD_AT as usize,
+            "⚠⚠⚠ THE PREMISE FAILED: the repeating arm needs at least {} turns the loop could \
+             MEASURE, and it had {}. This item is not about an agent that wrote nothing — that is \
+             `empty_max`'s, and it fires on a different fact; a fixture whose turns read as empty \
+             or unmeasured is staging the neighbouring item and the claim below would be about \
+             nothing: {repeating:?}",
+            crate::outer::Repeated::LOUD_AT,
+            productive(&repeating),
+        );
+
+        // ── ⛔⛔⛔ THE CLAIM ──
+        assert!(
+            repeating.iter().any(|note| note.contains(SAID)),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 993. {TURNS} judged turns produced exactly {SAME} tokens each \
+             and the walk never said so. Every clause on these lines is true and the run is getting \
+             nowhere — which is precisely what a person watching `run277` was shown eleven times \
+             before asking out loud why the same prompt kept going in. The reader has the number: \
+             `Made::Something` carries it on every one of these lines.\n  {repeating:?}",
+        );
+
+        // ── ⭐⭐ THE CONTROL, and this gate is worth nothing without it ──
+        assert!(
+            !moving.iter().any(|note| note.contains(SAID)),
+            "⛔⛔⛔⛔⛔ THE CONTROL FAILED, so the claim above says nothing. This arm's session wrote \
+             a DIFFERENT amount on every turn ({MOVING:?}) and the walk accused it of repeating \
+             itself. A reader that suspects every turn is the same blindness one octave louder — \
+             it would put this clause on every long run in this workspace and teach a person to \
+             skip the line that matters.\n  {moving:?}",
         );
     }
 

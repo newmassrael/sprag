@@ -4345,6 +4345,18 @@ pub enum Pumped {
         /// ⚠ It is [`Made`] rather than a count for the reason that type holds — the count is in
         /// the sentence and the WORD is what could ever be routed on.
         made: Option<Made>,
+        /// ⛔⛔⛔⛔⛔ **AND WHETHER IT PRODUCED THE SAME AMOUNT AS THE TURN BEFORE IT** — register
+        /// item 993, [`None`] on every pass that ended no turn.
+        ///
+        /// It sits beside [`made`](Self::Moved::made) because it is that verdict counted over the
+        /// RUN: `made` answers *did this turn produce anything*, and this answers *has the answer
+        /// stopped changing*. A run bounded on the first cannot see a peer that is waiting rather
+        /// than working, which is the whole of item 993 — eleven turns, all `produced 184`, nothing
+        /// counting.
+        ///
+        /// ⚠ Nothing routes on it and nothing may: see [`Repeated`], where the register's own
+        /// instruction not to kill a legitimate wait is recorded.
+        repeated: Option<Repeated>,
         /// ⛔⛔⛔⛔⛔ **WHAT THE SERVICE SAID WHEN IT REFUSED THIS TURN**, and [`None`] on every pass
         /// where it refused nothing — register item 988, and [`Made::Refused`]'s other half.
         ///
@@ -5571,6 +5583,136 @@ impl Made {
             (Some(before), Some(now)) if now > before => Self::Something(now - before),
             (Some(before), Some(now)) if now == before => Self::Nothing,
             _ => Self::Unmeasured,
+        }
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **HOW MANY JUDGED TURNS IN A ROW HAVE PRODUCED THE SAME AMOUNT AS THE ONE BEFORE** —
+/// register item 993, and the number [`Made`] was already computing one turn at a time and throwing
+/// away.
+///
+/// # ⛔⛔⛔⛔ The defect: a run that is WAITING looks exactly like a run that is WORKING
+///
+/// Measured 2026-09-09 on the loop driving another repository (`run277.log`): **eleven judged turns
+/// in 110 seconds, every one of them `produced 184 tokens of output`**, every one judged an ordinary
+/// turn, and the agent's single line on the pane was *"the release build is running, waiting for the
+/// completion notice"*. The loop re-typed its 224-byte turn prompt every ten seconds and **nothing
+/// anywhere counted that the answer had not changed**.
+///
+/// ⚠⚠⚠ **AND EVERY GUARD THAT LOOKS LIKE IT SHOULD HAVE CAUGHT IT WAS MEASURED NOT TO** — the
+/// register's own table, re-derived 2026-09-10 against this tree:
+///
+/// | guard | why it does not fire |
+/// | --- | --- |
+/// | `empty_max` (items 878, 987, 988) | it counts [`Made::Nothing`], and 184 is [`Made::Something`] — the agent really wrote 184 NEW tokens each turn |
+/// | the turn's judgement | *the agent had not declared the milestone* — an ordinary turn, correctly |
+/// | `stall_after_steps` | `debt_loop.scxml` authors **1300**, `ai_loop.scxml` authors `'never'`, `unclaimed_loop.scxml` declares neither — and 1300 steps at this speed is about 3.6 hours |
+///
+/// ⇒ The three of them answer *did the agent write*, *did the agent finish* and *did the FILES
+/// move*. **None of them asks whether the answer changed**, which is the one question a person
+/// watching the screen asked out loud.
+///
+/// # ⚠⚠⚠⚠⚠ It COUNTS and it never kills, and that is the item's own instruction
+///
+/// Waiting for a build is the RIGHT thing for an agent to do, so a guard that ended a repeating run
+/// would end correct runs — the register says so in as many words, and pairs this with item 983:
+/// *count the wait as a COST*. So nothing routes on this. It reaches one place, the walk line a
+/// person reads, and the run it is about ends exactly as it would have.
+///
+/// ⚠⚠ **WHICH IS ALSO WHY THE THRESHOLD MAY BE CHOSEN AND [`Made`]'s COULD NOT.** Being wrong low
+/// here costs one journal line; being wrong low on a ceiling costs a working run. See
+/// [`Repeated::LOUD_AT`] for the number and what it is derived from.
+///
+/// # ⚠ What this measures, stated exactly rather than one word wider
+///
+/// **The same SIZE, not provably the same TEXT.** Two different answers of 184 tokens would read
+/// alike here. The register authorised that in its own done-when — *the token count or a
+/// fingerprint of the answer, whichever the machine is ALREADY holding* — and the token count is
+/// the one already in hand: [`Made::Something`] carries it on every judged turn. A fingerprint of
+/// the answer would be a second reading of the pane and a second authority on one quantity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Repeated {
+    /// **THERE IS NOTHING TO COMPARE, OR THE AMOUNT CHANGED.** Every turn that is not
+    /// [`Made::Something`] lands here too — a session's first turn, an unreadable record, a refusal
+    /// and a turn that wrote nothing at all are each somebody else's fact, and none of them is
+    /// *the agent said the same thing again*.
+    Fresh,
+    /// **THIS TURN PRODUCED EXACTLY WHAT THE ONE BEFORE IT DID**, carrying that amount and how many
+    /// judged turns in a row have now done so.
+    ///
+    /// ⚠ `in_a_row` counts the TURNS, so the first repeat is `2` — two turns have produced this
+    /// amount. A count of *repeats* would make the sentence say `1` about two spent turns, and what
+    /// item 983 prices is turns.
+    Again {
+        /// The output total both turns moved by.
+        tokens: u64,
+        /// How many judged turns in a row have produced exactly `tokens`. Never below 2.
+        in_a_row: u32,
+    },
+}
+
+impl Repeated {
+    /// ⛔⛔⛔⛔ **HOW MANY IDENTICAL TURNS IN A ROW BEFORE THE RUN SAYS SO.**
+    ///
+    /// # Where the number comes from — measured, not chosen for feel
+    ///
+    /// `run277.log` took **eleven** turns in **110 seconds**, so a turn of a waiting run costs
+    /// about **ten seconds**. Six turns is therefore about **a minute** of the same answer, which is
+    /// the shortest span a person watching the screen could call *stuck* without being wrong about
+    /// an agent that is merely slow to type.
+    ///
+    /// ⚠⚠ **THE COST OF BEING WRONG IS ASYMMETRIC AND THAT IS WHY A NUMBER IS ALLOWED HERE AT ALL.**
+    /// Too low and one journal line appears on a run that was fine. Too high and the line never
+    /// appears — which is today's behaviour, and today's behaviour is the defect. So this errs low
+    /// on purpose. ⚠ It is NOT a ceiling: no run ends here, however long the streak gets.
+    ///
+    /// ⚠ It is in Rust rather than authored in the document for the division this driver already
+    /// keeps: what the document decides is what the run DOES (`empty_max`, `max_turns`,
+    /// `stall_after_steps` — every one of them routes a transition), and what a walk line SAYS is
+    /// the driver's, exactly as [`Made::describe`]'s own rule about when to stay silent is.
+    pub const LOUD_AT: u32 = 6;
+
+    /// The verdict for one judged turn — `before` is what the last judged turn produced, `now` what
+    /// this one did, and `streak` how many in a row `before` had already reached.
+    ///
+    /// ⚠⚠ **ONLY [`Made::Something`] CAN CONTINUE A STREAK.** A turn that produced nothing, could
+    /// not be read, or was refused is not evidence that the answer stayed the same — it is evidence
+    /// of something else, which its own type already carries. Reading any of them as a repeat would
+    /// make this instrument agree with `empty_max` about the same turns and say nothing new.
+    fn after(before: Option<u64>, now: Made, streak: u32) -> Self {
+        match (before, now) {
+            (Some(before), Made::Something(tokens)) if before == tokens => Self::Again {
+                tokens,
+                // ⚠ SATURATING, so a run long enough to overflow says a very large number rather
+                // than wrapping to a quiet one — this file's standing rule about counters that
+                // become green by going round.
+                in_a_row: streak.saturating_add(1).max(2),
+            },
+            _ => Self::Fresh,
+        }
+    }
+
+    /// **WHAT A READER OF THE RUN SHOULD MAKE OF IT** — the sentence a walk carries, or [`None`]
+    /// where there is nothing a person has to act on yet.
+    ///
+    /// ⚠⚠⚠ **SILENT UNDER [`LOUD_AT`](Self::LOUD_AT), and that silence is a measured rule rather
+    /// than tidiness.** [`Made::describe`] one type up says the same thing for its own reason: a
+    /// sentence on every turn of a long run fills a bounded journal with one fact, which is R396's
+    /// thirteen identical lines. The plain productive line already carries this turn's number on
+    /// every turn, so a reader who wants the raw evidence has it; this line exists for the reader
+    /// who is NOT reading every line.
+    #[must_use]
+    pub fn describe(self) -> Option<String> {
+        match self {
+            Self::Fresh => None,
+            Self::Again { in_a_row, .. } if in_a_row < Self::LOUD_AT => None,
+            Self::Again { tokens, in_a_row } => Some(format!(
+                "⚠ AND THAT IS {in_a_row} JUDGED TURNS IN A ROW PRODUCING EXACTLY {tokens} TOKENS \
+                 — this run has now spent {in_a_row} turns and {} tokens of output on an answer \
+                 that is not changing size. Nothing is being stopped: an agent waiting for its own \
+                 build is doing the right thing, and this is what that wait COSTS",
+                u64::from(in_a_row) * tokens,
+            )),
         }
     }
 }
@@ -7108,6 +7250,25 @@ pub struct OuterLoop {
     /// would be R396's thirteen identical lines — a verdict about a turn that had already been
     /// judged, printed onto every step that followed it.
     made: Option<Made>,
+    /// ⛔⛔⛔⛔⛔ **WHETHER THAT TURN PRODUCED THE SAME AMOUNT AS THE ONE BEFORE IT** — register item
+    /// 993, written beside [`made`](Self#structfield.made) and belonging to ONE turn exactly as it
+    /// does. See [`Repeated`].
+    repeated: Option<Repeated>,
+    /// ⛔⛔⛔⛔ **HOW MANY JUDGED TURNS IN A ROW HAVE PRODUCED [`repeated_at`](Self#structfield.repeated_at)**
+    /// — register item 993, and the only field of this trio that is a LEVEL rather than a turn's fact.
+    ///
+    /// ⚠⚠ **IT LIVES ON THE RUN AND NOT ON THE [`Session`], which is the opposite of `produced`
+    /// one type over, and the difference is the point.** `Session::produced` is a BASELINE — a
+    /// statement about the record being read, so a replacement must drop it or the next reading is
+    /// a difference between two different records. This is a statement about the RUN's own
+    /// behaviour. ⚠ It still resets across a replacement without anybody arranging it: the first
+    /// turn of a fresh session is [`Made::Unmeasured`], which is not [`Made::Something`], so
+    /// [`Repeated::after`] answers [`Repeated::Fresh`] and the streak goes back to zero on its own.
+    repeats: u32,
+    /// The output total [`repeats`](Self#structfield.repeats) is a streak OF, or [`None`] while
+    /// there is no streak. Kept beside the count rather than derived from
+    /// [`Session::produced`], which is a running total and not the per-turn difference.
+    repeated_at: Option<u64>,
     /// ⛔⛔⛔⛔⛔ **WHAT THE SERVICE SAID WHEN IT REFUSED THE TURN THAT JUST ENDED** — register item
     /// 988, written by [`costs_now`](Self::costs_now) in the same breath as
     /// [`made`](Self#structfield.made) and read at the funnel on the same pass.
@@ -7501,6 +7662,10 @@ impl OuterLoop {
             dearest: None,
             // ⚠ No turn has ended, so there is no turn for this to be an answer about.
             made: None,
+            // ⚠ Nor for this one — register item 993, and the streak it counts starts at nothing.
+            repeated: None,
+            repeats: 0,
+            repeated_at: None,
             // ⚠ And no service has refused a turn, for the same reason — register item 988.
             service_said: None,
             witnessed: None,
@@ -10249,6 +10414,10 @@ impl OuterLoop {
                     // 719 was measured inside, and the honest answer is still that this pass took
                     // no turn rather than that a turn came to nothing.
                     made: None,
+                    // ⚠ AND NO TURN ENDED, so there is no streak this pass could be part of —
+                    // register item 993. A pass that took no turn must not carry the LAST turn's
+                    // answer, which is `made`'s rule one line up and for its reason.
+                    repeated: None,
                     // ⚠ AND NO TURN ENDED, so no service refused one — register item 988.
                     service_said: None,
                     // ⚠ Nothing was judged on this edge, so there is no verdict for anything to be
@@ -10298,6 +10467,10 @@ impl OuterLoop {
                     // ⚠ NOR DID A TURN END. The peer left mid-turn, and *this turn produced
                     // nothing* is a verdict about an agent that answered — which this one did not.
                     made: None,
+                    // ⚠ AND NO TURN ENDED, so there is no streak this pass could be part of —
+                    // register item 993. A pass that took no turn must not carry the LAST turn's
+                    // answer, which is `made`'s rule one line up and for its reason.
+                    repeated: None,
                     // ⚠ AND NO TURN ENDED, so no service refused one — register item 988.
                     service_said: None,
                     // ⚠ Nothing was judged on this edge, so there is no verdict for anything to be
@@ -10400,6 +10573,10 @@ impl OuterLoop {
                     // ⚠ NOR DID A TURN END. Nothing was asked, so there is no turn for anything to
                     // have produced.
                     made: None,
+                    // ⚠ AND NO TURN ENDED, so there is no streak this pass could be part of —
+                    // register item 993. A pass that took no turn must not carry the LAST turn's
+                    // answer, which is `made`'s rule one line up and for its reason.
+                    repeated: None,
                     // ⚠ AND NO TURN ENDED, so no service refused one — register item 988.
                     service_said: None,
                     // ⚠ Nothing was judged on this edge, so there is no verdict for anything to be
@@ -10921,6 +11098,12 @@ impl OuterLoop {
             // what it did, and the topology is the document's business.
             made: (event == AiLoopEvent::TurnDone)
                 .then_some(self.made)
+                .flatten(),
+            // ⚠⚠ ON THE SAME PASS AND BY THE SAME RULE — register item 993. The streak belongs to
+            // the TURN that just ended, and a later pass reading the slot would print *six turns in
+            // a row* onto a step that took no turn at all.
+            repeated: (event == AiLoopEvent::TurnDone)
+                .then_some(self.repeated)
                 .flatten(),
             // ⚠⚠ THE WORDS BESIDE THAT VERDICT, on the same pass and by the same rule — register
             // item 988, and `explained`'s arrangement one fact over: `made` says the service
@@ -14555,10 +14738,41 @@ impl OuterLoop {
         // is real (it did not change, and that IS the reading), so a later answered turn compares
         // against the truth rather than against a gap.
         let service_said = spend.and_then(|spend| spend.refused.clone());
-        self.made = Some(match service_said {
+        let made = match service_said {
             Some(_) => Made::Refused,
             None => Made::between(self.driving.produced, now),
-        });
+        };
+        // ⛔⛔⛔⛔⛔ **AND WHETHER THIS TURN IS THE LAST ONE OVER AGAIN** — register item 993, taken
+        // HERE for the reason the difference above is: this is the one place per judged turn where
+        // the pair exists, and a second party recomputing it would be a second authority on one
+        // quantity.
+        //
+        // ⚠⚠ IT READS THE VERDICT AND NOT THE RAW TOTALS. `made` has already decided what kind of
+        // turn this was — refused, unreadable, empty, productive — and only the last of those can
+        // continue a streak. A comparison written on `now`/`before` here would have to re-derive
+        // all four, which is the second authority again, one line lower.
+        //
+        // ⚠ THE STREAK IS UPDATED IN THE SAME BREATH so the two cannot disagree: the count is what
+        // the answer says it is, and there is no path where one moves without the other.
+        let repeated = Repeated::after(self.repeated_at, made, self.repeats);
+        match repeated {
+            Repeated::Again { tokens, in_a_row } => {
+                self.repeats = in_a_row;
+                self.repeated_at = Some(tokens);
+            }
+            // ⚠⚠ A FRESH TURN RESETS BOTH, and it must reset `repeated_at` and not only the count:
+            // a run that produced 184, then 12, then 184 has not produced the same answer three
+            // times, and a baseline left standing across the gap would say it had.
+            Repeated::Fresh => {
+                self.repeats = 0;
+                self.repeated_at = match made {
+                    Made::Something(tokens) => Some(tokens),
+                    _ => None,
+                };
+            }
+        }
+        self.made = Some(made);
+        self.repeated = Some(repeated);
         self.service_said = service_said;
         // ⚠⚠ THE BASELINE MOVES ONLY ON A READING THAT HAPPENED. A turn whose record could not be
         // read must not overwrite the last real reading with `None`: the NEXT turn would then be
@@ -21743,6 +21957,8 @@ mod tests {
                 checked: None,
                 // ⚠ AND NO TURN ENDED, so there is nothing this pass could have produced either.
                 made: None,
+                // ⚠ Nor a streak for it to be part of — register item 993.
+                repeated: None,
                 // ⚠ Nor anything for a service to have refused — register item 988.
                 service_said: None,
                 explained: None,
@@ -30710,6 +30926,7 @@ mod tests {
                     unreadable,
                     checked,
                     made: _,
+                    repeated: _,
                     // ⚠ Named rather than `..` for this destructure's own reason — a pattern that
                     // mentions every field is what makes a NEW fact meet a reader here.
                     service_said: _,
