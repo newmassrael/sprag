@@ -182,17 +182,28 @@ index_mirror() {
 # The gate then refused a commit that was perfectly fine, which is the *fails closed* half working
 # and the *is right* half not.
 #
-# ⚠⚠ THE SUITE IS BLIND TO THIS BY CONSTRUCTION. `hooks_judge_the_bytes_being_published` runs each
-# hook through `sprag_gate::ambient::cut`, which removes exactly these variables before the hook
-# starts — it has to, or a sandbox would write into the operator's index (item 965's own defect).
-# Every case there was green while this was broken. What found it was driving `git commit` for real
-# in a throwaway workspace, and that is the reason to keep doing that.
+# ⚠⚠ THE SUITE WAS BLIND TO THIS BY CONSTRUCTION AND IS NOT ANY MORE — register item 1017.
+# `hooks_judge_the_bytes_being_published` used to run every hook through `sprag_gate::ambient::cut`
+# and stop there, which removed these variables before the hook started: right, because a sandbox
+# must not inherit the OPERATOR's index (item 965), and not enough, because a cut environment is a
+# state `git commit` never produces. It now supplies the sandbox's OWN, and deleting the `env -u`
+# below takes **8 of its 31 cases** red with the same `fatal: .git/index … Not a directory` a real
+# commit gave. What found it originally was driving `git commit` by hand; what holds it now is a
+# gate.
+#
+# ⛔⛔ AND THE LIST WAS A GUESS UNTIL IT WAS MEASURED. This cut `GIT_DIR`, `GIT_WORK_TREE` and
+# `GIT_OBJECT_DIRECTORY`, none of which `git commit` sets. Measured 2026-09-10 by committing to a
+# scratch repository with a hook that printed its own environment: **seven** variables, and the two
+# that name what is being committed are `GIT_INDEX_FILE` and `GIT_PREFIX`. The rest — `GIT_AUTHOR_*`
+# and `GIT_EDITOR`/`GIT_EXEC_PATH` — are the identity and the caller's installation, and cutting
+# `GIT_EXEC_PATH` in particular would break the very git calls below. So the cut is now the measured
+# pair rather than four names somebody thought of.
 #
 # ⚠⚠⚠ IT CANNOT BE CUT FOR THE WHOLE HOOK, which is why this is a wrapper rather than a line at the
 # top of the file: `rust_gates_run` asks `git write-tree`, and THAT call must read exactly the index
 # git is about to commit. The same variable is load-bearing three lines up and poison here.
 index_mirror_git() {
-    env -u GIT_INDEX_FILE -u GIT_DIR -u GIT_WORK_TREE -u GIT_OBJECT_DIRECTORY git "$@"
+    env -u GIT_INDEX_FILE -u GIT_PREFIX git "$@"
 }
 
 # rustfmt --check the given paths as `rev` holds them.

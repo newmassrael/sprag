@@ -9,6 +9,18 @@
 # process holds open for writing cannot be executed (`ETXTBSY`), and a harness
 # that runs its cases on threads makes every sibling's fork inherit that handle.
 printf 'mnemosyne-cli %s\n' "$*" >> "$DOUBLE_LOG"
+
+# ⛔⛔⛔⛔⛔ AND THE GIT ENVIRONMENT THE HOOK WAS HANDED — register item 1017.
+#
+# This double is the FIRST thing `pre-commit` runs and it runs in the repository
+# root, so what it sees is the hook's environment exactly as its caller gave it.
+# That environment is the one thing about a hook run that this suite could not
+# observe: `git commit` exports variables to its hooks, the sandbox used to cut
+# them all, and a hook that mishandled one was green here while refusing every
+# real commit. `env` is a builtin of nothing -- it is `/usr/bin/env` -- so this
+# is what the CHILD received rather than what this script believes.
+env | grep '^GIT_' | sed 's/^/git-env /' >> "$DOUBLE_LOG"
+
 if [ "${1:-}" = "validate-code-refs" ]; then
     printf '%s\n' "${REFS_REPORT:-violations: total=0}"
 fi

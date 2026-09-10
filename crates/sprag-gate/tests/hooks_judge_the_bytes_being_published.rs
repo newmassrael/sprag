@@ -312,6 +312,15 @@ impl Sandbox {
 
     /// Run a hook the way git runs it: from the work tree, with the refs (if any) on stdin.
     fn run(&self, hook: &str, refs_on_stdin: Option<&str>, report: Option<&str>) -> Output {
+        let mut command = self.hook_command(hook);
+        if let Some(report) = report {
+            command.env("REFS_REPORT", report);
+        }
+        self.finish(command, hook, refs_on_stdin)
+    }
+
+    /// The `Command` that runs a hook as git runs it — one spelling, shared by every arm.
+    fn hook_command(&self, hook: &str) -> Command {
         let mut command = Command::new(self.dir.join(".githooks").join(hook));
         // ⛔⛔⛔⛔⛔ THE HOOK UNDER TEST IS A CHILD TOO — register item 965, and this is the half a
         // fix to `Self::git` alone would have missed. A hook's whole subject is *what is being
@@ -330,9 +339,26 @@ impl Sandbox {
             .env_remove("REFS_REPORT")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if let Some(report) = report {
-            command.env("REFS_REPORT", report);
+        // ⛔⛔⛔⛔⛔ **AND THEN THIS SANDBOX'S OWN, WHICH IS THE OTHER HALF** — register item 1017.
+        //
+        // The cut above is right and it was not enough: it left every hook here running with NO git
+        // environment, and that is a state `git commit` never produces. A hook that mishandled one
+        // of these variables was therefore green across all 29 cases while refusing every real
+        // commit — measured 2026-09-10, twice in two rounds, and both times the thing that caught
+        // it was a person driving `git commit` by hand.
+        //
+        // ⚠⚠ THE VALUES ARE THE SANDBOX'S, NEVER THE OPERATOR'S, and that is what makes supplying
+        // them safe where inheriting them is the item-965 disaster: `.git/index` resolves under
+        // `current_dir` above, which is this sandbox. A hook that walks off with it damages this
+        // throwaway repository and nothing else.
+        for (name, value) in Sandbox::git_environment() {
+            command.env(name, value);
         }
+        command
+    }
+
+    /// Arm the push fixture if this is a push, feed stdin, and read the hook's verdict.
+    fn finish(&self, mut command: Command, hook: &str, refs_on_stdin: Option<&str>) -> Output {
         if hook == "pre-push" {
             command.args(["origin", "git@example.invalid:sprag.git"]);
             // ⛔⛔⛔⛔⛔ **THE TREE IS STAMPED AS ALREADY CLEARED, because since register item 480
@@ -377,6 +403,86 @@ impl Sandbox {
             sprag_gate::feeding::feed(&mut child, refs.as_bytes());
         }
         child.wait_with_output().expect("wait for the hook")
+    }
+
+    /// The git environment `git commit` hands a hook, with this sandbox's own values.
+    ///
+    /// # ⛔⛔⛔⛔⛔ MEASURED FROM GIT, NOT REMEMBERED — register item 1017
+    ///
+    /// A scratch repository was committed to with a hook that printed its own `GIT_*`, 2026-09-10.
+    /// Seven variables, and the list is not the one this repository had been guessing at:
+    ///
+    /// ```text
+    /// GIT_AUTHOR_DATE  GIT_AUTHOR_EMAIL  GIT_AUTHOR_NAME
+    /// GIT_EDITOR  GIT_EXEC_PATH  GIT_INDEX_FILE  GIT_PREFIX
+    /// ```
+    ///
+    /// ⛔ **NO `GIT_DIR` AND NO `GIT_WORK_TREE`.** `content-gate.sh` cuts both, on a guess written
+    /// while paying item 1011; the guess is harmless and it is still a guess, and this list is what
+    /// replaces it. ⚠ And `GIT_INDEX_FILE` is **relative** (`.git/index`) for a plain `git commit`
+    /// but an **absolute** `…/next-index-<pid>.lock` under `git commit -- <pathspec>` — a temporary
+    /// index, not the repository's. Both shapes are staged below, because a hook that resolves the
+    /// variable against the wrong directory fails on the first and not the second.
+    ///
+    /// # ⚠⚠ What is deliberately NOT supplied, and why that is a line rather than an omission
+    ///
+    /// `GIT_EDITOR` and `GIT_EXEC_PATH` describe the CALLER'S INSTALLATION — where git's helper
+    /// binaries live, what to open for a message — and not the commit. A sandbox inventing an
+    /// `EXEC_PATH` would break every git call the hook makes, which is a failure about this fixture
+    /// rather than about any hook.
+    /// ⚠ AND NOTHING THAT GIT DOES NOT SET. A sandbox-only marker here would be a variable no hook
+    /// can ever meet, in the one fixture whose entire claim is *this is the environment git gives*.
+    fn git_environment() -> Vec<(&'static str, String)> {
+        vec![
+            // ⚠ RELATIVE, exactly as git writes it, because that is the whole defect class: a
+            // relative path is resolved against whatever directory reads it, and a hook that hands
+            // it to a command running somewhere else gets a different index or none.
+            ("GIT_INDEX_FILE", ".git/index".to_owned()),
+            ("GIT_PREFIX", String::new()),
+            // ⚠ The identity is the one this sandbox's own config carries, so `ident-gate.sh` —
+            // which grades `git var GIT_AUTHOR_IDENT`, and that reads these first — sees exactly
+            // what it saw before this environment existed. Supplying them is more faithful, not a
+            // change of subject.
+            ("GIT_AUTHOR_NAME", "sprag-gate".to_owned()),
+            ("GIT_AUTHOR_EMAIL", allowed_ident_email()),
+            ("GIT_AUTHOR_DATE", "@1756100000 +0900".to_owned()),
+        ]
+    }
+
+    /// Run a hook the way `git commit -- <pathspec>` runs it: with an ABSOLUTE index somewhere
+    /// other than `.git/index`.
+    ///
+    /// `git` in this sandbox, staging into `index` rather than into `.git/index`.
+    ///
+    /// ⚠ Through `ambient::git_in` like every other git call here (item 965), and the variable is
+    /// set AFTER the cut — the cut removes what this process inherited, and a value named
+    /// deliberately is not one it took away.
+    fn git_into_index(&self, index: &std::path::Path, args: &[&str]) {
+        let run = sprag_gate::ambient::git_in(&self.dir)
+            .args(args)
+            .env("HOME", &self.dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_INDEX_FILE", index)
+            .output()
+            .expect("git on PATH — the sandbox is a git repository");
+        assert!(
+            run.status.success(),
+            "git {args:?} refused against {}: {}",
+            index.display(),
+            String::from_utf8_lossy(&run.stderr),
+        );
+    }
+
+    /// ⚠ THE SAME `Command` [`Sandbox::run`] BUILDS, with one variable replaced — through
+    /// [`Sandbox::hook_command`], because a second spelling of the setup is a second thing to keep
+    /// current and the only difference this case is about is that one variable.
+    fn run_with_index(&self, hook: &str, index: &std::path::Path) -> Output {
+        let mut command = self.hook_command(hook);
+        command
+            .env("GIT_INDEX_FILE", index)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap_or_else(|why| panic!(".githooks/{hook} must be executable: {why}"))
     }
 
     /// Every command the doubles were asked to run, in order.
@@ -739,6 +845,120 @@ fn a_mirror_that_was_corrupted_is_laid_out_again_rather_than_compiled() {
         !invoked.contains("cargo-saw clippy fn on_disk() {}"),
         "and the corrupted copy must not have been what clippy was given — that is neither the \
          index nor the working tree nor anything a person could name:\n{invoked}",
+    );
+    sandbox.done();
+}
+
+/// ⛔⛔⛔⛔⛔ **THE HOOK IS RUN WITH THE ENVIRONMENT GIT HANDS IT** — register item 1017, and this
+/// is the face of this suite that did not exist until now.
+///
+/// # What was invisible, and what it cost twice
+///
+/// Every case here ran its hook with the git environment CUT — rightly, because inheriting the
+/// operator's `GIT_INDEX_FILE` made nine cases judge sprag's staged bytes while standing in a
+/// sandbox (item 965). But cut is not what `git commit` produces either, and the gap between them
+/// held the entire real running environment of a hook. Measured 2026-09-10, twice in two rounds:
+/// a hook that mishandled `GIT_INDEX_FILE` was **green across all 29 cases here** while refusing
+/// **every** real commit with `fatal: .git/index: index file open failed: Not a directory`. Both
+/// times what caught it was a person typing `git commit`.
+///
+/// # ⚠⚠ Why supplying is safe where inheriting was the disaster
+///
+/// The values are THIS SANDBOX'S. `.git/index` resolves under the sandbox's own working directory,
+/// so a hook that walks off with the variable damages a throwaway repository. Item 965's defect was
+/// the operator's index arriving here; this is the sandbox's index arriving at the hook, which is
+/// the direction that was always missing.
+///
+/// # ⚠ The assertion is on what the CHILD received
+///
+/// `mnemosyne-cli` is the first thing `pre-commit` runs and it dumps its own `GIT_*` through
+/// `/usr/bin/env`. That is the environment a child actually got, not what this fixture believes it
+/// set — the two are the same claim only when nothing between them drops a variable.
+#[test]
+fn a_hook_is_driven_with_the_git_environment_a_commit_would_hand_it() {
+    let sandbox = Sandbox::new("commit-git-environment");
+    sandbox.write("crates/sprag-gui/paint.rs", FORMATTED);
+    sandbox.git(&["add", "crates/sprag-gui/paint.rs"]);
+
+    let run = sandbox.run("pre-commit", None, None);
+    let told = said(&run);
+    assert!(
+        run.status.success(),
+        "an ordinary commit must still pass once the hook is given git's environment — if this \
+         refuses, the environment is what broke it and that is the finding: {told}",
+    );
+
+    let invoked = sandbox.invocations();
+    for expected in [
+        "git-env GIT_INDEX_FILE=.git/index",
+        "git-env GIT_PREFIX=",
+        "git-env GIT_AUTHOR_NAME=sprag-gate",
+    ] {
+        assert!(
+            invoked.contains(expected),
+            "the hook must have been handed `{expected}`, because `git commit` hands it — a run \
+             without it is a run of something git never produces:\n{invoked}",
+        );
+    }
+    assert!(
+        invoked.contains(&format!(
+            "git-env GIT_AUTHOR_EMAIL={}",
+            allowed_ident_email()
+        )),
+        "and the identity must be the one this sandbox commits as, or `ident-gate.sh` is being \
+         asked a different question than it was before:\n{invoked}",
+    );
+    sandbox.done();
+}
+
+/// ⛔⛔⛔ **AND THE OTHER SHAPE OF THE SAME VARIABLE, WHICH IS THE ONE THAT HIDES** — register item
+/// 1017.
+///
+/// `git commit` writes `GIT_INDEX_FILE=.git/index`, RELATIVE. `git commit -- <pathspec>` writes an
+/// ABSOLUTE `…/.git/next-index-<pid>.lock` — a temporary index that is not the repository's at all.
+/// Measured on both, 2026-09-10. A hook that resolves the variable against the wrong directory
+/// fails on the relative shape and sails through the absolute one, so a suite that staged only one
+/// of them would be green for exactly half the ways a person commits.
+///
+/// ⚠ This repository commits BOTH ways: `git commit -- <path>` is what item 965 was measured on.
+/// ⚠⚠ **AND THE TEMPORARY INDEX HOLDS DIFFERENT BYTES FROM `.git/index`, WHICH IS THE ONLY WAY
+/// THIS CASE CAN GO RED.** A copy of the real index would make *judged the temporary one* and
+/// *judged the real one* the same observation, and the case would pass over a hook that ignored the
+/// variable entirely. Three states, all different: the temporary index carries `fn staged`,
+/// `.git/index` carries `fn on_disk`, and so does the file on disk.
+#[test]
+fn a_hook_is_driven_with_the_absolute_index_a_pathspec_commit_hands_it() {
+    let sandbox = Sandbox::new("commit-git-environment-pathspec");
+    sandbox.write("subject.rs", ON_DISK_BODY);
+    sandbox.git(&["add", "subject.rs"]);
+
+    // The shape git writes for `git commit -- <pathspec>`: an ABSOLUTE path to a lock file beside
+    // the real index, holding the content that commit is about — not the repository's own index.
+    let temporary = sandbox.dir.join(".git").join("next-index-probe.lock");
+    std::fs::copy(sandbox.dir.join(".git").join("index"), &temporary)
+        .expect("a temporary index beside the real one, as a pathspec commit makes");
+    sandbox.write("subject.rs", STAGED_BODY);
+    sandbox.git_into_index(&temporary, &["add", "subject.rs"]);
+    sandbox.write("subject.rs", ON_DISK_BODY);
+
+    let run = sandbox.run_with_index("pre-commit", &temporary);
+    let told = said(&run);
+    assert!(
+        run.status.success(),
+        "a pathspec commit hands an ABSOLUTE temporary index and the gates must judge it exactly \
+         as they judge the ordinary one: {told}",
+    );
+
+    let invoked = sandbox.invocations();
+    assert!(
+        invoked.contains(&format!("git-env GIT_INDEX_FILE={}", temporary.display())),
+        "the hook must actually have been handed it:\n{invoked}",
+    );
+    assert!(
+        invoked.contains("cargo-saw clippy fn staged() {}"),
+        "and the gates must have compiled what the TEMPORARY index carries — `.git/index` and the \
+         file on disk both say `fn on_disk`, so reading either of them is the defect this case is \
+         for:\n{invoked}",
     );
     sandbox.done();
 }
