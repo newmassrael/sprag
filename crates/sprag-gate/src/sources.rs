@@ -153,6 +153,93 @@ impl Source {
         );
         found
     }
+
+    /// **THE FUNCTION NAMED `name`, IF THIS FILE DEFINES ONE** — signature line to closing brace.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a gate needs a FUNCTION and not a window of lines
+    ///
+    /// Register item 470 files one driver reader as an INSTRUMENT — a reading kept outside the
+    /// document so that two authorities can disagree — and the ground for that was prose until a
+    /// test staged the disagreement. Holding the classification to that test means asking what the
+    /// test DOES, and the unit of that question is the whole function: a window would let the
+    /// neighbouring gate's body vouch for an empty one, which is the accounting error
+    /// [`Source::assertions`] is written against one level down.
+    ///
+    /// # ⚠⚠ [`Function::calls`] is de-stringed, and that is the point
+    ///
+    /// Every refusal in this workspace is prose, and the prose NAMES the readers it is about. A
+    /// gate that hunted a call in the text as written would be satisfied by a message mentioning
+    /// it, so what comes back is the body with every literal's contents gone — a witness has to
+    /// CALL the thing, not talk about it.
+    ///
+    /// ⚠ It is still a text scan: this crate takes no dependencies by charter and std has no Rust
+    /// parser, so a macro that expands into a call is invisible here, and a function whose name is
+    /// spelled by a macro cannot be found at all. What this answers is a question about spelling.
+    #[must_use]
+    pub fn function(&self, name: &str) -> Option<Function> {
+        let opener = format!("fn {name}(");
+        let mut strings = Strings::default();
+        let mut open: Option<(usize, Extent, String)> = None;
+
+        for (at, line) in &self.code {
+            // ⚠ EVERY line goes through the reader, open or not: a literal left open by a line
+            // above this function is what decides whether its first brace is a brace.
+            let structural = strings.code_of(line);
+            if open.is_none() {
+                if !defines(&structural, &opener) {
+                    continue;
+                }
+                open = Some((*at, Extent::default(), String::new()));
+            }
+            let Some((from, extent, calls)) = open.as_mut() else {
+                continue;
+            };
+            calls.push_str(&structural);
+            calls.push('\n');
+            if extent.eat(&structural) {
+                // ⚠ A form that ended at a `;` before any brace opened is a DECLARATION — a trait
+                // method, or an `extern` — and a declaration is not what a witness can be. The walk
+                // goes on rather than answering with a body that does not exist.
+                let (at_line, braced, body) = (*from, extent.braced, std::mem::take(calls));
+                open = None;
+                if braced {
+                    return Some(Function {
+                        at: at_line,
+                        end: *at,
+                        calls: body,
+                    });
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Whether `structural` — one de-stringed line — defines the function `opener` spells as `fn name(`.
+///
+/// ⚠ The character before is checked, so `fn also_named_x(` is not read as a definition of `x`;
+/// `opener` carries the `(`, so `fn xs(` is not read as one either.
+fn defines(structural: &str, opener: &str) -> bool {
+    structural.match_indices(opener).any(|(at, _)| {
+        structural[..at]
+            .chars()
+            .next_back()
+            .is_none_or(|char| !char.is_alphanumeric() && char != '_')
+    })
+}
+
+/// One function of a source file, as [`Source::function`] found it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Function {
+    /// One-indexed line its signature opens on.
+    pub at: usize,
+    /// One-indexed line its closing brace is on.
+    pub end: usize,
+    /// Its lines with every string literal's CONTENTS gone — what a gate hunting a CALL reads.
+    ///
+    /// ⚠ Newline-joined, so a needle spanning two lines wants [`str::split_whitespace`] or the
+    /// squeezing [`Source::squeezed`] does. A call rustfmt wrapped is the same call.
+    pub calls: String,
 }
 
 /// One `assert!` / `assert_eq!` / `assert_ne!` invocation, as [`Source::assertions`] found it.
@@ -959,6 +1046,74 @@ mod tests {
             proving_lines("#[cfg(test)]\nmod tests {\n    fn one() {}\n").is_err(),
             "a reader that cannot find the end of the item it is dropping must refuse, because \
              the alternative is a ratchet that gets looser without anybody being told",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A WITNESS HAS TO CALL THE THING, NOT TALK ABOUT IT** — [`Source::function`]'s whole
+    /// worth, and the four ways a reader of it goes quietly wrong.
+    ///
+    /// Register item 470 holds a classification to a named test, so what that reader hands back
+    /// decides whether the classification is measured or merely spelled. Each row below is a shape
+    /// this workspace really writes:
+    ///
+    /// * **the body is de-stringed** — every refusal here is prose that NAMES the readers it is
+    ///   about, so a body read as written would let a message vouch for a call that is not made;
+    /// * **a brace inside a literal is not a brace** — the body would end early and the call would
+    ///   fall outside it;
+    /// * **`fn also_named_it(` is not a definition of `it`** — and neither is `fn its(`;
+    /// * **a declaration ends at its `;`** and is not a body, so the walk goes on to the real one.
+    #[test]
+    fn a_function_is_read_whole_and_its_prose_is_not_read_as_its_calls() {
+        fn made_up(text: &str) -> Source {
+            let code = code_lines(text);
+            Source {
+                file: "made-up.rs".to_owned(),
+                product: code.clone(),
+                code,
+            }
+        }
+
+        let text = "trait Asked {\n\
+                    fn witness(&self);\n\
+                    }\n\
+                    fn also_named_witness() {\n\
+                    let shape = \"a {\";\n\
+                    }\n\
+                    fn witnesses() {}\n\
+                    fn witness(&self) {\n\
+                    if self.spoke() {\n\
+                    assert!(self.heard(), \"and self.imagined() is only ever named here\");\n\
+                    }\n\
+                    }\n\
+                    fn after() {}\n";
+        let found = made_up(text)
+            .function("witness")
+            .expect("the definition, not the declaration above it");
+
+        assert_eq!(
+            (found.at, found.end),
+            (8, 12),
+            "the walk must skip the trait's declaration, the longer name and the plural, and then \
+             read the definition WHOLE — a body that ended at the inner `if`'s brace would be a \
+             window wearing a function's name",
+        );
+        assert!(
+            found.calls.contains("self.spoke()") && found.calls.contains("self.heard()"),
+            "a call the function really makes has to be in what comes back: {:?}",
+            found.calls,
+        );
+        assert!(
+            !found.calls.contains("self.imagined()"),
+            "⚠⚠⚠⚠⚠ THE PROSE REACHED THE CALLS. A gate asking whether a witness CALLS a reader \
+             would be satisfied by a refusal message that merely names it, which is exactly how a \
+             classification comes to rest on a sentence again: {:?}",
+            found.calls,
+        );
+        assert_eq!(
+            made_up(text).function("imagined"),
+            None,
+            "a name this file does not define must come back absent rather than as the nearest \
+             thing to it",
         );
     }
 

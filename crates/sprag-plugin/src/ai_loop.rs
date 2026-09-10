@@ -11161,6 +11161,102 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠⚠ **THE HOST'S FLAG AND THE DOCUMENT'S STATE ARE TWO AUTHORITIES, AND THIS IS THE
+    /// MOMENT THEY DISAGREE** — register item 470's last residue, and the witness its INSTRUMENT
+    /// row was filed without.
+    ///
+    /// # What was unmeasured, and why a ground nothing asks is not a ground
+    ///
+    /// `sprag-gate`'s item-470 register files [`AiLoop::standing_down`] as an INSTRUMENT: a reader
+    /// that stays in the driver because it answers **whether the machine heard**, beside
+    /// `sprag-host`'s own boolean, which answers **whether somebody spoke**. Everything that gate
+    /// could check was that the id is not a region root. The ground it actually rests on — *the two
+    /// can disagree, so an order this loop dropped would be visible* — was a sentence, and measured
+    /// on 2026-08-28 the workspace held **no test that staged the disagreement at all**. A reader
+    /// that merely mirrored the flag would have satisfied every gate the item had.
+    ///
+    /// # ⚠⚠⚠ Three moments, and each one kills a different way of being wrong
+    ///
+    /// | moment | the host holds | the document answers | what a reader failing it would be |
+    /// | --- | --- | --- | --- |
+    /// | before anybody speaks | `false` | `false` | one stuck at `true` |
+    /// | ⭐ spoken, and no pass since | **`true`** | **`false`** | ⭐ one that MIRRORS the flag |
+    /// | one pass later | `true` | `true` | one that is blind, or stuck at `false` |
+    ///
+    /// **The middle row is the instrument.** It exists because [`crate::outer::OuterLoop::pump`]
+    /// carries a person's order in at the TOP of a pass and the flag is raised by a host thread at
+    /// a moment nothing in this loop controls — so between the speaking and the next pass the two
+    /// answers differ **by construction**. Collapse them into one and, in that reader's own words,
+    /// *if an order were ever dropped, nothing anywhere could see it, because the only published
+    /// answer was the one that cannot be wrong.*
+    ///
+    /// ⚠⚠ **THE ORDER IS GIVEN THROUGH THE FLAG AND NEVER THROUGH [`AiLoop::stand_down`].** Every
+    /// other stand-down gate in this file raises the event directly, which is the driver's own door
+    /// and cannot open this gap at all: it moves both answers in the same breath. What a person
+    /// actually reaches is the wire call that sets the flag, and that road is the one with two ends.
+    ///
+    /// ⚠ **ONE PASS FIRST**, so the orders region is live and resting when the order is spoken. A
+    /// machine nobody had stepped would answer `false` to everything, and the middle row would be
+    /// satisfied by nothing having happened yet.
+    #[test]
+    fn the_order_a_host_holds_and_the_order_the_document_heard_are_two_answers() {
+        let order = Arc::new(AtomicBool::new(false));
+        let run = RunContext::uncancellable().ordered_by(Arc::clone(&order));
+        let (workspace, pane) = standin_agent(40);
+        let access = supervised(&workspace);
+        let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+
+        // ⚠ THROUGH `Plugin::step`, the Driver's own one-pass entry point rather than a door opened
+        // for this gate: the gap measured below is one an ordinary pass leaves behind.
+        loops.step(&access, &run).expect("a live pane takes a pass");
+        let resting = loops.state();
+
+        // 1. ── NOBODY HAS SPOKEN, AND BOTH SAY SO ──
+        assert_eq!(
+            (run.stood_down(), loops.standing_down()),
+            (false, false),
+            "⚠⚠⚠⚠ THE BASELINE FAILED: nobody ordered this run to stand down and something already \
+             says somebody did. A reader stuck at `true` agrees with the host at every moment below \
+             while answering nothing, which is one of the two shapes this gate exists to refuse. \
+             The loop was in {resting:?}",
+        );
+
+        // 2. ── ⭐ SOMEBODY SPEAKS. THE MACHINE HAS NOT HEARD YET ──
+        //
+        // ⚠⚠⚠⚠⚠ THIS IS THE WHOLE INSTRUMENT, IN ONE ASSERTION: the two authorities are read in
+        // the same breath and they are REQUIRED to differ. A driver that answered this question
+        // off the host's flag — or a document made to hold the order without being told — passes
+        // moments 1 and 3 and fails exactly here.
+        order.store(true, Ordering::Release);
+        assert_eq!(
+            (run.stood_down(), loops.standing_down()),
+            (true, false),
+            "⛔⛔⛔⛔⛔ THE TWO AUTHORITIES CANNOT DISAGREE, so `standing_down` is not an INSTRUMENT \
+             and item 470's register files it as one. The order has been SPOKEN and no pass has \
+             carried it in, so the host must hold it and the document must not. A document that \
+             already holds it makes this reader a mirror of the flag, and deleting a mirror loses \
+             nothing; a host that does not hold it means the fixture never spoke. The loop was in \
+             {resting:?}",
+        );
+
+        // 3. ── ONE PASS CARRIES IT IN, AND THEY AGREE AGAIN ──
+        loops.step(&access, &run).expect("a live pane takes a pass");
+        assert_eq!(
+            (run.stood_down(), loops.standing_down()),
+            (true, true),
+            "⚠⚠⚠⚠⚠ THE ORDER WAS DROPPED — which is the failure this reader exists to make visible \
+             and the one the host's flag can never report, because the flag is the answer that \
+             cannot be wrong. A pass has run with the order standing and the document still does \
+             not hold it. The loop was in {:?}",
+            loops.state(),
+        );
+
+        for live in access.pane_ids() {
+            access.lifecycle().expect("lifecycle").close(live);
+        }
+    }
+
     /// ⛔⛔⛔⛔ **A TURN THAT WAS BANKED IS NOT LOST BECAUSE THE AGENT THEN LEFT** — register item
     /// 604, measured at the host door on 2026-08-22 and driven here where it is deterministic.
     ///

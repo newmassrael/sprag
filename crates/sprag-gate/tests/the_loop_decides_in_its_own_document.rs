@@ -549,7 +549,25 @@ enum Kind {
     /// must declare this id and must NOT declare it a region — a state inside a region, read from
     /// outside at an arbitrary later moment. Moving it in would delete the disagreement, which is
     /// the whole instrument.
-    Instrument,
+    ///
+    /// ⚠⚠⚠⚠⚠ **AND THE DISAGREEMENT IS THE GROUND, SO SOMETHING HAS TO STAGE IT** — 2026-09-10,
+    /// item 470's last residue. *Not a region root* is the only thing this kind used to be held to,
+    /// and it is the WEAK half: a reader that simply mirrored the other authority satisfies it
+    /// while being the second copy this item is about. The fields are what
+    /// [`an_instrument_is_held_to_a_witness_that_stages_the_disagreement`] asks the workspace, and
+    /// a row filed as this kind **does not compile without naming them**.
+    Instrument {
+        /// The test that puts the two authorities side by side at a moment they differ.
+        ///
+        /// ⚠ A NAME rather than a sentence, because a name is a thing a gate can go and look for.
+        witness: &'static str,
+        /// The OTHER authority's published reader — what the witness must call beside this state's.
+        ///
+        /// ⚠⚠ Spelled with its parentheses: a witness that merely NAMES the other reader in its
+        /// prose has staged nothing, and [`sprag_gate::sources::Function::calls`] is de-stringed so
+        /// that prose cannot answer for a call.
+        beside: &'static str,
+    },
 }
 
 /// **ONE SITE ITEM 470 DOES NOT ASK TO LEAVE, AND THE GROUND IT STANDS ON.**
@@ -604,7 +622,17 @@ struct Exempt {
 const EXEMPT_READERS: &[Exempt] = &[
     Exempt {
         state: "standing_down",
-        kind: Kind::Instrument,
+        // ⚠⚠⚠⚠⚠ THE WITNESS, 2026-09-10 — item 470's last residue, and the reason this row's kind
+        // is no longer a word. `sprag-plugin` now stages the moment the two authorities differ: the
+        // host holds the order and the document does not, because no pass has carried it in yet. A
+        // reader that mirrored the flag passes every other assertion that gate makes and fails
+        // exactly there, which is what makes INSTRUMENT a MEASURED kind rather than a spelled one.
+        kind: Kind::Instrument {
+            witness: "the_order_a_host_holds_and_the_order_the_document_heard_are_two_answers",
+            // ⚠ `RunContext::stood_down` — *whether somebody spoke*, off a boolean a host thread
+            // raises. This row's own reader answers *whether the machine heard*.
+            beside: "stood_down()",
+        },
         // ⚠⚠⚠⚠⚠ MEASURED FALSE 2026-08-26 R107, against the register's own recorded ground.
         // `<state id="standing_down"/>` is a self-closing LEAF inside `<state id="orders">`, which
         // is the region. So *the region's id is the only handle* is not this site's defence.
@@ -623,7 +651,9 @@ const EXEMPT_READERS: &[Exempt] = &[
                  *if an order were ever dropped, nothing anywhere could see it, because the only \
                  published answer was the one that cannot be wrong.* A reading moved INTO the \
                  document cannot check the document, so this one is not a second copy of state — \
-                 it is the second authority, and deleting it deletes the only witness.",
+                 it is the second authority, and deleting it deletes the only witness. ⚠ The `can \
+                 disagree` in that sentence was PROSE until 2026-09-10 and is now the `witness` \
+                 this row names.",
     },
     Exempt {
         state: "work",
@@ -646,7 +676,13 @@ const EXEMPT_READERS: &[Exempt] = &[
                  once and the leaves of the two regions sit at the same depth. Naming a region in \
                  order to address it is not keying a DECISION on a state name: no behaviour is \
                  chosen from the word, and the question it answers is about the ARRANGEMENT of the \
-                 document rather than about the run.",
+                 document rather than about the run. ⚠ AND THIS IS UPSTREAM'S SENTENCE, NOT ONLY \
+                 THIS REPOSITORY'S: `scxml-core-engine` answered the report of 2026-08-28 with the \
+                 structural form of it — *which member is the work region is not a fact the engine \
+                 hides, it is a fact the DOCUMENT does not carry*, so what a copy would duplicate \
+                 is the LIST and never the NAME. ⚠⚠ What both sides then argued about — how often \
+                 the engine CALLS that method — was wrong twice in opposite directions and this \
+                 ground never rested on it.",
     },
 ];
 
@@ -791,7 +827,7 @@ fn each_exempt_reader_stands_on_the_ground_the_register_recorded() {
                  the regions {regions:?}.",
                 reader.state,
             ),
-            Kind::Instrument => assert!(
+            Kind::Instrument { .. } => assert!(
                 !is_root,
                 "⚠⚠⚠⚠⚠ `{}` IS FILED AS AN INSTRUMENT AND THE DOCUMENT SAYS IT IS A REGION. An \
                  instrument is exempt because it reads a state of a SIBLING region from outside so \
@@ -800,6 +836,116 @@ fn each_exempt_reader_stands_on_the_ground_the_register_recorded() {
                  {regions:?}.",
                 reader.state,
             ),
+        }
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **AN INSTRUMENT IS A SECOND AUTHORITY, AND SOMETHING HAS TO HAVE SEEN THE TWO DISAGREE**
+/// — register item 470's last residue, paid 2026-09-10.
+///
+/// # ⚠⚠⚠⚠⚠ What the kind was held to, and why that was the WEAK half
+///
+/// [`each_exempt_reader_stands_on_the_ground_the_register_recorded`] asks the document one thing of
+/// an INSTRUMENT: that the id is **not** a region root. That is a fact about where the state sits,
+/// and the exemption does not rest on it. It rests on the sentence in the row's own `ground` —
+/// *the host's flag answers whether somebody SPOKE, this answers whether the machine HEARD, and
+/// the two can disagree by construction* — and **prose is the thing this item keeps being wrong
+/// about**. Both rows here carried a false ground for two rounds because nothing asked.
+///
+/// ⚠⚠ **AND THE READER THAT WOULD SLIP THROUGH IS THE EXACT ONE THIS ITEM IS ABOUT.** A driver
+/// reader that simply mirrored the host's flag is a second copy of a fact — item 470's whole
+/// subject — and it satisfies every other assertion this file makes: it names a state the document
+/// declares, it is not a region root, it decides nothing. Measured 2026-08-28, **the workspace held
+/// no test that staged the disagreement at all**, so the strongest thing said about this row was
+/// said by the row.
+///
+/// # What this asks, and what it deliberately does not
+///
+/// The row names a `witness`, and this walk goes and finds it. It must be:
+///
+/// 1. **DEFINED EXACTLY ONCE** in the workspace — a name with two definitions is a name a red
+///    cannot send anybody to, and a name with none is a row pointing at nothing.
+/// 2. **PROVING CODE AND NOT PRODUCT** — [`sprag_gate::sources::Source::product`] is what ships, so
+///    a witness that appears there is not a test at all.
+/// 3. **CALLING BOTH AUTHORITIES**, in a body read with its string literals emptied: the state's own
+///    reader, and the `beside` reader the row names. Every refusal in this workspace is prose that
+///    NAMES the readers it is about, so a witness read as written could be answered by its own
+///    message — which is this item's failure mode wearing a test's clothes.
+///
+/// ⚠⚠⚠ **IT DOES NOT CLAIM THE WITNESS IS RIGHT.** No text scan can; this crate takes no
+/// dependencies by charter and std has no Rust parser. What runs the witness is the suite, and what
+/// the witness asserts is its own business — three moments, of which the middle one requires the
+/// two answers to DIFFER. This gate holds the CLASSIFICATION to it, so the day somebody deletes the
+/// witness, renames it, moves it into the product, or guts it until it no longer reads both
+/// authorities, the row filing this reader as an INSTRUMENT goes red instead of standing on a
+/// sentence again.
+#[test]
+fn an_instrument_is_held_to_a_witness_that_stages_the_disagreement() {
+    let sources = rust_sources();
+
+    for reader in EXEMPT_READERS {
+        // ⚠ NO WILDCARD, here as in `Kind` itself: a third kind arrives at a compile error rather
+        // than at a quiet `continue`, which is what an escape hatch looks like from the inside.
+        let (witness, beside) = match reader.kind {
+            Kind::Address => continue,
+            Kind::Instrument { witness, beside } => (witness, beside),
+        };
+
+        let found: Vec<(&str, sprag_gate::sources::Function)> = sources
+            .iter()
+            .filter_map(|source| {
+                source
+                    .function(witness)
+                    .map(|body| (source.file.as_str(), body))
+            })
+            .collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "⛔⛔⛔⛔⛔ `{}` IS FILED AS AN INSTRUMENT AND ITS WITNESS `{witness}` IS DEFINED {} \
+             TIME(S) IN THIS WORKSPACE. The ground this row survives on is that two authorities can \
+             disagree, and until 2026-09-10 nothing staged that — a reader mirroring the other \
+             authority would have passed every gate this item had. Found in {:?}.",
+            reader.state,
+            found.len(),
+            found.iter().map(|(file, _)| *file).collect::<Vec<_>>(),
+        );
+        let (file, body) = &found[0];
+
+        // ⚠⚠ A WITNESS THAT SHIPS IS NOT A WITNESS. `product` is `code` with every `#[cfg(test)]`
+        // item gone, so a name that survives into it was never under the attribute — and a claim
+        // held by shipping code is a claim nothing runs on purpose.
+        let source = sources
+            .iter()
+            .find(|source| source.file == *file)
+            .unwrap_or_else(|| unreachable!("the file the walk just answered from"));
+        assert!(
+            !source
+                .product
+                .iter()
+                .any(|(line, _)| (body.at..=body.end).contains(line)),
+            "⚠⚠⚠⚠ `{witness}` IS SHIPPING CODE, NOT A TEST — `{file}` lines {}..={}. A witness is \
+             what a suite RUNS; a function in the product is one nothing is obliged to execute, and \
+             the classification of `{}` would rest on a body no run ever enters.",
+            body.at,
+            body.end,
+            reader.state,
+        );
+
+        // ⚠⚠⚠⚠⚠ AND IT HAS TO CALL BOTH OF THEM. `Function::calls` is de-stringed, so the prose in
+        // a refusal — which in this workspace always names the readers it is about — cannot answer
+        // for a call that is not made.
+        for owed in [format!("{}()", reader.state), beside.to_owned()] {
+            assert!(
+                body.calls.contains(&owed),
+                "⛔⛔⛔⛔ `{witness}` DOES NOT CALL `{owed}`, so whatever it stages is not the \
+                 disagreement `{}` is exempt for. An instrument is exempt because TWO authorities \
+                 answer the same question and can differ; a witness that reads only one of them has \
+                 measured one answer against itself. `{file}` lines {}..={}.",
+                reader.state,
+                body.at,
+                body.end,
+            );
         }
     }
 }
