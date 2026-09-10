@@ -584,8 +584,21 @@ pub struct Rust {
     /// 2026-08-21: no constant the gate resolves TODAY is ambiguous, so this is a hazard being
     /// closed before item 516 walks into it, not a defect being repaired.
     strings: BTreeMap<String, BTreeSet<String>>,
-    /// Function bodies by name, for a payload spelled as a call.
-    bodies: BTreeMap<String, Vec<String>>,
+    /// Function bodies by name, for a payload spelled as a call — as name to the DISTINCT BODIES
+    /// this workspace gives that name.
+    ///
+    /// # ⚠⚠⚠⚠⚠ A set, not a body, because the same name is five functions here — item 1027
+    ///
+    /// This is [`Rust::strings`]'s rule one level up, and it was missing. A constant declared twice
+    /// with two values resolves to NOTHING ([`Rust::one`]); a local `let` bound twice differently
+    /// resolves to NOTHING ([`Rust::bound`]); and a FUNCTION NAME declared five times resolved to
+    /// *whichever body happened to contain `json!({` first*. Measured 2026-09-11: `ai_loop.rs`
+    /// declares `fn walked` five times, two of them taking an event type.
+    ///
+    /// ⚠⚠ The reason a set of DISTINCT bodies rather than a count: two files declaring the same
+    /// helper with the same text disagree about nothing, and refusing them would be a red about
+    /// formatting.
+    bodies: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl Rust {
@@ -638,8 +651,10 @@ impl Rust {
             }
         }
 
-        let mut bodies: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let mut defined: Vec<(String, String, String)> = Vec::new();
+        let mut bodies: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        // `(qualified key, bare name, params, body)` — item 1027: the key is what this reader
+        // records a helper under, and the bare name is mirrored only while nothing contests it.
+        let mut defined: Vec<(String, String, String, String)> = Vec::new();
         let mut envelope = None;
         for source in sources {
             if !source.code.iter().any(|(_, line)| spells(line, event_type)) {
@@ -649,10 +664,22 @@ impl Rust {
             if envelope.is_none() {
                 envelope = text.after(&format!("implFrom<{event_type}>for"));
             }
-            for (name, params, body) in text.functions() {
-                bodies.entry(name.clone()).or_default().push(body.clone());
+            // ⚠⚠⚠ RECORDED UNDER BOTH ITS NAMES — `carrying` and `Raise::carrying` — for exactly
+            // the reason the constants above are: the bare one is not enough to tell two of them
+            // apart, and the qualified one is how every call site in this workspace spells it.
+            let owner = owners(&source.code);
+            for (name, params, body, line) in text.functions() {
+                let key = owner
+                    .get(&line)
+                    .map_or_else(|| name.clone(), |ty| format!("{ty}::{name}"));
+                for under in [&name, &key] {
+                    bodies
+                        .entry(under.clone())
+                        .or_default()
+                        .insert(body.clone());
+                }
                 if spells(&params, event_type) {
-                    defined.push((name, params, body));
+                    defined.push((key, name, params, body));
                 }
             }
         }
@@ -673,9 +700,14 @@ impl Rust {
                 },
             ),
         ]);
+        // ⚠⚠ A helper is inserted under its QUALIFIED key, and mirrored to the bare one only while
+        // this workspace agrees about that bare name — item 1027. Mirroring a contested name would
+        // put one of two functions where the other's callers look.
+        let alone = |bare: &str| bodies.get(bare).is_none_or(|found| found.len() == 1);
         loop {
             let mut grew = false;
-            for (name, params, body) in &defined {
+            for (key, bare, params, body) in &defined {
+                let name = key;
                 if raisers.contains_key(name) {
                     continue;
                 }
@@ -703,13 +735,14 @@ impl Rust {
                 } else {
                     Handing::Composes
                 };
-                raisers.insert(
-                    name.clone(),
-                    Raiser {
-                        handing,
-                        event_at: event_at(params, event_type),
-                    },
-                );
+                let raiser = Raiser {
+                    handing,
+                    event_at: event_at(params, event_type),
+                };
+                raisers.insert(name.clone(), raiser);
+                if alone(bare) {
+                    raisers.insert(bare.clone(), raiser);
+                }
                 grew = true;
             }
             if !grew {
@@ -725,7 +758,8 @@ impl Rust {
         // compose: `Self { data: Some(data.to_string()) }` RENDERS its argument and hands it over
         // whole, so a constant `null` there is a nil `_event.data` that read as carrying.
         if let Some(envelope) = &envelope {
-            for (name, params, body) in &defined {
+            for (key, bare, params, body) in &defined {
+                let name = key;
                 if raisers.contains_key(name) {
                     continue;
                 }
@@ -752,13 +786,14 @@ impl Rust {
                         }
                     }
                 };
-                raisers.insert(
-                    name.clone(),
-                    Raiser {
-                        handing,
-                        event_at: at,
-                    },
-                );
+                let raiser = Raiser {
+                    handing,
+                    event_at: at,
+                };
+                raisers.insert(name.clone(), raiser);
+                if alone(bare) {
+                    raisers.insert(bare.clone(), raiser);
+                }
             }
         }
 
@@ -819,17 +854,21 @@ impl Rust {
         if let Some(bound) = self.bound(expr) {
             return Some(bound);
         }
-        let called = expr
-            .strip_prefix("self.")
-            .unwrap_or(expr)
-            .split('(')
-            .next()
-            .unwrap_or_default();
-        let body = self
-            .bodies
-            .get(called)?
-            .iter()
-            .find(|body| body.contains("json!({"))?;
+        let called = self.keyed(expr.split('(').next().unwrap_or_default());
+        let candidates = self.bodies.get(&called)?;
+        // ⚠⚠⚠⚠⚠ ONE BODY, OR NONE — register item 1027, and this is [`Rust::one`]'s rule for
+        // functions. It used to take whichever body contained `json!({` first, which is a GUESS
+        // dressed as a reading: this workspace declares `fn walked` five times and nothing at the
+        // call site says which one was called. A claim built on the wrong body is a confident lie,
+        // and `None` here makes the claim go unread rather than wrong —
+        // `no_site_hands_an_event_through_a_name_this_workspace_disagrees_about` is what says so.
+        let body = match candidates.len() {
+            1 => candidates.iter().next()?,
+            _ => return None,
+        };
+        if !body.contains("json!({") {
+            return None;
+        }
         let at = body.find("json!({")? + "json!(".len();
         Some(self.object_keys(&balanced(body, at)))
     }
@@ -912,6 +951,54 @@ impl Rust {
             .iter()
             .filter(|(_, values)| values.len() > 1)
             .map(|(name, values)| (name.clone(), values.clone()))
+            .collect()
+    }
+
+    /// The key a CALL resolves to in this reader's function maps — the qualified name when the call
+    /// spells one this workspace declares, else the bare name.
+    ///
+    /// ⚠ `Raise::carrying(…)` resolves to `Raise::carrying`, `self.raise(…)` to `raise`, and
+    /// `engine.process_event(…)` to `process_event`: a receiver is not a type, so only a name the
+    /// map actually holds is taken as one.
+    #[must_use]
+    pub fn keyed(&self, callee: &str) -> String {
+        let parts: Vec<&str> = callee
+            .split(['.', ':'])
+            .filter(|it| !it.is_empty())
+            .collect();
+        if parts.len() >= 2 {
+            let qualified = format!("{}::{}", parts[parts.len() - 2], parts[parts.len() - 1]);
+            if self.bodies.contains_key(&qualified) {
+                return qualified;
+            }
+        }
+        parts
+            .last()
+            .map_or_else(String::new, |last| (*last).to_owned())
+    }
+
+    /// Every FUNCTION name this workspace declares more than once with different bodies, as name to
+    /// how many — register item 1027.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a reader must say this rather than choose
+    ///
+    /// [`Rust::ambiguous`] is this sentence about constants and it has been enforced since item 516
+    /// was closed before it could bite. `Rust::bound` is it about local bindings — *measured
+    /// 2026-08-21, `payload` is bound fourteen times workspace-wide, so a follower that took the
+    /// first would be a confident lie*. The same reader keyed FUNCTIONS by their short name and
+    /// chose: [`Rust::raisers`] kept whichever classification it reached first and dropped the rest
+    /// in silence, and [`Rust::keys_of`] took whichever body contained `json!({`.
+    ///
+    /// ⚠⚠ Measured before any of it was changed: `ai_loop.rs` alone declares `fn walked` FIVE
+    /// times, two of them taking an event type. Nothing was wrong on the day — the winner could not
+    /// carry a payload, the loser never reached a door, and the sites are declined for a third
+    /// reason — but three coincidences is not a design.
+    #[must_use]
+    pub fn contested(&self) -> BTreeMap<String, usize> {
+        self.bodies
+            .iter()
+            .filter(|(_, bodies)| bodies.len() > 1)
+            .map(|(name, bodies)| (name.clone(), bodies.len()))
             .collect()
     }
 
@@ -1070,7 +1157,7 @@ pub fn indirect(sources: &[Source], driven: &Driven) -> BTreeSet<(String, String
             continue;
         }
         let text = Squeezed::of_lines(&source.product);
-        for (name, _, body) in text.functions() {
+        for (name, _, body, _) in text.functions() {
             let mut at = 0;
             while let Some(hit) = body[at..].find(".into()") {
                 let end = at + hit;
@@ -1283,13 +1370,40 @@ impl Squeezed {
         let envelope_road = rust
             .envelope()
             .is_some_and(|envelope| callee.starts_with(&format!("{envelope}::")));
-        let short = callee.rsplit(['.', ':']).next().unwrap_or_default();
+        let short = rust.keyed(&callee);
+        let short = short.as_str();
         let handing = if envelope_road {
-            Some(Handing::Composes)
+            // ⚠⚠⚠⚠⚠ THE CONSTRUCTOR'S OWN CLASSIFICATION FIRST — register item 1026's residue,
+            // found 2026-09-11 while paying 1027. That round taught `Rust::of` to read the
+            // envelope's constructors and class `Raise::carrying` as `Forwards`, and this line went
+            // on answering `Composes` for everything spelled `Raise::…` — so the pin recorded the
+            // right answer while the READING never used it, and `Raise::carrying(EVENT,
+            // &Value::Null)` still counted as carrying. A classification nothing consults is prose.
+            //
+            // ⚠ `Composes` remains the fallback for a constructor this reader never found a body
+            // for: it is the road's own evidence that a payload is being built, and losing the site
+            // entirely would be worse than reading it permissively — the fallback is what
+            // `what_each_helper_does_with_a_payload_is_what_it_was_measured_doing` announces.
+            Some(
+                rust.raisers()
+                    .get(short)
+                    .map_or(Handing::Composes, |raiser| raiser.handing),
+            )
         } else if callee.is_empty() {
             // A pair is a pairing: whatever stands beside the event in a table IS its payload, and
             // the walkers that consume these tables hand it straight to the machine.
             Some(Handing::Forwards)
+        } else if rust.contested().contains_key(short) {
+            // ⚠⚠⚠⚠⚠ A NAME THIS WORKSPACE DISAGREES ABOUT — register item 1027. The raiser map
+            // holds ONE entry per short name, so a second function of the same name was classified
+            // and thrown away in silence, and reading the survivor's class here would be a claim
+            // about a function this site may never call.
+            //
+            // ⚠⚠ It is read as `Nothing` — the STRICTEST answer, so the site counts as bare and is
+            // announced — rather than as `None`, which would drop the site and leave nothing for
+            // `no_site_hands_an_event_through_a_name_this_workspace_disagrees_about` to name. A
+            // probe that cannot tell must never read as clean, and it must not read as absent.
+            Some(Handing::Nothing)
         } else {
             rust.raisers().get(short).map(|raiser| raiser.handing)
         }?;
@@ -1396,8 +1510,13 @@ impl Squeezed {
         self.text(at, walk)
     }
 
-    /// Every `fn NAME(params) … { body }` in this file, as `(name, params, body)`.
-    fn functions(&self) -> Vec<(String, String, String)> {
+    /// Every `fn NAME(params) … { body }` in this file, as `(name, params, body, one-indexed line)`.
+    ///
+    /// ⚠ The LINE is what lets a caller ask which `impl` a function is inside — item 1027. This
+    /// text has had every space removed, so `impl Raise {` is `implRaise{` and telling the type
+    /// from a trait or a generic here would be a second, worse parser; the line-based
+    /// [`impl_type`] already does it and is what the constants pass has always used.
+    fn functions(&self) -> Vec<(String, String, String, usize)> {
         /// What may stand immediately before `fn` once the spaces are gone.
         const BEFORE: [&str; 6] = ["pub", "unsafe", "async", "const", "extern", "default"];
         let mut found = Vec::new();
@@ -1448,6 +1567,7 @@ impl Squeezed {
                 name,
                 self.text(open + 1, params_end),
                 self.text(body_start, body_end + 1),
+                self.line(at),
             ));
         }
         found
@@ -1724,6 +1844,33 @@ fn literal(expr: &str) -> Option<String> {
         return None;
     }
     Some(quoted.replace("\\\"", "\""))
+}
+
+/// Which `impl` block each line of `code` is inside, by one-indexed line — register item 1027.
+///
+/// ⚠⚠ The same walk the constants pass has always done, given a name so the FUNCTIONS pass can use
+/// it too. That asymmetry was the defect: a constant was recorded under `WIRE_KEY` and
+/// `Readiness::WIRE_KEY` both, and a function only under its bare name — so `Raise::carrying` and
+/// `OuterLoop::carrying` were one key, and eleven driver sites were read through whichever of them
+/// this reader met first.
+fn owners(code: &[(usize, String)]) -> BTreeMap<usize, String> {
+    let mut found = BTreeMap::new();
+    let mut depth: i32 = 0;
+    let mut stack: Vec<(String, i32)> = Vec::new();
+    for (line, text) in code {
+        if let Some(name) = impl_type(text) {
+            stack.push((name, depth));
+        }
+        if let Some((name, _)) = stack.last() {
+            found.insert(*line, name.clone());
+        }
+        depth += i32::try_from(text.matches('{').count()).unwrap_or_default();
+        depth -= i32::try_from(text.matches('}').count()).unwrap_or_default();
+        while stack.last().is_some_and(|(_, opened)| depth <= *opened) {
+            stack.pop();
+        }
+    }
+    found
 }
 
 /// The TYPE an `impl` block is about, so a constant inside it can be named the way payloads name
@@ -2131,6 +2278,40 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE ENVELOPE CONSTRUCTOR'S CLASSIFICATION IS THE ONE THE SITE IS READ WITH** —
+    /// register item 1026's residue, found while paying 1027.
+    ///
+    /// The round that taught this reader to class `Raise::carrying` by its body left
+    /// [`Squeezed::handed`] answering `Composes` for everything on the envelope's road, so the
+    /// classification was pinned and never consulted. A pin nothing reads is prose with a test
+    /// around it.
+    #[test]
+    fn a_constant_null_through_the_envelopes_constructor_is_bare_like_any_other() {
+        let rust = "use x::AiLoopEvent;\n\
+                    impl From<AiLoopEvent> for Raise { fn from(event: AiLoopEvent) -> Self { Self { event, data: None } } }\n\
+                    impl Raise { fn carrying(event: AiLoopEvent, data: serde_json::Value) -> Self { Self { event, data: Some(data.to_string()) } } }\n\
+                    fn nothing() -> Raise { Raise::carrying(AiLoopEvent::TurnDone, serde_json::Value::Null) }\n\
+                    fn something() -> Raise { Raise::carrying(AiLoopEvent::Judge, json!({\"done\": true})) }";
+        let sources = [source("a.rs", rust)];
+        let read = Rust::of(&sources, &machine());
+        let carrying: BTreeMap<String, BTreeSet<String>> = ["turn.done", "judge"]
+            .into_iter()
+            .map(|event| (event.to_owned(), BTreeSet::from(["done".to_owned()])))
+            .collect();
+        let sites = spelled(&sources, &carrying, &read);
+        let carried: BTreeMap<&str, bool> = sites
+            .iter()
+            .map(|site| (site.event.as_str(), site.carries))
+            .collect();
+        assert_eq!(
+            carried,
+            BTreeMap::from([("turn.done", false), ("judge", true)]),
+            "⚠⚠⚠⚠⚠ the envelope's constructor RENDERS its argument into `_event.data`, so a \
+             constant null through it is the same nil as one through any other forwarder. Read by \
+             the ROAD rather than by the constructor, every neighbour counts as data",
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **A CONSTANT NULL FORWARDED TO THE MACHINE IS A BARE RAISE** — register item 1026,
     /// and the shape `review.rs` writes: a helper that renders its argument, handed the JSON `null`.
     ///
@@ -2183,6 +2364,70 @@ mod tests {
             "⚠⚠⚠⚠⚠ the null is the BARE one and the other two are not. A gate that cannot see \
              this reports the nil as *a payload it could not read*, which is a coverage number \
              moving rather than the defect being named: {sites:#?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A NAME THIS WORKSPACE DECLARES TWICE RESOLVES TO NOTHING, AND THE SITE THROUGH
+    /// IT IS ANNOUNCED RATHER THAN DROPPED** — register item 1027.
+    ///
+    /// The same rule [`Rust::one`] applies to constants and [`Rust::bound`] to local bindings, at
+    /// the level where it was missing: whichever function the reader met first used to win, and the
+    /// other was thrown away without a word.
+    #[test]
+    fn a_function_name_this_workspace_declares_twice_is_never_chosen_between() {
+        let rust = "use x::AiLoopEvent;\n\
+                    fn carried(m: &mut E, event: AiLoopEvent, data: &str) { m.raise_external(event, data, \"\"); }\n\
+                    fn handed(m: &mut E, event: AiLoopEvent, data: &str) { m.raise_external(event, data, \"\"); }\n\
+                    fn handed(m: &mut E, event: AiLoopEvent, standing: &str) { m.raise_external(event, &json!({\"done\": standing}).to_string(), \"\"); }\n\
+                    fn made() -> Value { json!({\"done\": true}) }\n\
+                    fn made() -> Value { Value::Null }\n\
+                    fn only() -> Value { json!({\"cold\": 1}) }\n\
+                    fn one(m: &mut E) { handed(m, AiLoopEvent::TurnDone, DATA); }\n\
+                    fn two(m: &mut E) { carried(m, AiLoopEvent::Judge, DATA); }";
+        let sources = [source("a.rs", rust)];
+        let read = Rust::of(&sources, &machine());
+
+        assert_eq!(
+            read.contested().keys().collect::<Vec<_>>(),
+            ["handed", "made"],
+            "⚠⚠⚠⚠ two functions of one name with different bodies is what this reader must refuse \
+             to choose between, and `carried`/`only` beside them must NOT be reported — one \
+             declaration is not a disagreement: {:?}",
+            read.contested(),
+        );
+
+        // ⚠⚠⚠⚠⚠ AND THE PAYLOAD READER REFUSES THE SAME NAME — item 1027. `made()` builds an
+        // object in one body and a constant null in the other, and the call says nothing about
+        // which; taking the one that happens to hold a `json!({` is the guess this whole item is
+        // about, and it reads exactly like a reading.
+        assert_eq!(
+            read.keys_of("made()"),
+            None,
+            "⚠⚠⚠⚠⚠ a payload spelled as a call to a CONTESTED name must resolve to nothing — the \
+             claim above it then goes unread rather than wrong",
+        );
+        assert_eq!(
+            read.keys_of("only()"),
+            Some(BTreeSet::from(["cold".to_owned()])),
+            "⚠⚠ and a name this workspace agrees about still resolves, or refusing the contested \
+             one would have cost the reader every call it can follow",
+        );
+
+        let carrying: BTreeMap<String, BTreeSet<String>> = ["turn.done", "judge"]
+            .into_iter()
+            .map(|event| (event.to_owned(), BTreeSet::from(["done".to_owned()])))
+            .collect();
+        let sites = spelled(&sources, &carrying, &read);
+        let carried: BTreeMap<&str, bool> = sites
+            .iter()
+            .map(|site| (site.event.as_str(), site.carries))
+            .collect();
+        assert_eq!(
+            carried,
+            BTreeMap::from([("turn.done", false), ("judge", true)]),
+            "⚠⚠⚠⚠⚠ the site through the CONTESTED name must survive as a site — dropping it would \
+             leave nothing for a claim to name — and it must read as the strictest answer, because \
+             a reader that cannot tell which function runs cannot say a payload arrived.",
         );
     }
 

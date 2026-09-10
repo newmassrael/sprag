@@ -144,16 +144,22 @@ const MACHINES: &[Machine] = &[
         // driver ever sent such a key and no edge ever read one — so a sentence naming nothing was
         // quietly widening what a payload may carry unread. The sentence was corrected, not the pin.
         affordances: &["rule"],
-        // ⚠⚠ TEN AND TWO on the day item 1024 was paid, and the refusal NAMES the two rather than
-        // leaving them to be re-derived:
+        // ⚠⚠ TEN AND TWO when item 1024 was paid; **ELEVEN AND ONE from 2026-09-11**, and the
+        // number moved because the READER got better rather than because the driver changed.
+        // Item 1027 made a call resolve through the key the call actually spells, and
+        // `&retyped.wire()` — a METHOD on a receiver, previously looked up under the whole dotted
+        // string `retyped.wire` and found nowhere — now resolves to the one `wire` these files
+        // declare. Its keys are the ones the document reads, which is why nothing else moved.
         //
-        // * `outer.rs` raises `brief` with `&payload.to_string()` — assembled a screen away, which
-        //   is why item 1023 built `sprag_gate::briefing` to ask this same question of that one
-        //   edge. Covered, elsewhere.
-        // * `outer.rs` raises `prompt.unasked` with `&retyped.wire()` — a METHOD on a receiver, and
-        //   `Rust::keys_of` follows a plain call's body but not this. Not covered anywhere, and the
-        //   document does read `retyped`, so nothing is wrong there today.
-        coverage: (10, 2),
+        // ⚠ The remaining dark one is `outer.rs`'s `brief`, raised with `&payload.to_string()`:
+        // assembled a screen away, which is why item 1023 built `sprag_gate::briefing` to ask this
+        // same question of that one edge. Covered, elsewhere.
+        //
+        // ⚠⚠⚠ Resolving a method by its bare name is a claim about the RECEIVER's type that a text
+        // scan cannot check — it is safe only because
+        // `no_site_hands_an_event_through_a_name_this_workspace_disagrees_about` refuses the moment
+        // two functions share it, on the same terms `Rust::one` gives constants.
+        coverage: (11, 1),
         sites: 144,
         envelope: true,
         raised_in: &[
@@ -185,17 +191,22 @@ const MACHINES: &[Machine] = &[
         // measured the other three that used to sit beside it — `from_working` and `raise` FORWARD
         // (each hands its own argument straight to a door) and `reviewed` takes no payload at all —
         // and each was a permissive answer given to a function nobody had read.
+        // ⚠⚠ A QUALIFIED KEY MEANS THIS WORKSPACE DECLARES THAT BARE NAME MORE THAN ONCE — item
+        // 1027. `Raise::carrying` is here and plain `carrying` is not, because `OuterLoop` declares
+        // a `carrying` of its own; `walk_carrying` is under both because nothing contests it. The
+        // shape of this list is therefore a reading of the workspace's naming, not a style choice.
         raisers: &[
+            ("OuterLoop::walk", Handing::Nothing),
+            ("OuterLoop::walk_carrying", Handing::Forwards),
+            ("Raise::carrying", Handing::Forwards),
+            ("Raise::from", Handing::Nothing),
             ("carried", Handing::Forwards),
-            ("carrying", Handing::Forwards),
-            ("from", Handing::Nothing),
             ("from_working", Handing::Forwards),
             ("process_event", Handing::Nothing),
             ("raise_external", Handing::Forwards),
             ("reflected", Handing::Composes),
             ("reviewed", Handing::Nothing),
             ("through", Handing::Forwards),
-            ("walk", Handing::Nothing),
             ("walk_carrying", Handing::Forwards),
             ("walked", Handing::Nothing),
         ],
@@ -226,6 +237,7 @@ const MACHINES: &[Machine] = &[
         // carrying, and the day this document reads a key off such an event the machine indexes nil
         // while the claim named for nil stays green. Measured, by doing exactly that.
         raisers: &[
+            ("ContextReview::raise", Handing::Forwards),
             ("process_event", Handing::Nothing),
             ("raise", Handing::Forwards),
             ("raise_external", Handing::Forwards),
@@ -1138,6 +1150,63 @@ fn what_each_helper_does_with_a_payload_is_what_it_was_measured_doing() {
          GONE: the closure lost a helper it used to reach, and the sites that go through it are no \
          longer judged at all.\n{}",
         moved.join("\n"),
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **NO SITE IS READ THROUGH A FUNCTION NAME THIS WORKSPACE DECLARES TWICE** — register
+/// item 1027, and it is [`no_payload_key_is_spelled_by_a_name_this_workspace_disagrees_about`]'s
+/// sibling one level up.
+///
+/// # The rule this reader had for two of its three name spaces
+///
+/// A CONSTANT declared twice with two values resolves to nothing, and a payload that spells one is
+/// refused by name — item 516's hazard, closed before it bit. A LOCAL BINDING bound twice
+/// differently resolves to nothing — `payload` is bound fourteen times workspace-wide, so following
+/// the first would have been a confident lie. A FUNCTION NAME resolved to *whichever one this
+/// reader met first*: [`Rust::raisers`] kept one classification and dropped the rest in silence,
+/// and [`Rust::keys_of`] took whichever body held a `json!({`.
+///
+/// ⚠⚠ Measured 2026-09-11, before any of it changed: `ai_loop.rs` declares `fn walked` five times,
+/// two of them taking an event type. Nothing was wrong that day and the reasons were three
+/// coincidences — the winner could carry no payload, the loser reached no door, and the sites are
+/// declined for the vocabulary rule instead. This is what makes it a design.
+///
+/// ⚠ A site through a contested name is read as [`Handing::Nothing`] — the strictest answer — so it
+/// SURVIVES as a site and is named here, rather than vanishing and leaving this claim nothing to be
+/// about.
+#[test]
+fn no_site_hands_an_event_through_a_name_this_workspace_disagrees_about() {
+    let mut guessed = Vec::new();
+    let mut contests = 0usize;
+    let mut seen = BTreeMap::new();
+    for reading in readings() {
+        let contested = reading.rust.contested();
+        contests += contested.len();
+        seen.insert(reading.machine.document().to_owned(), contested.clone());
+        for site in &reading.sites {
+            let key = reading.rust.keyed(&site.through);
+            if let Some(declared) = contested.get(&key) {
+                guessed.push(format!(
+                    "  {}:{} hands `{}` on through `{}`, which this reader resolves to `{key}` — \
+                     and the files it scans declare {declared} different functions under that \
+                     name. It cannot say which one runs, so whichever class it reported would be \
+                     about a function this site may never call",
+                    site.file, site.line, site.event, site.through,
+                ));
+            }
+        }
+    }
+    assert!(
+        contests > 0,
+        "⚠⚠⚠ this workspace declares the same function name more than once in several places, and \
+         finding NONE across every machine means the reader stopped seeing function bodies at all \
+         — which would make this claim, and every payload read through a call, vacuous: {seen:?}",
+    );
+    assert!(
+        guessed.is_empty(),
+        "⛔⛔⛔⛔⛔ A SITE IS READ THROUGH A CONTESTED NAME. Rename one of them, or give this \
+         reader the path that tells them apart — what it must not do is choose:\n{}",
+        guessed.join("\n"),
     );
 }
 
