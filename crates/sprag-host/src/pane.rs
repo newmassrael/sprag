@@ -71,11 +71,12 @@ use crate::wire::{
     FULL_LINES_SLOT, FULL_TEXT_SLOT, IMAGE_DATA_FIELD, INJECT_ACTION, INJECT_STROKES_KEY,
     INJECTED_BYTES_KEY, KEY_ACTION, KEY_FIELD, KEY_STATE_FIELD, LAST_COMMAND_SLOT, LINES_KEY,
     LINES_LOST_KEY, LINES_NEXT_KEY, LINES_PARTIAL_KEY, LINES_RESTARTED_KEY, LINES_SINCE_FIELD,
-    LINKS_SLOT, MOUSE_ACTION, PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT,
-    PANE_FOREGROUND_SLOT, PANE_GRAMMAR, PANE_HANDS_SLOT, PANE_PAINTED_SLOT, PANE_RAW_OUTPUT_SLOT,
-    PANE_REVISION_SLOT, PANE_SCHEMA, PANE_START_DIR_SLOT, PASTE_ACTION, PEER_GONE_REFUSAL,
-    PROMPT_MARKS_SLOT, RECENT_INPUT_FIELD, REGEX_FIELD, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT,
-    SHIFT_FIELD, SUPER_FIELD, TEXT_ACTION,
+    LINKS_SLOT, MOUSE_ACTION, MOUSE_BUTTON_FIELD, MOUSE_COL_FIELD, MOUSE_KIND_FIELD,
+    MOUSE_ROW_FIELD, PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_FOREGROUND_SLOT,
+    PANE_GRAMMAR, PANE_HANDS_SLOT, PANE_PAINTED_SLOT, PANE_RAW_OUTPUT_SLOT, PANE_REVISION_SLOT,
+    PANE_SCHEMA, PANE_START_DIR_SLOT, PASTE_ACTION, PEER_GONE_REFUSAL, PROMPT_MARKS_SLOT,
+    RECENT_INPUT_FIELD, REGEX_FIELD, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD,
+    SUPER_FIELD, TEXT_ACTION,
 };
 
 /// Search `screen`'s retained output for the LITERAL `needle` — the one place the
@@ -1172,11 +1173,19 @@ fn parse_mouse_args(args: &IntrospectValue) -> Result<MouseInput, InvokeError> {
     // crates. `MouseButton::wire_str` records what that cost; what matters here is that the words
     // this admits are now the same array the pane surface PUBLISHES, so a client that reads the
     // grammar cannot be told a word this refuses.
+    //
+    // ⛔⛔⛔ AND THROUGH THE FIELD NAMES' OWN CONSTANTS, which this reader spelled by hand until
+    // register item 1022. `mouse_args` writes all four through `wire`'s constants; these four read
+    // them back as literals, so `MOUSE_BUTTON_FIELD` and its three neighbours were words the host
+    // PUBLISHED and nothing in this workspace read — and a rename would have reached the writer,
+    // the grammar and the client and left this parser refusing every mouse report. That is item
+    // 559's defect seen from the reader's side, and it is what the gate item 1022 built found on
+    // its first run.
     let word = |name: &str| map.get(name).and_then(Value::as_str);
-    let button = word("button")
+    let button = word(MOUSE_BUTTON_FIELD)
         .and_then(MouseButton::from_wire)
         .ok_or(InvokeError::TypeMismatch)?;
-    let kind = word("kind")
+    let kind = word(MOUSE_KIND_FIELD)
         .and_then(MouseEventKind::from_wire)
         .ok_or(InvokeError::TypeMismatch)?;
     let coord = |name: &str| -> Result<u16, InvokeError> {
@@ -1188,8 +1197,8 @@ fn parse_mouse_args(args: &IntrospectValue) -> Result<MouseInput, InvokeError> {
     Ok(MouseInput {
         button,
         kind,
-        col: coord("col")?,
-        row: coord("row")?,
+        col: coord(MOUSE_COL_FIELD)?,
+        row: coord(MOUSE_ROW_FIELD)?,
         mods: parse_modifier_flags(map, false)?,
     })
 }

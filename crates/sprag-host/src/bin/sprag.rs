@@ -8497,6 +8497,24 @@ fn render_run(run: &Value) -> String {
                 .map_or_else(String::new, |why| {
                     format!("\n  nothing answered it: `{why}`")
                 });
+            // ⛔⛔⛔⛔⛔ AND WHY A DAEMON SET THE RUN ASIDE — register item 764's clause, given the
+            // mouth it never had.
+            //
+            // ⚠⚠ ITEM 1022 IS WHY THIS LINE EXISTS. `RUN_ABANDONED_KEY` was written into every
+            // abandoned driver's ending by `drive::ending` and read by NOTHING that ships — the
+            // only readers were the assertions of the gate that put it there. So item 764 bought
+            // *the reason is named in the ending* and the reason reached a person nowhere, which is
+            // this file's own recurring failure: a fact that reaches the wire and dies at the mouth
+            // somebody actually reads.
+            //
+            // ⚠ CARRIED VERBATIM, on `RUN_ABANDONED_KEY`'s own rule: the clause is the DAEMON's
+            // sentence, composed by `runs::Unreported::describe`, and a second mouth re-authoring
+            // it here would be the drift that key's doc refuses.
+            let set_aside = outcome[sprag_host::plugins::RUN_ABANDONED_KEY]
+                .as_str()
+                .map_or_else(String::new, |why| {
+                    format!("\n  the driver stopped because it was told: {why}")
+                });
             let output = state["output"]
                 .as_str()
                 .map_or_else(String::new, |text| format!("  ---\n{text}\n"));
@@ -8547,7 +8565,7 @@ fn render_run(run: &Value) -> String {
                 )
             });
             format!(
-                "{head}  {}{} after {} iterations, {} {unit}{}{}{closed_under}{blocked_on}{disposition}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{read_back}{fullness}{authors}{verified}{uncommitted}{canceller}{}{}{}{}\n{}{output}",
+                "{head}  {}{} after {} iterations, {} {unit}{}{}{closed_under}{blocked_on}{set_aside}{disposition}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{read_back}{fullness}{authors}{verified}{uncommitted}{canceller}{}{}{}{}\n{}{output}",
                 outcome["state"].as_str().unwrap_or("?"),
                 // ⚠ WHICH CEILING stopped it — the same fact the agent's renderer prints, for the
                 // same reason: `exhausted` names a class of ending and not the bound to change.
@@ -13183,6 +13201,56 @@ mod tests {
              at line {carrying} of {}: {declared}",
             lines.len(),
         );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN THIS DAEMON SET ASIDE TELLS A PERSON WHY** — register item 764's clause,
+    /// given the mouth register item 1022 found it had never had.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The fact was on the wire and died before any reader
+    ///
+    /// Item 764 built the whole road: a driver whose progress report is refused stops, and
+    /// `drive::ending` writes the daemon's own clause into its ending under
+    /// [`sprag_host::plugins::RUN_ABANDONED_KEY`]. What it did not build was a reader. Measured
+    /// 2026-09-10 by the gate item 1022 asked for: the key had **no shipping reader anywhere in
+    /// this workspace** — only the assertions of the gate that put it there — so every abandoned
+    /// run reached a person as a bare `cancelled`, which is register item 596's collapse arriving
+    /// by the third road 764 exists to keep open.
+    ///
+    /// ⚠⚠ THE SENTENCE IS THE DAEMON'S AND THIS TEST DOES NOT WRITE ONE. `Unreported::describe`
+    /// composes it and the row carries it verbatim; a fixture that authored its own words could
+    /// pass while the mouth printed something the daemon never said.
+    #[test]
+    fn the_row_a_person_reads_says_why_a_daemon_set_the_run_aside() {
+        const CLAUSE: &str = "the driver stopped because it was told:";
+
+        let quiet = render_run(&run_entry(&a_run_that_closed(None)));
+        assert!(
+            !quiet.contains(CLAUSE),
+            "⚠⚠⚠⚠⚠ THE CONTROL: a run nobody set aside must gain no clause — absence is how this \
+             row says *it ended on its own terms*, and without this the assertion below would pass \
+             on a mouth that printed the sentence for every run: {quiet}",
+        );
+
+        let refused = sprag_host::runs::Unreported::Ended.describe(sprag_host::runs::RunId(7));
+        let said = render_run(&a_run_a_daemon_set_aside(&refused));
+        assert!(
+            said.contains(&refused),
+            "⛔⛔⛔⛔⛔ ITEM 764 AT THE MOUTH: the row must carry the daemon's own clause verbatim. \
+             Without it a person is told `{}` and nothing else, and cannot tell a run they \
+             cancelled from one the daemon holding the socket set aside. Read {said}",
+            a_run_that_closed(None).state.wire_str(),
+        );
+    }
+
+    /// A row as the daemon publishes one whose driver was set aside mid-run, carrying `why`.
+    ///
+    /// ⚠⚠ The reported object is spliced WHOLE into `outcome` by `run_to_json`'s `Reported` arm,
+    /// which is private — so this stands in for it, through the host's own constant, for
+    /// [`a_driver_that_died`]'s reason one clause over.
+    fn a_run_a_daemon_set_aside(why: &str) -> Value {
+        let mut row = run_entry(&a_run_that_closed(None));
+        row["state"]["outcome"][sprag_host::plugins::RUN_ABANDONED_KEY] = Value::from(why);
+        row
     }
 
     /// A row as the daemon publishes one whose driver died saying `why`.

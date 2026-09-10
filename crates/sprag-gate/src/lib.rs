@@ -85,6 +85,15 @@ pub mod payload;
 /// only say that today's spelling works, which is exactly what let the split ship green.
 pub mod vocabulary;
 
+/// Whether every wire word the host PUBLISHES has something that reads it — item 1022.
+///
+/// [`vocabulary`]'s other half, and the register found them a fortnight apart. That one asks
+/// whether a WRITER names a field from one place; this asks whether the word a writer published is
+/// read at all. Item 1021 measured the answer being no for three weeks — the host joined the run
+/// registry on every pane listing to compute `borne_by`, and the only thing that ever noticed was a
+/// person counting `git grep` hits by hand.
+pub mod published;
+
 /// Every Rust source this workspace carries, for the gates that judge the TEXT of it.
 ///
 /// Shared by the two workspace-wide ratchets (items 467 and 471) rather than copied into each: the
