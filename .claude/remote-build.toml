@@ -52,13 +52,32 @@ peak_gb_per_task = 2
 # ⛔⛔⛔⛔⛔ WHAT THIS REPOSITORY HANDS THE WRAPPER ITSELF — register item 932, and the population
 # `[commands]` was never the whole of.
 #
-# `[commands]` is what this DECLARATION sends. It is not what the wrapper RUNS. The wrapper reads
-# exactly one key from this file — `peak_gb_per_task`, at `bx:485` — and divides a host's free RAM
-# by it for whatever argv it was given; it never reads `[commands]` or `[peak_measured]` at all.
-# ⚠ Asked of the program rather than remembered: `grep -n 'commands' bin/bx` answers FOUR lines —
-# three comments and one refusal message (`die "unknown flag $1 (commands go after --)"`), and not
-# one of them is a read of the table. `grep -n 'peak_measured\|_kb' bin/bx` answers none at all.
-# So the ceiling derived from two rows below has been budgeting every command any caller hands it.
+# `[commands]` is what this DECLARATION sends. It is not what the wrapper RUNS. The wrapper divides
+# a host's free RAM by `peak_gb_per_task` for whatever argv it was given, and it never reads
+# `[commands]` or `[peak_measured]` at all. ⚠ Asked of the program rather than remembered:
+# `grep -n 'commands' bin/bx` answers FOUR lines — three comments and one refusal message
+# (`die "unknown flag $1 (commands go after --)"`), and not one of them is a read of the table.
+# `grep -n 'peak_measured\|_kb' bin/bx` answers none at all. So the ceiling derived from two rows
+# below has been budgeting every command any caller hands it.
+#
+# ⛔⛔ **THE SENTENCE ABOVE USED TO SAY «THE WRAPPER READS EXACTLY ONE KEY FROM THIS FILE», AND
+# RE-MEASURING IT ON 2026-09-10 REFUTED THAT** — register item 1009, and the wrapper has not been
+# edited since 2026-08-24, so it was wrong when it was written rather than gone stale. Asked of the
+# program, which answers this question about itself:
+#
+#     bx --explain-declaration     # every extractor, INCLUDING the ones that found nothing
+#
+# Ten keys, six of them filled here: `send`, `needs`, `packages`, `writes`, `pin_host`,
+# `peak_gb_per_task`, `min_ram_gb`, `min_free_gb`, `target_cap_gb`, `workspace_dir`. The true half
+# of the old sentence is that exactly one of them BUDGETS; the false half mattered, because a
+# repository reading it would conclude that a requirement written here is a requirement nobody
+# reads.
+#
+# ⇒ ⚠⚠ AND THE ANSWER CARRIES ITEM 1009's OWN LIMIT: **not one of those ten is a platform.** So a
+# `platform = "…"` host requirement written here would be a key the wrapper does not extract, and
+# `--explain-declaration` is where that shows. The half of 1009 this repository can pay is at its
+# OWN call sites — `.githooks/rust-gates.sh` now reads `precommit_platform` beside `precommit_kb`
+# and refuses to spend another platform's peak — and the fleet half is the wrapper's owner's.
 #
 # ⚠⚠ MEASURED, AT 2026-09-06, from the wrapper's own logs rather than from memory:
 #     ls target/bx-logs/*.log | wc -l                                   -> 10029 runs

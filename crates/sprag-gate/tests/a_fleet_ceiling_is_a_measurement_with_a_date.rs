@@ -544,6 +544,19 @@ fn every_command_this_repository_hands_the_wrapper_is_one_it_measured() {
              `peak_gb_per_task` instead, and the branch that runs without the wrapper divides by \
              nothing at all. Derive the bound from the reading at the call site.",
         );
+        // ⛔⛔ THE SECOND AXIS OF THE SAME RULE — register item 1009. A reading is `VmHWM` out of
+        // procfs (item 1008), so it describes ONE platform's memory behaviour; a call site that
+        // divides by it without asking whose is spending another host's peak. The platform is
+        // recorded beside the number precisely so a divider can consult it, and a recorded field
+        // nothing reads is what item 932 calls a number in a file.
+        assert!(
+            hook.contains(&format!("{name}_platform = ")),
+            "⛔ ITEM 1009: `{site}` divides by `{name}_kb` and never reads `{name}_platform`. That \
+             reading was taken on one platform and this hook runs on every platform this project \
+             is developed on — on macOS there is no procfs to have taken it with at all. Read the \
+             platform beside the number and say so when they differ; leaving the lane unbounded is \
+             a valid answer, spending somebody else's peak silently is not.",
+        );
     }
 }
 

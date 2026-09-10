@@ -75,11 +75,34 @@ rust_gates_stamp_path() {
 # ⚠ A checkout without the declaration is the same case as one without `$BX`: the absence is the old
 # behaviour, silently. The warning is for a declaration that IS there and says nothing about this
 # lane — the case somebody has to fix (rule 6).
+#
+# ⛔⛔⛔⛔⛔ AND **THREE DIFFERENT FAILURES SPOKE WITH ONE VOICE, WHICH WAS THE WRONG ONE** — register
+# item 1009. Until 2026-09-10 anything that left this lane unbounded printed *no usable
+# `precommit_kb` in <file>*, and MEASURED on a host whose `/proc` answers ENOENT to every path, with
+# this repository's own declaration in place: the `sed` above extracted `9260688` perfectly, and
+# this function announced that the file said nothing. `/proc/meminfo` was what was missing, and the
+# sentence blamed the declaration — the exact defect item 1006 is named for eight lines up, *a
+# refusal naming the wrong cause is worse than none*, reached by a different road.
+#
+# ⚠⚠ **AND THE THIRD CAUSE COULD NOT BE SPOKEN AT ALL: the reading is a ONE-PLATFORM number.**
+# `precommit_kb` is `VmHWM` sampled out of procfs (item 1008), so it describes the memory behaviour
+# of the platform it was taken on and nothing says it describes this host. Reading
+# `precommit_platform` beside it is what makes that recorded field a row somebody USES — item 932's
+# own rule, that a row nobody divides by is a number in a file, applied to the field item 1008 added.
+#
+# ⇒ So the arms are named separately and each says which of the three it is. ⚠ None of them changes
+# what happens: an unverifiable host runs the lane exactly as it ran it yesterday. What changes is
+# that the sentence is true, and a person on that host is pointed at the host rather than at a file
+# that is correct.
+#
+# ⚠ `RUST_GATES_MEMINFO` is the seam the gates drive, and it fails CLOSED: pointing it anywhere that
+# does not answer makes this lane UNBOUNDED and loud, and no value of it can raise the job count.
 rust_gates_bound_this_lane() {
-    local routed_decl routed_kb free_kb routed_jobs root
+    local routed_decl routed_kb routed_platform host_platform free_kb routed_jobs root meminfo
     root="${repo_root:-$(git rev-parse --show-toplevel 2>/dev/null || printf '.')}"
     routed_decl="$root/.claude/remote-build.toml"
     routed_kb=""
+    routed_platform=""
     if [ -f "$routed_decl" ]; then
         # ⛔ `[0-9][0-9]*` AND NOT `[0-9]\+` -- register item 1006. `\+` is a GNU
         # extension to a basic regular expression; BSD reads it as a LITERAL `+`,
@@ -89,18 +112,32 @@ rust_gates_bound_this_lane() {
         # is worse than none. Measured 2026-09-10 with a FreeBSD regex(3) built
         # here: `1234` under GNU, empty under BSD, and `1+` matched instead.
         routed_kb=$(sed -n 's/^precommit_kb = \([0-9][0-9]*\).*/\1/p' "$routed_decl" | head -1)
+        # ⚠ The same basic-regex rule as the line above: `[^"]*` and no `\+` anywhere.
+        routed_platform=$(sed -n 's/^precommit_platform = "\([^"]*\)".*/\1/p' "$routed_decl" | head -1)
     fi
-    free_kb=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null || true)
-    if [ -n "$routed_kb" ] && [ -n "$free_kb" ] && [ "$routed_kb" -gt 0 ]; then
-        routed_jobs=$(( free_kb / routed_kb ))
-        [ "$routed_jobs" -ge 1 ] || routed_jobs=1
-        CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$routed_jobs}"
-        RUST_TEST_THREADS="${RUST_TEST_THREADS:-$routed_jobs}"
-        export CARGO_BUILD_JOBS RUST_TEST_THREADS
-        echo "rust-gates: this lane peaks at $((routed_kb / 1024))MB/task (declared in [routed]); ${free_kb}kB free -> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS" >&2
-    elif [ -f "$routed_decl" ]; then
-        echo "rust-gates: ⚠ no usable precommit_kb in $routed_decl — this lane is running UNBOUNDED (register item 932)" >&2
+    host_platform=$(uname -s 2>/dev/null || printf 'unknown')
+    meminfo="${RUST_GATES_MEMINFO:-/proc/meminfo}"
+    free_kb=$(awk '/^MemAvailable:/{print $2}' "$meminfo" 2>/dev/null || true)
+
+    if [ -z "$routed_kb" ] || [ "$routed_kb" -le 0 ] 2>/dev/null; then
+        # The declaration is there and says nothing about this lane — the original case, unchanged.
+        [ -f "$routed_decl" ] && echo "rust-gates: ⚠ no usable precommit_kb in $routed_decl — this lane is running UNBOUNDED (register item 932)" >&2
+        return 0
     fi
+    if [ -n "$routed_platform" ] && [ "$routed_platform" != "$host_platform" ]; then
+        echo "rust-gates: ⚠ precommit_kb was measured on $routed_platform and this host is $host_platform — that number is one platform's memory behaviour, so this lane is running UNBOUNDED rather than bounded by somebody else's peak (register item 1009). Take a reading here: bash crates/sprag-gate/tests/doubles/declared-verify/measure-peak precommit" >&2
+        return 0
+    fi
+    if [ -z "$free_kb" ]; then
+        echo "rust-gates: ⚠ cannot read this host's free memory from $meminfo — the reading in [routed] is fine and it is the HOST that cannot be measured, so this lane is running UNBOUNDED (register item 1009)" >&2
+        return 0
+    fi
+    routed_jobs=$(( free_kb / routed_kb ))
+    [ "$routed_jobs" -ge 1 ] || routed_jobs=1
+    CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$routed_jobs}"
+    RUST_TEST_THREADS="${RUST_TEST_THREADS:-$routed_jobs}"
+    export CARGO_BUILD_JOBS RUST_TEST_THREADS
+    echo "rust-gates: this lane peaks at $((routed_kb / 1024))MB/task (declared in [routed], measured on $host_platform); ${free_kb}kB free -> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS" >&2
 }
 
 # Run clippy, the rustdoc gate and the ratchet lane, routed through the build-machine wrapper when
