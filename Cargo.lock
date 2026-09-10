@@ -3793,6 +3793,7 @@ dependencies = [
  "sce-rust-runtime",
  "serde_json",
  "sprag-detect",
+ "sprag-gate",
  "sprag-input",
  "sprag-scratch",
  "sprag-terminal",
