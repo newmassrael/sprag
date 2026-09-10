@@ -88,13 +88,48 @@ tell() {
 # path invented in this file. `sprag-gate::launcher` holds the two spellings to naming one
 # directory, because a shell script cannot import a Rust `const`.
 #
-# ⚠ THE ORDER IS STILL MTIME, AND THAT IS WHAT KEEPS THIS TREE WINNING. A promoted copy is older
-# than the build that superseded it, so `ls -t` asks `target/` FIRST and reaches the promoted one
-# only when nothing there can talk — the fallback appears exactly when it is the only answer, and
-# a rebuild is still picked up with no edit anywhere.
+# ⛔⛔⛔⛔⛔ THE ORDER IS TWO TIERS AND ONLY THE FIRST ONE IS MTIME — register item 970, and the
+# sentence that used to stand here was FALSE. It read: *"A promoted copy is older than the build
+# that superseded it, so `ls -t` asks `target/` FIRST"* — an accident dressed as a mechanism.
+# Measured on this machine 2026-09-10, with one flat `ls -t` over both:
+#
+#   target/debug/sprag-gui                     2026-09-10 20:24
+#   ~/.local/share/sprag-loop/bin/sprag-gui    2026-09-09 13:15   ← the promoted copy, in the MIDDLE
+#   target/release/sprag-gui                   2026-09-08 21:37
+#
+# So a promoted copy is asked BEFORE a build of this tree whenever it is newer than that build —
+# which it is for every profile not rebuilt since the promotion, and for ALL of them in the window
+# between a promotion and the next build. The fallback becomes the preference, silently, and the
+# dock opens a build this tree has moved past while a build of this tree fits: item 963's own
+# defect, produced by item 963's own fix.
+#
+# ⇒ *this tree first* is a REQUIREMENT and is now carried by the structure. `target/` is asked in
+# mtime order among itself — a rebuild is still picked up with no edit anywhere, which is the whole
+# "keep it current" requirement — and the promoted copy is appended AFTER, so it is reached only
+# when nothing this tree built can talk. That is what a fallback means.
+#
+# ⛔⛔⛔⛔⛔ AND `-d`, WHICH IS NOT COSMETIC — register item 970. BSD `ls` FOLLOWS symbolic links
+# named on the command line, so `-t` alone sorts by the link TARGET's mtime; GNU `ls` uses the
+# link's own. Where several candidates resolve to ONE file they all TIE, and the tie is then broken
+# by NAME — under which `home/.local/…` sorts before `target/…`. Read out of the implementation
+# macOS actually ships (`apple-oss-distributions/file_cmds`), not remembered:
+#
+#   ls.c   if (!f_nofollow && !f_longform && !f_listdir && (!f_type || f_slash) && !f_inode …)
+#                  fts_options |= FTS_COMFOLLOW;          /* `case 'd': f_listdir = 1;` */
+#   cmp.c  modcmp(): … tv_sec, then tv_nsec, then `strcoll(a->fts_name, b->fts_name)`
+#
+# So `-d` suppresses the follow there, and it is a no-op for file operands on GNU (measured here,
+# both readings). ⚠ NOT `-P`, which says it more plainly and which GNU `ls` does not have at all.
+#
+# ⚠ It is stated rather than left to the default because *which mtime* is a real choice: the link's
+# own is what a rebuild moves in this repository's own gates, and a launcher whose candidate order
+# is implementation-defined is a dock that opens a different build on a different machine.
 PROMOTED=${HOME:-}/.local/share/sprag-loop/bin
 GUIS=()
-while IFS= read -r one; do GUIS+=("$one"); done < <(ls -t "$REPO"/target/*/sprag-gui "$PROMOTED/sprag-gui" 2>/dev/null)
+while IFS= read -r one; do GUIS+=("$one"); done < <(ls -td "$REPO"/target/*/sprag-gui 2>/dev/null)
+# ⚠ `-e` rather than letting `ls` decide: a DANGLING link is listed by `ls` and cannot be exec'd,
+# and the promoted directory is the one place a stale link is likely (a promotion that moved).
+[[ -e $PROMOTED/sprag-gui ]] && GUIS+=("$PROMOTED/sprag-gui")
 if [[ ${#GUIS[@]} -eq 0 ]]; then
     say "no sprag-gui under $REPO/target, none promoted to $PROMOTED"
     tell "sprag" "No sprag-gui is built.

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# An `ls` that reads a symbolic link the way BSD's does — the launcher gate's macOS, on this
+# machine. Register item 970.
+#
+# ⛔⛔⛔⛔⛔ WHAT IT REPRODUCES, and why a gate cannot get it any other way. BSD `ls` FOLLOWS
+# symbolic links named on the command line: `ls.c` sets `FTS_COMFOLLOW` exactly when none of `-l`,
+# `-d`, `-F` or `-i` is given, so `-t` alone sorts by the LINK TARGET's mtime. GNU `ls` uses the
+# link's own. The launcher's gates stage every build as a symlink to ONE tracked double (item 467 —
+# a file the suite wrote is a file `execve` can refuse with ETXTBSY), so under the BSD reading every
+# candidate resolves to one file and they all TIE — and BSD then breaks the tie with `strcoll` over
+# the FULL PATH, under which `home/.local/…` sorts before `target/…`.
+#
+# Measured on the macOS runner of 2026-09-10 (`sprag-gate --lib`, run 34465283158): the promoted
+# copy was asked FIRST in both of the two cases that name it, and the third — `skew`, which stages
+# only this tree's builds — was GREEN because `debug` happens to sort before `release` and the
+# fixture happens to stage `debug` second. That last one is the alphabet agreeing with the clock,
+# not a gate holding.
+#
+# ⚠⚠ IT EMULATES THE RULE, NOT THE OUTCOME. A double that always passed `-L` would defeat the
+# repair it exists to measure: `-d` is what suppresses `FTS_COMFOLLOW` over there, so a double
+# blind to `-d` would report the fixed script as broken. The flag test below is BSD's own.
+#
+# ⚠ It delegates to `/bin/ls` by absolute path rather than by `PATH`, which is where this file
+# itself sits while a gate is running it.
+set -u
+
+deref=1
+for arg in "$@"; do
+    case "$arg" in
+        --) break ;;
+        -*)
+            case "$arg" in
+                *l* | *d* | *F* | *i*) deref=0 ;;
+            esac
+            ;;
+    esac
+done
+
+if [ "$deref" = 1 ]; then
+    exec /bin/ls -L "$@"
+fi
+exec /bin/ls "$@"

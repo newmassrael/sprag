@@ -356,15 +356,26 @@ asked 3 socket(s) matching sprag*.sock under /run/user/1000
     #[test]
     fn a_build_whose_wire_no_daemon_speaks_is_passed_over_for_one_that_serves() {
         let fixture = Fixture::new("skew");
-        // ⚠ NEWEST FIRST is by mtime, and the launcher's pick is `ls -t`. `newer` is staged second
+        // ⚠ NEWEST FIRST is by mtime, and the launcher's pick is `ls -td`. `newer` is staged second
         // so it really is the newer file — the property being claimed is *the newest that fits*, so
         // the fixture must MAKE "newest" true rather than assume it.
         //
-        // ⚠⚠ THE PAUSE IS MEASURED, NOT SUPERSTITION. `ls -t` reads the SYMLINK's own mtime
+        // ⚠⚠ THE PAUSE IS MEASURED, NOT SUPERSTITION. `ls -td` reads the SYMLINK's own mtime
         // (measured 2026-09-02: staging order decides, in both orders), and the kernel stamps it
         // from a coarse clock — two links made back to back tied 5 times out of 5 and `ls` then
         // ordered them by name, which would have made this case pass or fail on the alphabet.
         // 50 ms separated them 5 times out of 5.
+        //
+        // ⛔⛔⛔⛔⛔ AND THAT 2026-09-02 SENTENCE WAS TRUE ONLY OF GNU — register item 970. BSD `ls`
+        // follows a symlink named on its command line unless `-l`/`-P`/`-d`/`-F`/`-i` is given, so
+        // WITHOUT the `-d` the script now passes, every build staged here resolves to the ONE
+        // tracked double, they tie, and the order is `strcoll` over the full path. This case was
+        // GREEN on macOS anyway — `debug` sorts before `release` and the fixture stages `debug`
+        // second, so the alphabet agreed with the clock — while two of its neighbours were red.
+        // A gate green because of the alphabet is a gate that will red the day somebody renames a
+        // profile. `the_build_order_is_the_same_where_ls_follows_a_link_on_its_command_line` is
+        // where that reading is held, and it stages the pair the other way round for exactly this
+        // reason.
         let older = fixture.build(
             "release",
             &[
@@ -475,16 +486,198 @@ asked 3 socket(s) matching sprag*.sock under /run/user/1000
         );
     }
 
-    /// ⚠⚠⚠⚠ **AND THE PROMOTED COPY IS A FALLBACK, NEVER A PREFERENCE** — the control on the case
-    /// above, which a widening that merely appended a path could pass while being wrong.
+    /// ⛔⛔⛔⛔⛔ **A PROMOTED COPY IS STILL A FALLBACK WHEN IT IS THE NEWER FILE** — register item
+    /// 970, and the arm `a_build_of_this_tree_that_fits_is_preferred_to_the_promoted_copy` could
+    /// not reach.
+    ///
+    /// # 📊 What was measured, on this machine, with one flat `ls -t`
+    ///
+    /// ```text
+    /// target/debug/sprag-gui                    2026-09-10 20:24
+    /// ~/.local/share/sprag-loop/bin/sprag-gui   2026-09-09 13:15   ← the promoted copy, in the MIDDLE
+    /// target/release/sprag-gui                  2026-09-08 21:37
+    /// ```
+    ///
+    /// The script's own comment claimed *"a promoted copy is older than the build that superseded
+    /// it, so `ls -t` asks `target/` FIRST"*. **That was an accident dressed as a mechanism**, and
+    /// on this machine it was already false: `target/release` is a build of this tree and it was
+    /// asked AFTER the promoted copy. In the window between a promotion and the next build the
+    /// promoted copy is newer than EVERY profile, so it is asked first — the fallback becomes the
+    /// preference, silently, and the dock opens a build this tree has moved past while a build of
+    /// this tree fits. That is item 963's own defect, produced by item 963's own fix.
+    ///
+    /// ⚠⚠ **THE OLDER CONTROL CANNOT SEE IT.** It stages the promoted copy first and the tree's
+    /// build second, so the tree's build is the newer file and wins for the wrong reason: an mtime
+    /// accident, not the requirement. This case makes the promoted copy the NEWER one — which is
+    /// what a promotion actually leaves behind — and asks the same question.
+    #[test]
+    fn a_promoted_copy_newer_than_this_trees_build_is_still_only_a_fallback() {
+        let fixture = Fixture::new("newer-promotion");
+        // ⚠ THE TREE'S BUILD FIRST, so the promoted copy is the NEWER file — the order a promotion
+        // really leaves. The 50 ms is the same measured pause the skew case explains.
+        let mine = fixture.build(
+            "debug",
+            &[
+                ("survey", LIVE),
+                ("serving", "/run/user/1000/sprag-loop.sock\n"),
+            ],
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let promoted = fixture.promote(&[
+            ("survey", LIVE),
+            ("serving", "/run/user/1000/sprag-loop.sock\n"),
+        ]);
+
+        let run = fixture.launch(&[]);
+
+        assert!(run.ok, "both builds fit, so a window must open");
+        assert!(
+            run.asked.starts_with(&format!("{}", mine.display())),
+            "⛔⛔⛔ REGISTER ITEM 970: THIS TREE IS ASKED FIRST WHATEVER THE CLOCK SAYS. The \
+             promoted copy is the newer file here — which is what every promotion leaves until the \
+             next build — and a launcher ordering one flat list by mtime asks it first. *This tree \
+             first* is a requirement and cannot be left to a timestamp. Asked: {:?}",
+            run.asked,
+        );
+        assert!(
+            run.gui
+                .contains(&format!("ran {}", mine.join("sprag-gui").display())),
+            "⛔⛔ and this tree's build is the one that RUNS — a dock frozen at the last promotion \
+             is a repository whose fixes never reach the person clicking it: {:?}",
+            run.gui,
+        );
+        assert!(
+            !run.gui
+                .contains(&format!("ran {}", promoted.join("sprag-gui").display())),
+            "⛔⛔⛔ AND THE PROMOTED COPY MUST NOT HAVE RUN. It fits, and it is the newer file, so \
+             an order that reads the clock alone hands the dock a build this tree has moved past \
+             on every press between a promotion and the next build: {:?}",
+            run.gui,
+        );
+        assert!(
+            run.shown.is_empty(),
+            "⚠⚠ AND NOTHING IS SHOWN: the window is this tree's build, so the note item 963 adds \
+             for the fallback must not fire. Shown: {:?}",
+            run.shown,
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE ORDER IS THE SAME WHERE `ls` READS A LINK THE OTHER WAY** — register
+    /// item 970, and the macOS runner reproduced on this machine.
+    ///
+    /// # 📊 The divergence, measured on both readings
+    ///
+    /// Read out of the implementation macOS actually ships — `apple-oss-distributions/file_cmds`,
+    /// not remembered:
+    ///
+    /// ```text
+    /// ls.c   if (!f_nofollow && !f_longform && !f_listdir && (!f_type || f_slash) && !f_inode …)
+    ///                fts_options |= FTS_COMFOLLOW;        /* `case 'd': f_listdir = 1;` */
+    /// cmp.c  modcmp(): … tv_sec, then tv_nsec, then `strcoll(a->fts_name, b->fts_name)`
+    /// ```
+    ///
+    /// So `-t` alone sorts by the link TARGET's mtime while GNU `ls` uses the link's own, and a tie
+    /// is broken by NAME — which for a root-level operand is the whole path as given. Every build
+    /// these gates stage is a symlink to ONE tracked double (item 467), so under that reading they
+    /// all resolve to one file and every candidate ties.
+    ///
+    /// Reproduced here, same three links, same instant:
+    ///
+    /// ```text
+    /// ls -tL  →  home/.local/…/sprag-gui   target/debug/sprag-gui   target/release/sprag-gui
+    /// ls -t   →  target/release/sprag-gui  target/debug/sprag-gui   home/.local/…/sprag-gui
+    /// ```
+    ///
+    /// That is byte for byte what the macOS runner did on 2026-09-10 (run 34465283158), and it is
+    /// why the two cases naming the promoted copy were red there and here green.
+    ///
+    /// # ⚠⚠⚠ Why this case stages `release` as the NEWEST
+    ///
+    /// Under the tie the order is the ALPHABET, and `debug` < `release`. Every other case in this
+    /// file stages `debug` last, so the alphabet agrees with the clock and a tie is invisible —
+    /// which is exactly why `a_build_whose_wire_no_daemon_speaks_is_passed_over_for_one_that_serves`
+    /// was GREEN on macOS while two of its neighbours were red. Reversing the pair is what makes
+    /// the two readings disagree, and it is the only arrangement in which this gate says anything.
+    #[test]
+    fn the_build_order_is_the_same_where_ls_follows_a_link_on_its_command_line() {
+        let fixture = Fixture::new("bsd-ls");
+        let promoted = fixture.promote(&[
+            ("survey", LIVE),
+            ("serving", "/run/user/1000/sprag-loop.sock\n"),
+        ]);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let older = fixture.build(
+            "debug",
+            &[
+                ("survey", LIVE),
+                ("serving", "/run/user/1000/sprag-loop.sock\n"),
+            ],
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let newest = fixture.build(
+            "release",
+            &[
+                ("survey", LIVE),
+                ("serving", "/run/user/1000/sprag-loop.sock\n"),
+            ],
+        );
+
+        // ⚠⚠ THE DOUBLE EMULATES BSD'S RULE, NOT ITS OUTCOME — see the file itself. One that always
+        // dereferenced would defeat the repair it exists to measure, because `-d` is what suppresses
+        // `FTS_COMFOLLOW` over there.
+        let doubles = Doubles::of(env!("CARGO_MANIFEST_DIR")).set("gui-launch");
+        let path = doubles.ahead_of_inherited();
+        let run = fixture.launch(&[("PATH", &path.to_string_lossy())]);
+
+        assert!(run.ok, "every build here fits, so a window must open");
+        assert!(
+            run.asked.starts_with(&format!("{}", newest.display())),
+            "⛔⛔⛔ REGISTER ITEM 970: on a machine whose `ls` follows a link named on its command \
+             line, every staged build resolves to ONE file, they tie, and the order becomes the \
+             ALPHABET over full paths — under which `home/.local/…` beats `target/…` and `debug` \
+             beats `release`. The launcher must not inherit that: its candidate order is a \
+             requirement, not whichever `ls` the machine ships. Asked: {:?}",
+            run.asked,
+        );
+        assert!(
+            run.gui
+                .contains(&format!("ran {}", newest.join("sprag-gui").display())),
+            "⛔⛔ and the newest build of THIS TREE is the one that ran: {:?}",
+            run.gui,
+        );
+        assert!(
+            !run.asked.starts_with(&format!("{}", promoted.display())),
+            "⛔⛔⛔⛔⛔ AND THE PROMOTED COPY IS NOT ASKED FIRST — this is the macOS red itself: \
+             `home/.local/…` sorts ahead of `target/…`, so a tie handed the dock a build this tree \
+             had moved past on every press. Asked: {:?}",
+            run.asked,
+        );
+        assert!(
+            !run.gui
+                .contains(&format!("ran {}", older.join("sprag-gui").display())),
+            "⚠⚠ and not the older profile either: the alphabet puts `debug` first and the clock \
+             does not, which is the whole reason this case stages them this way round",
+        );
+    }
+
+    /// ⚠⚠⚠⚠ **AND THE PROMOTED COPY IS A FALLBACK, NEVER A PREFERENCE** — the control on
+    /// `a_daemon_this_tree_has_moved_past_is_opened_by_the_build_that_was_promoted_to_it`, which a
+    /// widening that merely appended a path could pass while being wrong.
     ///
     /// Both fit here. The tree's build is newer, so it must be the one that runs — otherwise a
     /// promotion would freeze the dock at whatever was promoted, and every fix this repository
     /// makes would stop reaching the person who clicks. That is the launcher's ORIGINAL purpose,
     /// which item 963's widening must not have spent.
     ///
+    /// ⚠⚠⚠ **AND IT WINS HERE FOR AN ACCIDENTAL REASON, WHICH IS WHY IT IS NOT THE WHOLE CLAIM** —
+    /// register item 970. The tree's build is staged second, so it is the newer FILE, and a
+    /// launcher ordering one flat list by mtime passes this while getting the requirement wrong.
+    /// `a_promoted_copy_newer_than_this_trees_build_is_still_only_a_fallback` is the arm that makes
+    /// the promoted copy the newer one — which is what a promotion actually leaves behind.
+    ///
     /// ⚠ And nothing may be SHOWN. A note on an ordinary click is noise that teaches its reader to
-    /// dismiss the one that matters, which is the note the case above requires.
+    /// dismiss the one that matters, which is the note
+    /// `a_daemon_this_tree_has_moved_past_is_opened_by_the_build_that_was_promoted_to_it` requires.
     ///
     /// ⚠⚠ **THIS CASE WAS GREEN BEFORE THE FIX AND THAT IS NOT A FAULT — it is what a control is.**
     /// Measured: with the population still `$REPO/target/*`, the promoted copy was not a candidate
