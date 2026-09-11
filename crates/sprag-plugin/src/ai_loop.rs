@@ -269,6 +269,39 @@ struct Learned<'a> {
     moved: Option<&'a crate::outer::Moved>,
 }
 
+/// The closing note, carrying what this run's own document SWALLOWED when it swallowed anything.
+///
+/// # ⛔⛔⛔⛔⛔ Why this is a function and not three lines inside [`AiLoop::ended`] — item 509
+///
+/// It was three lines there, and the register's sentence for that is *"the residue channel has no
+/// gate that can reach it in the shipped document"*. The channel was **measured firing once, under
+/// a mutation**: with the document's region edge deleted a run came back CONVERGED with three
+/// errors swallowed, and this note is what said so. With the edge in place every state that runs
+/// content is inside the region, so no run of today's document reaches it.
+///
+/// ⚠⚠ **A channel exercised only by a mutation somebody remembers to run is indistinguishable from
+/// one that has rotted** — register item 453 names that, and item 799 names what it costs: a net
+/// that fires at nothing reads exactly like a clean tree. The repair is not to make the shipped
+/// document fail; it is to stop the decision being unreachable. As a pure function a gate feeds it
+/// BOTH ways — nothing swallowed, and each fault that can be — which is the idiom item 508 used on
+/// a verdict that only ran on one platform.
+///
+/// ⚠ The sentence is [`Faulted`](crate::document::Faulted)'s own: which fault it was is the whole
+/// diagnosis, and a note that said *something was swallowed* would send a reader looking for the
+/// wrong repair.
+pub(crate) fn noting_what_was_swallowed(
+    mut note: String,
+    swallowed: Option<&crate::document::Faulted>,
+) -> String {
+    if let Some(swallowed) = swallowed {
+        note.push_str(&format!(
+            " — ⚠ SWALLOWED BY THIS RUN'S OWN DOCUMENT: {swallowed}, and no state of it was left \
+             to answer that"
+        ));
+    }
+    note
+}
+
 impl AiLoop {
     /// Start a loop over `pane`, evaluated by `script`, for what `brief` says it is for, driven on
     /// the contracts `spec` declares.
@@ -1162,12 +1195,12 @@ impl AiLoop {
         // … (3 in total)"*. ⚠ With the edge in place nothing in today's document can reach it: every
         // state that runs content is inside the region, so this is the NET under that edge rather
         // than a live path, and the day a document stops covering itself it is what speaks.
-        if let Some(swallowed) = self.inner.swallowed() {
-            note.push_str(&format!(
-                " — ⚠ SWALLOWED BY THIS RUN'S OWN DOCUMENT: {swallowed}, and no state of it was \
-                 left to answer that"
-            ));
-        }
+        //
+        // ⛔⛔⛔⛔⛔ **AND THE DECISION IS NOT MADE HERE ANY MORE — register item 509.** It was three
+        // lines inside this method, so the one channel that carries this fact to a person could be
+        // reached by nothing but a mutation somebody remembers to run. [`noting_what_was_swallowed`]
+        // is the same decision as a pure function, which a gate can feed both ways.
+        let note = noting_what_was_swallowed(note, self.inner.swallowed().as_ref());
         Ok(Step::new(Cost::Bytes(spent), verdict).noting(note))
     }
 
@@ -2187,7 +2220,7 @@ mod tests {
     // population from that rather than from a list written here (register item 749).
     use sce_rust_runtime::{Engine, IScriptEngine, ScriptValue, StatePolicy};
 
-    use super::{AiLoop, Learned, NotStarted};
+    use super::{AiLoop, Learned, NotStarted, noting_what_was_swallowed};
     use crate::access::PaneAccess;
     use crate::driver::{Ceiling, Driver, Guardrails, OutcomeState, ProgressCell, Stopped};
     // ⚠ `OuterLoop` and `Pumped` are gone from here, and their going is a fact: the gate that used
@@ -2201,6 +2234,150 @@ mod tests {
     use crate::run::RunContext;
     use crate::sm::ai_loop::{AiLoopEvent, AiLoopPolicy, AiLoopState};
     use crate::testing::{screen_showing, standin_agent, standin_agent_that_leaves, supervised};
+
+    /// ⛔⛔⛔⛔⛔ **THE RESIDUE CHANNEL, REACHED WITHOUT A MUTATION** — register item 509.
+    ///
+    /// The register's sentence: *"the residue channel has no gate that can reach it in the shipped
+    /// document"*. It was measured firing ONCE, with the document's region edge deleted, and with
+    /// the edge in place no run of today's document can reach it. ⚠⚠ That is not a reason to relax:
+    /// item 799 is the same shape one level up — **a net that fires at nothing reads exactly like a
+    /// clean tree** — and item 453's rule is that a channel nobody exercises is a channel nobody
+    /// knows has rotted.
+    ///
+    /// # ⚠⚠ What this had to stop being, before it could be asked
+    ///
+    /// The register's own prescription was *"a gate drives a document whose content raises where no
+    /// state can answer"*. **Measured 2026-09-12 and it cannot be done**: the note is built in
+    /// [`super::AiLoop::ended`], whose machine is `AiLoopPolicy` — the document is compiled in, and
+    /// nothing injects another. So the decision moved OUT of that method instead, and this feeds it
+    /// directly. The idiom is item 508's: a verdict that only ran under one regime became a pure
+    /// function fed both.
+    ///
+    /// # ⛔⛔⛔ `quiet` NAMES EVERY FIELD WITH NO `..`, so a fourth fault stops the build
+    ///
+    /// A hand-written list of faults leaks the moment `Faulted` grows one — the failure register
+    /// item 749 measured on a sixteenth state nobody listed. The guard is one literal: `quiet`
+    /// spells every field, so a field added to `Faulted` is a *missing field* error HERE until
+    /// somebody says what the note should read for it. The three shapes below are then `..quiet`,
+    /// which is what makes each row differ in exactly the counter it is about.
+    ///
+    /// ⚠ Register item 1057 is where this idiom was measured: a type can hold a population a number
+    /// cannot, and the mutation that proves it is *add an arm and watch the build stop*.
+    #[test]
+    fn the_swallowed_channel_is_reachable_without_a_mutation_and_says_which_fault() {
+        let quiet = crate::document::Faulted {
+            unanswered: 0,
+            error: None,
+            cascaded: 0,
+            truncated: 0,
+            truncated_at: None,
+        };
+        assert_eq!(
+            noting_what_was_swallowed("closed".to_owned(), None),
+            "closed",
+            "⚠ THE CONTROL: a run whose document swallowed nothing says nothing extra, or the note \
+             would carry a warning on every run and mean nothing on any",
+        );
+
+        // ⚠ One shape per COUNTER `document::faults` reads, each built from `quiet` so the field it
+        // moves is the only difference — a row that changed two would not say which one spoke.
+        let shapes: [(&str, crate::document::Faulted, &str); 3] = [
+            (
+                "an error nothing answered",
+                crate::document::Faulted {
+                    unanswered: 3,
+                    error: Some("error.execution"),
+                    ..quiet
+                },
+                "answers no error at all",
+            ),
+            (
+                "its own error handling failing the same way",
+                crate::document::Faulted {
+                    cascaded: 2,
+                    ..quiet
+                },
+                "its own error handling failed",
+            ),
+            (
+                "a chain the engine had to cut",
+                crate::document::Faulted {
+                    truncated: 1,
+                    truncated_at: Some("working"),
+                    ..quiet
+                },
+                "never settles",
+            ),
+        ];
+
+        let mut said: Vec<String> = Vec::new();
+        for (what, faulted, needle) in &shapes {
+            let note = noting_what_was_swallowed("closed".to_owned(), Some(faulted));
+            assert!(
+                note.starts_with("closed") && note.len() > "closed".len(),
+                "⛔ ITEM 509: {what} reached the run's closing note as nothing at all, so the only \
+                 channel that carries it to a person is silent: {note:?}",
+            );
+            assert!(
+                note.contains("SWALLOWED BY THIS RUN'S OWN DOCUMENT"),
+                "⛔ ITEM 509: {what} — the note has to SAY that the document swallowed it, or a \
+                 reader has a fault with no owner: {note:?}",
+            );
+            assert!(
+                note.contains(needle),
+                "⛔ ITEM 509: {what} — the note must carry WHICH fault it was ({needle:?}), because \
+                 the three have three different repairs and a count cannot choose between \
+                 them: {note:?}",
+            );
+            said.push(note);
+        }
+
+        // ⛔⛔ AND THE THREE MUST NOT BE THE SAME SENTENCE, which every clause above would pass if
+        // the note ever collapsed to *something was swallowed* — item 799's own failure, where a
+        // reading that cannot tell two states apart reads as the harmless one.
+        said.sort();
+        said.dedup();
+        assert_eq!(
+            said.len(),
+            shapes.len(),
+            "⛔ ITEM 509: {} of the {} faults share a sentence, so the note cannot say which repair \
+             the reader owes",
+            shapes.len() - said.len(),
+            shapes.len(),
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE ENDING STILL PUTS ITS NOTE THROUGH THAT FUNCTION** — register item 509,
+    /// and the half the case above cannot reach.
+    ///
+    /// Moving the decision into [`super::noting_what_was_swallowed`] made it feedable. It also made
+    /// it **droppable**: delete the call in [`super::AiLoop::ended`] and every clause above still
+    /// passes while the channel carries nothing, which is item 799's failure rebuilt by the very
+    /// repair meant to close it. A pure function nobody calls is exactly a net that fires at
+    /// nothing.
+    ///
+    /// ⚠ Asked of the TEXT because nothing else can ask it: `AiLoop`'s machine is `AiLoopPolicy`
+    /// with the document compiled in, so no test can make `swallowed()` answer `Some` — which is
+    /// the same measurement that refuted this item's own prescription (*"a gate drives a document
+    /// whose content raises where no state can answer"*). A spelling gate is the honest limit here,
+    /// and it is the one this workspace already uses where a seam cannot be driven.
+    ///
+    /// ⚠⚠ The needle is ASSEMBLED, or this file would answer it with itself.
+    #[test]
+    fn the_ending_puts_its_note_through_the_function_a_gate_can_reach() {
+        let source = include_str!("ai_loop.rs");
+        let call = format!(
+            "{}{}",
+            "noting_what_was_", "swallowed(note, self.inner.swallowed().as_ref())",
+        );
+        assert_eq!(
+            source.matches(call.as_str()).count(),
+            1,
+            "⛔ ITEM 509: the ending no longer hands its note to the one function a gate can feed, \
+             so the residue channel is back to being reachable only by a mutation somebody \
+             remembers to run. Looked for: {call:?}",
+        );
+    }
 
     /// The document's own composed prompt, as a person reading the file expects it.
     const COMPOSED_START_PROMPT: &str = "North star: ";
