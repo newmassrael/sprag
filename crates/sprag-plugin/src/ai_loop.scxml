@@ -3832,10 +3832,86 @@
         comment: a claim about which prompts may name the milestone is prose
         until something re-reads it.
       -->
+      <!--
+        ⛔⛔⛔⛔⛔ THIS LINE SAYS NOTHING ABOUT HOW BIG A STEP SHOULD BE, and that
+        is a REMOVAL rather than an omission — owner's ruling, 2026-09-11.
+
+        It used to read *"Do the next SMALLEST thing that is verifiable"*, and
+        that word arrived with this document's first commit (`95207ad9`,
+        2026-08-13) carrying NO recorded reason — nothing in this file, nothing
+        in the commit. A clause with no argument behind it is the shape register
+        item 936 already named: the predicate with the largest consequence in the
+        loop becomes the sentence nobody measures.
+
+        ⚠⚠ AND IT CONTRADICTED THE RULES SENT ALONGSIDE IT. A kind's
+        `working_rules` reach every session through `start_prompt`, and this
+        repository's second rule is *"비용 무시 — 언제나 가장 장기적으로 올바른
+        선택. 가장 간단한 방법으로 때우지 말 것"*. An agent reading both on the
+        same turn was being told to ignore cost and to minimise at once. Measured
+        2026-09-11: a loop agent read `smallest` as *do not start a big build*
+        and deferred a design judgement on the strength of it — the reading this
+        word makes available, on the turn the work is chosen.
+
+        ⭐ WHAT REPLACES IT IS STRUCTURE PLUS THE ONE RULING THAT BELONGS HERE.
+        A turn must leave something `Judging` can read, which is why `that is
+        verifiable` and `then report` stay. And the sentence after them is the
+        owner's, placed in the TEMPLATE on purpose (ruling of 2026-09-11, given
+        against this file having sent it to a kind's `working_rules` instead):
+        **how many rounds a piece of work may take is a fact about THIS MACHINE,
+        not a taste one repository has.** A loop that reflects, re-aims and
+        replaces its session exists precisely so a correct answer can span
+        rounds; a consumer copying this template inherits that machine, so it
+        inherits the sentence that says what the machine is for.
+
+        ⚠ The line it makes false is the one an agent reaches for when a right
+        answer looks too big: *finish inside this round*. Nothing here asks for
+        that — `max_turns` is the kind's to bound, `reaim_max` bounds only how
+        far a run may WANDER, and neither is a reason to choose a smaller fix.
+
+        ⚠⚠ WHAT STAYS THE KIND'S, so this does not become the thing
+        `a_template_names_nothing_of_this_repository_and_decides_nothing_for_the_next_one`
+        measures: what counts as correct IN a repository, and the standing rules
+        that spell it, are `working_rules` — this file says only that taking
+        several rounds is allowed, never what the right answer is.
+
+        ⭐⭐ AND THE LINE BEFORE IT IS WHAT ACTUALLY FILLS THE SLOT `smallest` HELD.
+        Deleting a selection rule leaves the agent still having to select, with
+        nothing to select BY, so the owner's ruling of 2026-09-11 replaces the
+        answer rather than removing the question: **pick the candidate nearest
+        the BASE** — the structure that is most fundamentally wrong, the place
+        where no structure exists at all, or whatever GENERATES the defect. The
+        three are one rule read at three depths, and the third is the one that
+        can be refuted: fix the generator and the family above it closes, so a
+        second instance of the same face is evidence the wrong site was chosen.
+
+        ⚠ The two clauses are a PAIR and the order is load-bearing. A base fix is
+        usually the bigger one, so the rule that permits several rounds is what
+        removes the excuse for refusing it; shipping either alone leaks.
+
+        ⛔⛔ THE UPSTREAM CLAUSE NAMES A DOOR THAT ALREADY EXISTS — measured
+        2026-09-11 rather than built. There is NO marker an agent can say to halt
+        a run for a person: the four are `done_marker`, `north_star_marker`,
+        `milestone_marker` and `reference_marker`, and `blocked` is reached only
+        through a dialog `screening` finds. So the clause routes through that
+        door instead of inventing one: a question no `screen_rules` entry claims
+        takes `screen.none` to `awaiting_human`, and the run stops driving.
+        ⚠ AND `register what you found` COMES FIRST FOR A REASON, also measured:
+        an ending of `blocked` reads IDENTICALLY to a permission dialog, so the
+        run's own row cannot say *upstream* — and the pane cannot be read for it
+        either (run 306: 12 of 64 prompts folded away by the peer's composer).
+        Whatever record a kind keeps is where the reason survives, the dialog is
+        what stops the loop, and neither half does the other's job.
+        ⛔ WHAT IS STILL UNMEASURED, said rather than implied: nothing goes red
+        when an agent meets an upstream base and patches it here anyway. That gap
+        is registered rather than papered over — see this repository's register.
+      -->
       <assign location="turn_prompt"
               expr="'Continue toward the milestone this session was given.' + '\n' +
                     standing +
-                    'Do the next smallest thing that is verifiable, then report.' + '\n' +
+                    'Do the next thing that is verifiable, then report.' + '\n' +
+                    'Fix at the BASE: the structure that is most fundamentally wrong, the place where no structure exists at all, or whatever GENERATES the defect — never the instance it surfaced in.' + '\n' +
+                    'Take the most correct approach even when it needs several rounds — never trade the right design for finishing in one.' + '\n' +
+                    'If the base is UPSTREAM of this repository, do not patch it here: register what you found, then ask a question and stop.' + '\n' +
                     done_instruction"/>
       <!--
         ⛔⛔⛔⛔⛔ **AND THE ONE FOR A SESSION THAT IS ALREADY HERE** — register item 800's
