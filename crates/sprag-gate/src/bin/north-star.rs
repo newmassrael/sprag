@@ -370,6 +370,12 @@ fn main() -> std::process::ExitCode {
     // over: a run that examined nothing and a run that examined everything and found it finished
     // must not read alike.
     println!("{}", reading.ending());
+    // 🎯🎯🎯🎯🎯 AND WHETHER EITHER OF ITS TWO TERMS CAN REACH ZERO — register item 1050, printed
+    // directly under the line whose numbers it is about. A round that reads only `open 105,
+    // unclassified 327` takes them for two halves of one queue; measured 2026-09-12, a round may
+    // take NONE of the 327 while anything is takeable, and working rule 5's question was asked of
+    // neither number by anything but a person who remembered.
+    println!("{}", reading.paths(cap.depth()));
 
     // ⛔⛔⛔⛔⛔ THE VERDICT, AND IT READS THE SCREENINGS AS ONE VALUE — register item 940.
     //

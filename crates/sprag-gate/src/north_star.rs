@@ -1666,6 +1666,17 @@ pub enum Fault {
         /// What the ledger declared.
         declared: usize,
     },
+    /// 🎯🎯🎯🎯🎯 **EVERY REPAYMENT ON RECORD OPENED A CHILD, SO THIS POPULATION HAS NEVER SHRUNK**
+    /// — register item 1050, and working rule 5 refusing a loop whose ending cannot be reached.
+    ///
+    /// ⛔⛔ **The repair is NEVER to open fewer children** — item 1050's own words. A child that was
+    /// found is a finding, and hiding it moves the defect rather than paying it. What this says is
+    /// that the ROUNDS have not once closed a debt without opening one, which is a fact about how
+    /// the work is being taken and not about how it is being written down.
+    PopulationCannotShrink {
+        /// How many repayments the ledger records, every one of which opened a child.
+        payments: usize,
+    },
     /// ⛔⛔⛔⛔⛔ **THE LEDGER STATES WITNESSES AND NOT ONE OF THEM IS ON AN OPEN ITEM**, so
     /// [`Reading::witnessed`] put no question and exited green — register items 488 and 924, and
     /// the hole [`WITNESS_DECLARATION`]'s floor cannot cover by construction.
@@ -2145,6 +2156,13 @@ impl fmt::Display for Fault {
                  it because a paid block keeps its lines. A smaller count means witnesses were \
                  DELETED. Stated by: {}",
                 name_some(counted, Ends::Highest),
+            ),
+            Self::PopulationCannotShrink { payments } => write!(
+                f,
+                "all {payments} repayment(s) this ledger records opened a child, so paying has \
+                 never once shrunk the population and working rule 5's path to zero does not \
+                 exist. ⛔ The repair is NOT to open fewer children — a finding hidden is a debt \
+                 moved. It is for a round to close something without opening anything",
             ),
             Self::WitnessesUnasked { stated } => write!(
                 f,
@@ -3186,12 +3204,92 @@ impl Reading {
             // `commits`' reason rather than reached for: the ledger is not in the repository it
             // talks about, and this crate opens neither.
             witnesses: self.witnessed(tree)?,
+            // ⚠ Register item 1050. Takes the cap for `takeable`'s reason and no other: what holds
+            // the unclassified back is the same emptiness `admits` keys on.
+            paths: self.paths_judged(cap),
             // ⚠⚠ `reds` IS TAKEN HERE ONLY FOR THIS ONE — register item 1052. The work order's
             // population is what the ledger ADMITS, and a standing red is one of the two declared
             // overrides that decides it; screening the order against a set derived without them
             // would compare two different questions and call the difference a fault.
             work_order: self.order_covers(cap, reds),
         })
+    }
+
+    /// 🎯🎯🎯🎯🎯 **WHETHER EITHER TERM OF THE ENDING CAN REACH ZERO** — register item 1050. See
+    /// [`Paths`] for what each term's path is and how the second one was measured to be held.
+    ///
+    /// ⚠⚠ **`shrinking` IS DERIVED FROM THE MARKS AND NOT FROM A DIARY.** A repayment that opened
+    /// nothing is a [`Tag::Paid`] item no [`PARENT`] line names, which is a fact the ledger already
+    /// carries — item 1050 had to `grep` for it by hand, and that is the whole of what this
+    /// replaces.
+    #[must_use]
+    pub fn paths(&self, cap: u32) -> Paths {
+        let parents: std::collections::BTreeSet<u32> = self
+            .items
+            .iter()
+            .filter_map(|item| match item.parent {
+                Some(Parent::Item(named)) => Some(named),
+                _ => None,
+            })
+            .collect();
+        let paid: Vec<u32> = self
+            .items
+            .iter()
+            .filter(|item| item.tag == Some(Tag::Paid))
+            .map(|item| item.number)
+            .collect();
+        let takeable = self.takeable(cap);
+        Paths {
+            open: self.population().len(),
+            unclassified: self.backlogs().unclassified.items.len(),
+            payments: paid.len(),
+            shrinking: paid
+                .iter()
+                .filter(|number| !parents.contains(number))
+                .count(),
+            // ⚠ ASKED OF `takeable` AND NOT RE-DERIVED — register item 213. `admits`'s third tier
+            // fires on exactly this emptiness, so a second spelling of *what holds them* would be a
+            // second authority on the one question, and the one that PRINTS would not be the one
+            // that refuses.
+            held_by: (!takeable.is_empty()).then_some(takeable.len()),
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE ONE TERM THAT CAN BE REFUTED FROM THE RECORD** — register item 1050, as
+    /// a gate rather than a line.
+    ///
+    /// # ⚠⚠ Why `unclassified` is judged and cannot fault, while `open` can
+    ///
+    /// `unclassified`'s path is [`CLASSIFY_REMEDY`] and it always exists — what varies is whether
+    /// it is reachable THIS round, which is a sequencing fact and not a defect. `open`'s path is a
+    /// claim about the ledger's own history and it can be FALSE: a register where every repayment
+    /// ever made opened a child has proved its own ending unreachable, and that is a red.
+    ///
+    /// ⚠⚠⚠ **A LEDGER WITH NO REPAYMENT ON RECORD JUDGES ONE TERM, NOT TWO — AND SAYS SO.** That is
+    /// not an escape hatch: it is register item 924's rule at the one gate whose subject can be
+    /// genuinely absent, and the count in the report is what separates *never asked* from *asked
+    /// and clean*.
+    #[must_use]
+    pub fn paths_judged(&self, cap: u32) -> Screening {
+        let paths = self.paths(cap);
+        let mut faults = Vec::new();
+        // ⚠ The unclassified term is always judged: its path exists by construction, and saying so
+        // every run is what tells a reader the two numbers are not the same kind of thing.
+        let mut judged = 1;
+        if let Some(shrinks) = paths.population_shrinks() {
+            judged += 1;
+            if !shrinks {
+                faults.push(Fault::PopulationCannotShrink {
+                    payments: paths.payments,
+                });
+            }
+        }
+        Screening {
+            label: "paths to zero",
+            found: "unreachable",
+            judged,
+            faults,
+        }
     }
 
     /// 🎯🎯🎯🎯🎯 **WHETHER THE NORTH STAR IS REACHED, AS A READING RATHER THAN A JUDGEMENT** —
@@ -4315,6 +4413,8 @@ pub struct Screenings {
     pub work_order: Screening,
     /// The open population's stated measurements, put back to the tree — register item 488.
     pub witnesses: Screening,
+    /// Whether either term of the ending can reach zero — register item 1050.
+    pub paths: Screening,
 }
 
 impl Screenings {
@@ -4323,7 +4423,7 @@ impl Screenings {
     /// `Self` makes a fourth screening a compile error in **this one place**, and everything that
     /// prints or judges a screening walks it through here.
     #[must_use]
-    pub fn each(&self) -> [&Screening; 6] {
+    pub fn each(&self) -> [&Screening; 7] {
         let Self {
             deferrals,
             paid_commits,
@@ -4331,6 +4431,7 @@ impl Screenings {
             backlog_owners,
             work_order,
             witnesses,
+            paths,
         } = self;
         [
             deferrals,
@@ -4339,6 +4440,7 @@ impl Screenings {
             backlog_owners,
             work_order,
             witnesses,
+            paths,
         ]
     }
 
@@ -4409,6 +4511,105 @@ impl Ending {
     #[must_use]
     pub fn reached(&self) -> bool {
         self.open.is_empty() && self.unclassified.is_empty()
+    }
+}
+
+/// 🎯🎯🎯🎯🎯 **WHETHER EITHER TERM OF THE ENDING CAN REACH ZERO, DERIVED** — register item 1050,
+/// and this workspace's working rule 5 made into something the instrument says instead of something
+/// a round is supposed to ask itself.
+///
+/// # ⛔⛔⛔⛔⛔ The ending prints two numbers as if they were the same kind of thing
+///
+/// [`Ending`] reads `north star: NOT REACHED — open 105, unclassified 327`, and a reader takes that
+/// for two halves of one queue. **Measured 2026-09-12: a round may take NONE of the 327.** Three
+/// probes — items 2, 3 and 139 — each came back *"is not in this register's open population"*,
+/// because [`Reading::admits`]'s third tier only fires once `takeable` empties. So the second term
+/// cannot move until the first is zero, and nothing anywhere said so; item 1050 watched it sit at
+/// 327 for three rounds and could only record the fact in prose.
+///
+/// # ⚠⚠⚠ And rule 5 was asked of NEITHER
+///
+/// *이 값이 0 이 되는 경로가 실제로 있는가* is the question the loop's own ending rests on, and until
+/// this it was asked by hand, once, by whoever remembered. What makes it answerable from a snapshot
+/// is that the ledger records its own history in the marks: a repayment is a `paid` mark, and what
+/// that repayment OPENED is the [`PARENT`] lines pointing at it. So *has paying ever shrunk this
+/// population* is a question about the marks, not about a diary nobody keeps.
+///
+/// ⛔⛔ **AND THE ANSWER IS NEVER *OPEN FEWER CHILDREN*** — item 1050 forbids that in its own words
+/// (*자식을 덜 열어 수를 맞추는 것은 답이 아니다 — 그건 발견을 숨기는 것이다*). What is reported is
+/// whether the path EXISTS; a ledger where it does not has a loop that cannot end, and the repair
+/// is at the rounds, never at the recording.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Paths {
+    /// How many items are still open.
+    pub open: usize,
+    /// How many blocks carry no mark at all.
+    pub unclassified: usize,
+    /// How many items are marked [`Tag::Paid`] — the repayments on record.
+    pub payments: usize,
+    /// How many of those opened nothing: a paid item no [`PARENT`] line names. **Each one is a
+    /// repayment that demonstrably shrank the population**, and one is enough for the path to exist.
+    pub shrinking: usize,
+    /// How many items are takeable, when that is what holds the unclassified back — [`None`] once
+    /// nothing is takeable and [`Reading::admits`]'s third tier hands them over.
+    pub held_by: Option<usize>,
+}
+
+impl Paths {
+    /// Whether the ledger's own record shows repayment shrinking the population.
+    ///
+    /// ⚠ [`None`] where there is no repayment on record at all: *this ledger cannot say* is not
+    /// *the path is fine*, and it is reported by the judged COUNT rather than by a silence — see
+    /// [`Reading::paths_judged`].
+    #[must_use]
+    pub const fn population_shrinks(&self) -> Option<bool> {
+        if self.payments == 0 {
+            None
+        } else {
+            Some(self.shrinking > 0)
+        }
+    }
+}
+
+impl fmt::Display for Paths {
+    /// Two lines, one per term of [`Ending`], each naming its path or the absence of one.
+    ///
+    /// ⚠ Printed even when both are fine, for [`Screening`]'s reason: a round that reads only
+    /// `NOT REACHED — open 105, unclassified 327` has no way to tell a term that is moving from one
+    /// that cannot.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.population_shrinks() {
+            Some(true) => writeln!(
+                f,
+                "path to zero: open {} — {} repayment(s) on record, {} of which opened nothing, so \
+                 paying shrinks it",
+                self.open, self.payments, self.shrinking,
+            )?,
+            Some(false) => writeln!(
+                f,
+                "path to zero: open {} — NONE: all {} repayment(s) on record opened a child, so \
+                 this population has never shrunk",
+                self.open, self.payments,
+            )?,
+            None => writeln!(
+                f,
+                "path to zero: open {} — this ledger records no repayment, so it cannot say",
+                self.open,
+            )?,
+        }
+        match self.held_by {
+            Some(takeable) => write!(
+                f,
+                "path to zero: unclassified {} — CLASSIFY_REMEDY, and no round may take one while \
+                 {takeable} item(s) are takeable",
+                self.unclassified,
+            ),
+            None => write!(
+                f,
+                "path to zero: unclassified {} — CLASSIFY_REMEDY, and a round may take one now",
+                self.unclassified,
+            ),
+        }
     }
 }
 
@@ -8023,7 +8224,12 @@ mod tests {
             // ⚠ Register item 1053(3)'s two declaration faults are about ONE line each, which
             // their messages quote — the shape every `…Declaration` pair here has.
             | Fault::FinishDeclaration { .. }
-            | Fault::UnreadableFinishDeclaration { .. } => None,
+            | Fault::UnreadableFinishDeclaration { .. }
+            // ⚠ Register item 1050's fault names NO item, and that is the honest answer here: it
+            // is a statement about the ledger's whole history — *every repayment on record opened
+            // a child* — and there is no subset of items a reader should go and open. The count it
+            // carries is the population it is green or red for.
+            | Fault::PopulationCannotShrink { .. } => None,
             // ⛔ AND ITS SECOND ONE DOES CARRY A SET — register item 939. The items claiming a
             // backlog are what a reader has to go and look at, and there is no other line naming
             // them; the empty case is the one where the set is the point.
@@ -8865,6 +9071,19 @@ mod tests {
              reached, so the only mechanical answer to that question is one nobody sees — and the \
              ending goes back to being a sentence an agent judges by eye",
         );
+        // 🎯 AND WHETHER EITHER TERM OF THE ENDING CAN REACH ZERO — register item 1050, held here
+        // for this gate's own reason: the tests above judge a `Paths`, and only this says the
+        // derivation reaches a reader. Without the line, a round goes back to reading two numbers
+        // that look symmetric and are not.
+        //
+        // ⚠⚠ THE PRINT AND NOT THE CALL — the lesson two clauses down, which `CLASSIFY_REMEDY`
+        // paid for: `contains("paths(")` passes against a binary that computes it and drops it.
+        assert!(
+            BIN.contains("println!(\"{}\", reading.paths(cap.depth()))"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1050: the report no longer prints whether either term of the \
+             ending can reach zero, so working rule 5 goes back to being a question a round is \
+             supposed to remember to ask itself — which item 1050 measured nobody doing",
+        );
         // 🎯 AND WHAT TO TAKE NEXT — register item 1052, held here for this gate's own reason one
         // question over. [`Reading::work_order`]'s tests judge a `Vec<Placed>`; only this says the
         // derivation reaches a reader. Deleting the `next` line would leave every one of them green
@@ -9284,6 +9503,124 @@ mod tests {
                 "⛔ `{floor}` against {stated} stated witness(es) must red: {screening}",
             );
         }
+    }
+
+    // ── register item 1050: whether either term of the ending can reach zero ────────────────────
+
+    /// A ledger where the one repayment on record opened a child, so paying has never shrunk it.
+    const GREW: &str = "\
+# Ledger
+## A. THE SHARPEST THINGS OPEN
+@ns-unclassified: 0
+@sev-unclassified: 0
+@from-unclassified: 0
+@paid-uncommitted: 0
+@witness-floor: 0
+@finish-unclassified: 0
+
+600. ⛔ **Opened by the round that paid 601**
+     @ns: open — the child
+     @sev: ordinary — it is the standing backlog
+     @finish: none — a fixture states no prescription
+     @from: 601 — 601 을 갚으며 «만들었다»
+
+601. ✅ **The only repayment on record**
+     @ns: paid `deadbee`
+     @from: none
+";
+
+    /// 🎯🎯🎯🎯🎯 **A LEDGER WHOSE EVERY REPAYMENT OPENED A CHILD HAS PROVED ITS OWN ENDING
+    /// UNREACHABLE** — register item 1050, and working rule 5 as a predicate rather than a question
+    /// a round is supposed to remember to ask.
+    ///
+    /// ⛔⛔ **BOTH ARMS.** A reading that faulted every ledger would be unsatisfiable, and one that
+    /// faulted none would be the prose item 1050 was written as. The control is a single paid item
+    /// nobody names — one repayment that shrank the population is enough for the path to exist.
+    #[test]
+    fn a_population_every_repayment_grew_has_no_path_to_zero() {
+        let screening = read(GREW).paths_judged(9);
+        assert_eq!(
+            (screening.judged, screening.faults.clone()),
+            (2, vec![Fault::PopulationCannotShrink { payments: 1 }]),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1050: every repayment this ledger records opened a child, so \
+             the population has never shrunk and nothing said so: {screening}",
+        );
+        assert!(
+            screening.faults[0]
+                .to_string()
+                .contains("NOT to open fewer"),
+            "⛔ the refusal must refuse the WRONG repair by name — item 1050 forbids it in its own \
+             words: {}",
+            screening.faults[0],
+        );
+
+        // ⚠ THE CONTROL: one more repayment that opened nothing, and the path exists again.
+        let shrank = GREW.replace(
+            "601. ✅ **The only repayment on record**",
+            "602. ✅ **A repayment that opened nothing**\n     @ns: paid `deadbee`\n     @from: \
+             none\n\n601. ✅ **The only repayment on record**",
+        );
+        let screening = read(&shrank).paths_judged(9);
+        assert_eq!(
+            (screening.judged, screening.faults.len()),
+            (2, 0),
+            "⛔ one repayment that opened nothing is enough for the path to exist: {screening}",
+        );
+    }
+
+    /// ⛔⛔⛔ **A LEDGER WITH NO REPAYMENT ON RECORD JUDGES ONE TERM AND SAYS SO** — register items
+    /// 1050 and 924. *This ledger cannot say* is not *the path is fine*, and the difference is
+    /// carried by the printed count rather than by a silence.
+    #[test]
+    fn a_ledger_with_nothing_paid_judges_one_term_rather_than_passing() {
+        let unpaid = GREW.replace("@ns: paid `deadbee`", "@ns: out — never this loop's");
+        let screening = read(&unpaid).paths_judged(9);
+        assert_eq!(
+            (screening.judged, screening.faults.len()),
+            (1, 0),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 924: with nothing paid the population term cannot be judged, \
+             and the COUNT is what says so — a silent 2 would be a gate claiming to have asked: \
+             {screening}",
+        );
+        assert!(
+            read(&unpaid)
+                .paths(9)
+                .to_string()
+                .contains("records no repayment, so it cannot say"),
+            "⛔ and the printed line must say it too, or the count is the only place it lives",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE SECOND TERM SAYS WHETHER A ROUND MAY ACTUALLY TAKE ONE** — register item
+    /// 1050, and the sentence that item could only write in prose.
+    ///
+    /// Measured on the real register 2026-09-12: `north star: NOT REACHED — open 105, unclassified
+    /// 327`, and items 2, 3 and 139 each refused with *"is not in this register's open
+    /// population"*. The two numbers are not two halves of one queue and the report now says so.
+    #[test]
+    fn the_unclassified_term_says_whether_a_round_may_take_one_yet() {
+        let held = read(GREW).paths(9);
+        assert_eq!(
+            held.held_by,
+            Some(1),
+            "⚠ one open item is takeable, and it is what holds the unclassified back",
+        );
+        assert!(
+            held.to_string()
+                .contains("no round may take one while 1 item(s) are takeable"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1050: the line does not say the second term is HELD, so a \
+             reader goes on taking the two numbers for the same kind of thing: {held}",
+        );
+
+        // ⚠⚠ AND THE OTHER ARM, which is what makes this derived rather than spelled: empty the
+        // population and `admits`'s third tier hands the unclassified over.
+        let emptied = GREW.replace("@ns: open — the child", "@ns: paid `deadbee`");
+        let free = read(&emptied).paths(9);
+        assert_eq!(free.held_by, None, "nothing is takeable now");
+        assert!(
+            free.to_string().contains("a round may take one now"),
+            "⛔ the same line must change when the holding does, or it is a constant: {free}",
+        );
     }
 
     // ── register item 1053: the other verdict — a prescription this tree already meets ──────────
