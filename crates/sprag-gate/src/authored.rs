@@ -566,6 +566,7 @@ mod tests {
             file: file.to_owned(),
             code: code(body),
             product: code(body),
+            attributes: crate::sources::attribute_lines(body),
         };
         let reads = "pub fn ceiling(&self) -> Option<i64> {\n    \
                      OuterLoop::authored_number_in(&self.script, &self.session, \"context_ceiling\")\n}";

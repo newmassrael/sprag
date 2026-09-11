@@ -359,6 +359,8 @@ mod tests {
             file: file.to_owned(),
             code: product.clone(),
             product,
+            // ⚠ No attribute in this fixture's cases; empty says so — register item 1044.
+            attributes: Vec::new(),
         }
     }
 

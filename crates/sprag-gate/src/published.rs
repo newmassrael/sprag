@@ -401,6 +401,10 @@ mod tests {
             file: file.to_owned(),
             code: product.clone(),
             product,
+            // ⚠ This fixture's cases carry no attribute, and an empty vector here says exactly
+            // that rather than standing in for one — register item 1044, whose gate spent a draft
+            // reading a field that had already thrown its subject away.
+            attributes: Vec::new(),
         }
     }
 

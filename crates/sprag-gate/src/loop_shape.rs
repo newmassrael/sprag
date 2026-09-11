@@ -686,6 +686,7 @@ mod tests {
             file: file.to_owned(),
             product: code.clone(),
             code,
+            attributes: crate::sources::attribute_lines(text),
         }
     }
 

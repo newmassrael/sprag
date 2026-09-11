@@ -138,6 +138,8 @@ mod tests {
         let source = Source {
             file: "crates/made-up/src/lib.rs".to_owned(),
             code: Vec::new(),
+            // ⚠ No attribute in this case; empty says so rather than standing in — item 1044.
+            attributes: Vec::new(),
             product: vec![
                 (7, "json!({ \"key\": key, \"ctrl\": mods.ctrl })".to_owned()),
                 (9, "let key = \"Enter\";".to_owned()),
@@ -165,6 +167,8 @@ mod tests {
         let source = Source {
             file: "crates/made-up/tests/wire.rs".to_owned(),
             code: Vec::new(),
+            // ⚠ No attribute in this case; empty says so rather than standing in — item 1044.
+            attributes: Vec::new(),
             product: vec![(3, "json!({ \"key\": \"Enter\" })".to_owned())],
         };
         assert!(

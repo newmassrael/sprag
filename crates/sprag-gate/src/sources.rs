@@ -44,6 +44,23 @@ pub struct Source {
     /// fiddly (an item under the attribute may be a `mod`, an `impl`, a `thread_local!`, or a
     /// `const` that ends at a semicolon — this workspace carries all four).
     pub product: Vec<(usize, String)>,
+    /// The ATTRIBUTE lines, as `(one-indexed line number, trimmed text)` — what [`Source::code`]
+    /// throws away that is still code.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why this is a field and not a second reader — register items 213 and 1044
+    ///
+    /// `code_lines` drops every line starting with `#`, and that rule is stated in exactly one
+    /// place: a caller who needs attributes and re-reads the file gets a SECOND opinion about what
+    /// a comment is, which is the defect item 213 is named for. It is not hypothetical here —
+    /// [`rust_sources`] already carries a warning that its first draft looked for `#[cfg(test)]` in
+    /// `code` and **went green measuring nothing**, and item 1044's gate did the same thing on
+    /// 2026-09-11 before this field existed: it reported **0** `#[ignore]` sites in a workspace
+    /// that has 33.
+    ///
+    /// ⚠ The same comment rule applies, so a `#[…]` written inside a doc comment — including one
+    /// in a rustdoc code block, which a reader's eye sees as an attribute — is not here. That is
+    /// the point: `grep` for the same needle answers **41** against this field's **33**.
+    pub attributes: Vec<(usize, String)>,
 }
 
 impl Source {
@@ -481,6 +498,27 @@ pub(crate) fn code_lines(text: &str) -> Vec<(usize, String)> {
         .collect()
 }
 
+/// The lines [`code_lines`] drops for starting with `#` — attributes, inner and outer.
+///
+/// ⚠ Written beside its opposite on purpose: the two filters are complements of one rule, and a
+/// round that changes what counts as a comment must change both or neither. See
+/// [`Source::attributes`] for what happened the last two times an attribute was looked for in
+/// `code`, which does not carry them.
+///
+/// ⚠⚠ **WHAT THIS FILTER DOES AND DOES NOT BUY, measured rather than assumed.** Loosening it to
+/// `contains('#')` was mutated on 2026-09-11 and item 1044's gate stayed GREEN — because a caller
+/// asking `starts_with("#[…")` rejects a `/// … #[ignore] …` line on its own. So the anchor here
+/// is what makes this *the attribute lines* rather than a superset a caller must re-filter; it is
+/// not the thing standing between that gate and a doc comment. The line that IS load-bearing is
+/// the `#` in the first place: without it these are `code_lines`, which carry no attribute at all.
+pub(crate) fn attribute_lines(text: &str) -> Vec<(usize, String)> {
+    text.lines()
+        .enumerate()
+        .map(|(index, line)| (index + 1, line.trim().to_owned()))
+        .filter(|(_, line)| line.starts_with('#'))
+        .collect()
+}
+
 /// Every `.rs` file under `crates/`, comment lines dropped.
 ///
 /// # Panics
@@ -527,6 +565,7 @@ pub fn rust_sources() -> Vec<Source> {
                     file,
                     code,
                     product,
+                    attributes: attribute_lines(&text),
                 },
                 modules,
             )
@@ -1139,6 +1178,7 @@ mod tests {
                 file: "made-up.rs".to_owned(),
                 product: code.clone(),
                 code,
+                attributes: attribute_lines(text),
             }
         }
 
@@ -1254,6 +1294,7 @@ mod tests {
         Source {
             file: "crates/made-up/src/case.rs".to_owned(),
             code: code_lines(text),
+            attributes: attribute_lines(text),
             product: Vec::new(),
         }
     }
