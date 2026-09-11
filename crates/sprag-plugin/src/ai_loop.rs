@@ -17096,6 +17096,130 @@ mod tests {
         }
     }
 
+    /// ⛔⛔⛔⛔⛔ **A REASON THE DRIVER COMPOSED IS NOT QUOTED AS THE CHECKER'S** — register item
+    /// 1065, and `dispute_quoting`'s own rule held against the state that was breaking it.
+    ///
+    /// # The two reasons that share one slot and have different authors
+    ///
+    /// `_event.data.explained` arrives on both judgements and is written by different code each
+    /// time:
+    ///
+    /// * `disputing` — `judged.explained`, **the checker's own words**, read out of the reply it
+    ///   gave. `It said:` is exactly right.
+    /// * `unverified` — `Unheard::describe()`, **a sentence this driver composed about a checker
+    ///   that never answered**. There are no checker's words here; that is what the state means.
+    ///
+    /// Both used `It said:`, so the driver's sentence was published in the checker's mouth — which
+    /// is the failure `dispute_quoting`'s doc says it exists to prevent, one state over.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What it cost, measured
+    ///
+    /// 2026-09-12: a run was handed `It said: the checker was started and never answered: the wait
+    /// ended NotYet`. That is the DRIVER's phrasing, from an image seven days old — the tree had
+    /// replaced it that morning. Read as the checker's, it sends a reader to the checker; read as
+    /// the driver's, the first question is which build composed it. The reader went the wrong way,
+    /// and a process audit plus four string searches is what brought them back.
+    ///
+    /// # ⚠⚠ What is asserted, and the control
+    ///
+    /// The `unverified` prompt must NOT carry the checker-quoting word, must carry one of its own,
+    /// and must still carry the reason itself — a fix that dropped the reason to avoid mis-quoting
+    /// it would satisfy the first two and lose what register item 593 bought. ⚠ And `disputing`
+    /// keeps `It said:`, which is the control: a build that renamed the word everywhere would pass
+    /// a one-sided assertion while leaving the two authors indistinguishable again.
+    #[test]
+    fn a_reason_this_driver_composed_is_not_quoted_as_the_checkers() {
+        /// The reason the driver composes when nothing answered — `Unheard::describe`'s shape.
+        const DRIVERS_OWN: &str = "the checker was started and never answered";
+        /// And the reason a checker that DID answer gives for refusing.
+        const CHECKERS_OWN: &str = "the artifact names no file";
+
+        /// The `brief` payload, composed in a function of its own — which is the sibling gate's
+        /// shape and a REFUSAL this round met rather than a convention copied.
+        ///
+        /// ⚠⚠ Written inline at the `carried` call, the payload is not what
+        /// `no_payload_key_is_spelled_by_a_name_this_workspace_disagrees_about` reads: that gate
+        /// walks the source for what an event is raised with, found a literal it could not attribute
+        /// at the raising site, and refused the whole claim as a guess. Composed here, the keys are
+        /// declared where every other fixture declares them.
+        fn briefed() -> String {
+            serde_json::json!({
+                "unanswered_rule": "ASK-THE-CHECKER-AGAIN",
+                "unreadable_rule": "FIX-THE-CHECKERS-PROMPT",
+                "unwell_rule": "WAIT-THEN-ASK-AGAIN",
+                // ⚠ The ceiling the `brief` transition assigns unconditionally — a payload that
+                // omits it writes nil over a number a guard then reads. See the sibling gate.
+                "reflect_after_refusals": 3,
+            })
+            .to_string()
+        }
+
+        /// Reach `judging`, judge with `data`, and answer with the prompt named by `read`.
+        fn prompt_after(data: &serde_json::Value, read: &str) -> String {
+            let (mut engine, host, lua, session) = started();
+            carried(&mut engine, &host, AiLoopEvent::Brief, &briefed());
+            carried(&mut engine, &host, AiLoopEvent::Start, "");
+            carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+            carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
+            assert_eq!(
+                engine.get_current_state(),
+                AiLoopState::Judging,
+                "⚠⚠ THE PREMISE: the walk must reach `judging`",
+            );
+            carried(&mut engine, &host, AiLoopEvent::Judge, &data.to_string());
+            match lua.get_variable(&session, read) {
+                Ok(ScriptValue::String(said)) => said,
+                other => panic!("the composed prompt must be readable: {other:?}"),
+            }
+        }
+
+        let unverified = prompt_after(
+            &serde_json::json!({
+                "done": true,
+                "checked": "silent",
+                "silence": "unanswered",
+                "explained": DRIVERS_OWN,
+            }),
+            "unverified_prompt",
+        );
+        assert!(
+            unverified.contains(DRIVERS_OWN),
+            "⚠⚠⚠⚠⚠ THE REASON ITSELF MUST SURVIVE: register item 593 bought the division between \
+             six ways of hearing nothing, and a repair that stopped mis-quoting the reason by \
+             DROPPING it would hand that back. Got:\n{unverified}",
+        );
+        assert!(
+            !unverified.contains("It said:"),
+            "⛔⛔⛔⛔⛔ ITEM 1065: the driver's own sentence is published as the CHECKER's. This \
+             state is reached because the checker said nothing at all, so there is no *it* that \
+             said anything — and a reader sent to the checker goes to the one place where the \
+             answer is not. Got:\n{unverified}",
+        );
+        assert!(
+            unverified.contains("The driver of this run reports:"),
+            "⚠⚠⚠ AND IT MUST NAME THE RIGHT MOUTH RATHER THAN NO MOUTH: a reason with no author \
+             at all is read in the document's voice, which is `dispute_quoting`'s whole argument. \
+             Got:\n{unverified}",
+        );
+
+        // ── THE CONTROL: the state whose reason really IS the checker's keeps the word ────────
+        let disputed = prompt_after(
+            &serde_json::json!({
+                "done": true,
+                "checked": "failed",
+                "explained": CHECKERS_OWN,
+            }),
+            "dispute_prompt",
+        );
+        assert!(
+            disputed.contains("It said:") && disputed.contains(CHECKERS_OWN),
+            "⛔⛔⛔⛔ THE CONTROL FAILED — and its failure is the interesting one: a build that \
+             renamed the quoting word EVERYWHERE would pass the assertions above while leaving the \
+             two authors exactly as indistinguishable as they were. `disputing` quotes a reply the \
+             checker really gave, and that is the one place `It said:` is true. Got:\n{disputed}",
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **THE DOOR AN OUTAGE CAME IN AT DECIDES WHETHER ANYTHING MAY BE TYPED ON THE WAY
     /// OUT** — register item 715, and the judgement this document records rather than a tidy-up.
     ///

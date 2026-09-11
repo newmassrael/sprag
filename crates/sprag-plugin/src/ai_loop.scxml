@@ -1075,6 +1075,37 @@
     <data id="unverified_opening"
           expr="'You said this milestone was reached. An independent check was asked and this run could not read an answer from it, so nothing outside this session has verified the claim.'"/>
     <!--
+      ⛔⛔⛔⛔⛔ AND THE CLAUSE THE REASON ARRIVES IN HERE — register item 1065,
+      and it is `dispute_quoting`'s OWN RULE applied where that word was wrong.
+
+      That word is `It said:`, and its doc states the rule both obey: *"the
+      clause the reason arrives in has to say WHOSE reason it is … this is what
+      stops them being put in the wrong mouth."* `disputing` earns it — the
+      reason there is `judged.explained`, the CHECKER's own words, read out of
+      the reply it gave.
+
+      ⛔⛔⛔⛔ **NOTHING HERE IS THE CHECKER'S WORDS, AND FOR THE WORST OF
+      REASONS: THE CHECKER SAID NOTHING.** This state is reached from the `Err`
+      arm, where the reason is `Unheard::describe()` — a sentence THIS DRIVER
+      composed ABOUT a checker that never answered. Quoting it as *It said* puts
+      the driver's words in the checker's mouth, which is the exact failure the
+      word next door exists to prevent.
+
+      ⚠⚠⚠⚠⚠ **MEASURED, AND THE COST IS A SESSION'S WORK.** 2026-09-12: a run
+      was handed `It said: the checker was started and never answered: the wait
+      ended NotYet`. That sentence is the DRIVER's, and the driver that composed
+      it was a seven-day-old image — the phrasing had been replaced in the tree
+      that morning. Read as the checker's, it sends a reader to the checker; read
+      as the driver's, it is a statement about code whose build is the first
+      thing to ask about. **The reader went the wrong way and it took a process
+      audit and four string searches to come back.**
+
+      ⚠⚠ AND THE OPENING ALREADY NAMES THE RIGHT MOUTH — *"this run could not
+      read an answer from it"* — which is what made the mismatch silent: the two
+      clauses are one sentence apart and they disagree about who is speaking.
+    -->
+    <data id="unverified_quoting" expr="'The driver of this run reports:'"/>
+    <!--
       WHAT THIS KIND'S RUNS OWE WHEN THE CHECKER NEVER PRODUCED A VERDICT.
       Empty in the template; the kind's value arrives at `start`.
     -->
@@ -5623,15 +5654,29 @@
         <assign location="unverified_said" expr="unreadable_rule"/>
       </if>
       <!--
-        ⚠⚠⚠ THE CHECKER'S OWN WORDS, QUOTED — `disputing`'s rule verbatim, and
-        for its reason: an agent told *the wait ended NotYet* in this document's
-        voice would read it as the loop's finding. `_event.data.explained` is a
-        non-empty line or `false`, never `''`, which is what lets this branch on
-        it in a datamodel where the empty string is TRUE.
+        ⛔⛔⛔⛔⛔ THE DRIVER'S WORDS, QUOTED AS THE DRIVER'S — register item 1065.
+
+        This used to use `dispute_quoting` (*It said:*) and cite `disputing`'s
+        rule as its warrant. **It had that rule exactly backwards.** The reason
+        arriving here is `Unheard::describe()`: a sentence this driver composed
+        ABOUT a checker that produced no words at all. `disputing`'s reason is
+        `judged.explained`, which the checker really did say. Same slot, two
+        authors — and one word for the two put the driver's sentence in the
+        checker's mouth.
+
+        ⚠⚠ THE OLD COMMENT NAMED ITS OWN COUNTEREXAMPLE: it said an agent must
+        not read *the wait ended NotYet* as the loop's finding. That string is
+        `Over`'s debug form inside `Unheard::describe` — **it IS the loop's
+        finding**, and the prose asserted the opposite of what the code did. See
+        `unverified_quoting` for the session this cost.
+
+        ⚠ `_event.data.explained` is a non-empty line or `false`, never `''`,
+        which is what lets this branch on it in a datamodel where the empty
+        string is TRUE.
       -->
       <if cond="_event.data.explained">
         <assign location="unverified_said"
-                expr="unverified_said + ' ' + dispute_quoting + ' ' + _event.data.explained"/>
+                expr="unverified_said + ' ' + unverified_quoting + ' ' + _event.data.explained"/>
       </if>
       <!--
         ⚠⚠⚠ THE ORDINARY TURN PROMPT IS COMPOSED IN RATHER THAN REPLACED,
