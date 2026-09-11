@@ -50,6 +50,34 @@ pub fn build_command(bin: &Path) -> String {
     }
 }
 
+/// The cargo invocation that RELINKS `bin` — the remedy for a binary cargo believes is already
+/// current, derived the same way as [`build_command`].
+///
+/// # ⛔⛔⛔⛔⛔ Why a second command exists at all — register item 1057
+///
+/// [`build_command`] is the remedy when a source really changed: cargo sees the change, relinks,
+/// and the refusal ends. It is a **NO-OP** when cargo's own fingerprint says the unit is fresh —
+/// and a binary can be older than its inputs' mtimes while cargo is right that nothing needs
+/// rebuilding, because a build script may regenerate byte-identical output.
+///
+/// Measured 2026-09-12 on this workspace: `cargo build -p sprag-host --bins` returned **0** and
+/// `target/debug/sprag-term`'s mtime did not move by one second. Deleting the binary first does not
+/// help either — it is a HARD LINK to `target/debug/deps/sprag-term-<hash>` (`ls -la` shows a link
+/// count of 2), so cargo recreates the link and the original mtime comes back with it.
+///
+/// ⇒ The only thing that moves it is discarding what cargo is being fresh about, which is what
+/// `cargo clean -p` does. ⚠ It still carries `-p <package>` and `cargo build `, because a refusal
+/// that names a command has to name one the reader can run from anywhere — item 455's own finding.
+#[must_use]
+pub fn relink_command(bin: &Path) -> String {
+    match bin.file_name().and_then(|name| name.to_str()).map(owner_of) {
+        Some(Some(package)) => {
+            format!("cargo clean -p {package} && cargo build -p {package} --bins")
+        }
+        _ => "cargo clean && cargo build --workspace --bins".to_owned(),
+    }
+}
+
 /// The package that declares a bin target called `bin`, or `None` when this workspace has none.
 #[must_use]
 pub fn owner_of(bin: &str) -> Option<String> {

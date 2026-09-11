@@ -104,30 +104,74 @@ fn the_map_the_refusal_is_derived_from_is_the_one_cargo_publishes() {
 
 /// Each way [`Unbuilt`] can refuse `bin`, tagged with which arm it is.
 ///
-/// All three arms rather than the one that was measured: they are three separate `write!`s with
-/// three separately spelled remedies, which is exactly how one of them stayed wrong while the
-/// others were read.
+/// All the arms rather than the one that was measured: they are separate `write!`s with separately
+/// spelled remedies, which is exactly how one of them stayed wrong while the others were read.
+///
+/// # ⛔⛔⛔⛔⛔ A HAND LIST OF ARMS LEAKS, so the tag is an exhaustive `match` — item 1057
+///
+/// This list was three rows and [`Unbuilt`] grew a fourth; nothing here would have noticed, and the
+/// new arm would have shipped the one thing this file exists to forbid. [`tag`] names each arm
+/// through a `match` with no wildcard, so a fifth arm is a **compile error in this file** rather
+/// than a row somebody remembers to add — and [`every_arm_of_the_refusal_is_in_the_list`] counts
+/// the rows so the error cannot be answered by adding the tag alone.
 fn refusals(bin: &Path) -> Vec<(&'static str, String)> {
-    vec![
-        ("MISSING", Unbuilt::Missing(bin.to_path_buf()).to_string()),
-        (
-            "UNRECORDED",
-            Unbuilt::Unrecorded {
-                bin: bin.to_path_buf(),
-                depfile: bin.with_extension("d"),
-                why: "No such file or directory".to_owned(),
-            }
-            .to_string(),
-        ),
-        (
-            "STALE",
-            Unbuilt::Stale {
-                bin: bin.to_path_buf(),
-                edited: vec![PathBuf::from("crates/sprag-vt/src/lib.rs")],
-            }
-            .to_string(),
-        ),
+    [
+        Unbuilt::Missing(bin.to_path_buf()),
+        Unbuilt::Unrecorded {
+            bin: bin.to_path_buf(),
+            depfile: bin.with_extension("d"),
+            why: "No such file or directory".to_owned(),
+        },
+        Unbuilt::Stale {
+            bin: bin.to_path_buf(),
+            edited: vec![PathBuf::from("crates/sprag-vt/src/lib.rs")],
+        },
+        Unbuilt::Uncertain {
+            bin: bin.to_path_buf(),
+            newer: vec![PathBuf::from("crates/sprag-vt/src/lib.rs")],
+        },
     ]
+    .into_iter()
+    .map(|refusal| (tag(&refusal), refusal.to_string()))
+    .collect()
+}
+
+/// Which arm a refusal is, by a `match` that has no wildcard.
+///
+/// ⚠ The `_ =>` this deliberately lacks is the whole point: it is what turns "somebody adds an arm"
+/// from a silent gap into a build that stops.
+fn tag(refusal: &Unbuilt) -> &'static str {
+    match refusal {
+        Unbuilt::Missing(_) => "MISSING",
+        Unbuilt::Unrecorded { .. } => "UNRECORDED",
+        Unbuilt::Stale { .. } => "STALE",
+        Unbuilt::Uncertain { .. } => "UNCERTAIN",
+    }
+}
+
+/// ⚠⚠ **The compile error [`tag`] raises can be answered by adding a tag and NOT a row**, which
+/// would leave the new arm unchecked by the case above while every existing row still passed. So
+/// the rows are counted, and the count is one edit to change.
+#[test]
+fn every_arm_of_the_refusal_is_in_the_list() {
+    let rows = refusals(Path::new("target/debug/sprag-term"));
+    let mut tags: Vec<&str> = rows.iter().map(|(tag, _)| *tag).collect();
+    tags.sort_unstable();
+    tags.dedup();
+    assert_eq!(
+        tags.len(),
+        rows.len(),
+        "two rows carry the same arm, so one arm of `Unbuilt` is not being checked at all: \
+         {tags:?}",
+    );
+    assert_eq!(
+        rows.len(),
+        4,
+        "⛔ ITEM 1057: `Unbuilt` has {} arm(s) in this list against the 4 it had when this was \
+         written. An arm added here without a row is an arm whose remedy nobody reads — put the \
+         row in, or write the new number with the reason beside it.",
+        rows.len(),
+    );
 }
 
 /// `(bin target, owning package)` for every binary this workspace declares — **cargo's own answer**.

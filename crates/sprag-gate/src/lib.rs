@@ -356,6 +356,26 @@ pub enum Unbuilt {
         /// The inputs newer than it, in the order cargo recorded them.
         edited: Vec<PathBuf>,
     },
+    /// It is there, its inputs' mtimes are NEWER, and there is no record of what those inputs held
+    /// when it was built — so whether this binary is current has no answer here.
+    ///
+    /// # ⛔⛔⛔⛔⛔ It is NOT [`Unbuilt::Stale`], and telling them apart is register item 1057
+    ///
+    /// Nothing here says a source changed. What is known is only that the mtimes moved, which a
+    /// build script regenerating byte-identical output does on its own. [`Unbuilt::Stale`]'s remedy
+    /// — a plain rebuild — is a **no-op** for this state, because cargo agrees the unit is fresh and
+    /// declines to relink. Said with `Stale`'s words, the reader follows the advice, gets the same
+    /// refusal back, and the only remaining move is to switch the gate off.
+    ///
+    /// ⚠ Both still REFUSE: a probe that cannot tell must never read as clean, which is this
+    /// crate's standing doctrine and the reason the record is laid down only by a green check. What
+    /// changes is the sentence and the command, not the verdict.
+    Uncertain {
+        /// The binary.
+        bin: PathBuf,
+        /// The inputs whose mtimes are newer than it, in the order cargo recorded them.
+        newer: Vec<PathBuf>,
+    },
 }
 
 impl fmt::Display for Unbuilt {
@@ -400,6 +420,27 @@ impl fmt::Display for Unbuilt {
                 }
                 Ok(())
             }
+            Self::Uncertain { bin, newer } => {
+                write!(
+                    f,
+                    "{} CANNOT BE VOUCHED FOR — {} of the inputs cargo built it from are newer than \
+                     it, and nothing here records what they held when it was built, so whether this \
+                     run is about the code in this tree has no answer. ⚠ This is NOT the same as \
+                     stale, and `{}` will not end it: cargo may agree the unit is fresh and decline \
+                     to relink, which is measured. Run `{}` first.\n  newer than the binary:",
+                    bin.display(),
+                    newer.len(),
+                    owners::build_command(bin),
+                    owners::relink_command(bin),
+                )?;
+                for path in newer.iter().take(STALE_REPORT_CAP) {
+                    write!(f, "\n    {}", path.display())?;
+                }
+                if let Some(rest) = newer.len().checked_sub(STALE_REPORT_CAP).filter(|n| *n > 0) {
+                    write!(f, "\n    ...and {rest} more")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -432,15 +473,26 @@ const STALE_REPORT_CAP: usize = 5;
 /// no nested cargo, and cannot drift when the graph changes: the question it asks is cargo's own,
 /// off cargo's own record.
 ///
-/// ⚠ It is also cargo's own REBUILD condition, which is what makes the remedy always work: an input
-/// newer than the output is exactly what makes `cargo build` relink, so a binary this reports on is
-/// one cargo will refresh.
+/// # ⛔⛔⛔⛔⛔ It is NOT cargo's rebuild condition, and this doc used to say it was — item 1057
+///
+/// The sentence here read *"it is also cargo's own REBUILD condition, which is what makes the
+/// remedy always work"*. **Measured false 2026-09-12**: `cargo build -p sprag-host --bins` returned
+/// 0 and moved `sprag-term`'s mtime by nothing, because cargo relinks on a FINGERPRINT and this
+/// asks about a TIMESTAMP. [`owners::relink_command`] carries the rest of that measurement, hard
+/// link and all.
+///
+/// ⇒ So the two refusals are told apart rather than merged: a newer input whose recorded content
+/// DISAGREES is [`Unbuilt::Stale`], and a plain rebuild ends it; a newer input with NO record is
+/// [`Unbuilt::Uncertain`], where a plain rebuild is a no-op and the remedy has to force a relink.
 ///
 /// # Errors
 ///
-/// [`Unbuilt::Missing`] when nothing is there, [`Unbuilt::Unrecorded`] when the depfile is not —
-/// never `Ok(vec![])`, which is this crate's standing rule about probes that cannot see.
-pub fn edited_since_built(bin: &Path) -> Result<Vec<PathBuf>, Unbuilt> {
+/// One [`Unbuilt`] per way of refusing, and `Ok(())` for the one way of passing — never a bare
+/// list. A caller handed a list has to decide WHICH refusal it is, and [`sibling_bin`] decided
+/// wrong by construction: it wrapped every non-empty answer in [`Unbuilt::Stale`]. **A verdict a
+/// caller assembles is a verdict no derivation produced** — register item 1046's shape, reaching
+/// this file.
+pub fn built_from_this_tree(bin: &Path) -> Result<(), Unbuilt> {
     let built = std::fs::metadata(bin)
         .and_then(|meta| meta.modified())
         .map_err(|_| Unbuilt::Missing(bin.to_path_buf()))?;
@@ -497,14 +549,23 @@ pub fn edited_since_built(bin: &Path) -> Result<Vec<PathBuf>, Unbuilt> {
         // cannot be written costs the NEXT content-identical regeneration a red, which is the safe
         // direction and never a wrong pass.
         let _ = std::fs::write(&ledger, fingerprint_of(&inputs_seen));
-        return Ok(Vec::new());
+        return Ok(());
     }
-    if let Ok(was) = std::fs::read_to_string(&ledger)
-        && was == fingerprint_of(&inputs_seen)
-    {
-        return Ok(Vec::new());
+    // ⛔⛔⛔⛔⛔ **WHICH REFUSAL THIS IS DEPENDS ON WHETHER THERE IS ANYTHING TO COMPARE WITH** —
+    // register item 1057. With a record, this is an answer about CONTENT and `Stale` is true: the
+    // bytes moved and a plain rebuild will relink. Without one, nothing has been compared at all,
+    // and saying `Stale` sends the reader to a command cargo is entitled to treat as a no-op.
+    match std::fs::read_to_string(&ledger) {
+        Ok(was) if was == fingerprint_of(&inputs_seen) => Ok(()),
+        Ok(_) => Err(Unbuilt::Stale {
+            bin: bin.to_path_buf(),
+            edited,
+        }),
+        Err(_) => Err(Unbuilt::Uncertain {
+            bin: bin.to_path_buf(),
+            newer: edited,
+        }),
     }
-    Ok(edited)
 }
 
 /// Where the record of *what fresh looked like* sits — beside the binary, in `target/`, so it is
@@ -573,9 +634,8 @@ pub fn sibling_bin(own_exe: &str, name: &str) -> PathBuf {
         .parent()
         .expect("a built binary has a directory")
         .join(name);
-    match edited_since_built(&bin) {
-        Ok(edited) if edited.is_empty() => bin,
-        Ok(edited) => panic!("{}", Unbuilt::Stale { bin, edited }),
+    match built_from_this_tree(&bin) {
+        Ok(()) => bin,
         Err(unbuilt) => panic!("{unbuilt}"),
     }
 }
@@ -602,8 +662,8 @@ mod freshness_tests {
     fn a_touched_source_is_fresh_when_its_bytes_did_not_change_and_red_when_they_did() {
         let tree = BuiltTree::new("content", &[("a.rs", -60), ("b.rs", -60)]);
         assert_eq!(
-            edited_since_built(&tree.bin),
-            Ok(Vec::new()),
+            built_from_this_tree(&tree.bin),
+            Ok(()),
             "⚠ the control: sources older than the binary are fresh, and this is the pass that \
              lays down the record the two halves below are read against",
         );
@@ -614,8 +674,8 @@ mod freshness_tests {
             set_mtime(&tree.dir.join(name), touched);
         }
         assert_eq!(
-            edited_since_built(&tree.bin),
-            Ok(Vec::new()),
+            built_from_this_tree(&tree.bin),
+            Ok(()),
             "⚠⚠⚠⚠ A BYTE-IDENTICAL REGENERATION READ AS STALE. This is item 221: cargo relinks on a \
              FINGERPRINT and correctly refuses here, so the remedy this gate prints — `cargo build \
              -p sprag-host --bins` — reports `Fresh` and changes nothing, and the only escape is \
@@ -625,7 +685,10 @@ mod freshness_tests {
         // ── THE REAL EDIT ── one byte, no rebuild.
         std::fs::write(tree.dir.join("a.rs"), b"fn main() {/**/}").expect("edit a source");
         set_mtime(&tree.dir.join("a.rs"), touched);
-        let answer = edited_since_built(&tree.bin).expect("the binary and its depfile are there");
+        let why = built_from_this_tree(&tree.bin).expect_err("a changed byte is not current");
+        let Unbuilt::Stale { edited: answer, .. } = &why else {
+            panic!("a record that DISAGREES is the stale arm, not another: {why:?}")
+        };
         assert!(
             answer.contains(&tree.dir.join("a.rs")),
             "⚠⚠⚠⚠ A CHANGED SOURCE READ AS FRESH, which is the failure the whole check exists to \
@@ -648,13 +711,68 @@ mod freshness_tests {
     /// standing doctrine, which the content check must not soften: *"a probe which cannot tell must
     /// never read as clean"*. The record is laid down by a green check, so a binary whose inputs
     /// already look edited before anything has ever passed has nothing to be compared with.
+    ///
+    /// # ⛔⛔⛔⛔⛔ It is a DIFFERENT refusal from stale, and saying the wrong one cost a round
+    ///
+    /// Register item 1057. This state used to be reported as [`Unbuilt::Stale`] — *"the sources
+    /// cargo built it from have been edited since"* — which asserts something nothing here knows.
+    /// The remedy that sentence names is a plain rebuild, and for this state cargo is entitled to
+    /// treat it as a **no-op**: measured 2026-09-12 on the real tree, `cargo build -p sprag-host
+    /// --bins` returned 0 and moved nothing, three times, including after the binary was deleted
+    /// (it is a hard link into `deps/`). A reader who follows the advice gets the same words back.
     #[test]
     fn a_newer_source_with_no_record_yet_is_refused_rather_than_guessed_at() {
         let tree = BuiltTree::new("norecord", &[("a.rs", 60)]);
         assert_eq!(
-            edited_since_built(&tree.bin),
-            Ok(vec![tree.dir.join("a.rs")]),
-            "a gate with nothing to compare against must refuse, not assume",
+            built_from_this_tree(&tree.bin),
+            Err(Unbuilt::Uncertain {
+                bin: tree.bin.clone(),
+                newer: vec![tree.dir.join("a.rs")],
+            }),
+            "a gate with nothing to compare against must refuse, not assume — and must not claim \
+             the sources changed, which it has not looked at",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE REMEDY IT NAMES ENDS IT, WHICH IS THE HALF ITEM 455 COULD NOT REACH** —
+    /// register item 1057.
+    ///
+    /// Item 455 made every refusal name a command that builds THE RIGHT PACKAGE. It could not ask
+    /// whether the command ends the state, and for [`Unbuilt::Uncertain`] it does not: cargo relinks
+    /// on a fingerprint, so a binary it considers fresh is one `cargo build` leaves exactly where it
+    /// is. That was measured on the real tree; here it is modelled as what it is — **asking again,
+    /// with nothing about the tree changed** — and the refusal has to survive that, then end when a
+    /// relink really happens.
+    #[test]
+    fn the_remedy_for_a_binary_that_cannot_be_vouched_for_is_the_one_that_ends_it() {
+        let tree = BuiltTree::new("remedy", &[("a.rs", 60)]);
+        let why = built_from_this_tree(&tree.bin).expect_err("no record is no answer");
+        assert!(matches!(why, Unbuilt::Uncertain { .. }), "{why:?}");
+
+        // ── THE PLAIN REBUILD, AS CARGO PERFORMS IT HERE ── nothing about the tree changes.
+        assert_eq!(
+            built_from_this_tree(&tree.bin),
+            Err(why),
+            "⛔ following the plain rebuild leaves this state exactly where it was, so a refusal \
+             that named only that command would be a circle with no way out",
+        );
+
+        let said = built_from_this_tree(&tree.bin)
+            .expect_err("still refused")
+            .to_string();
+        assert!(
+            said.contains("cargo clean -p sprag-host"),
+            "⛔ so the sentence has to name the command that DISCARDS what cargo is being fresh \
+             about: {said}",
+        );
+
+        // ── THE RELINK ── the binary is written anew, which is what `cargo clean && cargo build`
+        // produces and what no plain rebuild could.
+        set_mtime(&tree.bin, SystemTime::now());
+        assert_eq!(
+            built_from_this_tree(&tree.bin),
+            Ok(()),
+            "⚠ and the named remedy ENDS it, or the reader is still stuck",
         );
     }
 
@@ -738,8 +856,8 @@ mod freshness_tests {
     fn a_binary_built_after_its_sources_is_reported_current() {
         let tree = BuiltTree::new("current", &[("a.rs", -60), ("b.rs", -30)]);
         assert_eq!(
-            edited_since_built(&tree.bin),
-            Ok(Vec::new()),
+            built_from_this_tree(&tree.bin),
+            Ok(()),
             "nothing has moved since the link, so there is nothing to report",
         );
     }
@@ -750,21 +868,32 @@ mod freshness_tests {
     /// This is R367's mutation exactly — a source changed, the test binary rebuilt, the daemon not.
     /// REVERT-PROOF: compare `>=` instead of `>` and the current case above reddens; drop the
     /// missing-input arm and the sibling test below goes green on a deleted source.
+    ///
+    /// ⚠ The binary is put through a GREEN first, which is what lays the record down — without one
+    /// this is [`Unbuilt::Uncertain`] instead, and the two being told apart is item 1057.
     #[test]
     fn a_source_edited_since_the_link_makes_the_binary_stale() {
-        let tree = BuiltTree::new("stale", &[("fresh.rs", -60), ("edited.rs", 60)]);
-        let edited =
-            edited_since_built(&tree.bin).expect("the binary and its record are both there");
+        let tree = BuiltTree::new("stale", &[("fresh.rs", -60), ("edited.rs", -30)]);
         assert_eq!(
-            edited,
-            vec![tree.dir.join("edited.rs")],
-            "only the input newer than the binary is named, and it IS named",
+            built_from_this_tree(&tree.bin),
+            Ok(()),
+            "the record is laid"
         );
-        let said = Unbuilt::Stale {
-            bin: tree.bin.clone(),
-            edited,
-        }
-        .to_string();
+
+        let edited = tree.dir.join("edited.rs");
+        std::fs::write(&edited, b"fn main() {/* moved */}").expect("edit a source");
+        set_mtime(&edited, SystemTime::now());
+        let why = built_from_this_tree(&tree.bin).expect_err("an edited source is not current");
+        assert_eq!(
+            why,
+            Unbuilt::Stale {
+                bin: tree.bin.clone(),
+                edited: vec![edited],
+            },
+            "the verdict is the function's, not a caller's — and only the input newer than the \
+             binary is named",
+        );
+        let said = why.to_string();
         assert!(
             said.contains("IS STALE") && said.contains("cargo build -p sprag-host --bins"),
             "the report has to carry the remedy, or it is a puzzle rather than a gate: {said}",
@@ -776,10 +905,18 @@ mod freshness_tests {
     #[test]
     fn a_source_that_no_longer_exists_makes_the_binary_stale() {
         let tree = BuiltTree::new("removed", &[("gone.rs", -60)]);
+        assert_eq!(
+            built_from_this_tree(&tree.bin),
+            Ok(()),
+            "the record is laid"
+        );
         std::fs::remove_file(tree.dir.join("gone.rs")).expect("remove the recorded source");
         assert_eq!(
-            edited_since_built(&tree.bin),
-            Ok(vec![tree.dir.join("gone.rs")]),
+            built_from_this_tree(&tree.bin),
+            Err(Unbuilt::Stale {
+                bin: tree.bin.clone(),
+                edited: vec![tree.dir.join("gone.rs")],
+            }),
             "a recorded input that cannot be found must not read as unchanged",
         );
     }
@@ -791,7 +928,7 @@ mod freshness_tests {
     fn a_binary_whose_record_is_missing_is_refused_rather_than_believed() {
         let tree = BuiltTree::new("unrecorded", &[("a.rs", -60)]);
         std::fs::remove_file(tree.bin.with_extension("d")).expect("remove the record");
-        let why = edited_since_built(&tree.bin).expect_err("no record is no answer");
+        let why = built_from_this_tree(&tree.bin).expect_err("no record is no answer");
         assert!(
             matches!(why, Unbuilt::Unrecorded { .. }),
             "an unreadable record is its own arm: {why:?}",
@@ -809,7 +946,7 @@ mod freshness_tests {
         std::fs::create_dir_all(&dir).expect("an empty dir");
         let bin = dir.join("sprag-term");
         assert_eq!(
-            edited_since_built(&bin),
+            built_from_this_tree(&bin),
             Err(Unbuilt::Missing(bin.clone())),
             "nothing there is a different failure from something stale, and needs a different fix",
         );
