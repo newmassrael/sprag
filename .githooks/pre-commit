@@ -77,6 +77,11 @@ cd "$repo_root"
 . "$repo_root/.githooks/ident-gate.sh"
 # shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/tree-drift.sh"
+# ⛔ Register item 1036: whether a member's manifest has moved past `Cargo.lock`. A SHELL gate
+# because the tool that would run a test repairs the thing the test measures — its own file says
+# how that was measured.
+# shellcheck source-path=SCRIPTDIR
+. "$repo_root/.githooks/lock-drift.sh"
 
 # ⛔⛔⛔⛔ FINGERPRINT THE TREE BEFORE ANY GATE READS IT — register item 925.
 #
@@ -164,6 +169,19 @@ if ! staged="$(git diff --cached --name-only --diff-filter=ACMR)"; then
 fi
 staged_rs="$(printf '%s\n' "$staged" | grep -E '\.rs$' || true)"
 staged_workflows="$(printf '%s\n' "$staged" | grep -E '^\.github/workflows/.*\.ya?ml$' || true)"
+
+# ⛔⛔⛔⛔⛔ A MANIFEST THAT HAS MOVED PAST `Cargo.lock` -- register item 1036, and it is HERE
+# rather than in a test for a reason that was measured, not assumed: `cargo test` resolves the
+# workspace before it runs anything, and resolving WRITES. A test that read these two files passed
+# with the drift staged, and `git diff --stat Cargo.lock` afterwards said `1 insertion(+)` -- the
+# tool that runs the gate had repaired the subject on the way in. See `.githooks/lock-drift.sh`.
+#
+# ⚠ UNCONDITIONAL, not keyed on a staged `Cargo.toml`. The lock is one file for the whole
+# workspace, so a manifest committed in an earlier commit and a lock never caught up with is
+# exactly the state this exists to end -- and that state has no staged manifest in it.
+if ! lock_drift_gate; then
+    exit 1
+fi
 if [ -n "$staged_rs" ]; then
     # shellcheck disable=SC2086  # intentional word-split of the file list
     if ! fmt_gate "pre-commit" "" $staged_rs; then
