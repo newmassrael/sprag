@@ -1060,22 +1060,83 @@ fn the_pane_clause_says_which_side_is_behind() {
 /// **MEASURED 2026-09-11: eighteen sites are still outside it.** A rule stated in a doc comment and
 /// counted by nobody does not shrink — item 932's lesson, one level up from a declaration.
 ///
-/// ⚠⚠ **A RATCHET, NOT A SWEEP.** Moving all eighteen is a round of its own: they are spread across
-/// nine features and some read two clients at once. What this refuses is the nineteenth — and it
-/// refuses a stale floor in the other direction too, because a round that moves one site and leaves
-/// the floor at eighteen has hidden its own progress and the next reader budgets against a number
-/// that was already spent.
+/// ⛔⛔⛔⛔⛔ **AND THE FIRST DRAFT OF THIS GATE COUNTED EIGHTEEN OF THEM, ALL FALSE.** It read a
+/// fixed window of fourteen lines after each call, and a window is not an extent: at what is now
+/// line 2768, `wait_for` closes three lines later on a condition that reads `pane_size`, and the
+/// window reached past it to a `tui.rows()` belonging to a separate `assert!`. Widening the window
+/// walked the count up — 8 → 6, 14 → 18, 20 → 26, 30 → 43, 50 → 59 — **with no stable point**,
+/// which is the shape of a population defined by a constant rather than by a predicate (item 1025).
+/// Asked properly, by balanced parentheses with string literals skipped, the answer is **zero**:
+/// this file already spells every screen-reading wait as a method. So this is a prohibition, not a
+/// ratchet — and the floor it would have published was a debt that did not exist.
 ///
 /// ⚠ The needle is ASSEMBLED, for the reason [`the_pane_clause_spends_the_verdict_it_was_given`]
 /// learned the hard way: a gate that reads its own source must not be answerable by its own text.
 #[test]
 fn a_wait_that_reads_a_client_screen_is_a_wait_on_that_client() {
-    /// What the tree measured at 2026-09-11. It may only go DOWN.
-    const FLOOR: usize = 18;
-    /// How far past the call a condition's body is read — these closures are short.
-    const BODY: usize = 14;
+    let sites = bare_waits_reading_a_screen(include_str!("pty_round_trip.rs"));
+    assert!(
+        sites.is_empty(),
+        "⛔ ITEM 519: {} wait(s) read a client's screen through the FREE `wait_for`. Such a wait \
+         fails with what was painted and nothing about whether the pane was ahead of it — the fork \
+         `who_is_behind` exists to make, and `Tui::standing` is the only road to it. Spell it as a \
+         method on the client being read.\nlines: {sites:?}",
+        sites.len(),
+    );
+}
 
-    let source = include_str!("pty_round_trip.rs");
+/// ⭐ **THE CONTROL FOR THE CLAUSE ABOVE, AND IT IS LOAD-BEARING BECAUSE THAT CLAUSE ASSERTS ZERO.**
+///
+/// A gate whose answer is *none* is green when its scan is broken, when its needle stops matching,
+/// and when somebody deletes its body. This drives [`bare_waits_reading_a_screen`] over staged
+/// source holding one of each shape, so the scan has to actually work for the prohibition to mean
+/// anything. R320's rule: an instrument built to close a measurement debt is itself unmeasured until
+/// somebody asks.
+#[test]
+fn the_scan_behind_that_prohibition_can_actually_find_one() {
+    let found = bare_waits_reading_a_screen(
+        "fn a() {\n\
+         \x20   wait_for(\"a bare wait that reads a screen\", || {\n\
+         \x20       settled(tui.rows().len(), &3)\n\
+         \x20   });\n\
+         \x20   tui.wait_for(\"a method wait, which is the right spelling\", || {\n\
+         \x20       settled(tui.rows().len(), &3)\n\
+         \x20   });\n\
+         \x20   wait_for(\"a bare wait that reads something else\", || {\n\
+         \x20       settled(pane_size(&mut conn, &session), &None)\n\
+         \x20   });\n\
+         \x20   assert_eq!(tui.rows(), rows);\n\
+         \x20   wait_for(\"a wait whose message spells a ) in prose\", || {\n\
+         \x20       settled(tui.status_rows().len(), &1)\n\
+         \x20   });\n\
+         }\n",
+    );
+    assert_eq!(
+        found,
+        vec![2, 12],
+        "⛔ the scan behind a prohibition that asserts ZERO must find the bare waits that read a \
+         screen (lines 2 and 12), must NOT claim the method wait on line 5, must NOT claim the \
+         bare wait on line 8 whose condition reads a pane, and must NOT reach the `assert_eq!` on \
+         line 11 — which is exactly the false positive the fixed-window draft produced eighteen \
+         of.\n⚠ LINE 12 IS THE STRING-LITERAL ARM AND IT IS NOT DECORATION: its message spells a \
+         bare `)` in prose, so a scan that counts parentheses inside string literals closes that \
+         call on its own message, never reaches `status_rows()` and silently drops the site. \
+         Measured: without it, the mutation that stops skipping strings was GREEN — the skip was a \
+         comment rather than a gate.",
+    );
+}
+
+/// Bare `wait_for` call sites in `source` whose CALL reads a client's screen, as 1-based lines.
+///
+/// ⚠⚠ **THE EXTENT IS THE CALL, NOT A WINDOW** — see the prohibition above for the eighteen false
+/// positives a window produced. Parentheses are balanced with string literals and line comments
+/// skipped, because a `")"` inside a message would otherwise end a call early and a `//` would
+/// otherwise start one.
+///
+/// ⛔ A call whose parentheses never balance is a PANIC and not a skip: this file is the input, so
+/// an unreadable one means the scan has stopped describing it — rule 6, where an unclassified case
+/// must never be silently a pass.
+fn bare_waits_reading_a_screen(source: &str) -> Vec<usize> {
     let lines: Vec<&str> = source.lines().collect();
     let needle = format!("wait_for{}", "(");
     let mut sites = Vec::new();
@@ -1086,30 +1147,50 @@ fn a_wait_that_reads_a_client_screen_is_a_wait_on_that_client() {
         if code.starts_with("//") || !code.starts_with(needle.as_str()) {
             continue;
         }
-        let body = lines[index..lines.len().min(index + BODY)].join("\n");
-        if body.contains(".rows()") || body.contains(".status_rows()") {
+        let (mut depth, mut in_string, mut end) = (0i32, false, None);
+        for (offset, text) in lines[index..].iter().enumerate() {
+            let chars: Vec<char> = text.chars().collect();
+            let mut at = 0;
+            while at < chars.len() {
+                let c = chars[at];
+                if in_string {
+                    if c == '\\' {
+                        at += 2;
+                        continue;
+                    }
+                    if c == '"' {
+                        in_string = false;
+                    }
+                } else {
+                    match c {
+                        '"' => in_string = true,
+                        '/' if chars.get(at + 1) == Some(&'/') => break,
+                        '(' => depth += 1,
+                        ')' => depth -= 1,
+                        _ => {}
+                    }
+                }
+                at += 1;
+            }
+            if depth <= 0 {
+                end = Some(index + offset);
+                break;
+            }
+        }
+        let end = end.unwrap_or_else(|| {
+            panic!(
+                "⛔ the `wait_for` call at line {} never closes its parentheses, so this scan can \
+                 no longer say what any call contains and its answer of `none` would be a silence \
+                 rather than a measurement.",
+                index + 1,
+            )
+        });
+        let call = lines[index..=end].join("\n");
+        if call.contains(".rows()") || call.contains(".status_rows()") {
             sites.push(index + 1);
         }
     }
-
-    assert!(
-        sites.len() <= FLOOR,
-        "⛔ ITEM 519: {} wait(s) read a client's screen through the FREE `wait_for`, which is {} \
-         more than the floor of {FLOOR}. Such a wait fails with what was painted and nothing about \
-         whether the pane was ahead of it — the fork `who_is_behind` exists to make. Spell it as a \
-         method on the client being read.\nlines: {sites:?}",
-        sites.len(),
-        sites.len() - FLOOR,
-    );
-    assert_eq!(
-        sites.len(),
-        FLOOR,
-        "⛔ ITEM 519: the floor says {FLOOR} and the tree now has {}. Lower `FLOOR` to {} in the \
-         same edit that moved them, or the next round budgets against a number already spent and \
-         this ratchet stops measuring anything.\nlines: {sites:?}",
-        sites.len(),
-        sites.len(),
-    );
+    sites
 }
 
 /// ⛔⛔⛔ **AND THE VERDICT IS ACTUALLY SPENT** — register items 519 and 932's rule, applied to a
