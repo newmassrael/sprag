@@ -84,15 +84,21 @@ use sprag_vt::{Emulator, InputModes, MouseProtocol, ScreenKind, VtPort};
 /// which build it ran in. [`the_input_path_costs_what_this_instrument_measures`] asks both, and
 /// `tests/instruments/input-throughput` drives it.
 ///
-/// **Measured 2026-09-11 on 32 cores, load 2.1–2.5, io pressure ~30%, with the arrival clock parked
-/// on the daemon (item 1042) and its resolution measured at 0.65 ms `debug` / 0.08 ms `release`:**
+/// **Measured 2026-09-11 on 32 cores, load 7.6–9.6, io pressure ~30%, with the arrival clock parked
+/// on the daemon (item 1042) and its resolution measured at 0.63 ms `debug` / 0.10 ms `release`:**
 ///
 /// | build | shape | 80 chars reach the pane in | marginal, 40→80 | knee |
 /// |---|---|---|---|---|
-/// | debug | per-char | 758 ms | ~5.4 ms/char | n=5 |
-/// | debug | bulk | 832 ms | ~14.0 ms/char | n=5 |
-/// | release | per-char | **10.6 ms** | ~0.17 ms/char | n=5 |
-/// | release | bulk | **9.2 ms** | ~0.10 ms/char | n=5 |
+/// | debug | per-char | 736 ms | ~10.8 ms/char | n=20, 7.2x |
+/// | debug | bulk | 833 ms | ~15.6 ms/char | n=20, 3.0x |
+/// | release | per-char | **14.0 ms** | ~0.20 ms/char | none, 0.7x |
+/// | release | bulk | **13.6 ms** | ~0.20 ms/char | none, 0.5x |
+///
+/// ⛔⛔ **THE KNEE COLUMN READ `n=5` FOUR TIMES UNTIL ITEM 1047.** That was not four sweeps agreeing;
+/// it was a verdict with one possible answer — *which reading first costs twice one character* — left
+/// behind when item 1042 removed the fixed round trip it had been asked against. Re-asked of the
+/// MARGINAL cost, the two builds separate: `debug` breaks at n=20 and `release` does not break at
+/// all, which is the same sweep saying something.
 ///
 /// ⛔⛔⛔⛔⛔ **THE RELEASE ROW USED TO READ 20.6 ms AND 0.00 ms/char, AND BOTH WERE THE
 /// INSTRUMENT** — register item 1042. Those readings were taken through a 20 ms sleep, which every
@@ -1613,20 +1619,362 @@ fn every_instrument_in_this_crate_declares_its_report_shape() {
 /// distinguishable from a knee anywhere else rather than an artefact of where the steps were put.
 const THROUGHPUT_SIZES: &[usize] = &[1, 5, 10, 20, 40, 80];
 
-/// How far above the sweep's FLOOR a reading must sit to be called the knee.
+/// How many times the marginal cost BEFORE a step the cheapest marginal cost from that step on must
+/// be, for the step to be called the knee.
 ///
 /// ⚠ It is a threshold and not a formality: the register's re-reading of the discarded probe claims
 /// the cost breaks **tenfold** near ten characters, so a sweep that reports `n=none` under this
 /// factor REFUTES that reading rather than failing to find something.
 ///
-/// ⛔⛔⛔⛔⛔ **AGAINST THE FLOOR, NOT AGAINST THE STEP BEFORE** — and the first draft of this did the
-/// latter, which MEASURED WRONG. A round trip has a fixed cost (~22 ms here) that swallows the first
-/// few characters whole, so the marginal cost across those steps is ~0 and a ratio against it is a
-/// division by noise: the draft reported `49.15x at n=20` for one shape and `none` for the other
-/// from the SAME shape of curve. The floor is a real quantity — the cheapest round trip the sweep
-/// saw — and "the first reading that costs twice a bare round trip" is the question a knee is
-/// actually being asked.
+/// # ⛔⛔⛔⛔⛔ It was AGAINST THE FLOOR, and item 1042 took the floor away
+///
+/// Register item 1047. The comment here used to say *against the floor, not against the step
+/// before*, and gave its reason: *"A round trip has a fixed cost (~22 ms here) that swallows the
+/// first few characters whole, so the marginal cost across those steps is ~0 and a ratio against it
+/// is a division by noise."* That was true and is not any more — **item 1042 removed the 22 ms**,
+/// which was the instrument's own 20 ms sleep, and the marginal cost across the early steps is now
+/// a real quantity (0.2 ms/char in `release`, 1.2 in `debug`).
+///
+/// ⛔⛔ **And the verdict it left behind had stopped being a predicate.** MEASURED 2026-09-11 on the
+/// same sweep, all four combinations of build and shape: `n=5`, `n=5`, `n=5`, `n=5`. Against a floor
+/// that is now *the cost of one character*, "five characters cost twice one character" is not a
+/// break in the curve — it is five characters. A verdict with one possible answer measures nothing,
+/// and the sweep it was run on has a real break in it that it was no longer reporting.
 const KNEE_FACTOR: f64 = 2.0;
+
+/// The marginal cost of each step of a sweep — `(n, milliseconds per character since the step
+/// before)`.
+///
+/// ⚠ Shared by the measurement and by [`the_knee_is_a_cost_that_stays_up_not_a_size_that_grew`],
+/// deliberately: item 213's rule. A gate that re-derived the marginals it judges would be judging
+/// its own arithmetic rather than the instrument's.
+fn marginals_of(readings: &[(usize, f64)]) -> Vec<(usize, f64)> {
+    let (mut last_n, mut last_ms) = (0usize, 0.0f64);
+    let mut marginals = Vec::with_capacity(readings.len());
+    for (n, ms) in readings {
+        marginals.push((*n, (ms - last_ms) / (n - last_n) as f64));
+        (last_n, last_ms) = (*n, *ms);
+    }
+    marginals
+}
+
+/// What a sweep says about WHERE its cost breaks — [`knee_of`]'s answer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Knee {
+    /// The step the cost broke at; `None` if it did not break inside this sweep.
+    at: Option<usize>,
+    /// How many times [`Knee::before`] the figure in [`Knee::after`] is — reported whether or not it
+    /// cleared [`KNEE_FACTOR`], so `n=none` comes with how close the sweep came.
+    over: f64,
+    /// The MEDIAN marginal cost before that step.
+    before: f64,
+    /// The CHEAPEST marginal cost from that step on.
+    after: f64,
+    /// How many candidate steps could not be asked about at all, because the marginal cost before
+    /// them was zero — see [`knee_of`], where this is rule 6 rather than a footnote.
+    unaskable: usize,
+}
+
+/// The first step of `marginals` whose cost STAYS above what came before it.
+///
+/// # ⛔⛔⛔⛔⛔ Three choices here, and each one is the difference between an answer and an artefact
+///
+/// Register item 1047, and its `Done when` ⑶ — *say how a sample that is not monotone is handled*.
+/// This sweep is not monotone: measured 2026-09-11 in `release`, `per-char` costs **1.48 ms at
+/// n=5 and 1.14 ms at n=10**, which is cheaper for twice the characters. So:
+///
+/// * **The comparison is a MEDIAN, not a minimum.** MEASURED on the same run: `release` `per-char`'s
+///   marginals are `0.51, 0.20, 0.24, 0.00, 0.06, 0.18`, and that `0.00` is a step whose whole cost
+///   sat inside the resolution. A minimum picks it up, every later step is then infinitely many
+///   times it, and the verdict comes back **`n=40`** on a curve that is flat. The median of the same
+///   prefix is `0.22` and the answer is `none`.
+/// * **The break must STAY.** A single peak that falls back is noise. So every step from the
+///   candidate on must clear the factor — not just the candidate. ⚠⚠ **The four measured sweeps do
+///   NOT hold this up**: dropping it leaves every one of their answers unchanged, which the mutation
+///   found by going green. It is held by a staged curve that leaps ninefold at n=10 and falls
+///   straight back — see clause ⑶ of the gate, which exists because of that green.
+/// * **The LAST step is not a candidate.** Its "stays" is one reading, which is exactly what a peak
+///   looks like; there is no sample to tell them apart with. A sweep whose only candidate is its
+///   last step answers `none`, and that is a measurement — *this sweep did not show a break* — not
+///   an abstention.
+///
+/// ⚠⚠ **A zero median is UNASKABLE and is counted, not skipped** — rule 6. A ratio against it is not
+/// a large number, it is an absent one; [`Knee::unaskable`] carries how many candidates were in that
+/// state so a reader can see a verdict taken over fewer steps than the sweep has.
+fn knee_of(marginals: &[(usize, f64)]) -> Knee {
+    let mut answer = Knee {
+        at: None,
+        over: 0.0,
+        before: 0.0,
+        after: 0.0,
+        unaskable: 0,
+    };
+    // The first step has nothing before it; the last has nothing after it. Both are excluded for
+    // the same reason — a break is a claim about two sides.
+    for k in 1..marginals.len().saturating_sub(1) {
+        let before = median_of(&marginals[..k]);
+        let after = marginals[k..]
+            .iter()
+            .map(|(_, ms)| *ms)
+            .fold(f64::INFINITY, f64::min);
+        if before <= 0.0 {
+            answer.unaskable += 1;
+            continue;
+        }
+        let over = after / before;
+        // The knee is the EARLIEST step that clears it. Until one does, the closest call is carried
+        // so that `n=none` still says how near the sweep came.
+        let cleared = over > KNEE_FACTOR;
+        if answer.at.is_none() && (cleared || over > answer.over) {
+            answer.over = over;
+            answer.before = before;
+            answer.after = after;
+            if cleared {
+                answer.at = Some(marginals[k].0);
+            }
+        }
+    }
+    answer
+}
+
+/// The four sweeps this workspace's own knee verdict was measured on — `(what it is, readings)`,
+/// each reading `(characters typed, milliseconds to reach the daemon's pane)`.
+///
+/// ⛔⛔⛔⛔⛔ **REAL FIGURES, TAKEN 2026-09-11 THROUGH `tests/instruments/input-throughput` ON THE
+/// TREE THAT CARRIES THIS** — register item 1047. A staged curve would let the predicate be tuned
+/// until it said something pleasing about a shape nobody has met; these are the numbers that
+/// produced `n=5, n=5, n=5, n=5`, and the gate below is what says the replacement does better on
+/// exactly them.
+///
+/// ⚠ `release` is the half that matters for the verdict being a PREDICATE: its cost is flat, so a
+/// knee there is a false positive, and a rule that answered `n=5` for it answered `n=5` for
+/// everything.
+const MEASURED_SWEEPS: &[(&str, &[(usize, f64)])] = &[
+    (
+        "debug per-char",
+        &[
+            (1, 1.28),
+            (5, 5.88),
+            (10, 7.03),
+            (20, 101.45),
+            (40, 231.82),
+            (80, 651.97),
+        ],
+    ),
+    (
+        "debug bulk",
+        &[
+            (1, 0.58),
+            (5, 4.36),
+            (10, 7.12),
+            (20, 91.03),
+            (40, 400.44),
+            (80, 735.50),
+        ],
+    ),
+    (
+        "release per-char",
+        &[
+            (1, 0.51),
+            (5, 1.29),
+            (10, 2.47),
+            (20, 2.49),
+            (40, 3.62),
+            (80, 10.69),
+        ],
+    ),
+    (
+        "release bulk",
+        &[
+            (1, 0.17),
+            (5, 1.11),
+            (10, 2.25),
+            (20, 3.50),
+            (40, 5.26),
+            (80, 10.54),
+        ],
+    ),
+];
+
+/// ⛔⛔⛔⛔⛔ **THE KNEE IS A COST THAT STAYS UP, NOT A SIZE THAT GREW** — register item 1047.
+///
+/// # What was wrong, and it was a shape rather than a number
+///
+/// The verdict asked *which reading's WHOLE cost first doubles the sweep's floor*. While the floor
+/// was a fixed 20 ms round trip — the instrument's own sleep, which item 1042 removed — that was a
+/// question about the curve. Afterwards the floor is **the cost of one character**, and the question
+/// becomes *which reading first costs twice what one character costs*, whose answer on any sweep at
+/// all is *the second reading*. MEASURED on [`MEASURED_SWEEPS`]: `n=5` four times out of four,
+/// including for a `release` curve that is flat from end to end and a `debug` curve that really does
+/// break at n=20 and was no longer saying so.
+///
+/// # ⚠⚠ What this gate holds, clause by clause
+///
+/// It is not enough for the replacement to be right about these four; the three decisions inside
+/// [`knee_of`] have to be shown to be doing work, or the next round will simplify one away. So the
+/// alternatives are COMPUTED HERE against the same figures, and each is required to get them wrong.
+#[test]
+fn the_knee_is_a_cost_that_stays_up_not_a_size_that_grew() {
+    let answers: Vec<(&str, Option<usize>)> = MEASURED_SWEEPS
+        .iter()
+        .map(|(what, readings)| (*what, knee_of(&marginals_of(readings)).at))
+        .collect();
+    assert_eq!(
+        answers,
+        vec![
+            ("debug per-char", Some(20)),
+            ("debug bulk", Some(20)),
+            ("release per-char", None),
+            ("release bulk", None),
+        ],
+        "⛔ ITEM 1047: the knee must find the break the `debug` sweeps have at n=20 — their marginal \
+         cost goes from under 1 ms/char to about 9 — and must find NO break in the `release` \
+         sweeps, whose marginal cost never leaves 0.1-0.2 ms/char.",
+    );
+    // ⛔ AND THE ANSWERS MUST DIFFER. This is the clause item 1047 was opened for: a verdict every
+    // sweep answers the same way is a constant wearing a predicate's name, and it passed every other
+    // check in this file for a round while being one.
+    //
+    // ⚠⚠ IT IS NOT IMPLIED BY THE ASSERTION ABOVE, AND THAT WAS MUTATED RATHER THAN ARGUED. With
+    // `knee_of` made to answer `None` always AND the four expectations edited to match — which is
+    // what a future round updating these figures would do — the equality passes and this refuses.
+    // The one above is about THESE numbers; this one is about the next ones.
+    let distinct: std::collections::BTreeSet<Option<usize>> =
+        answers.iter().map(|(_, at)| *at).collect();
+    assert!(
+        distinct.len() > 1,
+        "⛔ ITEM 1047: all four sweeps answered {:?}. That is what the floor-based verdict did — \
+         `n=5` four times — and it is the defect, not a coincidence of these figures: a rule that \
+         cannot separate a flat `release` curve from a `debug` curve that breaks tenfold is not \
+         reporting a knee.",
+        distinct,
+    );
+    let release_per_char = MEASURED_SWEEPS[2].1;
+    let marginals = marginals_of(release_per_char);
+
+    // ⑴ THE OLD RULE, run on the same figures — the `n=5` it answers here is what this round is
+    // replacing, and computing it is the only way that claim is measured rather than asserted.
+    let floor = release_per_char
+        .iter()
+        .map(|(_, ms)| *ms)
+        .fold(f64::INFINITY, f64::min);
+    let by_total = release_per_char
+        .iter()
+        .find(|(_, ms)| *ms > floor * KNEE_FACTOR)
+        .map(|(n, _)| *n);
+    assert_eq!(
+        by_total,
+        Some(5),
+        "⛔ ITEM 1047: the floor-based rule must still answer `n=5` on this flat release sweep — \
+         that is the false positive this round exists to remove, and a control that stopped \
+         reproducing it would leave the replacement unjustified.",
+    );
+
+    // ⑵ A MINIMUM INSTEAD OF A MEDIAN, on the same figures. This sweep's marginals hold a `0.00`
+    // (a step whose whole cost sat inside the resolution), so a minimum makes every later step
+    // infinitely many times it.
+    let by_minimum = (1..marginals.len() - 1).find(|k| {
+        let before = marginals[..*k]
+            .iter()
+            .map(|(_, ms)| *ms)
+            .fold(f64::INFINITY, f64::min);
+        let after = marginals[*k..]
+            .iter()
+            .map(|(_, ms)| *ms)
+            .fold(f64::INFINITY, f64::min);
+        after > before * KNEE_FACTOR
+    });
+    assert_eq!(
+        by_minimum.map(|k| marginals[k].0),
+        Some(40),
+        "⛔ ITEM 1047: comparing against the MINIMUM of the earlier steps must find a knee at n=40 \
+         in a curve that is flat — it divides by the `0.00 ms/char` step. If this stops happening, \
+         the median in `knee_of` is no longer holding anything and the reason for it should be \
+         re-measured rather than kept as prose.\n  marginals: {marginals:?}",
+    );
+
+    // ⑶ A BREAK THAT DOES NOT HAVE TO STAY, on a curve staged for it — and this clause exists
+    // because the MUTATION FOUND IT GREEN. Dropping the "stays" requirement (taking the candidate's
+    // own marginal instead of the cheapest from there on) leaves all four sweeps above answering
+    // exactly as before, so the four real figures do not hold it up. This curve does: its cost
+    // leaps at n=10 and falls straight back, which is the noise peak item 1047 is named for.
+    let one_peak: &[(usize, f64)] = &[(1, 1.0), (5, 5.0), (10, 50.0), (20, 55.0), (40, 60.0)];
+    let peaked = marginals_of(one_peak);
+    let by_candidate_alone = (1..peaked.len() - 1).find(|k| {
+        let before = median_of(&peaked[..*k]);
+        before > 0.0 && peaked[*k].1 > before * KNEE_FACTOR
+    });
+    assert_eq!(
+        by_candidate_alone.map(|k| peaked[k].0),
+        Some(10),
+        "⛔ ITEM 1047: judging a candidate by its OWN marginal cost must call this curve broken at \
+         n=10, where the cost leaps ninefold and then falls back below where it started. That is \
+         the false positive the `stays` requirement removes.\n  marginals: {peaked:?}",
+    );
+    assert_eq!(
+        knee_of(&peaked).at,
+        None,
+        "⛔ ITEM 1047: and `knee_of` must answer `none` for it — a peak that falls back is not a \
+         break in the curve, and the four measured sweeps cannot tell the two rules apart, so this \
+         staged one is the only thing holding the requirement up.",
+    );
+
+    // ⑷ A SWEEP WHOSE EARLY STEPS ARE ALL ZERO — not a hypothetical: this is precisely the shape
+    // `release` had before item 1042, when the arrival clock was a 20 ms sleep and the whole sweep
+    // reported `0.00 ms/char` twelve times over. A ratio against a zero median is not a large
+    // number, it is an absent one, and rule 6 says an unclassified candidate must not read as a
+    // pass. So they are COUNTED, and the verdict is `none` rather than a knee at the first step
+    // that happens to be measurable.
+    let under_resolution: &[(usize, f64)] =
+        &[(1, 0.0), (5, 0.0), (10, 0.0), (20, 100.0), (40, 200.0)];
+    let blind = knee_of(&marginals_of(under_resolution));
+    assert_eq!(
+        (blind.at, blind.unaskable),
+        (None, 3),
+        "⛔ ITEM 1047: every candidate of a sweep whose earlier steps all measured zero is \
+         UNASKABLE, and all three must be counted rather than skipped — a verdict taken over fewer \
+         steps than the sweep has is one a reader has to be told about.\n  got: {blind:?}",
+    );
+
+    // ⑸ A LAST STEP TAKEN AS A CANDIDATE, on a curve staged for it: the final step is the only one
+    // that rises, so "it stays up" is one reading and there is nothing to tell a break from a peak.
+    let ends_high: &[(usize, f64)] = &[(1, 1.0), (5, 5.0), (10, 10.0), (20, 20.0), (40, 200.0)];
+    let staged = marginals_of(ends_high);
+    let including_last = (1..staged.len()).find(|k| {
+        let before = median_of(&staged[..*k]);
+        let after = staged[*k..]
+            .iter()
+            .map(|(_, ms)| *ms)
+            .fold(f64::INFINITY, f64::min);
+        before > 0.0 && after > before * KNEE_FACTOR
+    });
+    assert_eq!(
+        including_last.map(|k| staged[k].0),
+        Some(40),
+        "⛔ ITEM 1047: a rule that lets the LAST step be a candidate calls this staged curve broken \
+         at n=40 on the strength of one reading — the control for excluding it.",
+    );
+    assert_eq!(
+        knee_of(&staged).at,
+        None,
+        "⛔ ITEM 1047: and `knee_of` must answer `none` for it. A break is a claim about two sides, \
+         and the last step of a sweep has one; `none` here means *this sweep did not show a break*, \
+         which is a measurement.",
+    );
+}
+
+/// The middle value of `marginals`, or `0.0` for an empty slice.
+///
+/// ⚠ Sorted with [`f64::total_cmp`] rather than a partial compare: a `NaN` from a zero-width step
+/// would otherwise put the sort into undefined order and the median would be whatever landed there.
+fn median_of(marginals: &[(usize, f64)]) -> f64 {
+    let mut values: Vec<f64> = marginals.iter().map(|(_, ms)| *ms).collect();
+    values.sort_by(f64::total_cmp);
+    match values.is_empty() {
+        true => 0.0,
+        false => values[values.len() / 2],
+    }
+}
 
 /// How long [`arrival_of`] stays parked before coming back to look at the client's screen.
 ///
@@ -2058,50 +2406,46 @@ fn the_input_path_costs_what_this_instrument_measures() {
             .filter(|reading| &reading.0 == shape)
             .map(|reading| (reading.1, reading.2))
             .collect();
-        let (mut last_n, mut last_ms) = (0usize, 0.0f64);
-        let mut marginals: Vec<(usize, f64)> = Vec::new();
-        for (n, ms) in &mine {
-            marginals.push((*n, (ms - last_ms) / (n - last_n) as f64));
-            (last_n, last_ms) = (*n, *ms);
-        }
+        let marginals = marginals_of(&mine);
         for (upto, per) in &marginals {
             println!("== marginal shape={shape} upto={upto} ms_per_char={per:.2}");
         }
-        // THE FLOOR IS THE CHEAPEST ROUND TRIP THIS SWEEP SAW — the fixed cost of asking at all,
-        // which is what the first few characters ride along inside. The knee is then the first size
-        // whose whole cost is [`KNEE_FACTOR`] times that, which is a question about the curve rather
-        // than about the gap between two adjacent points.
-        let floor = mine.iter().map(|(_, ms)| *ms).fold(f64::INFINITY, f64::min);
-        let knee = mine
-            .iter()
-            .find(|(_, ms)| *ms > floor * KNEE_FACTOR)
-            .map(|(n, ms)| (*n, ms / floor));
-        // ⚠⚠ AND WHETHER THAT FLOOR IS THIS INSTRUMENT'S OWN RESOLUTION — register item 1042. A
-        // floor inside one round trip bounds the cost from ABOVE and says nothing about how far
-        // below it lies. Left unsaid, a reader takes the instrument for a measurement — rule 6,
-        // where the unclassified case must not read as a pass.
+        // ⛔⛔⛔⛔⛔ **THE KNEE IS A QUESTION ABOUT THE MARGINAL COST, NOT ABOUT THE TOTAL** —
+        // register item 1047. It used to ask which reading's WHOLE cost first doubled the sweep's
+        // floor, and that worked while the floor was a fixed round trip the first characters rode
+        // inside. Item 1042 took the round trip out; the floor became the cost of ONE character, and
+        // "five characters cost twice one character" is true of every sweep ever taken. All four
+        // combinations answered `n=5`. See [`knee_of`] for what replaced it and why each of its
+        // three choices is load-bearing on this very sample.
+        let knee = knee_of(&marginals);
+        let at = match knee.at {
+            // ⛔ `n=none` IS AN ANSWER AND NOT AN ABSTENTION — rule 6. A sweep with no step that
+            // stays above what came before it has MEASURED that the cost does not break inside the
+            // range it walked, and `over_before` is printed either way so a reader can see by how
+            // much it missed.
+            None => "none".to_owned(),
+            Some(n) => n.to_string(),
+        };
+        println!(
+            "== knee shape={shape} n={at} over_before={:.2}x before_ms_per_char={:.3} \
+             after_ms_per_char={:.3} unaskable={}",
+            knee.over, knee.before, knee.after, knee.unaskable,
+        );
+        // ⚠⚠ THE FLOOR IS A SEPARATE ROW BECAUSE IT IS A SEPARATE QUESTION — register items 1042 and
+        // 1047. *Where does the cost break* and *can this instrument see the bottom of it* were one
+        // row while the knee was measured against the floor; they were never one question, and the
+        // round that changed the first would have silently changed the second.
         //
         // ⛔ THE COMPARISON IS AGAINST A MEASURED QUANTITY. It was `POLL`, which made the verdict a
         // statement about a constant this file chose, and the constant is no longer in the arrival
         // path at all: a floor of 0.3 ms would still have been `floor_is_poll=yes` against a 20 ms
         // sleep, so keeping that spelling would have turned a true sentence into a false one.
+        let floor = mine.iter().map(|(_, ms)| *ms).fold(f64::INFINITY, f64::min);
         let bound = match floor <= resolution * RESOLUTION_FACTOR {
             true => "yes",
             false => "no",
         };
-        match knee {
-            // ⛔ `n=none` IS AN ANSWER AND NOT AN ABSTENTION — rule 6. A sweep with no reading past
-            // the factor has measured that the cost does NOT break inside the range it walked, and
-            // the floor is printed either way so a reader can see what it was measured against.
-            Some((n, over)) => println!(
-                "== knee shape={shape} n={n} over_floor={over:.2}x floor_ms={floor:.2} \
-                 floor_is_resolution={bound}",
-            ),
-            None => println!(
-                "== knee shape={shape} n=none over_floor=1.00x floor_ms={floor:.2} \
-                 floor_is_resolution={bound}",
-            ),
-        }
+        println!("== floor shape={shape} floor_ms={floor:.2} floor_is_resolution={bound}");
     }
     println!(
         "== INPUT-THROUGHPUT profile={} shapes={} sizes={} readings={}",
@@ -2466,9 +2810,14 @@ fn body_of(source: &str, name: &str) -> String {
 /// a declaration that loses a row loses the agreement about it silently.
 ///
 /// ⚠⚠ **THE FIRST NUMBER WRITTEN HERE WAS 28 AND THE SCAN ANSWERED 35**, which is how the `==` row
-/// marker was found sitting in the population — see [`declared_fields`]. Both are 28 now, and the
-/// agreement between a hand count and a program is the only reason to believe either.
-const REPORT_FIELDS: usize = 28;
+/// marker was found sitting in the population — see [`declared_fields`]. The agreement between a
+/// hand count and a program is the only reason to believe either.
+///
+/// ⚠ **32 since item 1047**, which split the knee's verdict from the floor's: the knee row gained
+/// `over_before`, `before_ms_per_char`, `after_ms_per_char` and `unaskable` in place of
+/// `over_floor`, and `floor_ms`/`floor_is_resolution` moved to a row of their own. Raised rather
+/// than left at 28 because a floor under the measurement stops ratcheting (register item 926).
+const REPORT_FIELDS: usize = 32;
 
 /// `source` with every line that is only a comment removed — what the code SAYS, rather than what
 /// its prose says about itself.

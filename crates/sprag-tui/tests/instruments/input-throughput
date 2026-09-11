@@ -34,8 +34,21 @@
 # The pane's clock is now stopped by the DAEMON — `pane/waitForRevision` wakes the wait the moment
 # the pane moves — so the floor is a round trip rather than a sleep, and the round trip is MEASURED
 # on the machine the sweep runs on and published as `resolution_ms`. That is why the header reads
-# `pane_clock=park` and the knee's verdict reads `floor_is_resolution`: both name a quantity this
-# run took, where the words they replace named a constant the suite chose.
+# `pane_clock=park`: it names a quantity this run took, where the word it replaces named a constant
+# the suite chose.
+#
+# # ⛔⛔⛔⛔⛔ And what THAT broke, one round later — register item 1047
+#
+# The knee used to be *the first reading whose whole cost is twice the sweep's floor*, which was a
+# question about the curve only while the floor was a fixed 20 ms round trip that the first few
+# characters rode inside. With the sleep gone the floor is the cost of ONE CHARACTER, and "five
+# characters cost twice one character" is true of every sweep there has ever been: all four
+# combinations of build and shape reported **n=5**, on a sweep whose `debug` half really does break
+# at n=20. A verdict with one possible answer is not a verdict.
+#
+# So the knee is now asked of the MARGINAL cost — the first step whose cost STAYS above the median
+# of the steps before it — and the floor moved to a row of its own, because *where does the cost
+# break* and *can this instrument see the bottom of it* were never one question.
 #
 #   PROFILES   which builds to measure (default "debug release")
 #   SIZES      the sweep, passed through as SPRAG_THROUGHPUT_SIZES (default: the test's own)
@@ -59,7 +72,8 @@ if [ "${1:-}" = "--report-shape" ]; then
     echo "== warmup ms=<ms> (not a reading)"
     echo "== reading shape=<per-char|bulk> n=<n> pane_ms=<ms> screen_ms=<ms> per_char_ms=<ms> wakes=<n> probes=<n> probe_ms=<ms>"
     echo "== marginal shape=<shape> upto=<n> ms_per_char=<ms>"
-    echo "== knee shape=<shape> n=<n|none> over_floor=<factor>x floor_ms=<ms> floor_is_resolution=<yes|no>"
+    echo "== knee shape=<shape> n=<n|none> over_before=<factor>x before_ms_per_char=<ms> after_ms_per_char=<ms> unaskable=<n>"
+    echo "== floor shape=<shape> floor_ms=<ms> floor_is_resolution=<yes|no>"
     echo "== INPUT-THROUGHPUT profile=<p> shapes=<n> sizes=<list> readings=<n>"
     exit 0
 fi
