@@ -215,12 +215,209 @@ pub enum Over {
     ///
     /// ⚠ [`Waited::TimedOut`] under its old name, and it now means what it says. Every ending it
     /// used to cover that was NOT *the peer did not finish* has a word of its own above.
-    NotYet,
+    ///
+    /// ⚠⚠⚠⚠⚠ **AND IT CARRIES WHAT IT IS STILL WAITING FOR** — see [`Wanting`], which holds the
+    /// measurement that bought this field. The other four answers here have carried their evidence
+    /// since they were written; this one answered *no* about a contract nobody could interrogate.
+    NotYet(Wanting),
     /// **THE RUN ended underneath** — cancelled, or out of time.
     ///
     /// Not this wait's business to interpret: every caller hands it back to the driver's loop top,
     /// because only that knows whether it was a cancel or the duration ceiling.
     RunEnded,
+}
+
+/// ⚠⚠⚠⚠⚠ **ONE TERM OF A [`DoneWhen`] THAT IS STILL FALSE** — a single reason this turn has not
+/// ended yet.
+///
+/// # ⛔⛔⛔⛔⛔ The four-round measurement that bought this type
+///
+/// [`Over`]'s other four answers each carry the evidence they were decided from — the question, the
+/// pane, the silence, the run. [`Over::NotYet`] carried NOTHING, and nothing is what both a person
+/// and a gate were handed by a turn that would not end: `OuterLoop` translates it to a null event
+/// and the walk records `Working: looked, nothing had happened`, once a pass, for as long as the
+/// bound lasts. **That sentence is identical whether the agent is thinking, whether the pane belongs
+/// to a different agent than the turn was addressed to, or whether a counter this build requires can
+/// never move at all** — and the last of those three is a turn that will never end however long
+/// anybody waits.
+///
+/// Register item 598 is the measurement, not an argument. Four rounds and ten attempts failed to
+/// drive one pairing to its end, **nine of them narrowing from OUTSIDE the contract**: a test
+/// reading the same clock the loop reads, then a second reader built beside the first to compare
+/// them, then a settle-window hypothesis, then a race hypothesis — every one of them an attempt to
+/// infer which term was false, because the contract could not be ASKED. The round that gave up
+/// wrote the remedy into the register in the product's own terms: *build a reader that answers why
+/// this has not finished yet*. This is that reader, and [`Wanting`] is how a caller holds it.
+///
+/// ⚠⚠ **IT NAMES THE VALUES IT WAS DECIDED FROM**, not merely which term failed. *The state has not
+/// moved* and *the state has not moved: it reads 3 and it read 3 when the turn began* are different
+/// findings to a person holding a live run, and composing the second costs nothing at the one moment
+/// it is composed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unmet {
+    /// [`DoneWhen::Exits`]: the pane's child is still running.
+    PeerAlive,
+    /// [`DoneWhen::Settles`]: the contract was never armed, so there is nothing to compare a rest
+    /// against — see [`Completion::begin`], which arms it only where a supervisor answered about
+    /// the pane AND that answer named an agent.
+    ///
+    /// ⚠⚠⚠ **THIS IS A TURN THAT CAN NEVER END, AND IT USED TO LOOK EXACTLY LIKE A SLOW ONE.** A
+    /// manifest that does not claim the pane leaves the arming empty, every later observation is
+    /// compared against nothing, and the wait runs to its bound on every pass for the life of the
+    /// run.
+    Unarmed,
+    /// [`DoneWhen::Settles`]: nothing supervises this pane now, so no rest can be observed at all.
+    ///
+    /// ⚠ Distinct from [`Unarmed`](Self::Unarmed): that one is about the moment the turn STARTED
+    /// and cannot be repaired by anything the peer does; this one is about the moment being looked
+    /// at, and a supervisor that comes back answers it.
+    Unobserved,
+    /// [`DoneWhen::Settles`]: the agent is not at rest — the ordinary answer, and the only one on
+    /// this list that means *wait longer*.
+    Restless(AgentState),
+    /// [`DoneWhen::Settles`]: the pane's agent is not the one this turn was addressed to.
+    AnotherAgent {
+        /// The agent the turn was armed against, by the name the pane published then.
+        addressed: String,
+        /// What the pane publishes now, or [`None`] where it names no agent at all.
+        seen: Option<String>,
+    },
+    /// [`DoneWhen::Settles`]: the agent's published-verdict counter has not moved since the turn
+    /// began, so this rest is the one it was ALREADY in.
+    Unmoved {
+        /// What the counter read when the turn was armed.
+        began: u64,
+        /// What it reads now.
+        now: u64,
+    },
+    /// [`DoneWhen::Settles`]: the agent reports for itself, so this build requires its QUESTION
+    /// counter to move as well — and it has not.
+    ///
+    /// ⚠⚠⚠ **REGISTER ITEM 441'S COST, AND THE ONE TERM A CALLER CAN GET WRONG BY CONSTRUCTION.**
+    /// A report that does not state an `asked` never advances this counter, so a peer reporting
+    /// `Idle` in perfect good faith leaves this term false FOR EVER. That is not a slow turn and
+    /// waiting does not help it; it is the shape item 598 spent three rounds mistaking for one.
+    Unasked {
+        /// What the question counter read when the turn was armed.
+        began: u64,
+        /// What it reads now.
+        now: u64,
+    },
+    /// The wait's bound ran out before it looked at the pane even once.
+    ///
+    /// ⚠ Not a term of any contract — it is the honest answer for a wait given no time to ask one,
+    /// and it exists so that [`Wanting`] can never be empty beside an unsatisfied contract.
+    Unlooked,
+}
+
+impl Unmet {
+    /// This term as a clause a person reads, naming the values it was decided from.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Self::PeerAlive => {
+                "the peer's program is still running, and this turn ends when it exits".to_owned()
+            }
+            Self::Unarmed => "this turn's contract was never armed — nothing supervised the pane \
+                              when the prompt went in, or the pane named no agent — so no rest can \
+                              be compared against what the turn was addressed to, and this turn \
+                              cannot end however long it is given"
+                .to_owned(),
+            Self::Unobserved => {
+                "nothing supervises this pane now, so no rest can be observed at all".to_owned()
+            }
+            Self::Restless(state) => format!("the agent is {state:?} rather than at rest"),
+            Self::AnotherAgent { addressed, seen } => seen.as_ref().map_or_else(
+                || {
+                    format!(
+                        "the pane names no agent now, and this turn was addressed to {addressed:?}"
+                    )
+                },
+                |seen| {
+                    format!(
+                        "the pane's agent is {seen:?} and this turn was addressed to {addressed:?}"
+                    )
+                },
+            ),
+            Self::Unmoved { began, now } => format!(
+                "the agent's state has not moved since the turn began (seq {now}, and it read \
+                 {began} then), so this rest is the one it was already in"
+            ),
+            Self::Unasked { began, now } => format!(
+                "the agent reports for itself, so its QUESTION counter has to move too and it has \
+                 not (asked_seq {now}, and it read {began} when the turn began) — a report that \
+                 states no `asked` never moves it, and that turn never ends"
+            ),
+            Self::Unlooked => {
+                "the wait's bound ran out before it looked at the pane at all".to_owned()
+            }
+        }
+    }
+}
+
+/// **WHAT A CONTRACT IS STILL WAITING FOR** — every [`Unmet`] term of it, and EMPTY exactly when the
+/// contract is satisfied.
+///
+/// # ⚠⚠⚠⚠⚠ Emptiness IS satisfaction here, and that is the point rather than an optimisation
+///
+/// [`Completion`]'s own `satisfied_of` is DEFINED as `wanting_of(..).met()`. There is no second
+/// predicate
+/// to drift from this one, so the state *the turn is not over and nothing here can say why* is not
+/// reachable — which is precisely the state register item 598 sat in for four rounds. A `bool`
+/// computed beside a list would have left that hatch open, and rule 6 of this workspace's round
+/// discipline says what an unclassified pass is: **a red, never a pass.**
+///
+/// # ⚠⚠ EVERY term, not the first false one
+///
+/// Two terms are false together in the ordinary case — an agent that is still working has also not
+/// moved its counters — and a reader handed one at a time repairs one, waits out the next bound, and
+/// is told the next. That is the shape of the ten attempts item 598 records. Composing all of them
+/// costs one [`Vec`] that is UNALLOCATED on the satisfied path, which is the path taken once per
+/// look.
+/// ⚠⚠⚠⚠⚠ **DELIBERATELY NOT [`Default`]**, which is rule 6 of this workspace's round discipline
+/// applied to a type rather than to a pass: an empty `Wanting` MEANS *the contract is satisfied*,
+/// so `Over::NotYet(Wanting::default())` would be a value asserting both that the turn did not end
+/// and that nothing is outstanding. The only ways to make one are [`Completion`]'s own `wanting_of`,
+/// which measures, and [`Wanting::unlooked`], which names the one case a measurement was never taken.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Wanting(Vec<Unmet>);
+
+impl Wanting {
+    /// The answer for a wait whose bound ran out before it ever looked — see [`Unmet::Unlooked`].
+    #[must_use]
+    pub fn unlooked() -> Self {
+        Self(vec![Unmet::Unlooked])
+    }
+
+    /// **WHETHER THE CONTRACT IS SATISFIED** — nothing is outstanding.
+    #[must_use]
+    pub fn met(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The terms still outstanding, in the order the contract asks them.
+    #[must_use]
+    pub fn terms(&self) -> &[Unmet] {
+        &self.0
+    }
+
+    /// **WHAT A PERSON READING A STALLED RUN IS TOLD**, or [`None`] where nothing is outstanding.
+    ///
+    /// ⚠ The clauses are joined with `; and ` rather than a bare comma: each one names numbers of
+    /// its own, and a comma between two clauses that both end in digits reads as one list.
+    #[must_use]
+    pub fn describe(&self) -> Option<String> {
+        if self.met() {
+            return None;
+        }
+        Some(
+            self.0
+                .iter()
+                .map(Unmet::describe)
+                .collect::<Vec<_>>()
+                .join("; and "),
+        )
+    }
 }
 
 /// WHICH EVIDENCE says a peer's turn is over.
@@ -719,6 +916,18 @@ pub(crate) struct Stands {
     /// learned the cost of asking a scraped pane for a number only a reported one has, and this is
     /// that lesson applied before the fact rather than after.
     pub(crate) spoken: Option<Heard>,
+    /// **WHAT THE CALLER'S CONTRACT IS STILL WAITING FOR** — see [`Wanting`], and EMPTY exactly
+    /// where the contract's own evidence answered [`Over::Yes`].
+    ///
+    /// ⚠⚠ IT IS A FUNCTION OF THE SAME ONE READING as its three neighbours, which is what makes it
+    /// answerable at all: a reader that asked the pane a second time would be describing a moment
+    /// the ending was not decided in, and register item 598 records nine rounds of that mistake
+    /// made from outside this type.
+    ///
+    /// ⚠ NON-EMPTY beside [`Over::PeerGone`] and [`Over::Asking`], which is correct rather than
+    /// sloppy: both endings are reached BECAUSE the contract was not satisfied, so what it was
+    /// still waiting for remains true of them.
+    pub(crate) wanting: Wanting,
 }
 
 /// **WHAT THIS PANE'S REPORTER SAID, AT THE ONE LOOK [`Stands`] TOOK** — the two facts a silence
@@ -836,10 +1045,17 @@ impl Completion {
         // the `DoneWhen::Exits` arm a second read on every other round, because `satisfied` and the
         // gone-peer check each asked. Read once, both arms are one call and both see one moment.
         let eof = panes.pane_eof(pane);
+        // ⚠⚠⚠⚠⚠ **COMPOSED ONCE AND THEN LENT TO THE ENDING**, rather than asked twice. The ending
+        // needs one bit of this — *is anything outstanding* — and [`Wanting`]'s own doc says why
+        // that bit is not computed beside the list: two predicates over one reading are two things
+        // that can come to disagree, and the disagreement they would express is *this turn is not
+        // over and nothing here can say why*, which is the state register item 598 sat in.
+        let wanting = self.wanting_of(seen.as_ref(), eof);
         Stands {
-            over: self.ended_of(pane, seen.as_ref(), eof),
+            over: self.ended_of(pane, seen.as_ref(), &wanting, eof),
             settles: Self::settles_of(seen.as_ref()),
             spoken: Self::spoken_of(seen.as_ref()),
+            wanting,
         }
     }
 
@@ -852,6 +1068,7 @@ impl Completion {
         &self,
         pane: PaneId,
         seen: Option<&AgentObservation>,
+        wanting: &Wanting,
         eof: Option<bool>,
     ) -> Option<Over> {
         // ⚠ THE CONTRACT IS ASKED FIRST. Where both could be true — a peer that asked and whose
@@ -859,7 +1076,7 @@ impl Completion {
         // the turn is over on the terms they chose and the capture is whole. The ask is what ends
         // a turn the contract CANNOT end, and asking it second is what keeps it to that job.
         //
-        if self.satisfied_of(seen, eof) {
+        if wanting.met() {
             return Some(Over::Yes);
         }
         // ⚠⚠⚠⚠ AND THEN: THE PEER MAY BE GONE, which no contract left can end a turn on. See
@@ -941,42 +1158,78 @@ impl Completion {
             .then(|| seen.asking.clone())
     }
 
-    /// Whether the reading [`stands`](Self::stands) took satisfies this contract.
-    fn satisfied_of(&self, seen: Option<&AgentObservation>, eof: Option<bool>) -> bool {
+    /// **WHAT THIS CONTRACT IS STILL WAITING FOR**, from the reading [`stands`](Self::stands) took
+    /// — and EMPTY exactly where that reading satisfies it.
+    ///
+    /// # ⚠⚠⚠⚠⚠ This is the predicate. The `bool` is derived from it and not beside it
+    ///
+    /// It used to be `satisfied_of`, four terms `&&`-ed into a yes or no, and the terms were gone
+    /// the instant the answer was taken. [`Wanting`]'s doc holds what that cost — register item 598,
+    /// four rounds, ten attempts, nine of them narrowing from outside a contract that could not be
+    /// asked which of its terms was false.
+    ///
+    /// ⚠⚠ **THE TERMS AND THEIR ORDER ARE UNCHANGED**, which is what makes this a reader rather
+    /// than a rewrite: every `push` below stands where a `&&` stood, and a contract satisfied before
+    /// is satisfied now. The only new fact is that a contract which is NOT satisfied now says so in
+    /// words.
+    fn wanting_of(&self, seen: Option<&AgentObservation>, eof: Option<bool>) -> Wanting {
+        let mut wanting = Vec::new();
         match &self.when {
             // ⚠ An UNKNOWN pane counts as over. A rule that answered "not yet" for a pane that is
             // not there would spin to the timeout on a question that can never be answered — and
             // both plugins that use this already spelled it `unwrap_or(true)`, which is the
             // behaviour this preserves exactly.
-            DoneWhen::Exits => eof.unwrap_or(true),
+            DoneWhen::Exits => {
+                if !eof.unwrap_or(true) {
+                    wanting.push(Unmet::PeerAlive);
+                }
+            }
             DoneWhen::Settles => {
                 // Never armed, no supervisor to arm from, or no agent identified in the pane the
                 // prompt went to — see `begin`. None of those is evidence that a turn ended.
                 let Some(addressed) = &self.addressed else {
-                    return false;
+                    return Wanting(vec![Unmet::Unarmed]);
                 };
-                seen.is_some_and(|seen| {
-                    // ⚠⚠ ALL FOUR, and the last one is what stops a peer's rest from reading as
-                    // its answer to THIS question. See the variant's doc.
-                    //
-                    // ⚠⚠⚠⚠⚠ THE PAIRING IS ASKED ONLY OF A PANE THAT CAN ANSWER IT — register
-                    // item 441, and this condition is the SECOND half of that item's cost.
-                    // `asked_seq` advances where a REPORT states an `asked`; a pane read from
-                    // its SCREEN states nothing, so the term is false there for ever and the
-                    // turn never ends. Measured against a live agent: three lines, answered in
-                    // a second, `Over::NotYet` still at the 183-second bound. `is_exact` is the
-                    // published question for exactly this — *did this answer come from the pane
-                    // itself* — and a scraped rest is judged on the three terms a scraped rest
-                    // can support. ⚠ That is a DEGRADATION, named as one: a screen-read rest
-                    // cannot be told from one belonging to earlier work. The alternative is not
-                    // a stricter loop but one that never judges anything.
-                    seen.state == AgentState::Idle
-                        && seen.agent.as_deref() == Some(addressed.agent.as_str())
-                        && seen.seq > addressed.seq
-                        && (!seen.authority.is_exact() || seen.asked_seq > addressed.asked_seq)
-                })
+                let Some(seen) = seen else {
+                    return Wanting(vec![Unmet::Unobserved]);
+                };
+                // ⚠⚠ ALL FOUR, and the last one is what stops a peer's rest from reading as
+                // its answer to THIS question. See the variant's doc.
+                if seen.state != AgentState::Idle {
+                    wanting.push(Unmet::Restless(seen.state));
+                }
+                if seen.agent.as_deref() != Some(addressed.agent.as_str()) {
+                    wanting.push(Unmet::AnotherAgent {
+                        addressed: addressed.agent.clone(),
+                        seen: seen.agent.clone(),
+                    });
+                }
+                if seen.seq <= addressed.seq {
+                    wanting.push(Unmet::Unmoved {
+                        began: addressed.seq,
+                        now: seen.seq,
+                    });
+                }
+                // ⚠⚠⚠⚠⚠ THE PAIRING IS ASKED ONLY OF A PANE THAT CAN ANSWER IT — register
+                // item 441, and this condition is the SECOND half of that item's cost.
+                // `asked_seq` advances where a REPORT states an `asked`; a pane read from
+                // its SCREEN states nothing, so the term is false there for ever and the
+                // turn never ends. Measured against a live agent: three lines, answered in
+                // a second, `Over::NotYet` still at the 183-second bound. `is_exact` is the
+                // published question for exactly this — *did this answer come from the pane
+                // itself* — and a scraped rest is judged on the three terms a scraped rest
+                // can support. ⚠ That is a DEGRADATION, named as one: a screen-read rest
+                // cannot be told from one belonging to earlier work. The alternative is not
+                // a stricter loop but one that never judges anything.
+                if seen.authority.is_exact() && seen.asked_seq <= addressed.asked_seq {
+                    wanting.push(Unmet::Unasked {
+                        began: addressed.asked_seq,
+                        now: seen.asked_seq,
+                    });
+                }
             }
         }
+        Wanting(wanting)
     }
 
     /// [`Stands::settles`], folded from the one reading — the ARGUMENT for the fold, including why
@@ -1024,7 +1277,13 @@ impl Completion {
         // needs no `expect` over an invariant held somewhere else. `poll_until` answers `Ready`
         // exactly when the closure did, and the closure only says so having written an ending
         // here.
-        let mut ending = Over::NotYet;
+        // ⚠⚠⚠⚠⚠ **SEEDED WITH [`Unmet::Unlooked`], WHICH IS A REAL ANSWER AND NOT A PLACEHOLDER.**
+        // A wait whose bound is already spent never runs the closure below, and *the bound ran out
+        // before it looked* is the true finding for that pass — the one shape of `NotYet` no
+        // contract term can explain. Seeding an EMPTY `Wanting` would have said *nothing is
+        // outstanding* about a turn that did not end, which is the contradiction [`Wanting`]'s doc
+        // exists to make unreachable.
+        let mut ending = Over::NotYet(Wanting::unlooked());
         let mut listening = quiet.map(Listening::for_);
         // ⚠⚠⚠⚠⚠ **PARKED ON THE PANE, NOT POLLED AT IT** — register item 280. The predicate below
         // renders a screen and runs a detector over it, and asking it every
@@ -1087,6 +1346,17 @@ impl Completion {
                 ending = over;
                 return Look::Holds;
             }
+            // ⚠⚠⚠⚠⚠ **THE LOOK THAT FOUND NOTHING IS THE ONE THAT EXPLAINS THE BOUND RUNNING OUT.**
+            // Kept on every unfinished look rather than read once at the end, because there is no
+            // "end" to read at: `park_until` returns having taken its LAST look inside this
+            // closure, and a reader that asked the pane again out there would be describing a
+            // different moment — register item 598's whole mistake, made nine times from outside
+            // this type.
+            //
+            // ⚠ It overwrites rather than accumulates: what a person needs is why the turn is
+            // stuck NOW, and a contract whose terms changed during the wait is one whose last
+            // reading is the live one.
+            ending = Over::NotYet(stands.wanting);
             let Some(listening) = listening.as_mut() else {
                 // ⚠ No silence bound: the only clock inside this predicate is the supervisor's.
                 return stands.settles.not_yet();
@@ -1102,8 +1372,11 @@ impl Completion {
             Look::Settles(stands.settles.due().map_or(due, |verdict| verdict.min(due)))
         });
         match waited {
-            Waited::Ready => ending,
-            Waited::TimedOut => Over::NotYet,
+            // ⚠⚠ THE SAME SLOT, and that is what makes the answer honest: `ending` holds either the
+            // ending a look found, or the `NotYet` that look's own `Wanting` explains. A fresh
+            // `Over::NotYet(Wanting::default())` here would have published *nothing is outstanding*
+            // about a turn that plainly did not end.
+            Waited::Ready | Waited::TimedOut => ending,
             Waited::Stopped => Over::RunEnded,
         }
     }
@@ -1272,6 +1545,122 @@ mod tests {
         });
     }
 
+    /// ⛔⛔⛔⛔⛔ **A TURN THAT HAS NOT ENDED NAMES THE TERM OF ITS CONTRACT THAT IS STILL FALSE** —
+    /// register item 598, and the instrument that item's fourth round asked the next one to build.
+    ///
+    /// # What was unaskable, and what it cost
+    ///
+    /// [`Over::NotYet`] used to be a bare word. Four terms decide it, two of them mean *wait longer*
+    /// and two of them mean *this turn can never end*, and all four rendered as the same eleven
+    /// words in a run's journal. Item 598 spent four rounds and ten attempts narrowing that from
+    /// outside the contract — a test reading the same clock, a second reader built to compare
+    /// against the first, a settle-window hypothesis, a race hypothesis — because the contract could
+    /// not be asked which of its terms was false.
+    ///
+    /// # ⚠⚠⚠ What is asserted, and why each arm has a control beside it
+    ///
+    /// Three staged contracts, each false for a DIFFERENT reason, and the assertion is that they
+    /// answer differently. Asserting only that each is non-empty would pass for an instrument that
+    /// said *something is outstanding* three times, which is what the old bare word already said.
+    ///
+    /// ⚠⚠ AND THE SATISFIED CONTRACT IS THE FOURTH CASE, asserted last: a reader that never answers
+    /// `met` would make [`Over::Yes`] unreachable, since `satisfied` IS this predicate. That is the
+    /// control which stops this gate passing for an instrument welded to *not yet*.
+    #[test]
+    fn a_turn_that_has_not_ended_names_the_term_of_its_contract_that_is_still_false() {
+        const BOUND: Duration = Duration::from_millis(200);
+        /// The terms a wait ends up outstanding, or a panic naming what it answered instead.
+        fn terms(done: &Completion, access: &WorkspacePaneAccess, pane: PaneId) -> Vec<Unmet> {
+            let over = done.wait(access, pane, BOUND, None, &RunContext::uncancellable());
+            let Over::NotYet(wanting) = over else {
+                panic!("this contract is not satisfied, so the wait must run out: {over:?}");
+            };
+            assert!(
+                !wanting.met(),
+                "⛔⛔⛔⛔⛔ AN EMPTY `Wanting` BESIDE A `NotYet` IS THE ONE STATE THIS TYPE EXISTS \
+                 TO MAKE UNREACHABLE: it says the turn did not end AND that nothing is \
+                 outstanding, which is register item 598's whole four-round condition wearing a \
+                 new type. Got {wanting:?}",
+            );
+            wanting.terms().to_vec()
+        }
+
+        // ── ONE: a contract nobody armed. `begin` was never called, so no observation can be
+        //    compared against anything, and no amount of waiting repairs it ──────────────────────
+        let (access, pane, _reported) = supervised(AgentState::Idle, 7);
+        let unarmed = terms(&Completion::new(DoneWhen::Settles), &access, pane);
+        assert_eq!(
+            unarmed,
+            vec![Unmet::Unarmed],
+            "⚠⚠⚠⚠⚠ an unarmed contract is a turn that CANNOT end, and it is the one a person most \
+             needs told apart from a slow one — `begin` arms against what the supervisor said when \
+             the prompt went in, and a pane no manifest claims arms nothing",
+        );
+
+        // ── TWO: armed, and the peer is working. The ordinary answer, and the only one that means
+        //    *wait longer* ────────────────────────────────────────────────────────────────────────
+        let mut done = Completion::new(DoneWhen::Settles);
+        done.begin(&access, pane);
+        moved(&_reported, AgentState::Working, 8, Some("claude"));
+        let working = terms(&done, &access, pane);
+        // ⛔⛔⛔⛔⛔ **TWO TERMS, AND THE SECOND ONE IS THE WHOLE ARGUMENT FOR REPORTING ALL OF
+        // THEM.** The first run of this gate asserted `Restless` alone and the instrument
+        // contradicted it: this peer is working AND its question counter has not moved, because
+        // `moved` reports a state without stating an `asked`. A reader handed one term at a time
+        // repairs the state, waits out the next bound, and is told the next — which is the shape of
+        // the ten attempts register item 598 records. ⚠ It is asserted as an exact list rather
+        // than by `contains`, so an instrument that dropped the second term goes red here.
+        assert_eq!(
+            working,
+            vec![
+                Unmet::Restless(AgentState::Working),
+                Unmet::Unasked { began: 7, now: 7 },
+            ],
+            "⚠⚠ a peer mid-answer has BOTH the term that changes by itself and the one that never \
+             will, and a person who repairs only the first waits out another bound to learn the \
+             second",
+        );
+
+        // ── THREE: at rest, moved, and the pane belongs to somebody else ───────────────────────
+        moved(&_reported, AgentState::Idle, 9, Some("codex"));
+        let another = terms(&done, &access, pane);
+        assert_eq!(
+            another,
+            vec![
+                Unmet::AnotherAgent {
+                    addressed: "claude".to_owned(),
+                    seen: Some("codex".to_owned()),
+                },
+                Unmet::Unasked { began: 7, now: 7 },
+            ],
+            "⚠⚠⚠ a rest belonging to another program is not this question's answer, and the \
+             instrument has to say WHOSE — *the turn is not over* sends a person to wait, and the \
+             remedy here is to look at what is in that pane",
+        );
+
+        // ── AND THE THREE ANSWERS ARE THREE ANSWERS, which is the claim an instrument that merely
+        //    said *something is outstanding* would also pass ─────────────────────────────────────
+        assert!(
+            unarmed != working && working != another && unarmed != another,
+            "⛔⛔⛔⛔ THE INSTRUMENT IS DECORATION IF THE THREE READ ALIKE. That is precisely what \
+             the walk did before this round — `looked, nothing had happened`, identically, for a \
+             turn that was progressing and for two that could not end. Got {unarmed:?}, \
+             {working:?}, {another:?}",
+        );
+
+        // ── THE CONTROL: a contract this reading SATISFIES answers empty, and `Over::Yes` with it.
+        //    Without this arm an instrument hard-wired to *not yet* passes everything above ──────
+        moved(&_reported, AgentState::Idle, 10, Some("claude"));
+        _reported.lock().expect("the reported mutex").asked_seq = 11;
+        assert_eq!(
+            done.wait(&access, pane, BOUND, None, &RunContext::uncancellable()),
+            Over::Yes,
+            "⚠⚠⚠⚠⚠ THE CONTROL FAILED: `satisfied` IS `wanting(..).met()`, so a reader that can \
+             never answer empty is one that has made a completed turn unreachable",
+        );
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
     /// **SOMETHING SPOKE FOR THE PANE** — one accepted report, whatever it said.
     ///
     /// ⚠⚠⚠ SEPARATE FROM [`moved`], [`took`] AND [`asks`], and the separation IS register item
@@ -1419,9 +1808,8 @@ mod tests {
         );
         stop.store(true, std::sync::atomic::Ordering::Release);
         reporter.join().expect("the reporter thread");
-        assert_eq!(
-            working,
-            Over::NotYet,
+        assert!(
+            matches!(working, Over::NotYet(_)),
             "⚠⚠⚠⚠ THE CONTROL FAILED. This peer's turn has not ended and its reporter has spoken \
              {} times while the wait ran — which is precisely a turn calling tool after tool, the \
              case `reports` was added for. Answering `Silent` here would hand a healthy turn to a \
@@ -1445,9 +1833,8 @@ mod tests {
             Quiet::of(QUIET),
             &RunContext::uncancellable(),
         );
-        assert_eq!(
-            inferred,
-            Over::NotYet,
+        assert!(
+            matches!(inferred, Over::NotYet(_)),
             "⚠⚠⚠⚠⚠ THE CONTROL FAILED, and this is the expensive way to be wrong: every pane read \
              from its SCREEN reports zero for ever, so a rule that reads that zero as silence \
              declares every un-instrumented peer dead one bound into its first turn. Got \
@@ -1463,9 +1850,8 @@ mod tests {
         let mut done = Completion::new(DoneWhen::Settles);
         done.begin(&access, pane);
         let unasked = done.wait(&access, pane, BOUND, None, &RunContext::uncancellable());
-        assert_eq!(
-            unasked,
-            Over::NotYet,
+        assert!(
+            matches!(unasked, Over::NotYet(_)),
             "⚠⚠ THE CONTROL FAILED — `Over::Silent` must be unreachable for a caller that declared \
              no silence bound, by construction and not by arithmetic. Got {unasked:?}",
         );
@@ -1558,9 +1944,8 @@ mod tests {
             &RunContext::uncancellable(),
         );
         let cost = started.elapsed();
-        assert_eq!(
-            working,
-            Over::NotYet,
+        assert!(
+            matches!(working, Over::NotYet(_)),
             "⛔⛔⛔⛔⛔ THIS PEER IS QUIET BECAUSE A CHILD IS RUNNING, AND THAT IS NOT SILENCE. \
              `Silent` here is the measured defect: a run took this answer at 05:56:33 with \
              `cargo check` on its agent's screen and was killed an hour later while the turn was \
@@ -1759,9 +2144,11 @@ mod tests {
         let (long_looks, long_took, long_over) = listened(LONG);
 
         // ── the control: both arms really waited, so there is a wait to have looked during ──
-        assert_eq!(
-            (short_over, long_over),
-            (Over::NotYet, Over::NotYet),
+        assert!(
+            matches!(
+                (&short_over, &long_over),
+                (Over::NotYet(_), Over::NotYet(_))
+            ),
             "⚠⚠⚠ THE CONTROL: with the silence bound eight times the turn's, both waits must end \
              on the TURN's clock. Anything else means this measured a different wait",
         );
@@ -2027,15 +2414,17 @@ mod tests {
         let mut done = Completion::new(DoneWhen::Settles);
         done.begin(&access, pane);
 
-        assert_eq!(
-            done.wait(
-                &access,
-                pane,
-                Duration::from_millis(200),
-                None,
-                &RunContext::uncancellable(),
+        assert!(
+            matches!(
+                done.wait(
+                    &access,
+                    pane,
+                    Duration::from_millis(200),
+                    None,
+                    &RunContext::uncancellable(),
+                ),
+                Over::NotYet(_)
             ),
-            Over::NotYet,
             "⚠⚠⚠ the peer is at rest and named, and it has NOT answered — it never started. A \
              contract satisfied here captures the screen from before the model wrote a word and \
              publishes it as the model's reply.",
@@ -2073,15 +2462,17 @@ mod tests {
         // what it was already doing when the prompt landed in its composer.
         moved(&reported, AgentState::Idle, 8, Some("claude"));
 
-        assert_eq!(
-            done.wait(
-                &access,
-                pane,
-                Duration::from_millis(300),
-                None,
-                &RunContext::uncancellable(),
+        assert!(
+            matches!(
+                done.wait(
+                    &access,
+                    pane,
+                    Duration::from_millis(300),
+                    None,
+                    &RunContext::uncancellable(),
+                ),
+                Over::NotYet(_)
             ),
-            Over::NotYet,
             "⚠⚠⚠⚠⚠ AN IDLE THE PEER OWES TO AN EARLIER QUESTION IS NOT AN ANSWER TO THIS ONE. \
              Every other term is satisfied — it is idle, it is the addressed agent, and `seq` has \
              moved — which is exactly why this went unnoticed: the contract had no way to ask the \
@@ -2222,15 +2613,17 @@ mod tests {
         // Identical to the gate above in every term except where the answer came from.
         moved(&reported, AgentState::Idle, 8, Some("claude"));
 
-        assert_eq!(
-            done.wait(
-                &access,
-                pane,
-                Duration::from_millis(300),
-                None,
-                &RunContext::uncancellable(),
+        assert!(
+            matches!(
+                done.wait(
+                    &access,
+                    pane,
+                    Duration::from_millis(300),
+                    None,
+                    &RunContext::uncancellable(),
+                ),
+                Over::NotYet(_)
             ),
-            Over::NotYet,
             "⚠⚠⚠⚠ AN AGENT THAT SPEAKS FOR ITSELF IS HELD TO WHAT IT SAID. Widen the scraped \
              degradation to every pane and this goes green — and the loop is deaf again, because \
              the rest it accepts belongs to the question before this one",
@@ -2263,15 +2656,17 @@ mod tests {
         let mut done = Completion::new(DoneWhen::Settles);
         done.begin(&access, pane);
 
-        assert_eq!(
-            done.wait(
-                &access,
-                pane,
-                Duration::from_millis(200),
-                None,
-                &RunContext::uncancellable(),
+        assert!(
+            matches!(
+                done.wait(
+                    &access,
+                    pane,
+                    Duration::from_millis(200),
+                    None,
+                    &RunContext::uncancellable(),
+                ),
+                Over::NotYet(_)
             ),
-            Over::NotYet,
             "⚠⚠⚠ the question on that screen is one this turn never provoked — it was there when \
              the turn began. A contract satisfied here ends a turn the peer has not started, and \
              hands a caller a dialog to answer that may already have been answered",
@@ -2310,15 +2705,17 @@ mod tests {
         // It started, and has been busy through several published changes.
         moved(&reported, AgentState::Working, 11, Some("claude"));
 
-        assert_eq!(
-            done.wait(
-                &access,
-                pane,
-                Duration::from_millis(200),
-                None,
-                &RunContext::uncancellable(),
+        assert!(
+            matches!(
+                done.wait(
+                    &access,
+                    pane,
+                    Duration::from_millis(200),
+                    None,
+                    &RunContext::uncancellable(),
+                ),
+                Over::NotYet(_)
             ),
-            Over::NotYet,
             "a peer mid-answer is not a peer that answered — capturing here truncates it",
         );
         access.lifecycle().expect("lifecycle").close(pane);
@@ -2343,30 +2740,34 @@ mod tests {
         done.begin(&access, pane);
         // At rest, and moved — but it is not the program the prompt was given to.
         moved(&reported, AgentState::Idle, 8, Some("codex"));
-        assert_eq!(
-            done.wait(
-                &access,
-                pane,
-                Duration::from_millis(200),
-                None,
-                &RunContext::uncancellable(),
+        assert!(
+            matches!(
+                done.wait(
+                    &access,
+                    pane,
+                    Duration::from_millis(200),
+                    None,
+                    &RunContext::uncancellable(),
+                ),
+                Over::NotYet(_)
             ),
-            Over::NotYet,
             "⚠⚠ the turn was addressed to `claude` and `codex` is what is at rest there now — a \
              contract satisfied here reports another program's quiet as this question's answer",
         );
 
         // Named nobody: the same absence of evidence, spelled the other way.
         moved(&reported, AgentState::Idle, 9, None);
-        assert_eq!(
-            done.wait(
-                &access,
-                pane,
-                Duration::from_millis(200),
-                None,
-                &RunContext::uncancellable(),
+        assert!(
+            matches!(
+                done.wait(
+                    &access,
+                    pane,
+                    Duration::from_millis(200),
+                    None,
+                    &RunContext::uncancellable(),
+                ),
+                Over::NotYet(_)
             ),
-            Over::NotYet,
             "an observation naming no agent is not evidence about the one that was asked",
         );
         access.lifecycle().expect("lifecycle").close(pane);
@@ -2375,15 +2776,17 @@ mod tests {
         let (bare, pane) = sh_access("exec cat", 20, 4);
         let mut done = Completion::new(DoneWhen::Settles);
         done.begin(&bare, pane);
-        assert_eq!(
-            done.wait(
-                &bare,
-                pane,
-                Duration::from_millis(200),
-                None,
-                &RunContext::uncancellable(),
+        assert!(
+            matches!(
+                done.wait(
+                    &bare,
+                    pane,
+                    Duration::from_millis(200),
+                    None,
+                    &RunContext::uncancellable(),
+                ),
+                Over::NotYet(_)
             ),
-            Over::NotYet,
             "a host that cannot see agents must not report every turn instantly complete",
         );
         bare.lifecycle().expect("lifecycle").close(pane);
@@ -2408,15 +2811,17 @@ mod tests {
         ended.lifecycle().expect("lifecycle").close(pane);
 
         let (running, pane) = sh_access("exec cat", 20, 4);
-        assert_eq!(
-            Completion::new(DoneWhen::Exits).wait(
-                &running,
-                pane,
-                Duration::from_millis(200),
-                None,
-                &RunContext::uncancellable(),
+        assert!(
+            matches!(
+                Completion::new(DoneWhen::Exits).wait(
+                    &running,
+                    pane,
+                    Duration::from_millis(200),
+                    None,
+                    &RunContext::uncancellable(),
+                ),
+                Over::NotYet(_)
             ),
-            Over::NotYet,
             "⚠⚠ and a peer that never exits can only end this wait on the CLOCK — the whole \
              reason a second kind of evidence is owed, spelled here as a measurement rather than \
              as a claim in a comment",
@@ -2704,9 +3109,11 @@ mod tests {
         let (answered_asked, _, answered_end) = cost_of(DoneWhen::Settles, true);
 
         // ── THE CONTROLS: the wait really ran, and one reading really answers ──────────────────
-        assert_eq!(
-            (settles_end.clone(), exits_end.clone()),
-            (Over::NotYet, Over::NotYet),
+        assert!(
+            matches!(
+                (&settles_end, &exits_end),
+                (Over::NotYet(_), Over::NotYet(_))
+            ),
             "⚠⚠⚠⚠⚠ THE CONTROL: a contract that ended early costs one read too, and would make \
              the claim below true by not waiting. Both arms must have run out their patience at a \
              peer that never answered. Settles {settles_end:?}, Exits {exits_end:?}",

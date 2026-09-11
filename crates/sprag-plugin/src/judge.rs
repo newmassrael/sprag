@@ -1565,7 +1565,12 @@ mod tests {
                 Silence::Unanswered,
             ),
             (
-                Unheard::Unfinished(crate::completion::Over::NotYet),
+                // ⚠ `unlooked` rather than a measured `Wanting`: this table is about the ARM, and
+                // that is the one value of this type nothing has to be observed to build — see
+                // `Unmet::Unlooked`.
+                Unheard::Unfinished(crate::completion::Over::NotYet(
+                    crate::completion::Wanting::unlooked(),
+                )),
                 Silence::Unanswered,
             ),
             (Unheard::Unaccountable, Silence::Unanswered),

@@ -1099,7 +1099,12 @@ impl Plugin for Agent {
         // both the word and the caveat below are rendered from the answer, so the key a consumer
         // reads and the prose a person reads cannot come to disagree; a second test of `waited`
         // beside this one is exactly the drift this crate keeps paying for.
-        let closed = if waited == Over::NotYet {
+        // ⚠ `matches!` AND NOT `==`, because [`Over::NotYet`] now carries what the contract was
+        // still waiting for — register item 598. The QUESTION here is unchanged (*did the bound run
+        // out*), and this adapter's contract is `Exits`, whose one term renders as *the peer's
+        // program is still running* — which is what the sentence below already tells a person in
+        // its own words.
+        let closed = if matches!(waited, Over::NotYet(_)) {
             Closed::Unfinished
         } else {
             Closed::Replied

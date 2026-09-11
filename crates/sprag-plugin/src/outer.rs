@@ -7480,6 +7480,29 @@ pub struct OuterLoop {
     /// levels, and an arity that changes when an instrument breaks must not be republished every
     /// time a turn moves a file. See [`Moved`]'s own doc for the gate that said so.
     moved: Option<Moved>,
+    /// ⛔⛔⛔⛔⛔ **AND WHAT THE TURN CONTRACT WAS STILL WAITING FOR, WHERE THIS PASS'S WAIT RAN OUT
+    /// WITHOUT ONE** — [`crate::completion::Wanting`], register item 598, emptied at the top of
+    /// every pump exactly as
+    /// the three slots above it are.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The sentence a stalled run wrote for four rounds, and what it left out
+    ///
+    /// A wait that ends in [`Over::NotYet`] raises no event, so `walked` composes
+    /// `Working: looked, nothing had happened` — the same eleven words whether the agent is
+    /// thinking, whether the pane belongs to somebody else, or whether a counter this build
+    /// requires can never move again. The third of those never ends, and it is indistinguishable
+    /// from the first in that journal. Register item 598 spent four rounds and ten attempts
+    /// narrowing that from OUTSIDE the contract because the contract could not be asked.
+    ///
+    /// ⚠⚠ **A SLOT ON THE LOOP AND NOT A FIELD ON [`Pumped`]**, which is `faced`'s measured rule
+    /// one field up and applies here unchanged: emptied at the top of every pump, so what is in it
+    /// belongs to the pass that just ran, and a field on `Pumped` would put one fact at every
+    /// construction site.
+    ///
+    /// ⚠ [`None`] means THIS PASS TOOK NO WAIT THAT RAN OUT — it delivered, it judged, its peer
+    /// answered — and never *the contract wanted nothing*, which is a satisfied wait and reaches
+    /// this slot as [`None`] too because it raised `turn.done` instead.
+    wanting: Option<crate::completion::Wanting>,
     /// ⚠⚠⚠ **THE EVIDENCE THIS RUN HAS ALREADY TOLD ITS READER ABOUT** — the level
     /// [`witnessed`](Self#structfield.witnessed)'s event is DIFFED against, so a walk carries the
     /// answer once and then again whenever it CHANGES.
@@ -7853,6 +7876,9 @@ impl OuterLoop {
             // looked says nothing; `Moved::NoTurnYet` is what a pass that HAS looked says before a
             // prompt has gone in, and the two are not the same answer.
             moved: None,
+            // ⚠ No wait has run out yet — see the field's own doc, and note that a wait which ENDS
+            // leaves this empty too: the difference between the two is the event the pass raised.
+            wanting: None,
             told: Told::default(),
             deliveries: crate::plugin::Deliveries::NONE,
             folds: FoldsByReason::NONE,
@@ -9059,6 +9085,29 @@ impl OuterLoop {
     pub fn moved(&mut self) -> Option<Moved> {
         let reading = self.moved.take()?;
         self.told.moved(reading)
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHAT THIS PASS'S TURN CONTRACT WAS STILL WAITING FOR** —
+    /// [`crate::completion::Wanting`], or [`None`]
+    /// on a pass whose wait did not run out. Register item 598.
+    ///
+    /// # ⚠⚠⚠ Why this one is NOT diffed, where its three neighbours are
+    ///
+    /// They are LEVELS — *what this run is typing at*, *how many marks it can read* — republished on
+    /// every delivery, and item 277 measured what an unchanging level costs a journal: ~99,987 looks
+    /// erased the one transition that explained an ending. This is not a level. It is composed only
+    /// on a pass whose wait reached its bound WITHOUT an ending, which for the shipped document is
+    /// once per turn bound rather than once per look, and the line it lands on
+    /// (`… looked, nothing had happened`) is already written on every one of those passes. **Diffing
+    /// it would silence the second and later repetitions of exactly the sentence a person scrolling a
+    /// stuck run lands in the middle of.**
+    ///
+    /// ⚠ It does not TAKE, for the same reason: the slot is emptied at the top of every pump, so
+    /// what is in it belongs to this pass by construction and there is no finding for an early
+    /// return to consume.
+    #[must_use]
+    pub const fn wanting(&self) -> Option<&crate::completion::Wanting> {
+        self.wanting.as_ref()
     }
 
     /// **WHAT THE LAST PUMP SAW BEHIND THE EVENT IT RAISED** — see [`Noticed`].
@@ -10453,6 +10502,11 @@ impl OuterLoop {
         // ⚠⚠ AND THE FOURTH, on the same rule — register item 1037. What a pass saw move belongs
         // to the pass that saw it.
         self.moved = None;
+        // ⚠⚠ AND THE FIFTH, on the same rule — register item 598. What a pass's wait was still
+        // waiting for belongs to the pass that waited, and a stale reading here would be the worst
+        // one this slot can carry: a person reading *the agent is still Working* beside a pass on
+        // which the turn ended would be told the run is stuck by the very line that says it moved.
+        self.wanting = None;
         // ⚠⚠⚠ A PERSON'S ORDER IS CARRIED IN FIRST, BEFORE ANYTHING IS DECIDED THIS PASS. The flag
         // is raised by a host thread at a moment nothing here controls, so the only place it can be
         // read without racing a decision is at the top of a pass — the same reason the barrier
@@ -11852,7 +11906,16 @@ impl OuterLoop {
                 // whole per-turn bound, pass after pass, toward a `max_seconds` the shipped kind
                 // authors at twenty-four hours. Register item 458, measured twice in one day, and
                 // both times a PERSON ended it.
-                Over::NotYet => AiLoopEvent::Null,
+                // ⛔⛔⛔⛔⛔ **AND WHAT IT WAS WAITING FOR IS KEPT, WHICH IS REGISTER ITEM 598'S
+                // REPAIR.** The event is still `Null` — the machine has no word for an overrun and
+                // inventing one out here would put a decision in the driver — but the pass now
+                // carries the contract's own answer to *why not*, and `walked` says it. Without
+                // this line the journal writes the identical eleven words for a peer that is
+                // thinking and for a contract whose remaining term can never become true.
+                Over::NotYet(wanting) => {
+                    self.wanting = Some(wanting);
+                    AiLoopEvent::Null
+                }
                 // ⚠⚠⚠⚠ NOTHING HAS SPOKEN FOR THE PANE FOR THE WHOLE OF THE DOCUMENT'S OWN BOUND.
                 //
                 // The event goes to `awaiting_human`, and the destination is the decision: this
@@ -12477,10 +12540,24 @@ impl OuterLoop {
         // every run waiting at a dialog: a peer blocked on a question reports nothing while it waits,
         // so ten minutes at any permission prompt reads as silence. The wait this state wants is
         // `patience`, and the answer it wants at the end of it is `unattended`.
-        let raised = match self
+        let over = self
             .done
-            .wait(panes, self.driving.pane, self.patience(), None, run)
-        {
+            .wait(panes, self.driving.pane, self.patience(), None, run);
+        // ⛔⛔⛔⛔⛔ **WHAT THE CONTRACT WAS WAITING FOR IS KEPT HERE TOO** — register item 598, and
+        // this state needs it as much as `watch` does: `awaiting_human` is where a run goes to wait
+        // for a PERSON, and a person who arrives is owed the difference between *the peer is still
+        // thinking* and *this turn's contract can never be satisfied again*. Both wrote
+        // `AwaitingHuman: looked, nothing had happened` and nothing else.
+        //
+        // ⚠⚠ READ BEFORE THE MATCH rather than inside it, which the or-patterns below make the
+        // honest arrangement: `NotYet` and `Silent` share two arms and only one of them carries a
+        // `Wanting`, so binding it in the match would mean splitting two arms into four and
+        // repeating their argument twice. The clone is of a value that is EMPTY on every satisfied
+        // wait and holds at most four terms on any other.
+        if let Over::NotYet(wanting) = &over {
+            self.wanting = Some(wanting.clone());
+        }
+        let raised = match over {
             Over::Yes => Raise::carrying(AiLoopEvent::TurnDone, self.costs_now(panes)),
             // ⚠⚠ THE THIRD DOOR ONTO *the run ended underneath* — see
             // [`ended_underneath`](Self::ended_underneath), which holds the whole reason a clock
@@ -12546,10 +12623,10 @@ impl OuterLoop {
             // waited for a person* is exactly as much news as *the peer has not finished*, and the
             // honest reading of both is the one question this state has left — has the person's
             // patience run out.
-            Over::NotYet | Over::Silent(_) if since.elapsed() < patience => {
+            Over::NotYet(_) | Over::Silent(_) if since.elapsed() < patience => {
                 return Ok(AiLoopEvent::Null.into());
             }
-            Over::NotYet | Over::Silent(_) => AiLoopEvent::Unattended.into(),
+            Over::NotYet(_) | Over::Silent(_) => AiLoopEvent::Unattended.into(),
             // ⚠⚠⚠ AND NOT `unattended`, WHICH IS THE DECISION WORTH SPELLING. Both endings stop the
             // run, and they send its reader to opposite places: `blocked` says *a person was
             // expected here and did not come*, and this says *there is nothing left for them to

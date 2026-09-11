@@ -10663,9 +10663,11 @@ fn a_remote_driver_waiting_on_a_verdict_stops_asking_for_it_every_slice() {
     let (polled_asks, polled_end) = waited_out(false);
 
     // ── THE CONTROLS: both really waited, at a peer that really never answered ─────────────────
-    assert_eq!(
-        (parked_end, polled_end),
-        (sprag_plugin::Over::NotYet, sprag_plugin::Over::NotYet),
+    assert!(
+        matches!(
+            (&parked_end, &polled_end),
+            (sprag_plugin::Over::NotYet(_), sprag_plugin::Over::NotYet(_))
+        ),
         "⚠⚠⚠⚠ THE CONTROL: a wait that ended early costs nothing either, and the number below \
          would then be measuring a contract that answered rather than one that waited",
     );

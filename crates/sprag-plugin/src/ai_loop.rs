@@ -267,6 +267,13 @@ struct Learned<'a> {
     /// property its own doc says keeps a caller from half-filling it — away for a value the
     /// renderer only reads.
     moved: Option<&'a crate::outer::Moved>,
+    /// ⛔⛔⛔⛔⛔ **AND WHAT THE TURN CONTRACT WAS STILL WAITING FOR, WHERE THIS PASS'S WAIT RAN OUT
+    /// WITHOUT AN ENDING** — register item 598, and [`None`] on every pass whose turn ENDED.
+    ///
+    /// ⚠ Borrowed, on [`moved`](Self::moved)'s rule directly above: the answer carries a list of
+    /// terms and an owned one would take this struct's `Copy` away for a value the renderer only
+    /// reads.
+    wanting: Option<&'a crate::completion::Wanting>,
 }
 
 /// The closing note, carrying what this run's own document SWALLOWED when it swallowed anything.
@@ -628,9 +635,26 @@ impl AiLoop {
             faced,
             watching,
             moved,
+            wanting,
         } = learned;
         let mut note = if raised == AiLoopEvent::Null {
-            format!("{from:?}: looked, nothing had happened")
+            // ⛔⛔⛔⛔⛔ **AND WHAT IT WAS WAITING FOR, WHICH THIS LINE COULD NOT SAY FOR FOUR
+            // ROUNDS** — register item 598. *Looked, nothing had happened* is eleven words that
+            // read identically for a peer that is thinking, for a pane whose agent is not the one
+            // this turn was addressed to, and for a contract whose last outstanding term can never
+            // become true again. **Only the first of those three ends by waiting**, and a person
+            // reading this line repeated down a journal had no way to tell which of them they had.
+            //
+            // ⚠⚠ ON THIS ARM ALONE, which is not a narrowing: the other arm names a transition the
+            // machine TOOK, and a turn that ended has nothing outstanding. The slot is `None`
+            // there by construction — `OuterLoop::pump` empties it at the top of every pass and
+            // only a wait that ran out fills it — rather than by a test written here.
+            wanting
+                .and_then(crate::completion::Wanting::describe)
+                .map_or_else(
+                    || format!("{from:?}: looked, nothing had happened"),
+                    |waiting| format!("{from:?}: looked, nothing had happened — {waiting}"),
+                )
         } else {
             format!("{from:?} --{raised:?}--> {to:?}")
         };
@@ -1935,6 +1959,11 @@ impl Plugin for AiLoop {
                         // same reason — register item 1037. It is taken separately because it is
                         // diffed separately: see `OuterLoop::moved`.
                         moved: moved.as_ref(),
+                        // ⚠⚠ AND THE SAME ROAD AGAIN — register item 598. ⚠ READ rather than
+                        // taken, unlike its three neighbours: it is not a diffed level, so there
+                        // is no finding here for an early return to consume. See
+                        // `OuterLoop::wanting`, which holds why this one must repeat.
+                        wanting: self.inner.wanting(),
                     },
                 );
                 // ⚠⚠⚠⚠⚠ **WHETHER THAT ARRIVAL WAS AN ENDING IS THE DOCUMENT'S TO SAY** — register
@@ -10413,6 +10442,81 @@ mod tests {
     /// the first was swallowed and the screen carried the second). Nobody supervising a run does
     /// that, and it is only possible while the transcript still exists.
     ///
+    /// ⛔⛔⛔⛔⛔ **A PASS THAT FOUND NOTHING SAYS WHAT ITS TURN CONTRACT IS STILL WAITING FOR** —
+    /// register item 598, met at the surface a person actually reads.
+    ///
+    /// # The eleven words that were the same for three different runs
+    ///
+    /// `Working: looked, nothing had happened` is what a pass writes when its wait reached the
+    /// turn's bound without an ending. It is identical for a peer that is thinking, for a pane
+    /// whose agent is not the one the turn was addressed to, and for a contract whose last
+    /// outstanding term can never become true again — and **only the first of those three ends by
+    /// waiting**. Four rounds of item 598 read that line, repeated down a journal, with no way to
+    /// tell which of the three they had.
+    ///
+    /// # ⚠⚠ What is asserted, and the two controls that make it mean something
+    ///
+    /// The waiting line carries the contract's own clause; the line with NO answer is byte-for-byte
+    /// what it always was, so a build that stopped measuring says the old words rather than a
+    /// quieter new one; and a line naming a TRANSITION does not grow the clause — a turn that moved
+    /// has nothing outstanding, and a renderer that appended here anyway would be reporting a stall
+    /// on the pass that ended it.
+    #[test]
+    fn a_pass_that_found_nothing_says_what_its_turn_contract_is_waiting_for() {
+        let wanting = crate::completion::Wanting::unlooked();
+        let looked = |wanting| {
+            AiLoop::walked(
+                AiLoopState::Working,
+                AiLoopEvent::Null,
+                AiLoopState::Working,
+                Learned {
+                    wanting,
+                    ..Learned::default()
+                },
+            )
+        };
+
+        let unmeasured = looked(None);
+        assert_eq!(
+            unmeasured, "Working: looked, nothing had happened",
+            "⚠⚠ THE CONTROL: a pass with no answer to give says exactly what it always said. A \
+             build that lost the measurement must not lose the line too — the sentence is what a \
+             person scanning for the moment a run stopped getting anywhere scrolls to",
+        );
+
+        let waiting = looked(Some(&wanting));
+        assert!(
+            waiting.starts_with("Working: looked, nothing had happened — "),
+            "⚠⚠⚠⚠⚠ ITEM 598: a pass whose contract can SAY what it is waiting for must say it \
+             here, appended to the sentence rather than replacing it. Got {waiting:?}",
+        );
+        assert!(
+            wanting
+                .describe()
+                .is_some_and(|clause| waiting.contains(&clause)),
+            "⚠⚠⚠ AND IT IS THE CONTRACT'S OWN WORDS, not a second vocabulary composed here: a \
+             renderer that spelled these reasons itself would be free to drift from the terms the \
+             contract actually tests. Got {waiting:?}",
+        );
+
+        // ── AND A PASS THAT MOVED DOES NOT GROW THE CLAUSE ───────────────────────────────────
+        let moved_on = AiLoop::walked(
+            AiLoopState::Working,
+            AiLoopEvent::TurnDone,
+            AiLoopState::Judging,
+            Learned {
+                wanting: Some(&wanting),
+                ..Learned::default()
+            },
+        );
+        assert_eq!(
+            moved_on, "Working --TurnDone--> Judging",
+            "⚠⚠⚠⚠ A TURN THAT ENDED HAS NOTHING OUTSTANDING, so the line that names the transition \
+             must not carry a stall clause — a reader told *the agent is still Working* by the very \
+             line saying the turn finished is worse off than one told nothing. Got {moved_on:?}",
+        );
+    }
+
     /// # ⚠⚠ What is asserted: the DIFFERENCE, and that the ordinary road is not silent
     ///
     /// Asserting only that the account road says something would pass for a channel that said the

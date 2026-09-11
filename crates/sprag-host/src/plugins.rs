@@ -15742,7 +15742,12 @@ mod tests {
     ///   `agents: None`. **No pane here can ever be called settled** — that is the real blocker.
     /// * `exits` completes the turn, and lands in the run this gate drives.
     ///
-    /// ⚠ So 598 still waits on a fixture with a detector, which is named in the register.
+    /// ⚠⚠ **THAT FIXTURE NOW EXISTS AND ITEM 598 IS PAID** —
+    /// `a_stood_down_run_that_settles_at_its_milestone_is_told_its_work_is_banked`, directly below,
+    /// builds `PluginsExternal` with an [`crate::AgentClock`] and drives the converging half. This
+    /// gate keeps the OTHER half, and the pair is what makes either readable: an order honoured and
+    /// an order the peer's exit overtook are different endings, and item 604's harm was a renderer
+    /// that could not tell them apart.
     #[test]
     fn a_stood_down_run_whose_peer_exits_after_a_banked_turn_is_told_its_work_is_kept() {
         let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
@@ -15835,9 +15840,12 @@ mod tests {
         assert_eq!(
             entry["state"]["outcome"]["state"],
             json!("failed"),
-            "⛔ IF THIS IS RED, GOOD — a stood-down run whose peer exited after banking its turn no \
-             longer reports `failed`. Delete this gate and pay register item 598, which is now \
-             reachable from this door: {entry:?}",
+            "⛔ IF THIS IS RED, a stood-down run whose peer exited after banking its turn no longer \
+             reports `failed` — which is a change to what an ENDING is and not to a sentence. \
+             ⚠⚠ This note used to say *delete this gate and pay item 598*; 598 is paid by the \
+             sibling below, on `settles`, and this pairing is still its own: an agent that finishes \
+             and exits is the ordinary case, and `peer_gone` remains the honest word for it. Decide \
+             the ending deliberately rather than deleting this: {entry:?}",
         );
         // ⚠⚠⚠⚠⚠ **AND THE SENTENCE MUST NOT CALL THAT BANKED TURN LOST.** The precondition above
         // proves a turn COMPLETED, so *the turn it had going was NOT banked* is false in the one
@@ -15862,6 +15870,275 @@ mod tests {
             "⚠⚠⚠⚠⚠ AND IT HAS TO SAY SO, not merely stop lying: this run BANKED a turn, so the \
              sentence has to report the count the plugin measured rather than fall back to *this \
              run does not report completed work*. Said {said:?}",
+        );
+    }
+
+    /// Poll `query("runs")` until run `id` has delivered at least `n` prompts, and answer its entry.
+    ///
+    /// ⚠⚠⚠ [`driving`]'s generalisation, and a separate function rather than a widened one: every
+    /// existing caller asks *has it started*, and a run's SECOND delivery is a different boundary —
+    /// the one a document reaches by taking a transition, which is what makes it assertable at all.
+    ///
+    /// ⚠⚠ **A RUN THAT ENDED IS A FAILURE HERE AND NOT A WAIT**, which is what keeps the caller's
+    /// later assertions about the pairing they staged: a run that finished before its second
+    /// delivery finished for some other reason, and waiting out the bound would report that as a
+    /// timeout rather than as the ending it is.
+    fn delivered_at_least(external: &PluginsExternal, id: u64, n: u64, within: Duration) -> Value {
+        let start = Instant::now();
+        loop {
+            let entry = read_runs(external)
+                .into_iter()
+                .find(|entry| entry["id"] == json!(id));
+            if let Some(entry) = &entry {
+                if entry[RUN_DELIVERED_KEY].as_u64().unwrap_or(0) >= n {
+                    return entry.clone();
+                }
+                assert!(
+                    entry["state"]["outcome"]["state"].is_null(),
+                    "run {id} ENDED before its delivery {n}, so the pairing this gate stages never \
+                     happened: {entry:?}",
+                );
+            }
+            assert!(
+                start.elapsed() < within,
+                "run {id} had not delivered {n} prompt(s) after {:?}: {entry:?}",
+                start.elapsed(),
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A STOOD-DOWN RUN THAT REACHES ITS MILESTONE AND SETTLES CONVERGES, AND THE PERSON
+    /// IS TOLD ITS WORK IS BANKED** — register item 598, driven end to end at the door a person
+    /// reads.
+    ///
+    /// # What `sprag stand-down` promises, and the half no gate had ever driven
+    ///
+    /// The command promises *it stops at its next milestone, and its work is kept*. Two pairings can
+    /// come out of that and only one of them is the promise KEPT:
+    ///
+    /// * The order was NOT honoured — the run was cancelled, its peer left, its daemon died. Item
+    ///   594's gate drives that, and `stand_down_sentence` opens it with a `⚠`.
+    /// * The order WAS honoured — the run reached a milestone with the order standing and converged.
+    ///   **Nothing drove this one.** The sentence a person is relieved to read was the one no gate
+    ///   had ever made the product say, which is register item 598.
+    ///
+    /// # ⛔⛔⛔ Why it took four rounds, and what the fixture had to become
+    ///
+    /// A stood-down run converges out of `judging`, which is reached only when a TURN COMPLETES, and
+    /// the sibling gate above records what that cost: `exits` completes a turn and then the peer is
+    /// GONE, so `closing` — whose `onentry` asks the peer a final question — has nobody to ask.
+    /// **The converging pairing can only be driven on `settles`**, and that needs a peer a detector
+    /// will call an agent, which is why this is the first gate in this module to build
+    /// `PluginsExternal` with an [`crate::AgentClock`] rather than `None`.
+    ///
+    /// ⚠⚠⚠⚠⚠ **THE PANE IS CLAIMED BEFORE THE RUN STARTS, AND THAT ORDER IS LOad-BEARING.**
+    /// `Completion::begin` arms against whatever the supervisor says at the instant the prompt goes
+    /// in, and a pane no manifest claims arms nothing at all — every later observation is then
+    /// compared against nothing and the turn cannot end however long it is given. That is
+    /// `Unmet::Unarmed`, and until this round a run in that state wrote `Working: looked, nothing
+    /// had happened` and no other word.
+    #[test]
+    fn a_stood_down_run_that_settles_at_its_milestone_is_told_its_work_is_banked() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        // ⚠⚠⚠ THE MARKER IS ON A LINE OF ITS OWN AND IS PRINTED AFTER THE PROMPT ARRIVES. Both
+        // halves were measured: a judgement reads what this turn printed, so a marker already on
+        // screen when the turn began cannot count; and a marker sharing a line with anything else
+        // is not matched. ⚠ It PRINTS rather than repainting — a full-screen repaint resets the
+        // line addresses a judgement reads from, and the read comes back empty.
+        // ⚠⚠⚠⚠⚠ **IT SWALLOWS EVERY PROMPT AND PAINTS NOTHING**, and that is the fixture's whole
+        // shape rather than a simplification. This gate's peer declares its milestone through the
+        // hook (see `said` below), which is the road `said_marker` reads FIRST and the only one a
+        // full-screen agent has — register item 441 measured a live pane's logical-line count
+        // frozen at 37 while the agent wrote reply after reply. A stand-in ending in `exec cat`
+        // echoed the whole turn prompt instead, and this loop's prompt is the north star, the
+        // milestone, the reference AND the document's rules: the first run of this gate watched
+        // its own marker scroll off the screen.
+        //
+        // ⚠ It must STAY ALIVE: `closing` asks the peer one last question, and a peer that exited
+        // takes the run to `peer_gone` instead — which is the sibling gate above, and the pairing
+        // this one exists to tell apart from it.
+        command.arg("stty -echo; printf 'AGENT-READY\\r\\n'; while read -r _; do :; done");
+        command.env("TERM", "xterm-256color");
+        // ⚠ POINTED AT A TREE, like its siblings — see `a_tree_to_stand_in`.
+        command.cwd(a_tree_to_stand_in());
+        let pane = lock(&workspace)
+            .spawn(command, "agent".to_string(), 80, 24)
+            .expect("spawn the reporting stand-in agent");
+
+        let agents = Arc::new(crate::AgentClock::new(Ruleset::new(built_ins())));
+        /// One report from the agent's own hook — the only reporter that can move `asked_seq`, and
+        /// the only road by which a peer that paints nothing can DECLARE anything.
+        fn said(state: AgentState, seq: u64, asked: Option<&str>, answer: Option<&str>) -> Report {
+            Report {
+                state,
+                agent: Some("claude".to_owned()),
+                source: "claude-hook".to_owned(),
+                seq: Some(seq),
+                owner: None,
+                // ⚠⚠⚠⚠⚠ **WHAT THE AGENT SAYS IT ANSWERED, WHICH IS WHERE `MILESTONE REACHED`
+                // LIVES FOR A PEER WITH NO SCREEN TO READ.** `said_marker` asks the peer before it
+                // reads the pane, and this fixture has nothing on its pane to read — see the
+                // stand-in's own comment. The FIRST run of this gate declared nothing at all, and
+                // the instrument this round built said so in the walk: *the judge read the pane …
+                // and the agent had not declared*, turn after turn, while the reports it was given
+                // ended turn after turn. Two facts, both true, and only one of them is the defect.
+                said: answer.map(str::to_owned),
+                // ⚠⚠⚠⚠⚠ **THE TURN NEVER ENDS WITHOUT THIS** — register item 441, met from the
+                // other side. `DoneWhen::Settles` requires the QUESTION counter to move for a peer
+                // that reports for itself, and only a report STATING an `asked` moves it. Three of
+                // item 598's ten attempts were reports without one.
+                asked: asked.map(str::to_owned),
+                noticed: None,
+                running: None,
+                transcript: None,
+                build: None,
+            }
+        }
+        // ⚠⚠ BEFORE THE RUN — see this gate's doc. A pane the manifest does not claim arms no
+        // contract, and a contract that armed nothing waits for ever.
+        agents.report(
+            pane,
+            said(AgentState::Idle, 1, None, None),
+            crate::config::agent_settle,
+        );
+
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let mut external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            Some(Arc::clone(&agents)),
+            None,
+            None,
+        );
+        let started = external
+            .invoke(
+                RUN_ACTION,
+                IntrospectValue::Json(ai_loop_request(
+                    pane,
+                    json!({
+                        "done_when": "settles",
+                        // ⚠⚠⚠ **A BOUND SO THE CONTRACT GETS TO SPEAK.** It does not end a turn —
+                        // register item 598 measured that, and `Brief::turn_within_ms`'s own doc
+                        // says it BOUNDS `done_when` rather than replacing it. What it buys is that
+                        // an unfinished turn reaches `Over::NotYet` every two seconds instead of at
+                        // the shipped half-hour, and every one of those writes what the contract is
+                        // still waiting for into the walk. Without it a fixture that staged the
+                        // reports wrongly sat in `Working` saying nothing at all, which is the
+                        // silence that cost this item four rounds.
+                        "turn_within_ms": 2000,
+                        // ⚠⚠⚠⚠⚠ **THE FIXTURE'S OWN 30-SECOND CEILING ENDS THIS PAIRING BEFORE IT
+                        // HAPPENS**, measured on the first run of this gate: the ceiling fell due
+                        // during the first turn and `judging` took `Judge --> Stopping` on
+                        // `stop_short` — an ending that is not a convergence, so the sentence under
+                        // test was the WARNING arm and the gate would have been red about the
+                        // wrong thing. A settling turn is driven by reports this test has to make
+                        // in order, which is slower than a peer that answers and exits.
+                        "guardrails": { "max_iterations": 200, "max_seconds": 120 },
+                    }),
+                )),
+            )
+            .expect("a well-formed ai_loop run");
+        let IntrospectValue::Int(id) = started else {
+            panic!("a run answers its id: {started:?}");
+        };
+        let id = u64::try_from(id).expect("a run id is not negative");
+        // The prompt is in the pane and the loop is waiting on its peer — the moment a person
+        // watching a long run reaches for `sprag stand-down`.
+        drop(driving(&external, id, Duration::from_secs(30)));
+        external
+            .invoke(
+                STAND_DOWN_ACTION,
+                IntrospectValue::Json(json!({ "id": id })),
+            )
+            .expect("an ai_loop run reads a stand-down");
+        // ⚠ THE TURN ENDS HERE AND NOT ON A CLOCK: a report that the agent worked and came back to
+        // rest, each stating an `asked`, is what `settles` is — and the rest carries the
+        // DECLARATION, which is what makes this milestone reached rather than an ordinary turn.
+        agents.report(
+            pane,
+            said(AgentState::Working, 2, Some("the first turn"), None),
+            crate::config::agent_settle,
+        );
+        agents.report(
+            pane,
+            said(
+                AgentState::Idle,
+                3,
+                Some("the first turn"),
+                Some("MILESTONE REACHED"),
+            ),
+            crate::config::agent_settle,
+        );
+        // ⚠⚠ `closing` ASKS THE PEER ONE LAST QUESTION, so the run's SECOND delivery is the proof
+        // the stand-down edge fired — and the closing turn then needs an ending of its own.
+        drop(delivered_at_least(
+            &external,
+            id,
+            2,
+            Duration::from_secs(30),
+        ));
+        agents.report(
+            pane,
+            said(AgentState::Working, 4, Some("the closing turn"), None),
+            crate::config::agent_settle,
+        );
+        agents.report(
+            pane,
+            said(
+                AgentState::Idle,
+                5,
+                Some("the closing turn"),
+                Some("the account"),
+            ),
+            crate::config::agent_settle,
+        );
+
+        let entry = ended(&registry, id, Duration::from_secs(60));
+        assert!(
+            lock(&workspace).close(pane).is_some(),
+            "the pane this gate opened was there to close",
+        );
+
+        // ⚠⚠⚠ THE PRECONDITION: the order really did reach the document, and the document really
+        // did take the stand-down edge. Without it a run that converged for any other reason would
+        // satisfy the sentence below and this gate would pin nothing.
+        let walk = entry[RUN_JOURNAL_KEY].as_array().expect("a walk");
+        assert!(
+            walk.iter().any(|step| step["note"]
+                .as_str()
+                .is_some_and(|note| note.contains("stood_down"))),
+            "⚠⚠⚠ the document must have taken the STAND-DOWN edge out of `judging`, or this gate \
+             is about some other convergence: {entry:?}",
+        );
+        assert_eq!(
+            entry["state"]["outcome"]["state"],
+            json!("converged"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 598: a run told to stand down reached its milestone with the \
+             order standing and did NOT converge. This is the pairing `sprag stand-down` promises \
+             and the only one in which its promise is kept: {entry:?}",
+        );
+        let told = entry[RUN_STOOD_DOWN_KEY]
+            .as_str()
+            .expect("the order was given, so its sentence is published");
+        // ⚠⚠⚠⚠⚠ **AND THE RELIEVED SENTENCE IS THE ONE NOTHING HAD EVER MADE THE PRODUCT SAY.**
+        // Item 594's gate holds the alarming half; this holds the half a person is relieved by, and
+        // an unread branch is a branch free to rot into the other one — which is exactly what item
+        // 604 measured happening to its neighbour.
+        assert!(
+            told.contains("its work is banked"),
+            "⚠⚠⚠⚠⚠ ITEM 598: the run converged under a standing order and the sentence a person \
+             reads does not say their work was kept. Said {told:?} for {entry:?}",
+        );
+        assert!(
+            !told.starts_with('⚠'),
+            "⚠⚠ and it must not be the WARNING arm: `stand_down_sentence` opens every ending that \
+             is not a convergence with a warning sign, and a converged run wearing one tells a \
+             person the thing they asked for did not happen. Said {told:?}",
         );
     }
 
