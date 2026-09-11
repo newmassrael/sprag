@@ -2492,22 +2492,8 @@ fn the_input_path_costs_what_this_instrument_measures() {
 /// counted comments would be answered by the paragraph you are reading.
 #[test]
 fn the_input_path_instrument_and_this_suite_speak_one_report() {
-    let instrument = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/instruments")
-        .join("input-throughput");
-    let out = Command::new("bash")
-        .arg(&instrument)
-        .arg("--report-shape")
-        .output()
-        .expect("the instrument prints its own report shape");
-    assert!(
-        out.status.success(),
-        "⛔ ITEM 1041: `input-throughput --report-shape` exited {:?}.\nstderr:\n{}",
-        out.status.code(),
-        String::from_utf8_lossy(&out.stderr),
-    );
-    let said = String::from_utf8_lossy(&out.stdout).to_string();
-    let source = uncommented(include_str!("pty_round_trip.rs"));
+    let said = report_shape();
+    let source = code_of(include_str!("pty_round_trip.rs"));
     let (mut checked, mut fields) = (0, 0);
     for row in said.lines().filter(|line| line.starts_with("== ")) {
         // The row up to its first placeholder: the literal part a `println!` must contain.
@@ -2553,6 +2539,108 @@ fn the_input_path_instrument_and_this_suite_speak_one_report() {
          against {REPORT_FIELDS}. Fields went missing from the declaration, which makes the \
          agreement above vacuous for every one of them. Put them back, or — if they are gone on \
          purpose — write `REPORT_FIELDS = {fields}` and say why in the register.\nsaid:\n{said}",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **THE HAZARD IS PLANTED RATHER THAN COUNTED** — register item 1051.
+///
+/// The gate above asks whether this file's CODE prints each field the instrument declares, and it
+/// asks it of [`code_of`]. While that scan dropped only whole-line comments, one line reading
+/// `let n = 1; // probe_ms=` answered the clause for `probe_ms=`, and a `/* */` answered it
+/// anywhere. **Zero such lines existed**, and nothing kept the number at zero.
+///
+/// # ⚠⚠ Why a plant and not a ratchet on that zero
+///
+/// A ceiling of zero on *lines of this shape* is a gate over a shape that is not the defect: the
+/// defect is that the shape MATTERS. So this writes every declared field into a trailing comment
+/// and into a block comment and requires the scan to find neither — the hazard, present, answering
+/// nothing. A file may then carry as many trailing comments as it likes, which is what a fix at the
+/// base buys over a count.
+///
+/// # ⚠ And three numbers, because a scan without them is the prose the register objects to
+///
+/// [`COMMENTS_NO_WHOLE_LINE_FILTER_SEES`] says how much more this scan sees here than the filter it
+/// replaced; [`REPORT_FIELDS_THE_PROSE_NAMES`] says the removal changes an answer in this file at
+/// all; and [`REPORT_FIELDS_WITH_A_SECOND_HOME`] is the one that says what is NOT bought — a clause
+/// whose field has another home in the code survives the deletion of the `println!` it is about.
+#[test]
+fn the_report_scan_is_answered_by_code_and_never_by_the_prose_beside_it() {
+    let raw = include_str!("pty_round_trip.rs");
+    let read = sprag_gate::rust_source::scan(raw);
+    assert_eq!(
+        read.unclosed, None,
+        "⛔ ITEM 1051: this file does not close everything it opens, and the ending that leaves a \
+         literal open hands every comment after it back as code",
+    );
+
+    let hidden = read
+        .comments
+        .iter()
+        .filter(|comment| comment.shape != sprag_gate::rust_source::Shape::WholeLine)
+        .count();
+    println!(
+        "== ITEM-1051 comments={} whole_line={} hidden={hidden}",
+        read.comments.len(),
+        read.comments.len() - hidden,
+    );
+    assert!(
+        hidden >= COMMENTS_NO_WHOLE_LINE_FILTER_SEES,
+        "⛔ ITEM 1051: {hidden} comment(s) here are of a shape the whole-line filter could not see, \
+         against the {COMMENTS_NO_WHOLE_LINE_FILTER_SEES} this gate is written for. At zero the \
+         shared scanner buys this file nothing. Write \
+         `COMMENTS_NO_WHOLE_LINE_FILTER_SEES = {hidden}` and say in the register why the file stopped \
+         writing them.",
+    );
+
+    // ⛔ THE PLANT IS THE WHOLE GATE. Both shapes, every declared field, and the source carries no
+    // other reason to hold any of them — so a scan that kept either would be found by all of them
+    // at once rather than by whichever happened to be written into this file that month.
+    let declared = declared_report_fields();
+    let spelled = declared.join(" ");
+    let planted = format!("let planted = 0; // {spelled}\n/* {spelled} */\n");
+    let tempted = code_of(&planted);
+    for field in &declared {
+        assert!(
+            !tempted.contains(field.as_str()),
+            "⛔ ITEM 1051: the field {field:?} written into a comment AFTER code survived the scan, \
+             so the gate beside this one can be answered by a sentence discussing a field instead \
+             of by the `println!` that prints it.\nleft: {tempted:?}",
+        );
+    }
+
+    let prose: String = read
+        .comments
+        .iter()
+        .map(|comment| &raw[comment.at..comment.end])
+        .collect::<Vec<_>>()
+        .join("\n");
+    let named = declared
+        .iter()
+        .filter(|field| prose.contains(field.as_str()))
+        .count();
+    println!("== ITEM-1051 declared={} in_prose={named}", declared.len());
+    assert!(
+        named >= REPORT_FIELDS_THE_PROSE_NAMES,
+        "⛔ ITEM 1051: this file's prose names {named} of the declared fields, against the \
+         {REPORT_FIELDS_THE_PROSE_NAMES} this gate is written for. Reading with the comments gone \
+         changes that many answers, and at zero it changes none — the scan would then be holding \
+         nothing here. Write `REPORT_FIELDS_THE_PROSE_NAMES = {named}`.",
+    );
+
+    let code = code_of(raw);
+    let blunt = declared
+        .iter()
+        .filter(|field| code.matches(field.as_str()).count() > 1)
+        .count();
+    println!("== ITEM-1051 with_a_second_home={blunt}");
+    assert!(
+        blunt <= REPORT_FIELDS_WITH_A_SECOND_HOME,
+        "⛔ ITEM 1051: {blunt} declared field(s) are now found in more than one place in this \
+         file's code, against the {REPORT_FIELDS_WITH_A_SECOND_HOME} this gate is written for. \
+         Every one of those clauses survives the deletion of the `println!` it is about, which is \
+         what this scan does NOT guard. Give the field one home, or write \
+         `REPORT_FIELDS_WITH_A_SECOND_HOME = {blunt}` and say in the register which clause went \
+         blunt.",
     );
 }
 
@@ -2819,19 +2907,117 @@ fn body_of(source: &str, name: &str) -> String {
 /// than left at 28 because a floor under the measurement stops ratcheting (register item 926).
 const REPORT_FIELDS: usize = 32;
 
-/// `source` with every line that is only a comment removed — what the code SAYS, rather than what
-/// its prose says about itself.
+/// How many comments in this file the whole-line filter [`code_of`] replaced could not see —
+/// trailing and block, counted by [`sprag_gate::rust_source::scan`].
 ///
-/// ⚠ WHOLE-LINE comments only, which is the shape this file writes. A scan that tried to strip
-/// `/* */`, or a trailing comment after code, would be claiming to understand Rust — and it has no
-/// parser. The claim a caller may make on this is *"not on a line that is only a comment"* and no
-/// more.
-fn uncommented(source: &str) -> String {
-    source
+/// ⚠ A FLOOR, and it is the number register item 1051 asked for. The item's own measurement was
+/// **0 trailing comments spelling a field name**, with nothing keeping it at 0; the answer was not
+/// to cap that 0 but to make the shape harmless, and this says the widened scan still has work to
+/// do HERE. At zero, moving this file onto the shared scanner would have bought it nothing, and
+/// that is a sentence worth being red about.
+///
+/// MEASURED 2026-09-12 on the tree this landed in: **19 of 4,744 comments**, against 4,725
+/// whole-line ones. Small, and that is the shape of the item — the hazard was never common, it was
+/// unopposed.
+const COMMENTS_NO_WHOLE_LINE_FILTER_SEES: usize = 19;
+
+/// How many of the declared report fields this file's PROSE names.
+///
+/// ⚠ A FLOOR. It is what makes *read with the comments gone* load-bearing rather than decorative:
+/// at zero the scan changes no answer in this file and
+/// [`the_input_path_instrument_and_this_suite_speak_one_report`] would be the same gate without it.
+///
+/// MEASURED 2026-09-12: **12 of the 32**, counting a name once per row that declares it, as
+/// [`REPORT_FIELDS`] does. ⚠⚠ It read **6** an hour earlier, before this round wrote the commentary
+/// you are reading — the paragraphs explaining the scan name the fields they explain it with, so
+/// this file's own prose is part of what the number measures. That is not a distortion to correct;
+/// it is the reason the scan has to exist, arriving one level up.
+const REPORT_FIELDS_THE_PROSE_NAMES: usize = 12;
+
+/// How many of the declared report fields have MORE THAN ONE home in this file's code.
+///
+/// ⛔ A CEILING, and the number that says what the scan does NOT guard. The scan tells code from
+/// comment; it cannot tell a `println!` from an assertion message, a needle or a fixture. A field
+/// found in one place only has a clause that goes red when its `println!` is deleted. A field found
+/// in several has one that may not — so this counts the blunt clauses, and it is capped rather than
+/// left to grow.
+///
+/// MEASURED 2026-09-12: **11 of the 32**, a third of them, and that is the honest price of a clause
+/// spelled as `contains`. ⚠ It is not a defect this round pays — several are names two rows share
+/// (`shape=`, `n=`, `profile=`) and several are quoted by this file's own refusals — but it is what
+/// stops *what the scan cannot tell apart* from being a sentence nobody ever re-takes.
+const REPORT_FIELDS_WITH_A_SECOND_HOME: usize = 11;
+
+/// `source` with every comment gone — what the code SAYS, rather than what its prose says about
+/// itself — and a refusal for a source the scan could not finish reading.
+///
+/// # ⛔⛔⛔⛔⛔ This used to be four lines that dropped whole-line comments, which is register item 1051
+///
+/// The claim it could make was *"not on a line that is ONLY a comment"*, so `let n = 1; //
+/// probe_ms=` answered the clause below for `probe_ms=` and a `/* */` answered it anywhere. Neither
+/// shape was present — **0 lines of the first on 2026-09-11, 12,576 lines read** — and nothing kept
+/// either at 0, which is the whole of what that item says.
+///
+/// [`sprag_gate::rust_source`] is where it went, rather than being widened here: the same
+/// approximation is written at **ten call sites in six files** of this workspace, and the crate
+/// that already owns *what a comment is* for the other language is where the Rust answer belongs.
+///
+/// # ⚠⚠ WHAT THE SCAN NOW GUARDS AND WHAT IT STILL DOES NOT, in numbers rather than in a hedge
+///
+/// GUARDS: three comment shapes (whole-line, trailing, block, the last nesting), against five
+/// literal shapes that defeat a scanner keyed on `//` alone — plain, raw, byte, raw byte and
+/// character, plus the lifetime that is none of them. Eleven cases hold that, each red under the
+/// branch it is about.
+///
+/// DOES NOT GUARD, and the number is the point of saying so:
+/// - **one string literal from another** — a field name in an assertion message or a needle is code
+///   to this scan exactly as a `println!` argument is, and
+///   [`REPORT_FIELDS_WITH_A_SECOND_HOME`] is how many of the declared fields have somewhere else in
+///   this file's code to be found;
+/// - **live code from `#[cfg]`-dead code**, and what a macro assembles: neither is text this reads.
+///
+/// ⛔ An unclosed literal is the one ending that fails OPEN — every comment after it comes back as
+/// code — so it is a refusal here rather than a note, which is rule 6 in this file's own terms.
+fn code_of(source: &str) -> String {
+    let read = sprag_gate::rust_source::scan(source);
+    assert_eq!(
+        read.unclosed, None,
+        "⛔ ITEM 1051: the scan ran off the end of this file inside something it could not close. \
+         An unclosed literal hands every comment after it back as CODE, so the clauses below would \
+         be answered by the sentences discussing them rather than by a `println!`",
+    );
+    sprag_gate::rust_source::uncommented(source)
+}
+
+/// What the instrument says its report looks like, asked ONCE.
+///
+/// ⚠ A second spelling of *ask the instrument* is a second thing to keep in step with it, which is
+/// the defect the gate it feeds exists to catch, one level up.
+fn report_shape() -> String {
+    let instrument = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/instruments")
+        .join("input-throughput");
+    let out = Command::new("bash")
+        .arg(&instrument)
+        .arg("--report-shape")
+        .output()
+        .expect("the instrument prints its own report shape");
+    assert!(
+        out.status.success(),
+        "⛔ ITEM 1041: `input-throughput --report-shape` exited {:?}.\nstderr:\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+/// Every `key=` field the instrument declares, across every row of its report.
+fn declared_report_fields() -> Vec<String> {
+    report_shape()
         .lines()
-        .filter(|line| !line.trim_start().starts_with("//"))
-        .collect::<Vec<_>>()
-        .join("\n")
+        .filter(|line| line.starts_with("== "))
+        .flat_map(declared_fields)
+        .collect()
 }
 
 /// The `key=` tokens of one declared report row, with `<placeholder>`s taken as BOUNDARIES rather
