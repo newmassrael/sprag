@@ -13662,6 +13662,39 @@ impl OuterLoop {
         Self::authored_paths_in(&self.script, &self.session, name)
     }
 
+    /// ⛔⛔⛔⛔⛔ **WHAT A DOCUMENT SAYS IN WORDS** — [`None`] for a clause it did not author, and
+    /// register item 1034's reader for the six a kind used to answer through a generated accessor.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why a kind's words cannot be read off the codegen, which this file already argued
+    ///
+    /// [`authored_count_in`](Self::authored_count_in)'s own doc makes the case about numbers: *no
+    /// accessor typed from one document's literal can carry it — a kind that wrote `1` would get an
+    /// `Option<i64>` accessor and a kind that wrote `'never'` an `Option<String>`, so a reader typed
+    /// off the codegen would stop compiling the day a repository changed its mind.* That argument is
+    /// not about numbers. It is about **whose document is being typed against**, and the answer for
+    /// a kind is *somebody else's* — which is the whole of item 1034.
+    ///
+    /// ⚠⚠ Measured, and it is why this reader exists rather than a declaration being added
+    /// somewhere: codegen emits an accessor PER LITERAL, so a `<data>` declared with no value gets
+    /// none at all (`probe_absent.scxml` declares `absent` beside six valued ids, and the generated
+    /// module carries accessors for the six). A carrier document therefore cannot hold an empty slot
+    /// for a foreign document to fill — the slot has to be the DATAMODEL, which every document
+    /// shares and no codegen types.
+    ///
+    /// ⚠ An EMPTY string reads as [`None`], on `closing_rules`' rule: the template ships `''` for
+    /// the clauses a kind may decline, so *declared and empty* and *not declared* have to be one
+    /// answer or a kind that declined would read as a kind that decided the empty string.
+    pub(crate) fn authored_text_in(
+        script: &Arc<dyn IScriptEngine>,
+        session: &str,
+        name: &str,
+    ) -> Option<String> {
+        match script.get_variable(session, name) {
+            Ok(ScriptValue::String(held)) if !held.is_empty() => Some(held),
+            _ => None,
+        }
+    }
+
     /// [`authored_count`](Self::authored_count)'s reading, separated from the loop that holds the
     /// engine — `consents_in`'s shape, and for its reason: a loop KIND authors these in its own
     /// document ([`crate::kind`]), and a kind and a template that disagreed about what a decline IS

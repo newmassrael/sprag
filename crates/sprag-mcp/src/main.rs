@@ -2250,7 +2250,23 @@ fn argument_help(name: &str) -> &'static str {
              own record, so naming somebody else's kind has this run judged by a document that has \
              never heard of its work. Say `debt` only from this repository's own tree; say \
              `unclaimed` for a run that should hold no decisions but the loop template's own and \
-             whatever you name on this call."
+             whatever you name on this call — or `unclaimed` beside loop_kind_document, which is \
+             how a repository brings decisions of its own."
+        }
+        // 🎯🎯🎯 AND WHERE A REPOSITORY THAT IS NOT THIS ONE KEEPS ITS OWN — register item 1034.
+        "loop_kind_document" => {
+            "YOUR OWN TREE'S KIND DOCUMENT (ai_loop) — an absolute path to an SCXML document in \
+             the repository this run works in, holding what YOU have decided: how far a run may \
+             re-aim itself, how many steps without moving anything counts as stalled, which files \
+             its work is supposed to move, and the rest. Those are deliberately NOT arguments of \
+             this call — a caller who could name one could delete a ceiling on a launch nobody \
+             reviewed — so a document in the tree that owns the rule is the only road to them. \
+             Say it beside loop_kind=unclaimed, which is the kind that holds no decisions: \
+             pointing it at your tree is what makes the decisions yours. ⚠ Naming it beside a \
+             kind that already decides (debt) is refused, because two documents would then have a \
+             claim on the same clauses. ⚠ A path that holds no document is refused rather than \
+             quietly ignored — otherwise your run would be bounded by this repository's numbers \
+             while you believed it was bounded by yours."
         }
         "north_star" => {
             "WHERE THIS LOOP IS ULTIMATELY GOING (ai_loop) — one or two sentences, in your own \

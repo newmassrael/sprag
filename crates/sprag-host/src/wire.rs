@@ -2276,11 +2276,36 @@ impl PluginGrammar {
         // that predates this key is answered `accepted` and gets a run under this repository's
         // kind, which is item 848 happening SILENTLY to somebody who explicitly asked for it not
         // to. The handshake refusing that daemon outright is the honest failure.
+        // 🎯🎯🎯🎯🎯 **DECLINABLE SINCE ITEM 1034, AND ONLY BECAUSE ITS ALTERNATIVE ARRIVED WITH
+        // IT.** The paragraph above stays true word for word — *there is no answer for a caller who
+        // said nothing, because unclassified is a red rather than a pass* — and that is still what
+        // the door enforces. What changed is that *saying nothing* is no longer the only other
+        // thing a caller can do: the key below names a document in the caller's OWN tree, and the
+        // door refuses a request carrying neither exactly as it always did.
+        //
+        // ⚠⚠ **NO WIRE BUMP, on the rule this form already states twice**: relaxing
+        // required→optional WIDENS what is well-formed, and every caller that has ever sent the key
+        // keeps working unchanged. ⚠ The residue, stated rather than hidden and inherited from
+        // those two: the form alone does not tell an old client which build it is talking to, so a
+        // caller that declines the key against an older daemon still answers `TypeMismatch`.
         ArgGrammar::one_of(
             crate::plugins::LOOP_KIND_KEY,
             "string",
             sprag_plugin::kind::LoopKind::KINDS,
         ),
+        // 🎯🎯🎯🎯🎯 **OR THE DOCUMENT THE CALLER'S OWN TREE HOLDS** — register item 1034, and it is
+        // `open` rather than `one_of` for the reason the item exists: the legal values are every
+        // path in every repository that will ever run this loop, which is not a vocabulary this
+        // build can publish. `LoopKind::KINDS` above stays closed because those two ARE this
+        // build's, and a caller can ask for them by name.
+        //
+        // ⚠⚠ AN ADDED ARGUMENT EARNS NO NUMBER while nobody reads its ABSENCE as a promise —
+        // `BUILD_FIELD`'s measured rule on this same pin. Nothing reads it absent: a request
+        // without it is either naming a compiled kind or being refused, both of which are exactly
+        // what an older daemon does with it. ⚠ A caller that SENDS it to an older daemon is
+        // refused at the grammar, which is the honest failure rather than a silent fall-through to
+        // this repository's own document.
+        ArgGrammar::open(crate::plugins::LOOP_KIND_DOCUMENT_KEY, "string").optional(),
         ArgGrammar::open("north_star", "string"),
         ArgGrammar::open("milestone", "string"),
         // ⚠⚠⚠⚠⚠ DECLINABLE SINCE ITEM 738, and for `max_turns`' reason at a string instead of a
@@ -10852,7 +10877,7 @@ mod tests {
                 // that reads a hold at all — so publishing it on the other forms would advertise an
                 // argument they swallow, which is what `a_declared_argument_is_one_the_plugin_host_
                 // reads` exists to refuse.
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int loop_kind:string north_star:string milestone:string reference:string? max_turns:int? reflect_every:int? context_ceiling:int? reflect_after_refusals:int? agent:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? may_answer:array?{asked:string,answer:string} screen_rules:array?{when:string,text:string} await_person_ms:int? handback_still_ms:int? hold_within_ms:int? opened_by:int? dry_run:bool? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int loop_kind:string loop_kind_document:string? north_star:string milestone:string reference:string? max_turns:int? reflect_every:int? context_ceiling:int? reflect_after_refusals:int? agent:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? may_answer:array?{asked:string,answer:string} screen_rules:array?{when:string,text:string} await_person_ms:int? handback_still_ms:int? hold_within_ms:int? opened_by:int? dry_run:bool? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
                 // ⚠⚠⚠ AND THE PIN EARNED ITS KEEP ON THE VERY NEXT ROUND. R371 added
                 // `await_person_ms:int?` to the three forms that LOOP, and this is what went red
                 // for it — where R370's own re-typing had been noticed by nothing but two

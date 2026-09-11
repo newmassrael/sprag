@@ -25,6 +25,24 @@ sce-rust-runtime = { workspace = true }
 # sprag's own types (the host still owns the RPC-wire mapping), so this does
 # not breach the substrate's serde-free contract. Value-walked, no derives.
 serde_json = { workspace = true }
+# ⛔⛔⛔⛔⛔ THE ENGINE'S OWN ECMASCRIPT -> LUA TRANSLATOR, AT RUN TIME — register item 1034, and it
+# is here rather than in `[build-dependencies]` alone because a kind document in a CONSUMING
+# repository's tree is read when a run starts, not when sprag is built.
+#
+# ⚠⚠⚠⚠⚠ WHAT THE ALTERNATIVE WAS, measured rather than assumed. A `<data>` expression is
+# ECMAScript and this datamodel is Lua, and the compiled kinds only work because codegen lowers
+# them: read out of `OUT_DIR/debt_loop_sm.rs`, `['.git/logs/HEAD', …]` is emitted as Lua
+# `{".git/logs/HEAD", …}`. A document read at run time gets no such pass, so the only two roads are
+# to call `sce_build::ecmascript::to_lua_value` — upstream's own, public, and the same one the
+# generated code went through — or to write a SECOND ECMAScript-to-Lua translator here. The second
+# is a reimplementation of another project's semantics and this workspace's standing answer to that
+# shape is no.
+#
+# ⚠⚠ THE COST, STATED RATHER THAN HIDDEN: this puts a build-time crate into the shipped binary. It
+# is the same pinned rev already compiled for this crate's own `build.rs`, so it costs no build
+# time — what it costs is size and surface, and the trade is against owning a translator whose
+# correctness is upstream's to maintain.
+sce-build = { workspace = true }
 
 [dev-dependencies]
 # The script engine `ai_loop.scxml`'s datamodel is generated against. STILL a DEV dependency, and

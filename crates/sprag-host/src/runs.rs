@@ -1844,6 +1844,15 @@ pub struct RunSummary {
     ///
     /// ⚠ [`None`] for a plugin that takes no kind, which is most of them — and for a run restored
     /// from a log written before its caller had to name one.
+    ///
+    /// # ⛔⛔⛔⛔ A run whose decisions are its own tree's answers with the DOCUMENT — item 1034
+    ///
+    /// The question this field asks is *whose decisions*, and for a run launched against a document
+    /// in the caller's own tree the answer is that document's path. `unclaimed` would be a true
+    /// statement about which MACHINE carries the clauses and a false answer to the question — and
+    /// it would bring item 870's defect back through its own repair, with two repositories running
+    /// under two different documents printing the same word. See the derivation for why this stays
+    /// ONE column read off the request.
     pub loop_kind: Option<String>,
     /// **WHO RAISED THE CANCEL** — [`RunHandle::cancelled_by`], or [`None`] when none was raised
     /// (and also when the run was restored from disk, where nobody in this process knows).
@@ -8438,10 +8447,32 @@ impl RunRegistry {
                 // ⛔⛔⛔⛔⛔ WHOSE DECISIONS IT RUNS UNDER — register item 870, read off the
                 // REQUEST because that map is already the one authority on what this run was asked
                 // with (it is what a successor puts the run back from). See the field.
+                // ⛔⛔⛔⛔⛔ **AND A RUN WHOSE DECISIONS ARE ITS OWN TREE'S ANSWERS WITH THE
+                // DOCUMENT** — register item 1034, and this field's own question rather than a
+                // second one. It is named *whose decisions this run is being judged by*, and for a
+                // run launched against a tree's document the answer is that document: `unclaimed`
+                // is a true statement about which MACHINE carries the clauses and a false answer to
+                // the question this column asks.
+                //
+                // ⚠⚠⚠ WITHOUT IT, ITEM 870'S DEFECT COMES BACK THROUGH ITS OWN REPAIR. That item
+                // was filed because five rows *"printed identically apart from the pane"* while the
+                // runs were judged by different documents; two repositories each running under
+                // their own kind would print `unclaimed` and be indistinguishable again — this time
+                // by the very feature that let them differ.
+                //
+                // ⚠⚠ STILL READ OFF THE REQUEST AND STILL ONE COLUMN, which is the field's stated
+                // rule: the request map is what a successor puts a run back from, so a second field
+                // would be two records of one fact that drift across exactly the restart that
+                // matters. The document is preferred where present because the word is then only
+                // the carrier — see `plugins.rs`, where a document may accompany `unclaimed` alone.
                 loop_kind: record
                     .request
                     .as_ref()
-                    .and_then(|asked| asked.get(crate::plugins::LOOP_KIND_KEY))
+                    .and_then(|asked| {
+                        asked
+                            .get(crate::plugins::LOOP_KIND_DOCUMENT_KEY)
+                            .or_else(|| asked.get(crate::plugins::LOOP_KIND_KEY))
+                    })
                     .and_then(serde_json::Value::as_str)
                     .map(ToOwned::to_owned),
                 // ⚠ SAME PASS, SAME REASON — item 596. The sentence a mouth prints weighs this

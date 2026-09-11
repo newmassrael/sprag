@@ -1159,6 +1159,31 @@ pub const RUN_PANE_KEY: &str = "pane";
 /// [`LoopKind::KINDS`](sprag_plugin::kind::LoopKind::KINDS) and are published from there, so a
 /// client reading the vocabulary and the door admitting it cannot come apart.
 pub const LOOP_KIND_KEY: &str = "loop_kind";
+/// 🎯🎯🎯🎯🎯 **WHERE A RUN'S OWN TREE KEEPS THE DECISIONS IT RUNS UNDER** — register item 1034,
+/// and [`LOOP_KIND_KEY`]'s ALTERNATIVE rather than its companion.
+///
+/// # ⛔⛔⛔⛔⛔ What it costs when a repository has no road to its own kind
+///
+/// A kind's decisions are `<data>` in a document, and the documents this build has are compiled in
+/// through `build.rs`. So a repository that is not sprag has no road at all: the three policy values
+/// — `reaim_max`, `stall_after_steps`, `progress_marks` — are deliberately NOT wire keys, on the
+/// rule that *a caller who could name one could delete the cap silently*, and there was no document
+/// of theirs to read them from instead. Four repositories share this daemon and run on this
+/// repository's template defaults; measured from outside, their runs end `capped` at a depth
+/// nobody in those trees chose.
+///
+/// ⚠⚠⚠ **THIS IS NOT A HOLE IN THAT RULE, AND THE DIFFERENCE IS THE WHOLE DESIGN.** The rule is
+/// about a caller naming a NUMBER on a launch nobody reviewed. This names a FILE — which lives in
+/// the tree that owns the rule, is read there, and changes under review like any other line of that
+/// repository. The template's own comment is what asks for exactly this: *a rule about how work is
+/// done in a particular repository, not a bound a template other repositories copy can choose on
+/// their behalf.*
+///
+/// ⚠⚠ **NAMING BOTH IS A REFUSAL**, because they answer one question. A run whose request carried a
+/// word AND a path would have two documents with a claim on the same decisions, and whichever the
+/// door happened to prefer would be a precedence rule nobody wrote down — the shape this workspace
+/// calls an escape hatch. Naming NEITHER is [`LOOP_KIND_KEY`]'s own refusal, unchanged.
+pub const LOOP_KIND_DOCUMENT_KEY: &str = "loop_kind_document";
 /// The answer key carrying **WHAT THE TREE A RUN WORKED IN WAS HOLDING WHEN IT ENDED** — bytes of
 /// `git diff HEAD`, register item 682's commit-contamination clause.
 ///
@@ -2923,10 +2948,54 @@ fn plugin_from_request(
             // run of a template other repositories copy judged against a record it is not about,
             // and a proposal naming no item of a record is answered `NO`. `require_str` is what
             // makes *nobody said* an answer this door will not invent.
-            let kind = sprag_plugin::kind::LoopKind::named(
-                require_str(map, LOOP_KIND_KEY)?,
-                Arc::clone(&script),
-            )
+            // 🎯🎯🎯🎯🎯 **OR A DOCUMENT IN THE RUN'S OWN TREE** — register item 1034, and the two
+            // keys are ALTERNATIVES: see [`LOOP_KIND_DOCUMENT_KEY`] for why naming both is a
+            // refusal rather than a precedence rule nobody wrote down.
+            //
+            // ⚠⚠ THE PATH IS THE CALLER'S AND IS NOT RESOLVED HERE. A run names a file in the tree
+            // it works in, and this daemon serves four of them — so a relative path would mean
+            // *relative to wherever this process was started*, which is nobody's tree in
+            // particular. That is register item 794's shape one surface over, and the refusal for
+            // it belongs where the file is opened rather than here.
+            // 🎯🎯🎯🎯🎯 **THE WORD SAYS WHICH MACHINE, THE PATH SAYS WHOSE DECISIONS** — register
+            // item 1034, and `ready_when`'s own shape on this same form: there, *`marker` means
+            // whatever `match` says it means*. Here the kind word keeps doing exactly what item 848
+            // made it do — it is REQUIRED, it has no default, and an unknown word is refused — and
+            // the optional document says where the clauses that fill it come from.
+            //
+            // ⚠⚠⚠ **A DOCUMENT MAY ONLY ACCOMPANY THE KIND THAT DECIDES NOTHING**, and that is the
+            // whole of why this is not a precedence rule. `unclaimed` is the document item 848
+            // built to hold no decisions; pointing it at a tree says *these are mine*. A document
+            // beside `debt` would be TWO documents with a claim on the same clauses, settled by
+            // whichever this door read first — which is the escape hatch this workspace keeps
+            // paying for, so it is refused by name instead.
+            //
+            // ⚠⚠ AND THE CARRIER REALLY IS THAT MACHINE: `LoopKind::in_a_tree` opens
+            // `unclaimed_loop` and writes the tree's clauses into its datamodel, so the word a
+            // caller must say and the machine the constructor uses are the same fact rather than
+            // two that have to be kept in step.
+            let named = require_str(map, LOOP_KIND_KEY)?;
+            let kind = match opt_str(map, LOOP_KIND_DOCUMENT_KEY)? {
+                None => sprag_plugin::kind::LoopKind::named(named, Arc::clone(&script)),
+                Some(at) if named == sprag_plugin::kind::LoopKind::UNCLAIMED => {
+                    sprag_plugin::kind::LoopKind::in_a_tree(
+                        std::path::Path::new(at),
+                        Arc::clone(&script),
+                    )
+                }
+                Some(_) => {
+                    return Err(refused(format!(
+                        "this run names {LOOP_KIND_KEY}={named:?} AND a \
+                         {LOOP_KIND_DOCUMENT_KEY:?}, and both decide the same clauses. {named:?} is \
+                         a kind this build compiles in, with its own answers already in it, so a \
+                         second document beside it would be settled by whichever this door read \
+                         first — a precedence rule nobody wrote down. Name \
+                         {LOOP_KIND_KEY}={:?} beside your document: that is the kind that holds no \
+                         decisions, and pointing it at your tree is what makes them yours",
+                        sprag_plugin::kind::LoopKind::UNCLAIMED,
+                    )));
+                }
+            }
             .map_err(|why| refused(why.to_string()))?;
             // ⚠⚠⚠⚠⚠ RESOLVED BY A FUNCTION THAT HANDS THE BRIEF BACK — register item 492. It
             // was a hundred inline lines here, and the eight fall-throughs to the kind document
@@ -20481,8 +20550,18 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_constrained_argument_publishes_what_it_admits)
                 .count_or_panic(),
-            26,
-            "one probe per open string argument of every form. ⚠⚠ THE NEWEST TWO ARE A SCREEN \
+            27,
+            "one probe per open string argument of every form. ⛔⛔⛔ THE NEWEST IS \
+             `loop_kind_document` — register item 1034 — and it is the FIRST argument on this \
+             surface whose value names something OUTSIDE the daemon. It is open rather than \
+             `one_of` because its legal values are every path in every repository that will ever \
+             run this loop, which is not a vocabulary any build can publish. ⚠⚠ A junk path is \
+             refused, and this gate does not mind: it reports only `TypeMismatch`, and a path that \
+             does not open answers `Rejected` — which this gate's own doc calls INVISIBLE to it. \
+             That is the right division rather than a loophole, because the two refusals mean \
+             different things: *this is not a shape I can parse* is the wire's, and *no document \
+             is there* is the tree's, and only the first is a statement about the grammar. \
+             ⚠⚠ THE PREVIOUS TWO ARE A SCREEN \
              RULE's `when` and `text`, open for the consent needles' reason exactly: `when` quotes \
              the AGENT's own dialog and `text` is the AUTHOR's own prose about their own work, so \
              a closed vocabulary at either could only ever be sprag's guess. THE OLD SENTENCE \
@@ -20523,10 +20602,16 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            83,
+            84,
             "one probe per OPTIONAL declared argument of every form, nesting included — required \
              ones are deliberately not driven, because `null` for something the grammar demands is \
-             malformed rather than declined. ⛔⛔⛔ THE NEWEST IS `ordered_by` ON THE STAND-DOWN \
+             malformed rather than declined. ⛔⛔⛔ THE NEWEST IS `loop_kind_document` (item 1034), \
+             and declining it means the run takes one of the kinds this build compiles in, named \
+             by `loop_kind` beside it — which is what every run did before a consuming tree could \
+             own its own. ⚠ An absence here is therefore a fact rather than a gap, which is the \
+             test this pin's own sentence applies to every optional: nothing is silently chosen on \
+             the caller's behalf, because the key that IS required still says whose decisions the \
+             run is under. THE PREVIOUS NEWEST IS `ordered_by` ON THE STAND-DOWN \
              (item 835), and declining it means the order still lands — what is missing is the \
              RECORD of who gave it, which the row then says in those words rather than naming a \
              person nobody wrote down. ⚠ That is the whole reason the key may be optional at all: \
@@ -20647,12 +20732,17 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            129,
+            130,
             "one probe per declared argument of every FORM, nesting included: TWENTY-ONE for an \
              orchestrator, EIGHTEEN for a pipe, TWENTY-TWO for an agent, seventeen for a dialogue, \
-             ELEVEN to answer a pane, THIRTY-THREE to run an AI loop, one to cancel, TWO TO STAND \
+             ELEVEN to answer a pane, THIRTY-FOUR to run an AI loop, one to cancel, TWO TO STAND \
              A RUN DOWN, and TWO TO REPORT A RUN'S PROGRESS. \
-             ⛔⛔⛔ THE NEWEST IS THE STAND-DOWN'S SECOND, `ordered_by` (item 835), and it is the \
+             ⛔⛔⛔ THE NEWEST IS THE AI LOOP'S `loop_kind_document` (item 1034), and this gate is \
+             the one that matters most for it: the key names a document in the CALLER'S OWN TREE, \
+             so a surface that declared it and did not read it would advertise that a repository \
+             owns its own decisions while every run went on being bounded by this repository's \
+             template defaults — which is item 1034 itself, wearing the fix's clothes. \
+             ⚠ THE PREVIOUS NEWEST IS THE STAND-DOWN'S SECOND, `ordered_by` (item 835), and it is the \
              first argument on that verb since it was built — the asymmetry it closes is that \
              `cancel` has carried WHO since item 596 while a stand-down carried only THAT. \
              Measured 2026-09-02: another repository's watcher read *a person asked this run to \

@@ -84,129 +84,22 @@ pub(crate) trait KindDocument {
     /// The script session the document's `<data>` were evaluated into, or [`None`] for a document
     /// that opened none — which is [`NoKind::NoDatamodel`] at the door.
     fn session_id(&self) -> Option<String>;
-    /// `closing_rules`, or [`None`] where this document does not declare it.
-    fn closing_rules(&self) -> Option<String>;
-    /// `working_rules`, or [`None`] where this document does not declare it.
-    fn working_rules(&self) -> Option<String>;
-    /// `unanswered_rule`, or [`None`] where this document does not declare it.
-    fn unanswered_rule(&self) -> Option<String>;
-    /// `unreadable_rule`, or [`None`] where this document does not declare it.
-    fn unreadable_rule(&self) -> Option<String>;
-    /// `unwell_rule`, or [`None`] where this document does not declare it.
-    fn unwell_rule(&self) -> Option<String>;
-    /// `reference`, or [`None`] where this document does not declare it.
-    fn reference(&self) -> Option<String>;
-    /// `works_in`, or [`None`] where this document does not declare it.
-    fn works_in(&self) -> Option<String>;
-    /// `stands_in`, or [`None`] where this document does not declare it.
-    fn stands_in(&self) -> Option<String>;
-    /// `keeps`, or [`None`] where this document does not declare it.
-    fn keeps(&self) -> Option<String>;
-    /// `hold_within_ms`, or [`None`] where this document does not declare it.
-    fn hold_within_ms(&self) -> Option<i64>;
-    /// `reflect_every`, or [`None`] where this document does not declare it.
-    fn reflect_every(&self) -> Option<i64>;
-    /// `context_ceiling`, or [`None`] where this document does not declare it.
-    fn context_ceiling(&self) -> Option<i64>;
-    /// `reflect_after_refusals`, or [`None`] where this document does not declare it.
-    fn reflect_after_refusals(&self) -> Option<i64>;
 }
 
 impl KindDocument for Engine<crate::sm::debt_loop::DebtLoopPolicy> {
     fn session_id(&self) -> Option<String> {
         self.policy().session_id.clone()
     }
-    fn closing_rules(&self) -> Option<String> {
-        self.policy().closing_rules()
-    }
-    fn working_rules(&self) -> Option<String> {
-        self.policy().working_rules()
-    }
-    fn unanswered_rule(&self) -> Option<String> {
-        self.policy().unanswered_rule()
-    }
-    fn unreadable_rule(&self) -> Option<String> {
-        self.policy().unreadable_rule()
-    }
-    fn unwell_rule(&self) -> Option<String> {
-        self.policy().unwell_rule()
-    }
-    fn reference(&self) -> Option<String> {
-        self.policy().reference()
-    }
-    fn works_in(&self) -> Option<String> {
-        self.policy().works_in()
-    }
-    fn stands_in(&self) -> Option<String> {
-        self.policy().stands_in()
-    }
-    fn keeps(&self) -> Option<String> {
-        self.policy().keeps()
-    }
-    fn hold_within_ms(&self) -> Option<i64> {
-        self.policy().hold_within_ms()
-    }
-    fn reflect_every(&self) -> Option<i64> {
-        self.policy().reflect_every()
-    }
-    fn context_ceiling(&self) -> Option<i64> {
-        self.policy().context_ceiling()
-    }
-    fn reflect_after_refusals(&self) -> Option<i64> {
-        self.policy().reflect_after_refusals()
-    }
 }
 
-/// ⚠⚠⚠ **ELEVEN OF THESE FOURTEEN ANSWER `None` BECAUSE THE DOCUMENT DECLARES NOTHING**, which is
-/// the whole of what an unclaimed kind is — not a kind with cautious values, a kind with no values,
-/// so the template's own numbers and the caller's own arguments stand exactly as they would have.
-///
-/// ⚠⚠ Each `None` here is a fact about that file rather than a choice made in Rust, and
-/// `a_kind_declares_exactly_what_its_readers_read` is what keeps it one: the day that document
-/// declares a fourth id, the pin goes red naming it, and this implementation is what the red sends
-/// a reader to.
+/// ⚠⚠⚠ **THIS USED TO SPELL THIRTEEN `None`s, AND THEY ARE GONE BECAUSE NOTHING ASKS ANY MORE** —
+/// register item 1034. What an unclaimed kind is has not changed: a kind with no values, so the
+/// template's own numbers and the caller's own arguments stand exactly as they would have. What
+/// changed is WHERE that is answered — the datamodel it opens, which is empty, rather than thirteen
+/// hand-written refusals in Rust that no foreign document could ever have overridden.
 impl KindDocument for Engine<crate::sm::unclaimed_loop::UnclaimedLoopPolicy> {
     fn session_id(&self) -> Option<String> {
         self.policy().session_id.clone()
-    }
-    fn closing_rules(&self) -> Option<String> {
-        None
-    }
-    fn working_rules(&self) -> Option<String> {
-        None
-    }
-    fn unanswered_rule(&self) -> Option<String> {
-        None
-    }
-    fn unreadable_rule(&self) -> Option<String> {
-        None
-    }
-    fn unwell_rule(&self) -> Option<String> {
-        None
-    }
-    fn reference(&self) -> Option<String> {
-        None
-    }
-    fn works_in(&self) -> Option<String> {
-        None
-    }
-    fn stands_in(&self) -> Option<String> {
-        None
-    }
-    fn keeps(&self) -> Option<String> {
-        None
-    }
-    fn hold_within_ms(&self) -> Option<i64> {
-        None
-    }
-    fn reflect_every(&self) -> Option<i64> {
-        None
-    }
-    fn context_ceiling(&self) -> Option<i64> {
-        None
-    }
-    fn reflect_after_refusals(&self) -> Option<i64> {
-        None
     }
 }
 
@@ -232,9 +125,31 @@ pub struct LoopKind {
     /// this was `Engine<DebtLoopPolicy>` there was exactly one kind a run could be started under,
     /// so *which kind* could not be an argument and the driver named this repository's own for
     /// everybody.
+    ///
+    /// # ⛔⛔⛔⛔⛔ HELD FOR ITS `Drop`, WHICH IS WHY NOTHING READS IT — register item 1034
+    ///
+    /// It was read thirteen times until that item moved every clause onto the datamodel; now its
+    /// only method is called ONCE, during construction, and what the field does afterwards is
+    /// **stay alive**. Dropping it closes the script session, and every reader on this type would
+    /// then answer nothing about a datamodel that is gone — so the value is load-bearing and its
+    /// use is invisible to the compiler.
+    ///
+    /// ⚠⚠ `expect` RATHER THAN `allow`, which is the ratchet direction: the day something reads
+    /// this field again, the lint fires on the attribute itself and sends whoever did it here to
+    /// say why a kind needs its machine for anything but its lifetime.
+    #[expect(
+        dead_code,
+        reason = "held so the script session outlives this type; see the doc above"
+    )]
     machine: Box<dyn KindDocument + Send>,
     /// WHICH kind this is, in the word a caller names it by — see [`LoopKind::named`].
-    named: &'static str,
+    ///
+    /// ⚠⚠ **OWNED SINCE REGISTER ITEM 1034**, and the reason is what this field is FOR: it is what a
+    /// run reports it started under, so *which document decided this* is answerable from the run
+    /// rather than from a build. A kind that lives in a consuming repository's tree is named by its
+    /// PATH — there is no other honest answer to *which* — and a `&'static str` can only carry the
+    /// two words this build compiles in.
+    named: String,
     script: Arc<dyn IScriptEngine>,
     session: String,
 }
@@ -282,6 +197,39 @@ pub enum NoKind {
         /// The claims it answers nothing for, which the template would then answer on its behalf.
         unauthored: Vec<&'static str>,
     },
+    /// 🎯🎯🎯🎯🎯 **A RUN NAMED A KIND DOCUMENT IN ITS OWN TREE AND THE TREE DOES NOT HOLD ONE** —
+    /// register item 1034.
+    ///
+    /// ⚠⚠ **A REFUSAL AND NEVER A FALL-BACK**, which is that item's done-when ⑵ in as many words:
+    /// *remove the document and a red appears*. The tempting alternative — treat a missing document
+    /// as `unclaimed` — is this workspace's rule 6 exactly: an unclassified thing does not pass. A
+    /// run that fell through would be bounded by the template's numbers while its author believed
+    /// it was bounded by theirs, and **nothing in the run would say which**, because a kind that
+    /// decides nothing is a legal and ordinary state.
+    ///
+    /// ⚠ It carries the PATH, for [`Unknown`](Self::Unknown)'s reason: the remedy is to go and look,
+    /// and a reader who is not told where cannot.
+    NoDocumentAt {
+        /// Where the run said its kind lives.
+        at: std::path::PathBuf,
+        /// What the filesystem said about it, in its own words.
+        why: String,
+    },
+    /// ⛔⛔⛔⛔⛔ **A CLAUSE THE EXTERNAL DOCUMENT DECLARES DID NOT EVALUATE** — register item 1034,
+    /// and [`Faulted`](Self::Faulted)'s twin for a document this build did not compile.
+    ///
+    /// ⚠⚠ It is SEPARATE from that one because the two send a reader to different files and only
+    /// one of them is reachable by an author who does not work on sprag: `Faulted` is a document
+    /// this build compiled in, and this is a document somebody wrote in their own repository. A
+    /// single arm would print sprag's paths at an author holding their own file.
+    Unevaluable {
+        /// The document that holds the clause.
+        at: std::path::PathBuf,
+        /// Which `<data>` it was, so the remedy is a line rather than a file.
+        id: String,
+        /// What the engine said, in its own words.
+        why: String,
+    },
 }
 
 impl std::fmt::Display for NoKind {
@@ -324,6 +272,24 @@ impl std::fmt::Display for NoKind {
                 authored.join(", "),
                 unauthored.join(", "),
                 LoopKind::UNCLAIMED,
+            ),
+            Self::NoDocumentAt { at, why } => write!(
+                f,
+                "this run named its own tree's kind document at {} and nothing there could be read: \
+                 {why}. ⚠ A missing document is a REFUSAL and not a fall-back to the kind that \
+                 holds no decisions — a run that fell through would be bounded by the loop \
+                 template's own numbers while whoever launched it believed it was bounded by the \
+                 ones in their file, and nothing in the run could say which, because deciding \
+                 nothing is a legal state a kind can be in",
+                at.display(),
+            ),
+            Self::Unevaluable { at, id, why } => write!(
+                f,
+                "the kind document at {} declares `{id}` and this engine could not evaluate what it \
+                 says: {why}. Every decision in a kind is a `<data>` expression evaluated in the \
+                 run's own datamodel, so a clause that does not evaluate is one the run would \
+                 proceed WITHOUT — under a number its author wrote and nobody applied",
+                at.display(),
             ),
         }
     }
@@ -479,8 +445,8 @@ impl LoopKind {
     /// WHICH KIND THIS IS, in the word [`named`](Self::named) takes — what a run reports it started
     /// under, so *which document decided this* is answerable from the run rather than from a build.
     #[must_use]
-    pub fn name(&self) -> &'static str {
-        self.named
+    pub fn name(&self) -> &str {
+        &self.named
     }
 
     /// **THE DEBT-REPAYMENT KIND** — `debt_loop.scxml`, this repository's own.
@@ -527,6 +493,118 @@ impl LoopKind {
         Self::over(Box::new(machine), Self::UNCLAIMED, script)
     }
 
+    /// 🎯🎯🎯🎯🎯 **A KIND DOCUMENT IN THE TREE THAT OWNS IT** — register item 1034, and the road a
+    /// consuming repository reaches its own decisions by.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What it costs when this does not exist, measured
+    ///
+    /// A kind's decisions are `<data>` in a document, and the documents this build has are compiled
+    /// in through `build.rs`'s `STATECHARTS` list. So a repository that is not sprag has **no road
+    /// at all** to its own: the caller's request cannot carry the policy values — `reaim_max`,
+    /// `stall_after_steps` and `progress_marks` are deliberately not wire keys, because *a caller
+    /// who could name one could delete the cap silently* — and there is no document of theirs to
+    /// read them from. Four repositories run on this repository's template defaults today, and the
+    /// outside measurement of that is runs ending `capped` at a depth nobody in those trees chose.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the MACHINE stays compiled and only the DECISIONS come from the tree
+    ///
+    /// The item's own done-when forbids trading away what the codegen gives for free: a policy type
+    /// per document, checked by the compiler. And it could not be traded anyway — measured at the
+    /// pinned engine, `sce-rust-runtime` has no document→engine road at all; parsing lives in
+    /// `sce-build`, a BUILD dependency, and even its string entry point emits Rust source.
+    ///
+    /// ⇒ So this takes the `unclaimed` machine — the one compiled document that decides nothing —
+    /// and writes the external document's clauses into its datamodel. Every reader on this type
+    /// then answers them unchanged, because a [`LoopKind`] holds its script SESSION rather than its
+    /// values; and [`unauthored`](Self::unauthored) counts them unchanged too, which is how item
+    /// 1035's red rule reaches an external document **with the same force and without a second
+    /// spelling of it**.
+    ///
+    /// ⚠⚠ The `expr` is evaluated by the ENGINE and never interpreted here. That is what a `<data>`
+    /// means in SCXML, it is what the compiled kinds get, and it is why a kind in a tree can spell
+    /// a union — `1300` or `'never'` — without this road inventing an encoding for one.
+    ///
+    /// # Errors
+    ///
+    /// [`NoKind::NoDocumentAt`] when the tree holds no such document — a refusal, never a
+    /// fall-back; [`NoKind::Unevaluable`] for a clause the engine could not evaluate;
+    /// [`NoKind::HalfAuthored`] on exactly the terms every compiled kind meets, which is the point;
+    /// and [`NoKind::NoDatamodel`] / [`NoKind::Faulted`] from the carrier machine.
+    pub fn in_a_tree(at: &std::path::Path, script: Arc<dyn IScriptEngine>) -> Result<Self, NoKind> {
+        // ⚠⚠ READ FIRST, so a tree with no document is refused before a machine is built — the
+        // refusal is about the caller's file and should not be reachable only after this crate's
+        // own document has opened successfully.
+        let document = std::fs::read_to_string(at).map_err(|why| NoKind::NoDocumentAt {
+            at: at.to_path_buf(),
+            why: why.to_string(),
+        })?;
+        // ⚠⚠⚠ THE CARRIER IS `unclaimed_loop`, THE DOCUMENT THAT DECIDES NOTHING — register item
+        // 848 built it for runs that hold no decisions, and that is exactly the empty datamodel an
+        // external document's clauses are written INTO. Using `debt_loop` would start every
+        // external kind holding this repository's answers and let a missing clause be silently
+        // sprag's, which is the defect one layer in.
+        let machine = crate::document::opened(
+            crate::sm::unclaimed_loop::UnclaimedLoopPolicy::new(Arc::clone(&script)),
+            &crate::act::Serving::new(),
+        )
+        .map_err(NoKind::Faulted)?;
+        Self::over_with(
+            Box::new(machine),
+            // ⚠ NAMED BY ITS PATH, which is the only honest answer to *which document decided
+            // this*. See the `named` field.
+            at.display().to_string(),
+            Arc::clone(&script),
+            |kind| {
+                let declares = declarations(&document);
+                // ⛔⛔⛔⛔⛔ **THE SCOPE IS THE DOCUMENT'S OWN DECLARATIONS**, which is what the
+                // compiled road builds from a parsed model (`DocumentScope::from_model`). This
+                // caller has the ids without holding a model, and upstream publishes the
+                // constructor for exactly that — so a clause that reads a name its own document
+                // never declared is refused here rather than evaluating to nil in the datamodel.
+                let scope = sce_build::ecmascript::DocumentScope::declaring(
+                    declares.iter().map(|(id, _)| id.as_str()),
+                );
+                for (id, expr) in &declares {
+                    // ⛔⛔⛔⛔⛔ **LOWERED BY THE ENGINE'S OWN TRANSLATOR, NEVER BY THIS CRATE** —
+                    // register item 1034. A `<data>` expression is ECMAScript and this datamodel is
+                    // Lua; the compiled kinds work only because codegen lowers them at build time
+                    // (measured in `OUT_DIR/debt_loop_sm.rs`: `['.git/logs/HEAD', …]` is emitted as
+                    // `{".git/logs/HEAD", …}`). A document read at run time gets no such pass, and
+                    // the alternative to calling upstream's translator is writing a second one —
+                    // a reimplementation of another project's semantics, which is the shape this
+                    // workspace refuses everywhere else.
+                    //
+                    // ⚠⚠ A TRANSLATION FAILURE IS THE SAME REFUSAL AS AN EVALUATION FAILURE, and it
+                    // has to be: both mean *this clause did not become a decision*, both send the
+                    // author to the same line of the same file, and splitting them would ask an
+                    // author to care which of two passes inside somebody else's compiler stopped.
+                    let lua = sce_build::ecmascript::to_lua_value(expr, &scope).map_err(|why| {
+                        NoKind::Unevaluable {
+                            at: at.to_path_buf(),
+                            id: id.clone(),
+                            why: why.to_string(),
+                        }
+                    })?;
+                    let value = script
+                        .evaluate_expression(&kind.session, &lua)
+                        .map_err(|why| NoKind::Unevaluable {
+                            at: at.to_path_buf(),
+                            id: id.clone(),
+                            why: why.to_string(),
+                        })?;
+                    script
+                        .set_variable(&kind.session, id, value)
+                        .map_err(|why| NoKind::Unevaluable {
+                            at: at.to_path_buf(),
+                            id: id.clone(),
+                            why: why.to_string(),
+                        })?;
+                }
+                Ok(())
+            },
+        )
+    }
+
     /// The half every kind's constructor shares: take the session the document evaluated its
     /// clauses into, refuse a document that opened none, and refuse one that authored only some of
     /// what the template says is a kind's.
@@ -541,16 +619,38 @@ impl LoopKind {
     /// rule whose POPULATION is smaller than its subject.
     fn over(
         machine: Box<dyn KindDocument + Send>,
-        named: &'static str,
+        named: impl Into<String>,
         script: Arc<dyn IScriptEngine>,
+    ) -> Result<Self, NoKind> {
+        Self::over_with(machine, named, script, |_| Ok(()))
+    }
+
+    /// [`over`](Self::over) with a chance to WRITE the session before it is judged — register item
+    /// 1034, and the one line a kind document in a consuming tree needs that a compiled one does not.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the hook is before the judgement and not after the constructor returns
+    ///
+    /// The judgement is [`NoKind::HalfAuthored`], item 1035's rule: a document that decides some of
+    /// what the template says is a kind's and not the rest is a RED. An external document's
+    /// decisions are not in the compiled machine's datamodel — they are in a file — so a
+    /// constructor that judged first would refuse every external document for saying nothing, and
+    /// one that judged after would let a half-written external document through the one check built
+    /// to stop it. **The values have to be in the session before anybody counts them**, which is
+    /// what this ordering is.
+    fn over_with(
+        machine: Box<dyn KindDocument + Send>,
+        named: impl Into<String>,
+        script: Arc<dyn IScriptEngine>,
+        decide: impl FnOnce(&Self) -> Result<(), NoKind>,
     ) -> Result<Self, NoKind> {
         let session = machine.session_id().ok_or(NoKind::NoDatamodel)?;
         let kind = Self {
             machine,
-            named,
+            named: named.into(),
             script,
             session,
         };
+        decide(&kind)?;
         // ⚠⚠ BOTH HALVES ARE READ, because the rule is about the MIDDLE and neither half alone can
         // say where a document sits: all of them is an author who finished, none of them is the
         // `unclaimed` shape item 848 built on purpose, and some of them is an author who never
@@ -600,7 +700,7 @@ impl LoopKind {
         // ⚠ EMPTY READS AS NOTHING, which the generated accessor does not decide: the template
         // ships `''` for the slots a kind may fill, so *declared but empty* is *this document adds
         // nothing*. That polarity belongs to this reader, not to codegen.
-        self.machine.closing_rules().filter(|said| !said.is_empty())
+        OuterLoop::authored_text_in(&self.script, &self.session, "closing_rules")
     }
 
     /// **THE RULES EVERY SESSION OF THIS KIND WORKS UNDER**, or [`None`] for a kind that holds its
@@ -628,7 +728,7 @@ impl LoopKind {
         // ⚠ EMPTY READS AS NOTHING, on `closing_rules`' own polarity: the template ships `''` for
         // the slots a kind may fill, so *declared but empty* is *this document holds its runs to
         // nothing*.
-        self.machine.working_rules().filter(|said| !said.is_empty())
+        OuterLoop::authored_text_in(&self.script, &self.session, "working_rules")
     }
 
     /// ⛔⛔⛔⛔⛔ **WHAT THIS KIND DOES ABOUT A CHECKER THAT SAID NOTHING READABLE** — register item
@@ -652,14 +752,18 @@ impl LoopKind {
     /// [`NotScreenable`] when the document holds exactly one of the two, naming the empty one — a
     /// half-authored decision is the state this type exists to make unrepresentable.
     pub fn unverified_rules(&self) -> Result<Option<crate::outer::UnverifiedRules>, NotScreenable> {
-        let policy = &self.machine;
-        let unanswered = policy.unanswered_rule().filter(|said| !said.is_empty());
-        let unreadable = policy.unreadable_rule().filter(|said| !said.is_empty());
+        // ⚠⚠ READ FROM THE DATAMODEL like every other clause a kind authors — register item 1034.
+        // These three are a document's words about its own checker, and a repository that owns its
+        // kind owns them; reading them off a generated accessor would make them answerable only by
+        // the two documents this build compiles in.
+        let said = |id: &str| OuterLoop::authored_text_in(&self.script, &self.session, id);
+        let unanswered = said("unanswered_rule");
+        let unreadable = said("unreadable_rule");
         // ⚠⚠⚠ THE THIRD, REGISTER ITEM 752 — see [`crate::judge::Silence::Unwell`]. It joins the
         // all-or-nothing rule rather than defaulting: a kind that says what to do about a checker
         // that misphrased and nothing about one that was stopped before it judged would leave the
         // commonest interruption in an unattended loop's life answered by an empty sentence.
-        let unwell = policy.unwell_rule().filter(|said| !said.is_empty());
+        let unwell = said("unwell_rule");
         match (unanswered, unreadable, unwell) {
             (None, None, None) => Ok(None),
             (Some(unanswered), Some(unreadable), Some(unwell)) => {
@@ -699,7 +803,7 @@ impl LoopKind {
     /// has learnt nothing yet begins.
     #[must_use]
     pub fn reference(&self) -> Option<String> {
-        self.machine.reference().filter(|said| !said.is_empty())
+        OuterLoop::authored_text_in(&self.script, &self.session, "reference")
     }
 
     /// **WHAT MAKES A PANE READY FOR THIS KIND'S FIRST PROMPT**, or [`None`] for a kind that names
@@ -853,7 +957,7 @@ impl LoopKind {
     /// *hold this run and end it at once* is `cancel` spelled wrong.
     #[must_use]
     pub fn hold_within_ms(&self) -> Option<i64> {
-        self.machine.hold_within_ms()
+        OuterLoop::authored_number_in(&self.script, &self.session, "hold_within_ms")
     }
 
     /// **WHERE A RUN OF THIS KIND WORKS**, or [`None`] for a kind that does not care where its
@@ -879,7 +983,7 @@ impl LoopKind {
     /// passes.
     #[must_use]
     pub fn works_in(&self) -> Option<String> {
-        self.machine.works_in().filter(|said| !said.is_empty())
+        OuterLoop::authored_text_in(&self.script, &self.session, "works_in")
     }
 
     /// **WHICH WINDOW A RUN OF THIS KIND STANDS IN**, or [`None`] for a kind that does not care
@@ -910,7 +1014,7 @@ impl LoopKind {
     /// other repositories copy — and it means no check at all rather than a check that passes.
     #[must_use]
     pub fn stands_in(&self) -> Option<String> {
-        self.machine.stands_in().filter(|said| !said.is_empty())
+        OuterLoop::authored_text_in(&self.script, &self.session, "stands_in")
     }
 
     /// **WHICH DIMENSION A RUN OF THIS KIND MUST KEEP WHOLE**, or [`None`] for a kind that does not
@@ -941,7 +1045,7 @@ impl LoopKind {
     /// all** rather than a check that passes.
     #[must_use]
     pub fn keeps(&self) -> Option<String> {
-        self.machine.keeps().filter(|said| !said.is_empty())
+        OuterLoop::authored_text_in(&self.script, &self.session, "keeps")
     }
 
     /// **HOW MANY TURNS A RUN OF THIS KIND MAY TAKE**, or [`None`] where this kind says nothing and
@@ -973,7 +1077,7 @@ impl LoopKind {
     /// naming a cadence asks for a loop that runs for ever and never improves itself.
     #[must_use]
     pub fn reflect_every(&self) -> Option<i64> {
-        self.machine.reflect_every()
+        OuterLoop::authored_number_in(&self.script, &self.session, "reflect_every")
     }
 
     /// **HOW MUCH A SESSION OF THIS KIND MAY HAVE READ** before the next milestone is taken in a
@@ -996,7 +1100,7 @@ impl LoopKind {
     /// the word `never` beside it would be two spellings of one decision.
     #[must_use]
     pub fn context_ceiling(&self) -> Option<i64> {
-        self.machine.context_ceiling()
+        OuterLoop::authored_number_in(&self.script, &self.session, "context_ceiling")
     }
 
     /// **HOW MANY TIMES IN A ROW A CHECK MAY REFUSE A RUN OF THIS KIND'S CLAIM** before it stops
@@ -1026,7 +1130,7 @@ impl LoopKind {
     /// has a spelling and a second one would be two ways to say the same thing.
     #[must_use]
     pub fn reflect_after_refusals(&self) -> Option<i64> {
-        self.machine.reflect_after_refusals()
+        OuterLoop::authored_number_in(&self.script, &self.session, "reflect_after_refusals")
     }
 
     /// 🎯🎯🎯🎯🎯 **HOW FAR A RUN OF THIS KIND MAY RE-AIM ITSELF AWAY FROM THE CHECKPOINT IT WAS
@@ -1261,6 +1365,97 @@ impl LoopKind {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **WHAT A KIND DOCUMENT DECLARES — `(id, expr)` PER `<data>`, COMMENTARY EXCLUDED** —
+/// register item 1034, and the reader an EXTERNAL document is taken through.
+///
+/// # ⚠⚠⚠⚠⚠ Why a scan and not a parser, which is `declared_data_ids`' argument one crate-file over
+///
+/// The `expr` is never interpreted here — it is handed to the ENGINE, which is the party whose
+/// semantics a `<data>` has ([`IScriptEngine::evaluate_expression`]). So what this needs to find is
+/// a declaration's two attributes, an id is an NCName and cannot contain a quote, and a real XML
+/// parser would be a second reading of a document the engine already knows how to read.
+/// `OuterLoop::declared_data_ids` makes exactly this argument and ships in production on it.
+///
+/// # ⛔⛔⛔⛔⛔ Why commentary is EXCLUDED here where that sibling does not exclude it
+///
+/// That reader's subject is `ai_loop.scxml`, a document in THIS tree, and its commentary carries no
+/// `<data` tag (measured 2026-09-11: zero, in both kind documents too). **This reader's subject is a
+/// document written in somebody else's repository**, and their commentary is not ours to constrain —
+/// a kind that explained a clause by quoting the declaration would have that explanation silently
+/// become a decision. That is register item 799's shape reaching a tree this one cannot see.
+///
+/// # ⚠⚠⚠⚠ This is a SECOND spelling of *what a comment is*, and it is second on purpose
+///
+/// `sprag_gate::loop_shape::uncommented` is the first, and it was made public saying a second copy
+/// is where two readers of one file come to disagree. It cannot be the one used here:
+/// **`sprag-gate` declares no dependencies, deliberately** — *"a gate that stands outside the suite
+/// must not be able to fail because the product failed to compile"* — and `north-star`, the
+/// instrument this repository's loop reads its own termination condition from, is one of its
+/// binaries. Making it depend on the product would put the judge inside the thing it judges.
+///
+/// ⇒ So the two spellings are held against each other instead, by
+/// `the_two_readers_of_what_a_comment_is_agree_about_this_workspaces_own_documents`, which feeds
+/// both the documents this crate ships and asserts they find the same declarations.
+///
+/// ⚠ An unterminated `<!--` runs to the end of the document, which is what a parser would do with
+/// it; a document that shipped one would not compile anywhere.
+fn declarations(document: &str) -> Vec<(String, String)> {
+    /// What opens a comment, and what closes it.
+    const OPENS: &str = "<!--";
+    const CLOSES: &str = "-->";
+    /// The two attributes a declaration is located by.
+    const DECLARES: &str = "<data id=\"";
+    const EXPRESSES: &str = "expr=\"";
+
+    // ⛔⛔⛔⛔⛔ **THE COMMENT SPANS ARE TAKEN ONCE, IN ABSOLUTE POSITIONS, AND THAT IS A REPAIR
+    // RATHER THAN A STYLE.** The first draft asked *is there an unclosed `<!--` behind me* of a
+    // window that advanced past each declaration — so the look-back began at the PREVIOUS
+    // declaration, and **two declarations inside one comment leaked the second one**: the window
+    // for it started after the first, where the comment's own opener is no longer visible. Found by
+    // mutating the comment test and watching the gate stay green twice.
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    let mut at = 0;
+    while let Some(open) = document[at..].find(OPENS) {
+        let opened = at + open;
+        let after = opened + OPENS.len();
+        // ⚠ An unterminated `<!--` runs to the end of the document, which is what a parser would do
+        // with it — and what a document shipping one deserves, since it would compile nowhere.
+        let closed = document[after..]
+            .find(CLOSES)
+            .map_or(document.len(), |end| after + end + CLOSES.len());
+        spans.push((opened, closed));
+        at = closed;
+    }
+
+    let mut found = Vec::new();
+    for (declares, needle) in document.match_indices(DECLARES) {
+        if spans
+            .iter()
+            .any(|(open, close)| (*open..*close).contains(&declares))
+        {
+            continue;
+        }
+        let after = &document[declares + needle.len()..];
+        let Some(id_ends) = after.find('"') else {
+            continue;
+        };
+        let id = &after[..id_ends];
+        let tail = &after[id_ends..];
+        // ⚠ THE `expr` IS TAKEN FROM INSIDE THIS TAG ONLY. A `<data>` declared with no `expr` —
+        // legal SCXML, and what `probe_absent` measured — has nothing to evaluate, so it is not a
+        // decision and is skipped rather than read as one. The tag's own end is the boundary.
+        let ends = tail.find("/>").unwrap_or(tail.len());
+        let within = &tail[..ends];
+        if let Some(expr_at) = within.find(EXPRESSES) {
+            let value = &within[expr_at + EXPRESSES.len()..];
+            if let Some(expr_ends) = value.find('"') {
+                found.push((id.to_owned(), value[..expr_ends].to_owned()));
+            }
+        }
+    }
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1268,6 +1463,271 @@ mod tests {
     fn debt() -> LoopKind {
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
         LoopKind::debt(lua).expect("the debt kind's document must open a script session")
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE TWO SPELLINGS OF *WHAT A COMMENT IS* AGREE ABOUT THIS WORKSPACE'S OWN
+    /// DOCUMENTS** — register item 1034, and the price of a rule that cannot have one copy.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why there are two, which is a measured constraint and not an oversight
+    ///
+    /// `sprag_gate::loop_shape::uncommented` was made public on the rule that a second copy is where
+    /// two readers of one file come to disagree. It cannot be the copy production uses:
+    /// **`sprag-gate` declares no dependencies on purpose** — its own manifest argues *"a gate that
+    /// stands outside the suite must not be able to fail because the product failed to compile"* —
+    /// and `north-star`, the binary this repository's loop reads its termination condition from, is
+    /// one of its bins. A gate crate that depended on the product would put the judge inside the
+    /// thing it judges, and the CI step that runs it `if: always()` would stop running exactly when
+    /// it is most wanted.
+    ///
+    /// ⇒ So the two spellings stay, and this is what keeps them honest: both readers are fed the
+    /// SAME documents and must find the same declarations. ⚠ It is a dev-only call into the gate
+    /// crate, which is the direction that manifest already allows.
+    ///
+    /// # ⚠⚠ The control, without which this is green over an empty answer
+    ///
+    /// Both documents must yield SOME declarations, or *the two readers agree* is a statement about
+    /// two empty lists — register item 799's shape, which this workspace has now measured five
+    /// times.
+    #[test]
+    fn the_two_readers_of_what_a_comment_is_agree_about_this_workspaces_own_documents() {
+        for (named, document) in [
+            ("debt_loop.scxml", include_str!("debt_loop.scxml")),
+            ("unclaimed_loop.scxml", include_str!("unclaimed_loop.scxml")),
+            ("ai_loop.scxml", include_str!("ai_loop.scxml")),
+        ] {
+            let mine: Vec<String> = super::declarations(document)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+            // ⚠ THE GATE CRATE'S READER, run over the same bytes: it strips commentary and then
+            // the ids are scanned out of what is left, which is the other road to one answer.
+            let theirs: Vec<String> =
+                crate::outer::declared_data_ids(&sprag_gate::loop_shape::uncommented(document))
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect();
+            assert!(
+                !theirs.is_empty(),
+                "⚠⚠⚠⚠⚠ THE CONTROL: {named} must declare SOME `<data>`, or the agreement below is \
+                 between two empty lists — the vacuous green register item 799 measured",
+            );
+            // ⚠⚠ IDS ONLY, because that is what both readers can answer: the gate crate's reader
+            // returns ids and this one returns pairs. What is under test is *which declarations are
+            // real*, which is the comment question; the `expr` is the engine's business.
+            //
+            // ⚠⚠⚠ A `<data>` WITH NO `expr` IS DELIBERATELY ABSENT FROM MINE — it declares nothing
+            // to evaluate — so the comparison is a SUBSET in that direction and an equality would
+            // be red for a reason that is not about comments. What must never happen is the other
+            // way: a declaration mine finds that theirs does not is one that came out of a comment.
+            for id in &mine {
+                assert!(
+                    theirs.contains(id),
+                    "⛔⛔⛔⛔⛔ REGISTER ITEM 1034: the production reader found `{id}` in {named} and \
+                     the gate crate's reader — which strips commentary first — did not. The two \
+                     spellings of *what a comment is* have drifted, and the direction they drifted \
+                     in is the dangerous one: a declaration read out of somebody's COMMENTARY \
+                     becomes a decision their run is bounded by. Mine {mine:?}, theirs {theirs:?}",
+                );
+            }
+        }
+    }
+
+    /// ⚠⚠⚠ **THE READER FINDS A DECLARATION'S PAIR, SKIPS ONE THAT DECLARES NOTHING, AND REFUSES
+    /// COMMENTARY** — register item 1034, the three arms that are not about this workspace's files.
+    ///
+    /// ⚠⚠ Staged rather than found, on R374's rule: the documents this crate ships carry no `<data`
+    /// inside a comment (measured: zero), so the hazard this reader exists for is unreachable in
+    /// them — and a reader whose only evidence is a file where the case cannot arise has not been
+    /// tested for it. An EXTERNAL document is the subject, and nobody here writes those.
+    ///
+    /// # ⛔⛔⛔⛔⛔ THE FIXTURE STAGES **TWO DECLARATIONS INSIDE ONE COMMENT**, AND THAT FOUND A BUG
+    ///
+    /// The first draft put ONE declaration in ONE comment, and mutating the comment test left this
+    /// gate green **twice**. Tracing why found a real defect rather than a weak fixture: the reader
+    /// walked a window that advanced past each declaration, so its look-back began at the PREVIOUS
+    /// one — and for the second declaration inside a comment, that comment's own opener was already
+    /// behind the window. It read as ordinary and became a decision.
+    ///
+    /// ⇒ The reader now takes comment spans ONCE in absolute positions, and this fixture is the
+    /// arrangement that says so: `max_turns` and `reask_max` are both inside the same comment, and
+    /// it is the SECOND of them that the old reader leaked.
+    #[test]
+    fn a_declaration_inside_commentary_is_not_a_decision() {
+        let found = super::declarations(
+            "<datamodel>\
+               <data id=\"reaim_max\" expr=\"3\"/>\
+               <!-- an author explaining: <data id=\"max_turns\" expr=\"7\"/> is the budget, \
+                    and <data id=\"reask_max\" expr=\"9\"/> is how often we ask again -->\
+               <data id=\"declared_only\"/>\
+               <data id=\"reflect_every\" expr=\"'never'\"/>\
+             </datamodel>",
+        );
+        assert_eq!(
+            found,
+            vec![
+                ("reaim_max".to_owned(), "3".to_owned()),
+                ("reflect_every".to_owned(), "'never'".to_owned()),
+            ],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1034: three things at once, and each is a different way a \
+             consuming tree's run would be bounded by something nobody decided — a clause read out \
+             of an author's own explanation, a `<data>` that declares nothing being read as a \
+             decision, and an `expr` picked up from a neighbouring tag",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **A TREE THAT OWNS ITS KIND DECIDES ITS OWN RUNS, AND A TREE THAT LOST THE
+    /// DOCUMENT IS REFUSED** — register item 1034's done-when ⑴ and ⑵, driven.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What the two arms are, and why the second is the one that matters
+    ///
+    /// ⑴ **The document decides.** A kind document written in a scratch tree — standing in for a
+    /// consuming repository — sets `reaim_max` to a number this repository's template does not use,
+    /// and the reader on [`LoopKind`] answers THAT number. Change the file, change the run: the
+    /// value is read back through the same accessor every compiled kind is read through, so what is
+    /// under test is the product's own road rather than a fixture's.
+    ///
+    /// ⑵ **Take the document away and it is a RED.** This is the arm the item asks for by name, and
+    /// the tempting alternative is a fall-back to the kind that decides nothing — which is this
+    /// workspace's rule 6 exactly. A run that fell through would be bounded by the template's
+    /// numbers while its author believed it was bounded by theirs, and **nothing in the run could
+    /// say which**, because deciding nothing is a legal state a kind can be in. So the refusal has
+    /// to name the path, which is asserted rather than assumed.
+    ///
+    /// # ⚠⚠⚠ And item 1035's rule reaches it with the same force, which is done-when ⑶ⓑ
+    ///
+    /// The third arm writes a document that decides SOME of what the template says is a kind's and
+    /// not the rest, and it is refused by `HalfAuthored` — **the same refusal, from the same line**,
+    /// that a compiled document meets. Nothing here spells that rule a second time; the values are
+    /// written into the session before anybody counts them, and the counting is the one that was
+    /// already there.
+    #[test]
+    fn a_kind_document_in_a_tree_decides_that_trees_runs_and_its_absence_is_a_red() {
+        /// A depth this repository's own template does not author, so a run reading it back could
+        /// not have got the number from anywhere but the file.
+        const THEIRS: i64 = 7;
+
+        let home = sprag_scratch::scratch_for("sprag-kind-in-a-tree", "");
+        std::fs::create_dir_all(&home).expect("a tree to put the document in");
+        let at = home.join("their_loop.scxml");
+        let engine = || -> Arc<dyn IScriptEngine> { Arc::new(sce_rust_lua::LuaEngine::new()) };
+
+        // ── ⑴ THE DOCUMENT IN THEIR TREE DECIDES ──
+        //
+        // ⚠ It authors EVERY claim the template says is a kind's, because authoring only some is
+        // the third arm below — this one must differ from that one in exactly one thing.
+        let wholly_authored = |reaim: i64| {
+            format!(
+                "<?xml version=\"1.0\"?>\
+                 <scxml xmlns=\"http://www.w3.org/2005/07/scxml\" version=\"1.0\" \
+                        datamodel=\"ecmascript\" initial=\"done\">\
+                   <datamodel>\
+                     <data id=\"reference\" expr=\"'their register'\"/>\
+                     <data id=\"working_rules\" expr=\"'their rules'\"/>\
+                     <data id=\"max_turns\" expr=\"'never'\"/>\
+                     <data id=\"reflect_every\" expr=\"5\"/>\
+                     <data id=\"reaim_max\" expr=\"{reaim}\"/>\
+                     <data id=\"stall_after_steps\" expr=\"1300\"/>\
+                     <data id=\"progress_marks\" expr=\"['.git/logs/HEAD']\"/>\
+                     <data id=\"reask_max\" expr=\"2\"/>\
+                     <data id=\"hold_within_ms\" expr=\"21600000\"/>\
+                     <data id=\"reflect_after_refusals\" expr=\"2\"/>\
+                     <data id=\"context_ceiling\" expr=\"800000\"/>\
+                   </datamodel>\
+                   <final id=\"done\"/>\
+                 </scxml>"
+            )
+        };
+        std::fs::write(&at, wholly_authored(THEIRS)).expect("their document");
+        let theirs = LoopKind::in_a_tree(&at, engine()).expect("a wholly authored document opens");
+        assert_eq!(
+            theirs.reaim_max(),
+            Some(crate::outer::Counted::Of(THEIRS)),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1034: a repository that is not sprag wrote its own depth in its \
+             own tree and the run did not read it. `reaim_max` is deliberately NOT a wire key — *a \
+             caller who could name it could delete the cap silently* — so a document in the tree \
+             that owns the rule is the only road there is, and this is it",
+        );
+        assert_eq!(
+            theirs.name(),
+            at.display().to_string(),
+            "⚠⚠⚠ AND THE RUN CAN SAY WHICH DOCUMENT DECIDED IT. `name()` is what a run reports it \
+             started under, and for a kind in somebody's tree the only honest answer is the path — \
+             a word like `tree` would leave a reader of four repositories' runs unable to tell them \
+             apart",
+        );
+        assert!(
+            theirs.unauthored().is_empty(),
+            "⚠⚠ AND ITEM 1035's COUNT READS THE SAME SESSION: a document that authored every claim \
+             must answer NOTHING as unauthored, or the rule below is being applied to a reading \
+             that cannot see what the file said. Got {:?}",
+            theirs.unauthored(),
+        );
+
+        // ⚠⚠⚠ THE CONTROL FOR ⑴: a DIFFERENT number in the same file reaches the run. Without it
+        // the assertion above is satisfied by a reader that answers `THEIRS` for anything.
+        std::fs::write(&at, wholly_authored(THEIRS + 4)).expect("their document, edited");
+        assert_eq!(
+            LoopKind::in_a_tree(&at, engine())
+                .expect("the edited document opens")
+                .reaim_max(),
+            Some(crate::outer::Counted::Of(THEIRS + 4)),
+            "⚠⚠⚠⚠⚠ EDITING THE DOCUMENT MUST CHANGE THE RUN — item 1034's ⑵, first half. A reader \
+             that answered the first value for every document would pass the assertion above and \
+             mean nothing",
+        );
+
+        // ── ⑶ⓑ ITEM 1035's RULE REACHES AN EXTERNAL DOCUMENT, FROM THE SAME LINE ──
+        std::fs::write(
+            &at,
+            "<?xml version=\"1.0\"?>\
+             <scxml xmlns=\"http://www.w3.org/2005/07/scxml\" version=\"1.0\" \
+                    datamodel=\"ecmascript\" initial=\"done\">\
+               <datamodel><data id=\"reaim_max\" expr=\"3\"/></datamodel>\
+               <final id=\"done\"/>\
+             </scxml>",
+        )
+        .expect("a half-authored document");
+        // ⚠ REDUCED TO WHAT THE FAILURE MESSAGE NEEDS: a `LoopKind` holds an engine and a live
+        // script session and is deliberately not `Debug`, so what a refusal is printed against is
+        // the name a successful open would have carried.
+        let half = LoopKind::in_a_tree(&at, engine()).map(|kind| kind.name().to_owned());
+        let Err(NoKind::HalfAuthored {
+            authored,
+            unauthored,
+        }) = half
+        else {
+            panic!(
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 1034's ⑶ⓑ: a document in a tree that decides ONE of the \
+                 clauses the template says are a kind's must meet item 1035's refusal with the same \
+                 force a compiled document meets it — otherwise the silent default-filling those \
+                 four repositories live with today comes back as REMOTE INPUT. Got {half:?}",
+            );
+        };
+        assert_eq!(authored, vec!["reaim_max"], "it decided exactly the one");
+        assert!(
+            unauthored.len() > 1 && !unauthored.contains(&"reaim_max"),
+            "⚠⚠ and the refusal names what is missing, which is what sends an author to a line \
+             rather than to a file. Got {unauthored:?}",
+        );
+
+        // ── ⑵ TAKE THE DOCUMENT AWAY AND IT IS A RED ──
+        std::fs::remove_file(&at).expect("the document this tree had");
+        let gone = LoopKind::in_a_tree(&at, engine()).map(|kind| kind.name().to_owned());
+        let Err(NoKind::NoDocumentAt { at: named, .. }) = gone else {
+            panic!(
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 1034's ⑵: a run that named its tree's kind document and \
+                 found none must be REFUSED. Falling through to the kind that decides nothing is \
+                 this workspace's rule 6 — an unclassified thing does not pass — and it is the worse \
+                 half here: the run would be bounded by the template's numbers while whoever \
+                 launched it believed it was bounded by theirs, and nothing in the run could say \
+                 which, because deciding nothing is a legal state. Got {gone:?}",
+            );
+        };
+        assert_eq!(
+            named, at,
+            "⚠⚠⚠ AND THE REFUSAL NAMES THE PATH, because the remedy is to go and look and a reader \
+             who is not told where cannot",
+        );
     }
 
     /// ⚠⚠⚠ **THE DECISIONS THE TEMPLATE GAVE UP ARE HELD HERE, WHOLE** — the other half of the
@@ -2635,67 +3095,39 @@ mod tests {
     /// through is that document's own session, opened the way the constructor opens it.
     #[test]
     fn a_document_that_decides_some_of_the_templates_claims_is_refused_naming_the_rest() {
-        /// The unclaimed document, answering `reference` and nothing else.
-        struct Halfway(Box<dyn KindDocument + Send>);
-
-        impl KindDocument for Halfway {
-            fn session_id(&self) -> Option<String> {
-                self.0.session_id()
-            }
-            fn reference(&self) -> Option<String> {
-                Some("the one clause this author reached".to_string())
-            }
-            fn closing_rules(&self) -> Option<String> {
-                self.0.closing_rules()
-            }
-            fn working_rules(&self) -> Option<String> {
-                self.0.working_rules()
-            }
-            fn unanswered_rule(&self) -> Option<String> {
-                self.0.unanswered_rule()
-            }
-            fn unreadable_rule(&self) -> Option<String> {
-                self.0.unreadable_rule()
-            }
-            fn unwell_rule(&self) -> Option<String> {
-                self.0.unwell_rule()
-            }
-            fn works_in(&self) -> Option<String> {
-                self.0.works_in()
-            }
-            fn stands_in(&self) -> Option<String> {
-                self.0.stands_in()
-            }
-            fn keeps(&self) -> Option<String> {
-                self.0.keeps()
-            }
-            fn hold_within_ms(&self) -> Option<i64> {
-                self.0.hold_within_ms()
-            }
-            fn reflect_every(&self) -> Option<i64> {
-                self.0.reflect_every()
-            }
-            fn context_ceiling(&self) -> Option<i64> {
-                self.0.context_ceiling()
-            }
-            fn reflect_after_refusals(&self) -> Option<i64> {
-                self.0.reflect_after_refusals()
-            }
-        }
-
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
         let opened = crate::document::opened(
             crate::sm::unclaimed_loop::UnclaimedLoopPolicy::new(Arc::clone(&lua)),
             &crate::act::Serving::new(),
         )
         .expect("the unclaimed document initialises");
+        // ⛔⛔⛔⛔⛔ **THE HALF IS STAGED IN THE DATAMODEL, WHICH IS WHERE A DOCUMENT PUTS IT** —
+        // register item 1034 moved every claim's reader onto the session, and this fixture moved
+        // with it.
+        //
+        // ⚠⚠⚠ WHAT IT REPLACED, and why the replacement is the honest one: this used to wrap the
+        // machine in a fourteen-method `Halfway` shim whose `reference()` answered a fixed string —
+        // faking the generated ACCESSOR. That road no longer exists for any claim, and while it did
+        // it was staging something no document can do: a `<data>` a document does not declare gets
+        // no accessor at all (`probe_absent.scxml` measured it), so the shim was modelling a
+        // half-authored document as one whose codegen had been edited. Writing the value into the
+        // session is what authoring the clause actually is.
+        //
+        // ⚠⚠ AND THE CLAIM IS UNCHANGED — that is the point of writing it down here. What went red
+        // when the readers moved was this fixture, not item 1035's rule; a round that had "fixed"
+        // the rule to match the fixture would have deleted the refusal this whole item bought.
+        let session = opened
+            .session_id()
+            .expect("the unclaimed document opens a session");
+        lua.set_variable(
+            &session,
+            "reference",
+            sce_rust_runtime::ScriptValue::String("the one clause this author reached".to_string()),
+        )
+        .expect("a datamodel this test can write is the same one a document writes");
         // ⚠ `expect_err` is out of reach: a `LoopKind` holds an engine and is not `Debug`, so the
         // refusal is taken by hand — which also lets the OPENED case carry its own sentence.
-        let Err(refused) = LoopKind::over(
-            Box::new(Halfway(Box::new(opened))),
-            LoopKind::UNCLAIMED,
-            lua,
-        ) else {
+        let Err(refused) = LoopKind::over(Box::new(opened), LoopKind::UNCLAIMED, lua) else {
             panic!(
                 "⛔⛔⛔⛔⛔ ITEM 1035: a document that decided ONE of the template's claims opened, \
                  and the other nine are now `ai_loop.scxml`'s — chosen for this tree by a file it \

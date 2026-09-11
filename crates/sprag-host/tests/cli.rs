@@ -5480,6 +5480,79 @@ fn a_runs_row_says_whose_decisions_it_is_being_judged_by() {
          {here} against {nowhere}",
     );
 
+    // ── ⛔⛔⛔⛔⛔ AND A RUN JUDGED BY ITS OWN TREE'S DOCUMENT SAYS WHICH ONE ─────────────────────
+    //
+    // Register item 1034, and it belongs in THIS gate rather than beside it: the question is item
+    // 870's own — *whose decisions is this run being judged by* — and the answer for a tree-owned
+    // kind is a document this build has never heard of.
+    //
+    // ⚠⚠⚠ WITHOUT IT, ITEM 870'S DEFECT RETURNS THROUGH ITS OWN REPAIR. Every such run names
+    // `loop_kind: unclaimed` — that is the only word the door admits beside a document — so two
+    // repositories running under two entirely different documents would print the SAME word and be
+    // exactly as indistinguishable as the five rows this item was opened on. The word names the
+    // machine that carries the clauses; only the path names whose they are.
+    let owned = sprag_scratch::scratch_for("sprag-row-says-which-document", "");
+    std::fs::create_dir_all(&owned).expect("a tree to put the document in");
+    let document = owned.join("their_loop.scxml");
+    std::fs::write(
+        &document,
+        "<?xml version=\"1.0\"?>\
+         <scxml xmlns=\"http://www.w3.org/2005/07/scxml\" version=\"1.0\" \
+                datamodel=\"ecmascript\" initial=\"done\">\
+           <datamodel>\
+             <data id=\"reference\" expr=\"'their register'\"/>\
+             <data id=\"working_rules\" expr=\"'their rules'\"/>\
+             <data id=\"max_turns\" expr=\"'never'\"/>\
+             <data id=\"reflect_every\" expr=\"5\"/>\
+             <data id=\"reaim_max\" expr=\"7\"/>\
+             <data id=\"stall_after_steps\" expr=\"1300\"/>\
+             <data id=\"progress_marks\" expr=\"['.git/logs/HEAD']\"/>\
+             <data id=\"reask_max\" expr=\"2\"/>\
+             <data id=\"hold_within_ms\" expr=\"21600000\"/>\
+             <data id=\"reflect_after_refusals\" expr=\"2\"/>\
+             <data id=\"context_ceiling\" expr=\"800000\"/>\
+           </datamodel>\
+           <final id=\"done\"/>\
+         </scxml>",
+    )
+    .expect("their document");
+    let at = document.display().to_string();
+    let judged_there = loop_session(&mut conn, "there");
+    conn.call(
+        "scene/invoke",
+        json!({
+            "session": "there",
+            "path": sprag_host::wire::plugins_path(sprag_host::plugins::RUN_ACTION),
+            "args": {
+                "plugin": "ai_loop",
+                "pane": judged_there,
+                // ⚠ THE CARRIER WORD, which is the only one a document may accompany.
+                "loop_kind": sprag_plugin::kind::LoopKind::UNCLAIMED,
+                "loop_kind_document": at,
+                "agent": "claude",
+                "north_star": "say which document judges this run",
+                "milestone": "be readable on the row",
+                "ready_when": { "match": "shows", "marker": "AGENT-READY" },
+                "shows_prompt": false,
+                "guardrails": { "max_iterations": 100000, "max_seconds": 3000 },
+            },
+        }),
+    )
+    .expect("the tree-owned loop is submitted");
+    let there = run_block_for(&sprag(&sock, &["runs", "-t", "there"]).stdout, judged_there);
+    assert!(
+        there.contains(&at),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 1034: a run judged by a document in its own tree printed a row \
+         that does not name it. Every such run says `unclaimed` — the carrier word — so without \
+         the path two repositories under two different documents print the same row, which is \
+         register item 870's five identical rows arriving through the repair for them. Row: {there}",
+    );
+    assert!(
+        !there.contains(sprag_plugin::kind::LoopKind::DEBT),
+        "⚠⚠ AND IT MUST NOT CARRY THIS REPOSITORY'S OWN KIND, which is the word whose absolute \
+         register path makes a row about somebody else's tree misleading: {there}",
+    );
+
     // ── THE CONTROL: a plugin that takes no kind gains no clause ────────────────────────────────
     let plain = loop_session(&mut conn, "plain");
     conn.call(
@@ -16956,6 +17029,202 @@ fn a_launcher_is_told_this_daemon_cannot_take_its_call_before_any_run_exists() {
 /// sentence from the same side of the wire. The property is *the two roads agree*, and any
 /// daemon-only refusal exercises it; a case chosen because it reproduces one bug would stop
 /// covering the next one.
+/// 🎯🎯🎯🎯🎯 **A REPOSITORY THAT IS NOT THIS ONE CAN LAUNCH A RUN UNDER ITS OWN KIND DOCUMENT** —
+/// register item 1034's done-when ⑴ and ⑵, driven through the daemon rather than the library.
+///
+/// # ⛔⛔⛔⛔⛔ Why this gate exists beside the library's own
+///
+/// `sprag_plugin`'s `a_kind_document_in_a_tree_decides_that_trees_runs_and_its_absence_is_a_red`
+/// proves the READER: a document in a tree decides, editing it changes the decision, removing it
+/// refuses. None of that is reachable by anybody until a RUN can name one — item 1034's ⑴ says a
+/// consuming repository can *launch*, and a launch goes through this door. A library that worked
+/// and a door that did not would be the shape item 469 keeps producing: a capability nobody can ask
+/// for.
+///
+/// # ⚠⚠⚠ It is a DRY RUN, which is the launch's own verdict rather than a cheaper check
+///
+/// `dry_run` returns at the last line before the spawn — by then the plugin is built, the kind is
+/// resolved and every word is validated, which is register item 873's whole argument and the reason
+/// that line may not move upward. So a dry run that is accepted is a launch that would have been
+/// accepted, and one that is refused is refused for the launch's own reason.
+///
+/// ⚠⚠ NO NEW CLIENT CODE WAS NEEDED and that is worth saying: `orchestrate` fills any `--name value`
+/// from the published grammar, so declaring the argument is what made it callable. A flag this
+/// binary had to learn separately would be a second place deciding what the word means — item 873's
+/// defect, one layer out.
+#[test]
+fn a_tree_that_owns_its_kind_can_launch_under_it_and_a_missing_document_is_refused() {
+    let (_guard, sock, pane) = daemon_with_one_pane("kind-in-a-tree");
+    let pane = pane.to_string();
+
+    // ⛔ `sprag_scratch` AND NOT `std::env::temp_dir()` — register item 794.
+    let home = sprag_scratch::scratch_for("sprag-door-kind-in-a-tree", "");
+    std::fs::create_dir_all(&home).expect("a tree to put the document in");
+    let at = home.join("their_loop.scxml");
+    let path = at.display().to_string();
+
+    // ⚠ EVERY CLAIM THE TEMPLATE SAYS IS A KIND'S, because authoring only some is item 1035's
+    // refusal and that is a different case — the library gate drives it. This one differs from a
+    // compiled launch in exactly one thing: whose document decided.
+    std::fs::write(
+        &at,
+        "<?xml version=\"1.0\"?>\
+         <scxml xmlns=\"http://www.w3.org/2005/07/scxml\" version=\"1.0\" \
+                datamodel=\"ecmascript\" initial=\"done\">\
+           <datamodel>\
+             <data id=\"reference\" expr=\"'their register'\"/>\
+             <data id=\"working_rules\" expr=\"'their rules'\"/>\
+             <data id=\"max_turns\" expr=\"'never'\"/>\
+             <data id=\"reflect_every\" expr=\"5\"/>\
+             <data id=\"reaim_max\" expr=\"7\"/>\
+             <data id=\"stall_after_steps\" expr=\"1300\"/>\
+             <data id=\"progress_marks\" expr=\"['.git/logs/HEAD']\"/>\
+             <data id=\"reask_max\" expr=\"2\"/>\
+             <data id=\"hold_within_ms\" expr=\"21600000\"/>\
+             <data id=\"reflect_after_refusals\" expr=\"2\"/>\
+             <data id=\"context_ceiling\" expr=\"800000\"/>\
+           </datamodel>\
+           <final id=\"done\"/>\
+         </scxml>",
+    )
+    .expect("their document");
+
+    let launch = |extra: &[&str]| -> Vec<String> {
+        let mut words: Vec<String> = [
+            "orchestrate",
+            "ai_loop",
+            "-t",
+            "work",
+            "--pane",
+            &pane,
+            "--north-star",
+            "SPRAG-KIND-IN-A-TREE",
+            "--milestone",
+            "say the marker",
+            "--agent",
+            "claude",
+            "--match",
+            "shows",
+            "--marker",
+            "SPRAG-KIND-IN-A-TREE-READY",
+            "--dry-run",
+        ]
+        .iter()
+        .map(|word| (*word).to_string())
+        .collect();
+        words.extend(extra.iter().map(|word| (*word).to_string()));
+        words
+    };
+    let run = |words: &[String]| {
+        let borrowed: Vec<&str> = words.iter().map(String::as_str).collect();
+        sprag(&sock, &borrowed)
+    };
+
+    // ══ ⑴ A RUN NAMES THE DOCUMENT ITS OWN TREE HOLDS, AND THE DOOR TAKES IT ═══════════════════
+    //
+    // ⚠⚠⚠ THE WORD SAYS WHICH MACHINE AND THE PATH SAYS WHOSE DECISIONS — `ready_when`'s shape on
+    // this same form, where `marker` means whatever `match` says. `unclaimed` is the kind item 848
+    // built to hold none, so pointing it at a tree is what makes the decisions that tree's; the
+    // kind word stays REQUIRED and undefaulted, which is item 848's rule untouched.
+    let theirs = run(&launch(&[
+        "--loop-kind",
+        "unclaimed",
+        "--loop-kind-document",
+        &path,
+    ]));
+    assert!(
+        theirs.ok,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 1034: a repository that is not sprag named the kind document in \
+         its own tree and this door would not launch it. The three policy values — `reaim_max`, \
+         `stall_after_steps`, `progress_marks` — are deliberately not wire keys, on the rule that a \
+         caller who could name one could delete the cap silently, so a document in the tree that \
+         OWNS the rule is the only road there is. Without it four repositories go on running under \
+         this repository's template defaults. stderr: {}",
+        theirs.stderr,
+    );
+
+    // ⚠⚠⚠ THE CONTROL: the same launch naming a COMPILED kind is taken too. Without it the
+    // assertion above is satisfied by a door that accepts everything, and the one below by a door
+    // that refuses everything.
+    //
+    // ⚠⚠ IT NAMES `debt` AND NOT `unclaimed`, and the first draft got that wrong: a kind that holds
+    // NO decisions authors no `reference` either, so `--loop-kind unclaimed` alone is refused by
+    // item 738's door — *nothing says where its first session should start reading*. That refusal
+    // is correct and is not what this arm is about, so the control has to be a kind that decides.
+    // ⚠ Which is also the cleanest statement of what ⑴ above proved: the tree's document supplied
+    // exactly what `unclaimed` could not.
+    let compiled = run(&launch(&["--loop-kind", "debt"]));
+    assert!(
+        compiled.ok,
+        "⚠⚠⚠ THE CONTROL FAILED: a launch naming one of this build's own kinds must still be \
+         taken, or nothing below separates *this document is unreadable* from *this door is shut*. \
+         stderr: {}",
+        compiled.stderr,
+    );
+
+    // ══ ⑵ TAKE THE DOCUMENT AWAY AND THE LAUNCH IS REFUSED ═════════════════════════════════════
+    std::fs::remove_file(&at).expect("the document this tree had");
+    let gone = run(&launch(&[
+        "--loop-kind",
+        "unclaimed",
+        "--loop-kind-document",
+        &path,
+    ]));
+    assert!(
+        !gone.ok,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 1034's ⑵: the tree's kind document was removed and the launch was \
+         TAKEN. Falling through to the kind that decides nothing is rule 6 — an unclassified thing \
+         does not pass — and it is the worse half here: the run would be bounded by this \
+         repository's template numbers while whoever launched it believed it was bounded by theirs, \
+         and nothing in the run could say which, because deciding nothing is a legal state a kind \
+         can be in. stdout: {} stderr: {}",
+        gone.stdout, gone.stderr,
+    );
+    // ⛔⛔⛔⛔⛔ **AND THIS ASSERTION IS THE ONE THAT ACTUALLY HOLDS ⑵ — MEASURED, NOT ASSUMED.**
+    // Mutating the reader so a missing document falls back to an empty one leaves the launch
+    // REFUSED ANYWAY: a kind with no clauses authors no `reference`, so item 738's door turns it
+    // away and `!gone.ok` above is still true. **A silent fall-through and a real refusal are the
+    // same boolean here**, and only the sentence tells them apart — which is why the remedy being
+    // in the words is a property of the product rather than a nicety. The mutation goes red here
+    // and nowhere else.
+    assert!(
+        gone.stderr.contains(&path),
+        "⚠⚠⚠ AND THE REFUSAL NAMES THE PATH, because the remedy is to go and look and a reader who \
+         is not told where cannot — and because a refusal for some OTHER reason is what a silent \
+         fall-through to the kind that decides nothing looks like from here: {}",
+        gone.stderr,
+    );
+
+    // ══ AND A DOCUMENT BESIDE A KIND THAT ALREADY DECIDES IS REFUSED ═══════════════════════════
+    //
+    // ⚠⚠ `debt` has its own answers compiled in, so a second document beside it is two documents
+    // with a claim on the same clauses — settled by whichever the door read first, which is a
+    // precedence rule nobody wrote down. ⚠ This is the arm that makes the word MEAN something: a
+    // door that took any word beside a path would be publishing a required argument it ignores.
+    std::fs::write(&at, "<scxml><final id=\"done\"/></scxml>").expect("something to name");
+    let both = run(&launch(&[
+        "--loop-kind",
+        "debt",
+        "--loop-kind-document",
+        &path,
+    ]));
+    assert!(
+        !both.ok,
+        "⚠⚠⚠⚠ A RUN NAMED A KIND THAT ALREADY DECIDES AND A DOCUMENT BESIDE IT, AND THE DOOR TOOK \
+         IT. Whichever it read first would be a precedence rule nobody wrote down. stdout: {} \
+         stderr: {}",
+        both.stdout, both.stderr,
+    );
+    assert!(
+        both.stderr
+            .contains(sprag_plugin::kind::LoopKind::UNCLAIMED),
+        "⚠⚠⚠ AND THE REFUSAL SAYS WHICH WORD TO USE INSTEAD. *These two conflict* sends somebody \
+         to guess; naming the kind that holds no decisions is what turns the refusal into a \
+         remedy: {}",
+        both.stderr,
+    );
+}
+
 #[test]
 fn a_dry_run_refuses_everything_a_launch_does() {
     let (_guard, sock, pane) = daemon_with_one_pane("seam");
