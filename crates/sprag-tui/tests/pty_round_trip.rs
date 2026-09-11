@@ -67,28 +67,52 @@ use sprag_vt::{Emulator, InputModes, MouseProtocol, ScreenKind, VtPort};
 /// only buys a loaded machine room to finish.
 ///
 /// **15s was not generous, and it was measured rather than argued.** The slowest legitimate wait in
-/// ⛔⛔ **THE PROBE BEHIND THE PER-CHARACTER FIGURES BELOW IS NOT IN THIS TREE** — register item
-/// 1040. It was a throwaway, so those four readings can be quoted and never re-taken, and a reader
-/// cannot tell which spelling of "typing" they describe. ⚠ They are NOT this file's bulk path:
-/// `type_bytes` writes a whole line with `write_all`, and at 100ms/char the 800 characters
-/// `a_re_wrapped_pane_taller_than_the_client_shows_its_newest_rows` types would take eighty
-/// seconds against the 8.4s it actually takes. Two real measurements, one of them missing the
-/// condition it was taken under, is item 964's shape. The instrument that DID survive this round is
-/// `tests/instruments/reproduce-under-load`, and `the_instrument_behind_item_1040_is_in_this_tree`
-/// keeps it here.
-///
 /// this file is `a_click_in_the_second_pane_arrives_in_that_panes_own_columns`, which types an
 /// 88-character command into a pane's shell and waits for the echo: 9–13 seconds in ISOLATION, on a
 /// quiet machine, of a 15-second cap. It passed only because it happened to fit. Adding tests to this
 /// binary — which run in parallel — pushed it over, so a green suite turned amber for a reason that
 /// had nothing to do with what any of the tests assert.
 ///
-/// The cost is in one place, and it is worth recording where: typed input is delivered at roughly
-/// **100–124ms per character** in bulk (measured with a throwaway probe: 1 char 222ms, 10 chars
-/// 384ms, 20 chars 2.1s, 40 chars 5.0s), so 88 keystrokes are ~8 of that test's ~10 seconds. That is
-/// a real property of the input path rather than of this harness, and it is the thing to fix; a
-/// deadline is not the place to hold the line on it. Until then this is set where a HANG is still
-/// caught promptly and a slow-but-working wait is not called a failure.
+/// # ⛔⛔⛔⛔⛔ What that cost is, RE-TAKEN — register item 1041
+///
+/// This comment used to quote four readings from a **throwaway probe** — *"1 char 222ms, 10 chars
+/// 384ms, 20 chars 2.1s, 40 chars 5.0s"*, summarised as *"100–124ms per character in bulk"* — and
+/// reach a verdict on them: *"a real property of the input path … and it is the thing to fix"*. The
+/// probe was never in this tree, so no reader could ask which spelling of typing it measured or
+/// which build it ran in. [`the_input_path_costs_what_this_instrument_measures`] asks both, and
+/// `tests/instruments/input-throughput` drives it.
+///
+/// **Measured 2026-09-11 on 32 cores, load 3.9–4.2, io pressure ~35%, with [`POLL`] at 20 ms:**
+///
+/// | build | shape | 80 chars reach the pane in | marginal, 40→80 | knee |
+/// |---|---|---|---|---|
+/// | debug | per-char | 716 ms | ~10.9 ms/char | n=20 |
+/// | debug | bulk | 808 ms | ~12.1 ms/char | n=20 |
+/// | release | per-char | **20.6 ms** | 0.00 ms/char | none |
+/// | release | bulk | **21.2 ms** | 0.00 ms/char | none |
+///
+/// **The quoted figures were wrong about what they described, and the verdict was wrong about what
+/// to do.** Four ways, each of them a number rather than a reading of the old prose:
+///
+/// * **Not a shape.** `per-char` — one `write` per byte, as a keyboard types — and `bulk` — one
+///   `write_all`, as this file and a paste do — land within 13% of each other in both builds. The
+///   summary's *"in bulk"* named an axis that is not one.
+/// * **A build.** In `release` the whole sweep finishes inside ONE poll, so 20.6 ms is this
+///   instrument's resolution and not the path's cost; `debug`, which is what `cargo test` runs,
+///   costs ~9–12 ms per character. The 60x between the two builds was on record already (R246:
+///   ~5 ms/char release against ~124–304 ms debug) — the quoted figures sit in that debug range.
+/// * **A first trip, not a character.** `1 char 222ms` is a warm-up: the instrument spends one
+///   round trip before timing anything, precisely because that first trip reads 151–155 ms here and
+///   would otherwise make the next step's marginal cost NEGATIVE.
+/// * **Already fixed.** R246 made a keystroke cheap, and this file has recorded the consequence ever
+///   since inside `a_click_in_the_second_pane_arrives_in_that_panes_own_columns`: the race that
+///   88-character delay had been hiding surfaced the moment the delay went away. A comment calling
+///   it *the thing to fix* outlived the fix by that long.
+///
+/// What is left for a deadline to cover is the debug suite's ~10 ms/char and a loaded machine, which
+/// is what 45s is for: a HANG is still caught promptly and a slow-but-working wait is not called a
+/// failure. ⛔ Widening it further is not the answer to anything below — a gate widened until it is
+/// green measures nothing.
 const DEADLINE: Duration = Duration::from_secs(45);
 
 /// How often a condition is re-checked while waiting.
@@ -1368,6 +1392,485 @@ fn the_instrument_behind_item_1040_is_in_this_tree() {
              the readings and rewrite what quotes them.\nsaid:\n{said}",
         );
     }
+}
+
+/// ⛔⛔⛔⛔⛔ **EVERY INSTRUMENT IN THIS CRATE, AND NOT A NAMED LIST OF THEM** — register item 1041,
+/// and rule 6 applied to the directory rather than to one file in it.
+///
+/// The clause above names ONE instrument. A second was added the same day, and a third added
+/// tomorrow would be covered by nothing: a tracked file that will not execute reads exactly like a
+/// tracked instrument until somebody tries to run it, which — for a script a round reaches for once
+/// a month — is how a numbers-producing tool quietly becomes a numbers-quoting comment.
+///
+/// So the POPULATION is what the directory holds, read at run time. ⚠ An EMPTY directory is red for
+/// the same reason: a gate whose population can go to zero and still pass is a gate that stops
+/// asserting the moment the thing it guards is deleted.
+#[test]
+fn every_instrument_in_this_crate_declares_its_report_shape() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/instruments");
+    let mut seen = Vec::new();
+    for entry in std::fs::read_dir(&dir).unwrap_or_else(|why| {
+        panic!(
+            "⛔ ITEM 1041: {} — {why}. This is where this crate's instruments live; without the \
+             directory the numbers any of them produced are figures nobody can re-take.",
+            dir.display(),
+        )
+    }) {
+        let path = entry.expect("a directory entry").path();
+        if !path.is_file() {
+            continue;
+        }
+        let mode = std::fs::metadata(&path)
+            .expect("the instrument's metadata")
+            .permissions()
+            .mode();
+        assert!(
+            mode & 0o111 != 0,
+            "⚠⚠⚠ ITEM 1041: {} is not executable ({mode:o}). A tracked instrument that cannot be \
+             run is a tracked file, not an instrument.",
+            path.display(),
+        );
+        let out = Command::new("bash")
+            .arg(&path)
+            .arg("--report-shape")
+            .output()
+            .unwrap_or_else(|why| {
+                panic!("⛔ ITEM 1041: {} would not start — {why}", path.display())
+            });
+        assert!(
+            out.status.success(),
+            "⛔ ITEM 1041: {} --report-shape exited {:?}. Every instrument here owes a caller the \
+             shape of what it prints, so a report that changed can be caught without a five-minute \
+             run.\nstderr:\n{}",
+            path.display(),
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        let said = String::from_utf8_lossy(&out.stdout).to_string();
+        let rows = said.lines().filter(|line| line.starts_with("== ")).count();
+        assert!(
+            rows > 0,
+            "⛔ ITEM 1041: {} --report-shape printed no report row at all, so nothing it emits can \
+             be matched against what the register quotes.\nsaid:\n{said}",
+            path.display(),
+        );
+        seen.push((path, rows));
+    }
+    assert!(
+        !seen.is_empty(),
+        "⛔ ITEM 1041: {} holds no instrument. The register quotes numbers taken with the tools \
+         that live here; an empty directory means every one of those numbers has gone back to \
+         being unre-takeable, which is the state item 1041 was opened for.",
+        dir.display(),
+    );
+}
+
+/// The sizes the input-path instrument walks unless a caller names others.
+///
+/// Chosen so the discarded probe's own steps (1, 10, 20, 40) are all in the sweep and 5 and 80 sit
+/// either side of the break the register's re-reading of it claims, which is what makes a knee at 10
+/// distinguishable from a knee anywhere else rather than an artefact of where the steps were put.
+const THROUGHPUT_SIZES: &[usize] = &[1, 5, 10, 20, 40, 80];
+
+/// How far above the sweep's FLOOR a reading must sit to be called the knee.
+///
+/// ⚠ It is a threshold and not a formality: the register's re-reading of the discarded probe claims
+/// the cost breaks **tenfold** near ten characters, so a sweep that reports `n=none` under this
+/// factor REFUTES that reading rather than failing to find something.
+///
+/// ⛔⛔⛔⛔⛔ **AGAINST THE FLOOR, NOT AGAINST THE STEP BEFORE** — and the first draft of this did the
+/// latter, which MEASURED WRONG. A round trip has a fixed cost (~22 ms here) that swallows the first
+/// few characters whole, so the marginal cost across those steps is ~0 and a ratio against it is a
+/// division by noise: the draft reported `49.15x at n=20` for one shape and `none` for the other
+/// from the SAME shape of curve. The floor is a real quantity — the cheapest round trip the sweep
+/// saw — and "the first reading that costs twice a bare round trip" is the question a knee is
+/// actually being asked.
+const KNEE_FACTOR: f64 = 2.0;
+
+/// Which build this test binary is, in the word the register and the instrument both use.
+///
+/// ⛔⛔⛔⛔⛔ **THE AXIS THE DISCARDED PROBE'S FIGURES WERE MISSING** — register item 1041. A number
+/// taken on the input path is not a property of the input path until its profile is beside it: this
+/// repository has the 60x between them on record already (R246 — ~5 ms/char in release against
+/// ~124-304 ms in debug), and the whole of `cargo test` runs in the second of those two.
+fn this_profile() -> &'static str {
+    match cfg!(debug_assertions) {
+        true => "debug",
+        false => "release",
+    }
+}
+
+/// How many times `ch` appears in `text`.
+///
+/// ⚠ A COUNT and not a `contains`, because an echo eighty characters long is WRAPPED by the pane it
+/// lands in — `"aaaa\naaaa"` is the screen a person reads as eight a's, and a needle of eight would
+/// never match it. See [`fold`] for the same problem solved the other way round for a word.
+fn held(ch: u8, text: &str) -> usize {
+    text.bytes().filter(|byte| *byte == ch).count()
+}
+
+/// Type `n` copies of `ch` at `tui` the way `shape` spells typing, and return how long each of the
+/// two ends took to hold all of them: the DAEMON's pane first, the CLIENT's screen second, both in
+/// milliseconds from the instant the first byte was written.
+///
+/// ⚠⚠ **BOTH CLOCKS RUN IN ONE POLLING LOOP.** Timed in sequence, the second would start only once
+/// the first had been observed, and the screen's figure would then be an artefact of when this loop
+/// happened to look rather than of when the client painted.
+fn arrival_of(
+    ch: u8,
+    n: usize,
+    shape: &str,
+    conn: &mut HostConn,
+    session: &str,
+    pane: u64,
+    tui: &mut Tui,
+) -> (f64, f64) {
+    let payload = vec![ch; n];
+    let started = Instant::now();
+    match shape {
+        "bulk" => tui.type_bytes(&payload),
+        "per-char" => {
+            for byte in &payload {
+                tui.type_bytes(std::slice::from_ref(byte));
+            }
+        }
+        other => panic!(
+            "⛔ ITEM 1041: {other:?} is not a shape this measures. The two the register names are \
+             the keyboard's (one write per byte) and the paste's (one write_all).",
+        ),
+    }
+    let (mut at_pane, mut at_screen) = (None, None);
+    tui.wait_for(
+        &format!(
+            "{n} copies of {:?} to arrive, typed {shape}",
+            char::from(ch)
+        ),
+        || {
+            if at_pane.is_none() && held(ch, &pane_text_of(conn, session, pane)) >= n {
+                at_pane = Some(started.elapsed());
+            }
+            if at_screen.is_none() && held(ch, &tui.rows().join("")) >= n {
+                at_screen = Some(started.elapsed());
+            }
+            match (at_pane, at_screen) {
+                (Some(_), Some(_)) => Ok(()),
+                (pane_at, screen_at) => Err(format!(
+                    "pane {pane_at:?}, screen {screen_at:?} of {n} copies of {:?}",
+                    char::from(ch),
+                )),
+            }
+        },
+    );
+    (
+        at_pane.expect("the pane clock stopped").as_secs_f64() * 1000.0,
+        at_screen.expect("the screen clock stopped").as_secs_f64() * 1000.0,
+    )
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT A KEYSTROKE COSTS ON THE WAY IN — BY SHAPE, BY SIZE AND BY BUILD PROFILE** —
+/// register item 1041.
+///
+/// # ⚠⚠⚠ The figures this replaces could be quoted and never re-taken
+///
+/// The [`DEADLINE`] comment above quoted four readings taken with a throwaway probe. Looked for on
+/// 2026-09-11: no file under `crates/` carried it. So a reader could not ask which spelling of
+/// "typing" they described, nor which build they were taken in — and the comment nevertheless
+/// reached a VERDICT on them (*"a real property of the input path … the thing to fix"*), which is a
+/// conclusion its own evidence could not support.
+///
+/// # What it measures, and why it is two clocks rather than one
+///
+/// Both spellings of typing, over a sweep:
+///
+/// * **`per-char`** — one `write`+`flush` per byte, which is what a keyboard does. The client reads
+///   each byte separately, so each is its own trip through the input path.
+/// * **`bulk`** — the whole payload in one `write_all`, which is what every other test in this file
+///   does and what a paste does. One `read` on the client's side can carry all of it.
+///
+/// and, for each, the instant the bytes reach the DAEMON'S pane (the input path's end) and the
+/// instant they reach the CLIENT'S screen (the output path's end, which cannot precede it). One
+/// clock could not say which half a cost sat in.
+///
+/// # ⚠ Why `#[ignore]` rather than a gate
+///
+/// It holds a live daemon and a live client for minutes and types thousands of characters through
+/// them; as a gate it would be the slowest thing in this binary and would measure the machine it
+/// ran on. What a GATE can hold cheaply is that the instrument still exists and still speaks the
+/// report the register quotes — [`every_instrument_in_this_crate_declares_its_report_shape`] and
+/// [`the_input_path_instrument_and_this_suite_speak_one_report`] do exactly that.
+#[test]
+#[ignore = "the input-path measurement: minutes, a live daemon, and a machine it must have to \
+            itself — driven by tests/instruments/input-throughput"]
+fn the_input_path_costs_what_this_instrument_measures() {
+    let sizes: Vec<usize> = match std::env::var("SPRAG_THROUGHPUT_SIZES") {
+        Ok(named) => named
+            .split_whitespace()
+            .map(|word| {
+                word.parse()
+                    .expect("a size in SPRAG_THROUGHPUT_SIZES is a number")
+            })
+            .collect(),
+        Err(_) => THROUGHPUT_SIZES.to_vec(),
+    };
+    let shapes: Vec<String> = match std::env::var("SPRAG_THROUGHPUT_SHAPES") {
+        Ok(named) => named.split_whitespace().map(str::to_owned).collect(),
+        Err(_) => vec!["per-char".to_owned(), "bulk".to_owned()],
+    };
+    // ⛔ THE SWEEP MUST FIT THE PANE IT IS TYPED INTO, and a sweep that does not says so HERE rather
+    // than as a deadline forty characters into the run. The echo is never consumed — nothing sends a
+    // newline — so every character typed is still on the pane's screen at the end, and a sweep that
+    // overflows it scrolls the earliest readings out of the text this counts, which arrives as a
+    // wait that can no longer be satisfied by anything.
+    let typed: usize = sizes.iter().sum::<usize>() * shapes.len();
+    let room = BOOT_PANES.0 as usize * BOOT_PANES.1 as usize;
+    assert!(
+        typed < room,
+        "⛔ ITEM 1041: this sweep types {typed} character(s) into a {}x{} pane, which holds {room}. \
+         Every one stays on the screen, so a larger sweep scrolls its own earliest readings away. \
+         Narrow SPRAG_THROUGHPUT_SIZES, or run the shapes in separate invocations.",
+        BOOT_PANES.0,
+        BOOT_PANES.1,
+    );
+    // One LETTER per reading, so the readings cannot be confused with one another on a screen that
+    // keeps all of them. Twenty-six is the alphabet, less the one the warm-up below spends.
+    let points = sizes.len() * shapes.len();
+    assert!(
+        points < 26,
+        "⛔ ITEM 1041: {points} reading(s) plus the warm-up need {} distinct letters, and there \
+         are 26.",
+        points + 1,
+    );
+
+    let (_daemon, _sock, mut conn, session, mut tui) = attached_client();
+    let pane = *pane_ids(&mut conn, &session)
+        .first()
+        .expect("the boot pane exists");
+    // ⛔⛔⛔⛔⛔ **THE POLL IS IN THE HEADER BECAUSE IT IS THE FLOOR OF WHAT THIS CAN SEE** — register
+    // item 1041. Both clocks stop when a POLLING loop next looks, so no arrival can be reported
+    // faster than [`POLL`], and a release build's whole sweep lands inside one tick. A reader given
+    // `20.7 ms` and not given the poll would read this instrument's resolution as the input path's
+    // cost — which is the exact mistake that put four unattributable figures in the comment above.
+    println!(
+        "== input-throughput: profile={} pane={pane} poll_ms={}",
+        this_profile(),
+        POLL.as_millis(),
+    );
+    // ⛔⛔⛔⛔⛔ **WHAT THE MACHINE WAS DOING WHILE THIS WAS TAKEN** — register items 1040 and 880,
+    // and the lesson the instrument beside this one learned on the same day. A timing whose
+    // conditions were not recorded cannot afterwards be asked whether it measured the input path or
+    // the box it ran on, and this workstation has had `loadavg 10.20` sit beside
+    // `cpu.pressure some avg10=0.04` — one number saying busy and the other saying not starved.
+    // Both ends, because a sweep takes minutes and the machine does not hold still for them.
+    println!("== conditions at=before {}", how_loaded());
+
+    // ⛔⛔⛔⛔⛔ **ONE ROUND TRIP IS SPENT BEFORE ANY OF THEM IS TIMED, AND THIS IS NOT HYGIENE** —
+    // register item 1041. MEASURED without it: the sweep's first reading was **151.3 ms** where the
+    // next was 22.5 ms for five times the characters, so the marginal cost of the second step came
+    // out NEGATIVE and every ratio built on it was noise. The cost is the first trip's alone — a
+    // client that has not yet painted, a daemon that has not yet been asked — and attributing it to
+    // the character that happened to go first is how a probe reports `1 char 222ms` and leaves a
+    // reader to conclude that one character costs 222 ms.
+    let warm = arrival_of(b'a', 1, "bulk", &mut conn, &session, pane, &mut tui);
+    println!("== warmup ms={:.1} (not a reading)", warm.0);
+
+    let mut readings: Vec<(String, usize, f64, f64)> = Vec::new();
+    for (index, (shape, n)) in shapes
+        .iter()
+        .flat_map(|shape| sizes.iter().map(move |size| (shape, *size)))
+        .enumerate()
+    {
+        let ch = b'b' + index as u8;
+        let (pane_ms, screen_ms) = arrival_of(ch, n, shape, &mut conn, &session, pane, &mut tui);
+        println!(
+            "== reading shape={shape} n={n} pane_ms={pane_ms:.1} screen_ms={screen_ms:.1} \
+             per_char_ms={:.2}",
+            pane_ms / n as f64,
+        );
+        readings.push((shape.clone(), n, pane_ms, screen_ms));
+    }
+    println!("== conditions at=after {}", how_loaded());
+
+    // ⚠⚠ THE MARGINAL COST, NOT THE AVERAGE — which is the whole of what the discarded probe's
+    // summary hid. Its own four readings average to "100-124 ms per character" and break by a factor
+    // of ten INSIDE that average; a mean over a sweep with a knee in it describes neither side.
+    for shape in &shapes {
+        let mine: Vec<(usize, f64)> = readings
+            .iter()
+            .filter(|reading| &reading.0 == shape)
+            .map(|reading| (reading.1, reading.2))
+            .collect();
+        let (mut last_n, mut last_ms) = (0usize, 0.0f64);
+        let mut marginals: Vec<(usize, f64)> = Vec::new();
+        for (n, ms) in &mine {
+            marginals.push((*n, (ms - last_ms) / (n - last_n) as f64));
+            (last_n, last_ms) = (*n, *ms);
+        }
+        for (upto, per) in &marginals {
+            println!("== marginal shape={shape} upto={upto} ms_per_char={per:.2}");
+        }
+        // THE FLOOR IS THE CHEAPEST ROUND TRIP THIS SWEEP SAW — the fixed cost of asking at all,
+        // which is what the first few characters ride along inside. The knee is then the first size
+        // whose whole cost is [`KNEE_FACTOR`] times that, which is a question about the curve rather
+        // than about the gap between two adjacent points.
+        let floor = mine.iter().map(|(_, ms)| *ms).fold(f64::INFINITY, f64::min);
+        let knee = mine
+            .iter()
+            .find(|(_, ms)| *ms > floor * KNEE_FACTOR)
+            .map(|(n, ms)| (*n, ms / floor));
+        // ⚠⚠ AND WHETHER THAT FLOOR IS THIS INSTRUMENT'S OWN RESOLUTION. A floor at the poll means
+        // the cheapest trip finished inside one tick, so the figure bounds the cost from ABOVE and
+        // says nothing about how far below it lies. Left unsaid, a reader takes the poll for a
+        // measurement — rule 6, where the unclassified case must not read as a pass.
+        let bound = match floor <= POLL.as_secs_f64() * 1000.0 * 1.5 {
+            true => "yes",
+            false => "no",
+        };
+        match knee {
+            // ⛔ `n=none` IS AN ANSWER AND NOT AN ABSTENTION — rule 6. A sweep with no reading past
+            // the factor has measured that the cost does NOT break inside the range it walked, and
+            // the floor is printed either way so a reader can see what it was measured against.
+            Some((n, over)) => println!(
+                "== knee shape={shape} n={n} over_floor={over:.2}x floor_ms={floor:.1} \
+                 floor_is_poll={bound}",
+            ),
+            None => println!(
+                "== knee shape={shape} n=none over_floor=1.00x floor_ms={floor:.1} \
+                 floor_is_poll={bound}",
+            ),
+        }
+    }
+    println!(
+        "== INPUT-THROUGHPUT profile={} shapes={} sizes={} readings={}",
+        this_profile(),
+        shapes.len(),
+        sizes
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        readings.len(),
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **THE INSTRUMENT AND THE TEST IT DRIVES PRINT ONE REPORT** — register item 1041, and
+/// item 213's rule (*two readers of one format*) turned around onto two WRITERS of one.
+///
+/// The instrument declares the report's shape; the measurement above prints it. Those are two files,
+/// so they can drift, and the drift is silent in the direction that matters: a `--report-shape` that
+/// still lists a row nothing prints any more leaves a reader matching the register's quoted numbers
+/// against a format no run produces.
+///
+/// So the declaration is READ and every row of it is required to exist in this suite's own source.
+/// ⚠ The prefixes are taken from what the instrument prints rather than written out here — a list
+/// spelled in this file would be found in this file, and the gate would hold against itself.
+#[test]
+fn the_input_path_instrument_and_this_suite_speak_one_report() {
+    let instrument = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/instruments")
+        .join("input-throughput");
+    let out = Command::new("bash")
+        .arg(&instrument)
+        .arg("--report-shape")
+        .output()
+        .expect("the instrument prints its own report shape");
+    assert!(
+        out.status.success(),
+        "⛔ ITEM 1041: `input-throughput --report-shape` exited {:?}.\nstderr:\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let said = String::from_utf8_lossy(&out.stdout).to_string();
+    let source = include_str!("pty_round_trip.rs");
+    let mut checked = 0;
+    for row in said.lines().filter(|line| line.starts_with("== ")) {
+        // The row up to its first placeholder: the literal part a `println!` must contain.
+        let fixed = row
+            .split('<')
+            .next()
+            .expect("a row has a first part")
+            .trim_end();
+        assert!(
+            source.contains(fixed),
+            "⛔ ITEM 1041: the instrument declares a row this suite never prints: {fixed:?}. One of \
+             the two was edited and the other was not, so the register's quoted numbers would be \
+             matched against a format no run emits.\nsaid:\n{said}",
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 7,
+        "⛔ ITEM 1041: only {checked} report row(s) were declared, and the measurement prints a \
+         header, the machine's conditions, a warm-up, a reading, a marginal, a knee and a footer. \
+         A declaration that lost rows checks less than it did.\nsaid:\n{said}",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **AND THE DEADLINE'S OWN FIGURES CARRY THEIR SHAPE AND THEIR PROFILE** — register item
+/// 1041, which is the half a tracked instrument does not reach on its own.
+///
+/// An instrument in the tree makes a number re-takeable. It does not stop the comment beside it
+/// quoting a number whose conditions are missing — which is the defect item 1041 names, and item
+/// 964's shape: two real measurements in one file, one of them without the conditions it was taken
+/// under.
+///
+/// ⛔⛔⛔⛔⛔ **EVERY CELL OF THE SWEEP, ON ONE LINE, CARRYING A NUMBER — AND THE FIRST DRAFT OF THIS
+/// ASKED FOR LESS AND WAS NOT A GATE.** That draft required the four words to appear ANYWHERE in the
+/// comment. Mutated by deleting the whole measurement table and leaving the prose that discusses it,
+/// it was **GREEN**: the words survive in sentences like *"`debug`, which is what `cargo test`
+/// runs"*, so the clause held while the readings it exists for were gone.
+///
+/// What is owed is the product, not the words: both spellings of typing TIMES both builds, each
+/// combination on a single line together with a figure. That is what makes a quoted number
+/// re-takeable — a reader can see which of the four cells to run the instrument for — and prose
+/// about an axis cannot satisfy it by mentioning the axis.
+#[test]
+fn the_deadline_says_which_shape_and_profile_its_figures_were_taken_in() {
+    let source = include_str!("pty_round_trip.rs");
+    let comment = deadline_comment(source);
+    for profile in ["debug", "release"] {
+        for shape in ["per-char", "bulk"] {
+            let cell = comment.lines().find(|line| {
+                line.contains(profile)
+                    && line.contains(shape)
+                    && line.chars().any(|c| c.is_ascii_digit())
+            });
+            assert!(
+                cell.is_some(),
+                "⛔ ITEM 1041: the DEADLINE comment carries no reading for {profile}/{shape} — no \
+                 line names both and a number. The throwaway probe's four readings said neither \
+                 which spelling of typing they measured nor which build they were taken in, and \
+                 this repository has a 60x between the two builds on record, so a figure missing \
+                 either is not a property of the input path.\ncomment:\n{comment}",
+            );
+        }
+    }
+}
+
+/// The doc comment attached to [`DEADLINE`] — every `///` line immediately above its declaration.
+///
+/// ⛔ Walked UPWARD from the declaration rather than taken as a fixed window of lines: a window is
+/// what R305 measured producing eighteen false positives, and it would silently stop covering the
+/// comment the first time a sentence was added to it.
+fn deadline_comment(source: &str) -> String {
+    let declaration = format!("const {}", "DEADLINE: Duration");
+    let lines: Vec<&str> = source.lines().collect();
+    let at = lines
+        .iter()
+        .position(|line| line.starts_with(declaration.as_str()))
+        .unwrap_or_else(|| {
+            panic!("⛔ ITEM 1041: this file no longer declares the deadline as {declaration:?}")
+        });
+    let mut head = at;
+    while head > 0 && lines[head - 1].trim_start().starts_with("///") {
+        head -= 1;
+    }
+    assert!(
+        head < at,
+        "⛔ ITEM 1041: the deadline carries no doc comment at all, so there is nothing to check the \
+         conditions of. A constant this file argues about in prose must keep the prose.",
+    );
+    lines[head..at].join("\n")
 }
 
 /// ⛔⛔⛔ **AND THE VERDICT IS ACTUALLY SPENT** — register items 519 and 932's rule, applied to a

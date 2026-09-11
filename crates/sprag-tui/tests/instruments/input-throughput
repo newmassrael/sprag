@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# ⛔⛔⛔⛔⛔ **WHAT A KEYSTROKE COSTS ON THE WAY IN — register item 1041.**
+#
+# # Why this file exists rather than a scratch script
+#
+# The `DEADLINE` comment in `pty_round_trip.rs` used to quote four readings — *"1 char 222ms,
+# 10 chars 384ms, 20 chars 2.1s, 40 chars 5.0s"* — taken with a **throwaway probe**. That probe was
+# never in this tree (looked for, 2026-09-11: no file under `crates/` carried it), so the numbers
+# could be read and never re-taken, and the comment nevertheless reached a VERDICT on them: *"a real
+# property of the input path … and it is the thing to fix"*. A measurement whose instrument was
+# discarded cannot be disputed, which is the opposite of what this repository means by one.
+#
+# # What it does
+#
+# Drives `the_input_path_costs_what_this_instrument_measures`, which types a sweep at a live client
+# both ways a caller can type — one `write` per byte, as a keyboard does, and one `write_all`, as
+# every other test in that file and every paste does — and stops two clocks for each: when the bytes
+# reach the DAEMON's pane, and when they reach the CLIENT's screen.
+#
+# ⛔⛔⛔⛔⛔ **AND IN BOTH BUILD PROFILES, WHICH IS THE AXIS THE DISCARDED PROBE'S FIGURES WERE
+# MISSING.** This repository already has ~5 ms/char in release against ~124-304 ms in debug on
+# record (R246, about 60x), and `cargo test` is a DEBUG build — so a per-character figure taken by
+# any probe run under the suite is a debug figure whether or not it says so. Reporting one profile
+# would repeat the omission this item exists to close.
+#
+#   PROFILES   which builds to measure (default "debug release")
+#   SIZES      the sweep, passed through as SPRAG_THROUGHPUT_SIZES (default: the test's own)
+#   SHAPES     which spellings of typing, as SPRAG_THROUGHPUT_SHAPES (default "per-char bulk")
+#   --report-shape  print the report format and exit, running nothing — what the gate drives
+#
+# ⚠ **IT IS NOT SPELLED `--selftest`** — register items 799 and 964, and the same reason the
+# instrument beside this one carries: in this repository `--selftest` already names a harness that
+# drives arms and reports `N/M arm(s) pass`, which `a_declared_selftest_is_one_this_suite_runs`
+# walks `.githooks/` for and EXECUTES. This flag drives no arms.
+#
+# ⚠⚠ **The rows below are matched against the suite's own `println!`s** by
+# `the_input_path_instrument_and_this_suite_speak_one_report`, so an edit here that is not made
+# there is red rather than silent drift.
+set -u
+
+if [ "${1:-}" = "--report-shape" ]; then
+    echo "input-throughput: report shape"
+    echo "== input-throughput: profile=<debug|release> pane=<id> poll_ms=<ms>"
+    echo "== conditions at=<before|after> machine: load <n> over <n> cores; starved: <rows>"
+    echo "== warmup ms=<ms> (not a reading)"
+    echo "== reading shape=<per-char|bulk> n=<n> pane_ms=<ms> screen_ms=<ms> per_char_ms=<ms>"
+    echo "== marginal shape=<shape> upto=<n> ms_per_char=<ms>"
+    echo "== knee shape=<shape> n=<n|none> over_floor=<factor>x floor_ms=<ms> floor_is_poll=<yes|no>"
+    echo "== INPUT-THROUGHPUT profile=<p> shapes=<n> sizes=<list> readings=<n>"
+    exit 0
+fi
+
+PROFILES="${PROFILES:-debug release}"
+root="$(git rev-parse --show-toplevel 2>/dev/null || printf '.')"
+out="${OUT:-$root/target/input-throughput}"
+mkdir -p "$out"
+
+export SPRAG_THROUGHPUT_SIZES="${SIZES:-}"
+export SPRAG_THROUGHPUT_SHAPES="${SHAPES:-}"
+[ -n "$SPRAG_THROUGHPUT_SIZES" ] || unset SPRAG_THROUGHPUT_SIZES
+[ -n "$SPRAG_THROUGHPUT_SHAPES" ] || unset SPRAG_THROUGHPUT_SHAPES
+
+the_test=the_input_path_costs_what_this_instrument_measures
+failed=0
+
+for profile in $PROFILES; do
+    case "$profile" in
+        debug) flags="" ;;
+        release) flags="--release" ;;
+        *)
+            echo "input-throughput: $profile is not a build profile this measures" >&2
+            exit 2
+            ;;
+    esac
+
+    # ⛔ REGISTER ITEM 491: a suite run right after a commit measures the STALENESS GUARD, because
+    # `sprag-rpc/build.rs` stamps the commit into the binary and `rerun-if-changed`s the ref. A red
+    # that arrives that way looks exactly like a measurement, and reads as one too.
+    if ! (cd "$root" && cargo build $flags -p sprag-host --bins); then
+        echo "input-throughput: the $profile bins would not build, so nothing below is about this tree" >&2
+        exit 2
+    fi
+
+    (cd "$root" && cargo test $flags -p sprag-tui --test pty_round_trip -- \
+        --ignored --exact --nocapture "$the_test") > "$out/$profile.log" 2>&1
+    rc=$?
+    echo "== profile $profile rc=$rc"
+    grep -E '^== ' "$out/$profile.log" || echo "== profile $profile printed no report row"
+    [ "$rc" -eq 0 ] || failed=$((failed + 1))
+done
+
+echo "== PROFILES=$PROFILES FAILED=$failed"
+echo "== logs: $out"
+[ "$failed" -eq 0 ] || exit 1
+exit 0
