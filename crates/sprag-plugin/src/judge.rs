@@ -664,11 +664,22 @@ impl Unheard {
             // the load of every reading the bound was sized on, answered in a SIXTH of the worst
             // once the question named the files to open. A judge asked to find its own way around
             // a tree pays for the search, and nothing here was telling anybody that.
+            // ⛔⛔⛔⛔⛔ **THE ENDING IS ASKED FOR ITS OWN WORDS** — register item 1063. This
+            // interpolated `{over:?}`, which handed a person a Rust value in the middle of a
+            // sentence about what to do next; item 598 then made that strictly worse, because
+            // `Over::NotYet` stopped debug-printing as one word and started printing a nested
+            // `Wanting([Restless(Working), Unasked { began: 7, now: 7 }])` — the very reasoning
+            // this reader most needs, spelled in a notation nobody outside the compiler reads.
+            //
+            // ⚠⚠ AND THE WORDS ARE THE TYPE'S, not a second vocabulary spelled here: `describe`
+            // answers all six endings, where a sentence written at this site would be one author
+            // of a fact `Over` already owns — which is how the two come to disagree.
             Self::Unfinished(over) => {
                 format!(
-                    "the checker was started and never answered: the wait ended {over:?} — ask a \
-                     SMALLER question (name the files to open: measured 6x faster, and it costs \
-                     nothing), or give it longer, or a faster judge"
+                    "the checker was started and never answered: {} — ask a SMALLER question \
+                     (name the files to open: measured 6x faster, and it costs nothing), or give \
+                     it longer, or a faster judge",
+                    over.describe(),
                 )
             }
             Self::Unaccountable => {
@@ -1611,6 +1622,53 @@ mod tests {
             "⚠⚠ and the words are the ones `ai_loop.scxml` compares against — the document spells \
              `_event.data.silence == 'unanswered'`, and a renamed word here would take the else \
              branch for every silence in silence",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE SENTENCE ABOUT AN UNANSWERED CHECK CARRIES WORDS, NOT A RUST VALUE** —
+    /// register item 1063.
+    ///
+    /// # What was published, and what item 598 did to it
+    ///
+    /// This arm read `the wait ended {over:?}`, so the one door a person arrives at to find out why
+    /// their check never answered handed them a debug-printed enum. It was tolerable while
+    /// `Over::NotYet` printed as a single word. Item 598 gave that arm the reasoning it had always
+    /// been missing — and this site then published it as
+    /// `NotYet(Wanting([Restless(Working), Unasked { began: 7, now: 7 }]))`. **The most useful fact
+    /// this reader could be given arrived in the one notation they cannot use.**
+    ///
+    /// # ⚠⚠ The assertion is over the DEBUG FORM, which is what makes it hold against a reword
+    ///
+    /// A gate matching the new prose would go red the day somebody improves the sentence. What must
+    /// never come back is the value's own `Debug` inside a sentence a person reads, so that is what
+    /// is asserted — together with the positive half, that the ending's own words ARE there.
+    ///
+    /// ⚠ `Unfinished` is the only arm that carries an [`crate::completion::Over`], so it is the
+    /// only one this can be asked of; the neighbouring gate holds the remaining six arms.
+    #[test]
+    fn the_sentence_about_an_unanswered_check_carries_words_and_not_a_rust_value() {
+        let over = crate::completion::Over::NotYet(crate::completion::Wanting::unlooked());
+        let said = Unheard::Unfinished(over.clone()).describe();
+
+        assert!(
+            !said.contains(&format!("{over:?}")),
+            "⛔⛔⛔⛔⛔ ITEM 1063: the debug form of the ending is back inside the sentence a person \
+             reads. Said {said:?}",
+        );
+        // ⚠⚠ AND THE TOKEN ON ITS OWN, because the whole debug form is one string a partial
+        // interpolation would slip past: a variant name with an open bracket after it is notation
+        // whatever else the line does.
+        assert!(
+            !said.contains("NotYet("),
+            "⛔⛔⛔⛔ AND NOT A FRAGMENT OF IT EITHER — `NotYet(` is a Rust constructor, not \
+             something anybody reading a run is going to act on. Said {said:?}",
+        );
+        assert!(
+            said.contains(&over.describe()),
+            "⚠⚠⚠⚠⚠ AND THE POSITIVE HALF: the ending's OWN words have to be in there, or this \
+             gate passes for a sentence that simply stopped saying why. The words are \
+             `Over::describe`'s and must not be a second copy composed here — that is how one fact \
+             comes to have two authors that drift. Said {said:?}",
         );
     }
 

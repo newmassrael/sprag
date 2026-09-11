@@ -1111,10 +1111,18 @@ impl Plugin for Agent {
         };
         self.closed = Some(closed);
         let mut note = match closed {
+            // ⛔⛔⛔⛔⛔ **AND WHY IT HAD NOT FINISHED, IN THE CONTRACT'S OWN WORDS** — register
+            // item 1063. This site used to drop the evidence entirely: it folded the answer to a
+            // `Closed` and wrote a sentence of its own, so *the peer had not finished* was all a
+            // person got however much the wait knew. Today this adapter's contract is
+            // [`DoneWhen::Exits`] and its one term is small — but that is a property of the
+            // CONTRACT, not of this site, and a caller that ever asks for `settles` here would get
+            // the identical sentence for four different reasons, two of which never end by waiting.
             Closed::Unfinished => format!(
-                "the peer had not finished after {:?}; captured the {characters} characters on \
-                 screen, which may be a PARTIAL reply",
+                "the peer had not finished after {:?} ({}); captured the {characters} characters \
+                 on screen, which may be a PARTIAL reply",
                 self.spec.timeout,
+                waited.describe(),
             ),
             Closed::Replied => format!("captured a {characters}-character reply"),
         };
@@ -1951,6 +1959,83 @@ mod tests {
             "ping\nREPLY[ping]",
             "with the terminal echoing there are TWO `ping`s — the line discipline's and the \
              peer's — and exactly one of them may survive",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A TURN THAT RAN OUT OF TIME SAYS WHAT ITS CONTRACT WAS STILL WAITING FOR** —
+    /// register item 1063, at the third of the three sites that each had a vocabulary of its own.
+    ///
+    /// # What this adapter used to publish
+    ///
+    /// *"the peer had not finished after 400ms"*, and nothing else — the answer was folded to a
+    /// [`Closed`] with `matches!` and the evidence dropped on the floor. This adapter's contract is
+    /// [`DoneWhen::Exits`](crate::completion::DoneWhen::Exits), whose single term is small, so the
+    /// loss looks small — **but that is a property of the contract, not of this site.** A caller
+    /// that asked for `settles` here would get the identical sentence for four different reasons,
+    /// and two of those never end by waiting at all.
+    ///
+    /// # ⚠⚠ What is asserted, and the control
+    ///
+    /// The clause is the CONTRACT's own words, taken from `Unmet::PeerAlive` rather than matched as
+    /// prose, so a reword of that term moves both sides together and a SILENCE goes red. The debug
+    /// form must not be there — that is the defect one module over, and this site is where it would
+    /// most plausibly be reintroduced. ⚠ And a turn that FINISHED says none of it: a caveat printed
+    /// for every peer diagnoses nothing, which is the rule its neighbour below is built on.
+    #[test]
+    fn a_turn_that_ran_out_of_time_says_what_its_contract_was_waiting_for() {
+        /// One turn against `script` with a bound short enough to run out: the step's note.
+        fn note_for(script: &str) -> String {
+            let (access, pane) = sh_access(script, 40, 8);
+            started(&access, pane, "UP");
+            let cell = crate::driver::ProgressCell::default();
+            let mut agent = Agent::new(
+                pane,
+                AgentSpec {
+                    timeout: Duration::from_millis(400),
+                    ..AgentSpec::new("ping")
+                },
+            );
+            let outcome = Driver::new(Guardrails {
+                max_iterations: Some(1),
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(30)),
+            })
+            .reporting_to(Arc::clone(&cell))
+            .run(&mut agent, &access, &RunContext::uncancellable());
+            assert_eq!(outcome.state, OutcomeState::Converged, "{outcome:?}");
+            let note = cell
+                .lock()
+                .expect("the progress cell")
+                .journal
+                .last()
+                .and_then(|step| step.note.clone())
+                .unwrap_or_default();
+            access.lifecycle().expect("lifecycle").close(pane);
+            note
+        }
+
+        // A peer that never exits: this adapter's contract cannot be satisfied, so the bound ends
+        // the turn and the note is the one this item is about.
+        let unfinished = note_for("stty raw -echo; printf 'UP\\r\\n'; exec cat");
+        let term = crate::completion::Unmet::PeerAlive.describe();
+        assert!(
+            unfinished.contains(&term),
+            "⛔⛔⛔⛔⛔ ITEM 1063: this turn ran out with a term of its contract still false and the \
+             note does not say which. The words are the CONTRACT's ({term:?}) — asserted through \
+             the type so a reword moves both sides and a silence goes red. Said {unfinished:?}",
+        );
+        assert!(
+            !unfinished.contains("NotYet("),
+            "⚠⚠⚠⚠ AND NOT THE DEBUG FORM, which is the defect this item found one module over: a \
+             Rust constructor in a sentence published AS THE MODEL'S ANSWER. Said {unfinished:?}",
+        );
+
+        // ── THE CONTROL: a peer that DID finish says none of it ───────────────────────────────
+        let finished = note_for("printf 'UP\\n'; in=$(cat); echo \"REPLY[$in]\"");
+        assert!(
+            !finished.contains(&term) && finished.contains("captured a"),
+            "⚠⚠⚠ a clause printed for every turn diagnoses nothing — this one completed, so it has \
+             no outstanding term to name. Said {finished:?}",
         );
     }
 

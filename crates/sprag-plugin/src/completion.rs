@@ -227,6 +227,87 @@ pub enum Over {
     RunEnded,
 }
 
+impl Over {
+    /// **HOW THIS TURN ENDED, IN WORDS A PERSON READS** — one author for a sentence three callers
+    /// were each writing on their own.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The three vocabularies, measured rather than feared
+    ///
+    /// Four of this type's six answers carry the evidence they were decided from, and until this
+    /// existed there was no way to SAY any of it. Each consumer solved that differently, and all
+    /// three ways are wrong in a different direction:
+    ///
+    /// * [`judge`](crate::judge)'s `Unheard::describe` interpolated `{over:?}`, so a person reading
+    ///   why a check went unanswered was handed a Rust value. Register item 598 made that worse
+    ///   rather than better — `NotYet` used to debug-print as one word and now prints a nested
+    ///   `Wanting([Restless(Working), Unasked { began: 7, now: 7 }])`, which is the reasoning this
+    ///   round is about, spelled in a notation nobody outside the compiler reads.
+    /// * [`Agent`](crate::agent::Agent) tests the arm with `matches!` and writes a sentence of its
+    ///   own, so the evidence is DROPPED. Its contract is [`DoneWhen::Exits`], whose single term is
+    ///   small — but that is because the contract is small, not because this site asks.
+    /// * [`OuterLoop`](crate::outer::OuterLoop) reaches into [`Over::NotYet`] and renders
+    ///   [`Wanting`] itself. Correct today, and correct for exactly one of the six answers.
+    ///
+    /// **Three authors for one fact is how two of them come to disagree** — the drift this crate
+    /// names at every seam it has closed. The type is the one place that cannot drift from itself.
+    ///
+    /// # ⚠⚠ It is a CLAUSE, not a sentence
+    ///
+    /// Every caller has its own opening (*the checker never answered*, *the peer had not finished*)
+    /// and its own remedy to append. What only this type knows is the middle, so that is all it
+    /// says: no leading capital, no full stop, and no restatement of a bound the caller passed in.
+    ///
+    /// ⚠⚠⚠ THE `match` IS EXHAUSTIVE WITH NO CATCH-ALL, which is `Unheard::silence`'s rule at the
+    /// same kind of seam: a seventh ending does not inherit whichever arm sits last, it fails to
+    /// compile until somebody says what it reads like to a person.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Yes => "the peer answered on the evidence this turn named".to_owned(),
+            // ⚠ The question's own lines, joined — a reader chasing a blocked turn needs the words
+            // that are on the screen, and this host already parsed them.
+            Self::Asking(Some(question)) => {
+                format!("the peer stopped to ask: {}", question.asked.join(" "))
+            }
+            // ⚠ NOT folded into the arm above: *asking something unreadable* and *asking this* send
+            // a person to different places, which is the distinction `Over::Asking`'s own inner
+            // `Option` exists to keep.
+            Self::Asking(None) => {
+                "the peer stopped to ask something this host could not read as a \
+                                   menu"
+                    .to_owned()
+            }
+            Self::PeerGone(pane) => format!(
+                "the peer's program in pane {} has exited, so nothing is left to end this turn",
+                pane.0,
+            ),
+            // ⚠⚠ BOTH NUMBERS, which is `Silence`'s own doc verbatim: *nothing has spoken for ten
+            // minutes* is unreadable without *and this pane HAS a reporter, which had spoken six
+            // times*, because the second is what separates a stalled agent from a pane nobody
+            // instrumented.
+            Self::Silent(silence) => format!(
+                "nothing spoke for this pane for {:?}, and its reporter had spoken {} time(s) \
+                 before that",
+                silence.within, silence.reports,
+            ),
+            Self::NotYet(wanting) => wanting.describe().map_or_else(
+                // ⛔⛔⛔ UNREACHABLE BY CONSTRUCTION AND SAID ANYWAY. An empty `Wanting` MEANS the
+                // contract is satisfied, so this pairing is the contradiction `Wanting`'s own doc
+                // makes impossible — `satisfied` IS `met()`. A silent fallback here would be the
+                // escape hatch that discipline closed, re-opened at the one surface a person reads.
+                || {
+                    "the bound ran out with the turn still running, and nothing here can say what \
+                     it was waiting for — which this build is supposed to make impossible, so \
+                     report it"
+                        .to_owned()
+                },
+                |waiting| format!("the bound ran out with the turn still running — {waiting}"),
+            ),
+            Self::RunEnded => "the run ended underneath this turn".to_owned(),
+        }
+    }
+}
+
 /// ⚠⚠⚠⚠⚠ **ONE TERM OF A [`DoneWhen`] THAT IS STILL FALSE** — a single reason this turn has not
 /// ended yet.
 ///
@@ -1543,6 +1624,95 @@ mod tests {
                 },
             ],
         });
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY WAY A TURN CAN END SAYS ITSELF IN WORDS A PERSON READS** — register item
+    /// 1063, and the seam three callers were each writing on their own.
+    ///
+    /// # What each of the three did instead, measured
+    ///
+    /// * `judge`'s `Unheard::describe` interpolated `{over:?}` — a Rust value in the middle of a
+    ///   sentence about what to do next, and item 598 made it worse rather than better.
+    /// * `Agent` folded the answer with `matches!` and wrote its own sentence, dropping the
+    ///   evidence entirely.
+    /// * `OuterLoop` reached into one arm and rendered [`Wanting`] itself — right for one ending
+    ///   out of six.
+    ///
+    /// # ⚠⚠ What is asserted, and why each control is here
+    ///
+    /// Every clause is non-empty (a silent arm is the old defect wearing a method call); no clause
+    /// is the value's own [`Debug`] (which is what the judge's door was handing people); and all of
+    /// them DIFFER, because a `describe` that answered one sentence for six endings would satisfy
+    /// both of the assertions above while telling a reader nothing.
+    ///
+    /// ⚠⚠⚠ THE LIST IS SEVEN FOR SIX ARMS — [`Over::Asking`] appears twice, since a question this
+    /// host can read and one it cannot send a person to different places. An arm added to [`Over`]
+    /// does not slip past this gate silently: `describe`'s own `match` carries no catch-all, so it
+    /// fails to compile until somebody says what the new ending reads like.
+    #[test]
+    fn every_way_a_turn_can_end_says_itself_in_words_a_person_reads() {
+        let every: [Over; 7] = [
+            Over::Yes,
+            Over::Asking(Some(Question {
+                asked: vec!["Do you want to make this edit to lib.rs?".to_owned()],
+                choices: vec![Choice {
+                    number: 1,
+                    label: "Yes".to_owned(),
+                    selected: true,
+                }],
+            })),
+            Over::Asking(None),
+            Over::PeerGone(PaneId(3)),
+            Over::Silent(Silence {
+                reports: 6,
+                within: Duration::from_secs(600),
+            }),
+            Over::NotYet(Wanting(vec![
+                Unmet::Restless(AgentState::Working),
+                Unmet::Unasked { began: 7, now: 7 },
+            ])),
+            Over::RunEnded,
+        ];
+
+        for over in &every {
+            let said = over.describe();
+            assert!(
+                !said.is_empty(),
+                "⚠⚠⚠ an ending with nothing to say is the defect this exists to close, reached \
+                 through the method that was supposed to close it: {over:?}",
+            );
+            assert_ne!(
+                said,
+                format!("{over:?}"),
+                "⛔⛔⛔⛔⛔ ITEM 1063: this is the WHOLE defect — a person reading why their turn \
+                 ended was handed the Rust value. `describe` that answers its own `Debug` has \
+                 moved the notation rather than replaced it",
+            );
+        }
+
+        // ── AND THE SEVEN ARE SEVEN, which is what an instrument that answered one sentence for
+        //    every ending would fail — and it would pass both assertions above ──────────────────
+        let mut clauses: Vec<String> = every.iter().map(Over::describe).collect();
+        clauses.sort();
+        let spoken = clauses.len();
+        clauses.dedup();
+        assert_eq!(
+            clauses.len(),
+            spoken,
+            "⚠⚠⚠⚠ TWO ENDINGS THAT READ ALIKE ARE ONE ENDING to whoever has to act, and these six \
+             arms exist because each of them sends a person somewhere different: {clauses:?}",
+        );
+
+        // ── AND THE ONE ARM THAT CARRIES REASONING USES THE REASONING'S OWN WORDS ──────────────
+        let wanting = Wanting(vec![Unmet::Restless(AgentState::Working)]);
+        let waiting = Over::NotYet(wanting.clone()).describe();
+        assert!(
+            wanting
+                .describe()
+                .is_some_and(|clause| waiting.contains(&clause)),
+            "⚠⚠⚠⚠⚠ A SECOND VOCABULARY FOR ONE FACT IS HOW THE TWO COME TO DISAGREE: this arm has \
+             to carry `Wanting`'s own words, never a paraphrase composed here. Got {waiting:?}",
+        );
     }
 
     /// ⛔⛔⛔⛔⛔ **A TURN THAT HAS NOT ENDED NAMES THE TERM OF ITS CONTRACT THAT IS STILL FALSE** —
