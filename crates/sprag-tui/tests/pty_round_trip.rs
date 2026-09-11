@@ -67,6 +67,16 @@ use sprag_vt::{Emulator, InputModes, MouseProtocol, ScreenKind, VtPort};
 /// only buys a loaded machine room to finish.
 ///
 /// **15s was not generous, and it was measured rather than argued.** The slowest legitimate wait in
+/// ⛔⛔ **THE PROBE BEHIND THE PER-CHARACTER FIGURES BELOW IS NOT IN THIS TREE** — register item
+/// 1040. It was a throwaway, so those four readings can be quoted and never re-taken, and a reader
+/// cannot tell which spelling of "typing" they describe. ⚠ They are NOT this file's bulk path:
+/// `type_bytes` writes a whole line with `write_all`, and at 100ms/char the 800 characters
+/// `a_re_wrapped_pane_taller_than_the_client_shows_its_newest_rows` types would take eighty
+/// seconds against the 8.4s it actually takes. Two real measurements, one of them missing the
+/// condition it was taken under, is item 964's shape. The instrument that DID survive this round is
+/// `tests/instruments/reproduce-under-load`, and `the_instrument_behind_item_1040_is_in_this_tree`
+/// keeps it here.
+///
 /// this file is `a_click_in_the_second_pane_arrives_in_that_panes_own_columns`, which types an
 /// 88-character command into a pane's shell and waits for the echo: 9–13 seconds in ISOLATION, on a
 /// quiet machine, of a 15-second cap. It passed only because it happened to fit. Adding tests to this
@@ -778,7 +788,7 @@ fn how_loaded() -> String {
         |_| "an unreadable number of cores".to_owned(),
         |cores| format!("{cores} cores"),
     );
-    match std::fs::read_to_string("/proc/loadavg") {
+    let load = match std::fs::read_to_string("/proc/loadavg") {
         Ok(said) => {
             let over = said
                 .split_whitespace()
@@ -788,7 +798,65 @@ fn how_loaded() -> String {
             format!("machine: load {over} over {cores}")
         }
         Err(why) => format!("machine: load unreadable on this host ({why}), {cores}"),
-    }
+    };
+    format!("{load}; {}", how_starved())
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT THE MACHINE WAS WAITING FOR, WHICH `loadavg` CANNOT SAY** — register item 1040.
+///
+/// # ⚠⚠⚠ The load figure above is the wrong unit for the question it was added to answer
+///
+/// Item 880 added the load average to fork *a starved runner* from *a hung client*. But Linux's load
+/// average counts RUNNABLE and UNINTERRUPTIBLE tasks in one number, so a `load 4.76` is equally a
+/// machine with four busy cores and a machine with four tasks blocked on a disk — and those want
+/// opposite repairs, which is the very split item 880 was opened for.
+///
+/// **Measured on this workstation 2026-09-11, all three at the same instant:**
+///
+/// | axis | reading |
+/// |---|---|
+/// | `loadavg` | 10.20 — "very busy" |
+/// | `cpu.pressure some` | avg10 = **0.04** — the CPU is barely starved |
+/// | `io.pressure some` | avg10 = **36.38** — a third of the time something waits on IO |
+///
+/// Item 1040's round spent a whole reproduction on this: four cores loaded to 11-20 with busy loops
+/// cost the suite 1.4-1.6x and lost nothing, which refutes CPU competition and says nothing at all
+/// about the other axis. The runner's own failure reported `load 4.76 over 4 cores` and needed a
+/// **23x** slowdown to fail — a figure no CPU reading here approaches.
+///
+/// # ⛔ A kernel that keeps no pressure accounting says so
+///
+/// Rendered as zeroes, a missing file reads as *the machine was idle*, which is the one conclusion
+/// an unreadable instrument must never support — the same rule `how_loaded` already states for
+/// `/proc/loadavg`, and the same one `sprag-terminal`'s `Waiting::NotAccounted` exists for. ⚠ It
+/// matters on the runner specifically: a container may not expose `/proc/pressure` at all.
+/// ⛔⛔⛔⛔⛔ **THROUGH `sprag-terminal`'s READER, NOT A SECOND ONE** — register item 213, and a first
+/// draft of this function was the defect that item is named for.
+///
+/// That draft opened `/proc/pressure/<resource>` itself and looked for a line starting `some`. It
+/// worked, and it was wrong: [`share::Pressure::read`] already parses exactly this format, and its
+/// own doc says why a second reader is a defect — *"two readers of one format is how a machine row
+/// and a pane row come to be parsed differently"*. This crate already depends on that one, so the
+/// draft added a parser to save no dependency at all.
+///
+/// ⚠ It also inherits the honesty that reader already owes: an unreadable file is
+/// [`Waiting::NotAccounted`], never a zero. A container that does not expose `/proc/pressure` — the
+/// `headless (linux)` runner may well be one — must not read here as *the machine was calm*, which
+/// is the conclusion item 1040's round spent five runs arguing against.
+fn how_starved() -> String {
+    use sprag_terminal::share::{Pressure, Waiting};
+    let row = |resource: &str| {
+        let read = Pressure::read(std::path::Path::new(&format!("/proc/pressure/{resource}")));
+        match read.some {
+            Waiting::Measured {
+                avg10,
+                avg60,
+                avg300,
+            } => format!("{resource} some avg10={avg10} avg60={avg60} avg300={avg300}"),
+            Waiting::NotAccounted => format!("{resource} not accounted on this host"),
+        }
+    };
+    format!("starved: {} | {}", row("cpu"), row("io"))
 }
 
 /// ⛔⛔⛔⛔⛔ **WHICH SIDE IS BEHIND — STATED, NOT LEFT FOR THE READER TO COMPUTE** — register item
@@ -904,6 +972,19 @@ fn the_deadline_says_what_it_wanted_and_what_was_standing_there() {
          `load 8` means nothing — eight on eight cores and eight on thirty-two are opposite \
          readings, and this file's reds have come from oversubscription: {said}",
     );
+    // ⛔⛔⛔⛔⛔ AND IT MUST SAY WHAT THE MACHINE WAS WAITING FOR — register item 1040. `loadavg`
+    // folds RUNNABLE and UNINTERRUPTIBLE into one number, so it cannot separate a busy CPU from a
+    // blocked disk; measured on this workstation the same instant, `loadavg 10.20` sat beside
+    // `cpu.pressure some avg10=0.04` and `io.pressure some avg10=36.38`. Item 1040's reproduction
+    // spent five runs refuting CPU competition and could say nothing about the other axis.
+    for owed in ["starved:", "cpu ", "io "] {
+        assert!(
+            said.contains(owed),
+            "⛔⛔⛔ REGISTER ITEM 1040: the machine clause must carry {owed:?} — the pressure rows \
+             are what fork a CPU-starved runner from an IO-starved one, and item 880's whole \
+             purpose was that fork. A load figure alone answers neither: {said}",
+        );
+    }
     // ⛔⛔⛔ AND THE FIFTH — register item 519. A deadline that cannot say whether anything was
     // still arriving leaves STALLED and SLOW as one sentence, which is the fork `arrival` makes.
     assert!(
@@ -1191,6 +1272,102 @@ fn bare_waits_reading_a_screen(source: &str) -> Vec<usize> {
         }
     }
     sites
+}
+
+/// ⛔⛔⛔⛔⛔ **THE INSTRUMENT THAT REFUTED THE LOAD HYPOTHESIS IS IN THIS TREE** — register item
+/// 1040, and the rule is item 932's with the subject changed from a declaration to a measurement.
+///
+/// # ⚠⚠⚠ A measurement whose instrument was discarded cannot be disputed
+///
+/// The `DEADLINE` comment above cites four per-character readings taken with a **throwaway probe**.
+/// Looked for on 2026-09-11: no file under `crates/` carries it. So those numbers can be quoted for
+/// ever and re-taken by nobody — and this round nearly repeated the mistake, running its whole
+/// reproduction from a scratch directory the next round would not find.
+///
+/// # What it established, which is a REFUTATION and not a guess
+///
+/// Item 1040 records a runner failure needing a **23x** slowdown (45s, 376 of 1600 characters in the
+/// pane). Measured with this instrument:
+///
+/// | shape | result |
+/// |---|---|
+/// | thirty-two cores | 110/0, 53.85s |
+/// | `taskset -c 0-3`, idle | 110/0, **43.08s** — FASTER, because this suite waits rather than computes |
+/// | `taskset -c 0-3` + four spinners, load 11.75 → 20.39 | 110/0 **five times**, 58.55-68.42s |
+///
+/// The runner's own reading was `load 4.76 over 4 cores`; local load of 11-20 on the same four costs
+/// 1.4-1.6x and loses nothing. **So load is not the cause.** One hypothesis is gone, which is what a
+/// round of this kind is for.
+///
+/// # ⚠ What this clause does and does not claim
+///
+/// Not that the instrument is correct — that it is HERE, and that the report format the register
+/// quotes is the one it still emits. `--report-shape` is driven rather than a real run, because a
+/// real run takes five minutes and holds four cores; what a gate can cheaply hold is that the thing
+/// exists, executes, and still speaks the language the register wrote down.
+///
+/// ⚠ The flag is NOT `--selftest`: that word already names a different contract here — a harness
+/// that drives arms and reports `N/M arm(s) pass`, which `a_declared_selftest_is_one_this_suite_runs`
+/// walks `.githooks/` for and executes. Measured 2026-09-11: spelling it `--selftest` put this file
+/// in front of that gate and was refused three ways, correctly.
+#[test]
+fn the_instrument_behind_item_1040_is_in_this_tree() {
+    // ⚠ Through this crate's own manifest directory rather than a walk to the workspace root: the
+    // instrument belongs to this crate's tests, and the macro expands to the crate being compiled.
+    let instrument = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/instruments")
+        .join("reproduce-under-load");
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(&instrument)
+        .unwrap_or_else(|why| {
+            panic!(
+                "⛔ ITEM 1040: {} — {why}. The register quotes this instrument's numbers; without \
+                 the instrument they are figures nobody can re-take, which is exactly the state the \
+                 `DEADLINE` comment's throwaway probe left its own four readings in.",
+                instrument.display(),
+            )
+        })
+        .permissions()
+        .mode();
+    assert!(
+        mode & 0o111 != 0,
+        "⚠⚠⚠ ITEM 1040: the instrument is not executable ({mode:o}): {}. A tracked instrument that \
+         cannot be run is a tracked file, not an instrument.",
+        instrument.display(),
+    );
+
+    let out = Command::new("bash")
+        .arg(&instrument)
+        .arg("--report-shape")
+        .output()
+        .expect("the instrument prints its own report shape");
+    assert!(
+        out.status.success(),
+        "⛔ ITEM 1040: `reproduce-under-load --report-shape` exited {:?}.\nstderr:\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let said = String::from_utf8_lossy(&out.stdout).to_string();
+    // The three lines the register quotes by shape. A report that stopped emitting one of them would
+    // leave the recorded numbers unattributable to any run of this script.
+    // ⛔ THE PRESSURE ROWS ARE IN THIS LIST FOR THE SAME REASON `how_starved` EXISTS — item 1040.
+    // The first version of this instrument recorded `loadavg` alone, and its five green runs could
+    // not afterwards be asked WHICH starvation they were carried out under; a report that drops
+    // those rows again puts the next round back in that position without anything going red.
+    for owed in [
+        "== load before the runs:",
+        "== pressure before:",
+        "== run ",
+        "== pressure after:",
+        "== RUNS=",
+    ] {
+        assert!(
+            said.contains(owed),
+            "⛔ ITEM 1040: the instrument no longer reports {owed:?}, so the numbers the register \
+             quotes cannot be matched against a fresh run of it. Either keep the format or re-take \
+             the readings and rewrite what quotes them.\nsaid:\n{said}",
+        );
+    }
 }
 
 /// ⛔⛔⛔ **AND THE VERDICT IS ACTUALLY SPENT** — register items 519 and 932's rule, applied to a

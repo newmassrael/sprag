@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# ⛔⛔⛔⛔⛔ **REPRODUCE A pty_round_trip TIMEOUT UNDER LOAD — register items 1040 and 519.**
+#
+# # Why this file exists rather than a scratch script
+#
+# The `DEADLINE` comment in `pty_round_trip.rs` cites a measurement — *"1 char 222ms, 10 chars
+# 384ms, 20 chars 2.1s, 40 chars 5.0s"* — taken with a **throwaway probe**. That probe is not in this
+# tree (looked for, 2026-09-11: no file under `crates/` carries it), so the numbers it produced can
+# be read and never re-taken. Item 1040's round was about to do the same thing: its reproduction ran
+# from a scratch directory that the next round would not find.
+#
+# ⇒ A measurement whose instrument was discarded is a number nobody can dispute, which is the
+# opposite of what this repository means by a measurement. So the instrument is tracked and the
+# numbers it produced are recorded beside it, in the register, with the arguments that produced them.
+#
+# # What it does
+#
+# Pins the suite to four cores — the shape of the `headless (linux)` runner — and puts spinners on
+# those same cores so they are cores somebody else is already using. A bare `taskset` does NOT
+# reproduce the runner: measured 2026-09-11, four cores ran the suite in **43.08s** against
+# **53.85s** on all thirty-two, because this suite waits rather than computes.
+#
+# # ⚠ What it measured, and what that refuted — READ THE QUALIFIER
+#
+#     RUNS=5 SPINNERS=4  ->  110/0 five times, 58.55-68.42s, load 11.75 -> 20.39 over 4 masked cores
+#
+# The runner needed a **23x** slowdown to fail the way item 1040 records (45s, 376 of 1600 chars in
+# the pane). Local load of 11-20 on four cores — far past the runner's own `load 4.76 over 4 cores`
+# — costs 1.4-1.6x and loses nothing.
+#
+# ⛔⛔⛔⛔⛔ **SO «CPU COMPETITION» IS NOT THE CAUSE. NOT «LOAD».** A first draft of this comment said
+# *load is not the cause* and that sentence was FALSE, for the same reason the numbers beside it are
+# not enough: the spinners above are busy loops, so they raise CPU pressure and nothing else, while
+# `loadavg` counts RUNNABLE and UNINTERRUPTIBLE tasks together and cannot say which was which.
+#
+# **Measured on this workstation 2026-09-11, all three at the same instant:**
+#
+#     loadavg              10.20            "very busy"
+#     cpu.pressure some    avg10=0.04       the CPU is barely starved
+#     io.pressure  some    avg10=36.38      a third of the time, something is waiting on IO
+#
+# Three axes, two opposite stories. That is why this script now records the pressure rows as well:
+# a run that says only `load 11.75 -> 20.39` cannot be asked, afterwards, WHICH kind of starvation
+# it was carried out under — and an experiment whose conditions were written in the wrong unit
+# refutes nothing in particular.
+#
+# # ⚠⚠ It cleans up after itself, and that is not politeness
+#
+# A spinner that outlives this script is a busy core on the developer's machine for ever. The trap
+# covers the signal paths as well as the normal end.
+#
+#   RUNS      how many times to run the suite (default 5)
+#   SPINNERS  how many busy loops to pin to the masked cores (default 4)
+#   CORES     the mask (default 0-3, four cores, the runner's shape)
+#   --report-shape  print the report format and exit, running nothing — what the gate drives
+#
+# ⛔⛔⛔⛔⛔ **IT IS NOT SPELLED `--selftest`, AND THAT IS PRECISION RATHER THAN EVASION** — register
+# items 799 and 964. In this repository `--selftest` already MEANS something: a shell harness that
+# drives arms and reports `N/M arm(s) pass`, which `a_declared_selftest_is_one_this_suite_runs`
+# walks `.githooks/` for and EXECUTES. This flag drives no arms — it prints the report format so a
+# gate can check that the shape the register quotes is still the shape emitted. Measured 2026-09-11:
+# calling it `--selftest` put this file in front of that gate, which refused it three ways at once,
+# correctly. Two meanings under one name is the covering item 776's family is about; the fix is a
+# different name, not a widened population.
+set -u
+
+if [ "${1:-}" = "--report-shape" ]; then
+    echo "reproduce-under-load: report shape"
+    echo "== load before the runs: <1m> <5m> <15m> over N masked cores"
+    echo "== pressure before: cpu <some-row> | io <some-row>"
+    echo "== run <i> rc=<rc> :: test result: ..."
+    echo "== pressure after: cpu <some-row> | io <some-row>"
+    echo "== RUNS=<n> SPINNERS=<n> FAILED=<n>"
+    exit 0
+fi
+
+RUNS="${RUNS:-5}"
+SPINNERS="${SPINNERS:-4}"
+CORES="${CORES:-0-3}"
+root="$(git rev-parse --show-toplevel 2>/dev/null || printf '.')"
+out="${OUT:-$root/target/reproduce-under-load}"
+mkdir -p "$out"
+
+pids=()
+cleanup() {
+    for p in "${pids[@]:-}"; do kill "$p" 2>/dev/null || true; done
+    wait 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+# ⛔ REGISTER ITEM 491: a suite run right after a commit measures the STALENESS GUARD, because
+# `sprag-rpc/build.rs` stamps the commit into the binary and `rerun-if-changed`s the ref. A red that
+# arrives that way looks exactly like a reproduction — it did, on 2026-09-11, for this very item.
+if ! (cd "$root" && cargo build -p sprag-host --bins); then
+    echo "reproduce-under-load: the bins would not build, so nothing below would be about this tree" >&2
+    exit 2
+fi
+
+for _ in $(seq "$SPINNERS"); do
+    taskset -c "$CORES" sh -c 'while :; do :; done' &
+    pids+=($!)
+done
+sleep 2
+
+# ⛔ A KERNEL THAT KEEPS NO PRESSURE ACCOUNTING SAYS SO, rather than reading as calm. A missing file
+# rendered as zeroes is an absence wearing a measurement's clothes — `sprag-terminal`'s own
+# `Waiting::NotAccounted` exists for this, and the shell side owes the same honesty.
+pressure_row() {
+    if [ -r "/proc/pressure/$1" ]; then
+        awk '/^some/ { print; exit }' "/proc/pressure/$1"
+    else
+        printf 'not accounted on this kernel'
+    fi
+}
+say_pressure() { echo "== pressure $1: cpu $(pressure_row cpu) | io $(pressure_row io)"; }
+
+echo "== load before the runs: $(awk '{print $1, $2, $3}' /proc/loadavg) over $CORES masked cores"
+say_pressure before
+
+fails=0
+for i in $(seq "$RUNS"); do
+    (cd "$root" && taskset -c "$CORES" cargo test -p sprag-tui --test pty_round_trip) \
+        > "$out/run-$i.log" 2>&1
+    rc=$?
+    line=$(grep -m1 '^test result:' "$out/run-$i.log" || echo 'no result line')
+    echo "== run $i rc=$rc :: $line"
+    [ "$rc" -eq 0 ] || fails=$((fails + 1))
+    [ "$rc" -eq 0 ] || grep -m1 -A 8 '^---- a_re_wrapped' "$out/run-$i.log" || true
+done
+say_pressure after
+echo "== RUNS=$RUNS SPINNERS=$SPINNERS FAILED=$fails"
+echo "== load after: $(awk '{print $1, $2, $3}' /proc/loadavg)"
+echo "== logs: $out"
+exit 0
