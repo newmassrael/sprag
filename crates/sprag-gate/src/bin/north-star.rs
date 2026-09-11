@@ -116,8 +116,21 @@ fn main() -> std::process::ExitCode {
     if path == *"--elsewhere" {
         return elsewhere(args);
     }
-    if args.next().is_some() {
-        eprintln!("north-star: one ledger, not several");
+    // ⛔⛔⛔⛔⛔ **`--order` IS HOW THE ORDER IS ASKED FOR, AND THE ONLY HOW** — register item 1052.
+    // The head of it prints on every run because that is the line a round acts on; the rest is
+    // behind a flag because a round needs one item and a reader auditing the rule needs all of
+    // them. Neither is ever written down: a copied order is a snapshot, and the ledger moves under
+    // it every time an item is paid or opened.
+    let mut whole_order = false;
+    for extra in args {
+        if extra == *"--order" {
+            whole_order = true;
+            continue;
+        }
+        eprintln!(
+            "north-star: one ledger, not several — and the only flag after it is `--order`, not {}",
+            extra.to_string_lossy(),
+        );
         return std::process::ExitCode::FAILURE;
     }
 
@@ -218,6 +231,24 @@ fn main() -> std::process::ExitCode {
             }
         }
     }
+    // ⛔ THE SUITE IS ASKED HERE AND REPORTED LOWER DOWN — register item 1052. A standing red is one
+    // of the two declared overrides that decide what this ledger admits, so the work-order
+    // screening cannot be assembled before it is known. Only the ASKING moved: the `reds` lines
+    // print where they always did, because the report's order is what a reader has learned.
+    let claims = reading.red_claims();
+    let here = std::env::consts::OS;
+    let found = match reading.standing_reds(&RunTheSuite, here) {
+        Ok(found) => found,
+        Err(why) => {
+            eprintln!("north-star: {why}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let Reds {
+        standing,
+        refuted,
+        elsewhere,
+    } = found;
     // ⛔⛔⛔⛔⛔ AND EVERY GATE THAT CAN RED, EACH SAYING HOW MANY QUESTIONS IT PUT — register
     // items 920, 902, 937 for the three of them, 924 for the count and 940 for the enumeration.
     //
@@ -230,7 +261,7 @@ fn main() -> std::process::ExitCode {
     // is not in `north_star::Screenings` cannot red at all. The lines are `Screening`'s and never
     // this file's — the split register item 934 drew for the four backlogs, held by the same gate
     // in `north_star`'s tests.
-    let screenings = match reading.screenings(cap.depth(), &Repository) {
+    let screenings = match reading.screenings(cap.depth(), &standing, &Repository) {
         Ok(screenings) => screenings,
         // ⚠⚠ A FAILURE TO ASK IS ITS OWN FAULT and never forty item faults — see
         // `north_star::Reading::paid_commits`. Being unable to reach `git` says nothing about any
@@ -264,20 +295,8 @@ fn main() -> std::process::ExitCode {
     // about its population; it had no way to HOLD that population, so *nobody asked* and *asked
     // and clean* were the same zero. This third number is that distinction, and item 924 is the
     // rule it is written under.
-    let claims = reading.red_claims();
-    let here = std::env::consts::OS;
-    let found = match reading.standing_reds(&RunTheSuite, here) {
-        Ok(found) => found,
-        Err(why) => {
-            eprintln!("north-star: {why}");
-            return std::process::ExitCode::FAILURE;
-        }
-    };
-    let Reds {
-        standing,
-        refuted,
-        elsewhere,
-    } = found;
+    // ⚠ The suite was asked further up — see the note there. What is left here is the REPORT, which
+    // stays where it has always been.
     let confirmed: Vec<String> = standing.iter().map(ToString::to_string).collect();
     let others: Vec<String> = elsewhere.iter().map(ToString::to_string).collect();
     println!(
@@ -291,6 +310,38 @@ fn main() -> std::process::ExitCode {
         elsewhere.len(),
         others.join(" "),
     );
+    // ⛔⛔⛔⛔⛔ **WHAT TO TAKE NEXT, DERIVED — AND THE TERM THAT PLACED IT** — register item 1052.
+    //
+    // Working rule 11 forbids choosing by eye and then, when `critical` is empty, hands the round a
+    // sentence: *population 을 이음매가 맞는 순서로*. MEASURED 2026-09-11: this binary printed no
+    // such line and `north_star` derived no order (0 and 0), `critical` read 0 on all twelve
+    // readings of that session, and the supervisor chose by eye eight times in one day.
+    //
+    // ⚠⚠ It is printed BELOW the reds because it depends on them — a standing red is one of the two
+    // declared overrides — and above `north star:` because it is the line acted on. The terms are
+    // [`north_star::Reading::work_order`]'s and are not re-spelled here: a second author of the
+    // order would be the drift item 213 is named for.
+    let order = reading.work_order(cap.depth(), &standing);
+    match order.first() {
+        Some(first) => println!("next {}: {}", first.number, first.why),
+        // ⛔ AN ANSWER, NOT AN ABSTENTION — rule 6. Nothing admitted means the ledger has nothing a
+        // round may take, which is a fact about the ledger and not a missing line.
+        None => println!("next none: this ledger admits nothing a round may take"),
+    }
+    println!(
+        "  {} item(s) in the order. ⛔ Do not write this order down; ask for it (--order).",
+        order.len(),
+    );
+    if whole_order {
+        for placed in &order {
+            println!("  {} — {}", placed.number, placed.why);
+        }
+    }
+    // ⛔⛔⛔ WHETHER THE ORDER IS THE WHOLE OF WHAT IS ADMITTED is a `Screening` and is printed with
+    // its four siblings above — register item 1052, corrected by item 940's own gate. The first
+    // draft judged it here with a bare `missed.is_empty()` in the verdict, and that gate refused
+    // the build in as many words: a term that is not `screenings` is a gate whose population
+    // nothing prints.
     // ⛔ A CLAIM THE SUITE REFUTES IS A FAULT ABOUT THE DOCUMENT, and the mirror of item 902's
     // wrongly-paid mark: this one would buy an item past the severity gate on a red that is not
     // there. It is reported here, beside `standing_reds`, because only the caller could ask.

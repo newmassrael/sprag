@@ -937,6 +937,27 @@ impl fmt::Display for Link {
 /// ⚠ A number can own several blocks: this ledger closes an item by laying a new block ON TOP of
 /// the original rather than editing it. So the blocks are grouped by number and the TOPMOST mark
 /// wins, which is the same rule a reader uses — the newest block is the current one.
+/// One item in the derived work order, and the TERM that placed it there — register item 1052.
+///
+/// ⚠⚠ The `why` travels with the number rather than being recomputed by whoever prints it. An order
+/// a reader cannot interrogate is the eye-choice it replaces with extra steps: rule 11's complaint
+/// is not that the wrong item gets picked, it is that *그 판단이 어디에도 안 남는다*.
+///
+/// ⚠ Declared BELOW [`Item`]'s doc comment and above its derive would have silently taken that
+/// derive — the compiler caught it as five conflicting impls on this type, which is the one shape
+/// where inserting a struct between a doc comment and its attributes is not a formatting matter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Placed {
+    /// The register item.
+    pub number: u32,
+    /// Whether a declared override (a `critical` severity, or a standing red) placed it.
+    pub critical: bool,
+    /// Its chain depth, `None` when nobody wrote the chain down — see [`Reading::depth`].
+    pub depth: Option<u32>,
+    /// The term that put it here, in words a reader can check against the ledger.
+    pub why: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
     /// The number the ledger files it under.
@@ -1275,6 +1296,17 @@ pub enum Fault {
         /// The item it named.
         owner: u32,
     },
+    /// The derived work order and the set this ledger admits are not the same — register item 1052.
+    ///
+    /// ⚠⚠ The NON-VACUITY floor made into a fault. `next` reads perfectly well when the order holds
+    /// one item and has silently dropped a hundred, so what is judged is a bijection: an admitted
+    /// item missing from the order, an ordered item that is not admitted, or one placed twice.
+    WorkOrderDisagrees {
+        /// The item the two sets disagree about.
+        number: u32,
+        /// Which way round, in words a reader can act on.
+        how: &'static str,
+    },
     /// A declared floor standing **above** what this reading counted — register item 926.
     ///
     /// # ⛔⛔⛔⛔⛔ Why slack is a RED and not a tidy-up
@@ -1382,6 +1414,13 @@ impl fmt::Display for Fault {
                  not in the open population — so nothing carries that work and no round can be \
                  routed to it. Move the `{OWNER} {token}` line out of item {owner}'s block and \
                  into the open item that carries the work now",
+            ),
+            Self::WorkOrderDisagrees { number, how } => write!(
+                f,
+                "the derived work order and what this ledger admits disagree about item {number}: \
+                 {how}. The `next` line is what a round acts on, so an order describing a \
+                 different set from the one that may be taken is the state working rule 11 exists \
+                 to prevent",
             ),
             Self::UnreadableDeclaration { line } => write!(
                 f,
@@ -2325,6 +2364,157 @@ impl Reading {
         self.backlogs().unclassified.items
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE ORDER A ROUND TAKES WORK IN, DERIVED** — register item 1052.
+    ///
+    /// Returns what [`Reading::admits`] admits, first one first, each carrying the TERM that placed
+    /// it. Pure in its arguments.
+    ///
+    /// # Why this exists when `admits` already answered
+    ///
+    /// `admits` answers *may I take this one*, which is a set. Working rule 11 needs an ORDER, and
+    /// what it says when nothing is critical is *"population 을 이음매가 맞는 순서로"* — a sentence,
+    /// with no seam named. MEASURED 2026-09-11 over this session: the instrument printed no `next`
+    /// and its source derived no order (`grep` for either: **0**), `critical` read **0 on all
+    /// twelve** readings, so the second branch was the one always used — and the supervisor chose by
+    /// eye **eight times in one day**, which is the thing rule 11 forbids in its own last clause
+    /// (*그 판단이 어디에도 안 남는다*).
+    ///
+    /// ⚠⚠ **The population is `admits`'s answer and not a fresh filter**, deliberately — item 213.
+    /// Two derivations of *what may be taken* would be two authorities on the one question, and the
+    /// one that PRINTS would not be the one that refuses.
+    ///
+    /// # The terms, and why each one
+    ///
+    /// 1. **`critical`, and a standing red** — the declared overrides, and the only inputs a person
+    ///    or the suite can steer with. ⚠⚠ **This term is [`Reading::admits`]'s, not this
+    ///    function's**, and that is a correction a mutation forced: `admits` returns the overrides
+    ///    ALONE when there are any, so a `critical` key in the sort below could never separate two
+    ///    items and deleting it left every gate green. Steering still needs no edit to this rule —
+    ///    it just happens one call earlier, in the one place that decides what may be taken.
+    /// 2. **Chain depth, ascending** — and this term is MEASURED rather than assumed, which is the
+    ///    half a borrowed rule would have skipped. Asked of this ledger on 2026-09-11: an item that
+    ///    is itself nobody's child spawns **0.240** children; an item that IS a child spawns
+    ///    **0.338** — 41% more. Depth predicts drift, so ascending points away from it. The same
+    ///    session had measured the fork from the other side (item 1050): three rounds spent inside
+    ///    one chain paid two items and opened three — **1.5 children per repayment, five times the
+    ///    ledger's own average**.
+    /// 3. **Number, ascending** — so the order is total and two runs agree, and because a lower
+    ///    number is an OLDER debt: rule 13's own worry is that *오래된 부채일수록 빨리 가라앉는다*.
+    ///
+    /// ⛔⛔⛔ **`None` depth sorts WITH the roots, not behind them, and that is a decision.**
+    /// [`Reading::depth`] answers `None` for *nobody wrote it down*, which on this ledger is **379**
+    /// of 602 items — the standing backlog, which predates the mark. Sorting them last would put
+    /// every recently-opened child in front of every old debt and make term 2 point AT the drift it
+    /// exists to avoid. They are not reported as roots (the `why` says *unrecorded*); they are
+    /// merely not treated as deep.
+    ///
+    /// # ⚠ What this does NOT decide
+    ///
+    /// * **Which item is `critical`.** That is the person's lever, left where a person can reach it.
+    /// * **That the unclassified backlog waits.** It does not wait by choice: a round CANNOT take
+    ///   one — measured 2026-09-11, `--admits … "Take item 2"` is refused with *"item 2 is not in
+    ///   this register's open population"*. It is `admits`'s third tier and appears here only when
+    ///   nothing is takeable, carrying that sentence as its `why`.
+    #[must_use]
+    pub fn work_order(&self, cap: u32, reds: &[u32]) -> Vec<Placed> {
+        let admitted = self.admits(cap, reds);
+        let takeable = self.takeable(cap);
+        let overrides: std::collections::BTreeSet<u32> = self
+            .critical()
+            .into_iter()
+            .chain(reds.iter().copied())
+            .collect();
+        let mut out: Vec<Placed> = admitted
+            .into_iter()
+            .map(|number| {
+                let over = overrides.contains(&number);
+                let depth = self.depth(number);
+                let why = match (over, takeable.contains(&number), depth) {
+                    (true, _, _) => {
+                        "critical or a standing red — declared, and it jumps the queue".to_owned()
+                    }
+                    (false, false, _) => "nothing is takeable, so the unclassified backlog is the \
+                                          work — it cannot be taken while anything else is"
+                        .to_owned(),
+                    (false, true, None) => "depth unrecorded — it predates the mark, so it is not \
+                                            drift by construction"
+                        .to_owned(),
+                    (false, true, Some(0)) => {
+                        "a root — nothing opened it while paying something else".to_owned()
+                    }
+                    (false, true, Some(deep)) => format!(
+                        "depth {deep} — opened while paying something else, which is where drift \
+                         lives"
+                    ),
+                };
+                Placed {
+                    number,
+                    critical: over,
+                    depth,
+                    why,
+                }
+            })
+            .collect();
+        // ⛔⛔⛔⛔⛔ **THE OVERRIDE IS NOT A SORT TERM HERE, AND A MUTATION IS WHY.** The first draft
+        // sorted `critical` first, which read like the rule and did nothing: [`Reading::admits`]
+        // already returns the overrides ALONE when there are any, so the population this sorts is
+        // either all-override or no-override and the term could never separate two items. Deleting
+        // it left every gate green. Keeping a term that cannot change an answer would be a second
+        // authority on tiering — item 213 — and the one that PRINTS would not be the one that
+        // refuses. So the tiering stays in `admits`, and what is sorted here is what is left.
+        out.sort_by_key(|placed| (placed.depth.unwrap_or(0), placed.number));
+        out
+    }
+
+    /// Every admitted item the work order leaves out, or names twice — the NON-VACUITY floor.
+    ///
+    /// ⛔⛔⛔⛔⛔ **An assertion whose subject can empty out is restated, not deleted** — register
+    /// item 1052, taking the shape `order_covers` has in the repository that closed the same debt
+    /// first. *The order is non-empty* would go vacuously green the day a bug made
+    /// [`Reading::work_order`] return nothing. What is asserted instead is that it is a BIJECTION
+    /// with [`Reading::admits`], which fails in BOTH directions and cannot be passed by returning
+    /// less.
+    #[must_use]
+    pub fn order_covers(&self, cap: u32, reds: &[u32]) -> Screening {
+        let want: std::collections::BTreeSet<u32> = self.admits(cap, reds).into_iter().collect();
+        let order = self.work_order(cap, reds);
+        let seen: Vec<u32> = order.iter().map(|placed| placed.number).collect();
+        let held: std::collections::BTreeSet<u32> = seen.iter().copied().collect();
+        let mut faults: Vec<Fault> = want
+            .difference(&held)
+            .map(|number| Fault::WorkOrderDisagrees {
+                number: *number,
+                how: "it is admitted and the order leaves it out",
+            })
+            .collect();
+        faults.extend(
+            held.difference(&want)
+                .map(|number| Fault::WorkOrderDisagrees {
+                    number: *number,
+                    how: "the order holds it and this ledger does not admit it",
+                }),
+        );
+        let twice: std::collections::BTreeSet<u32> = seen
+            .iter()
+            .copied()
+            .filter(|number| seen.iter().filter(|other| *other == number).count() > 1)
+            .collect();
+        faults.extend(twice.iter().map(|number| Fault::WorkOrderDisagrees {
+            number: *number,
+            how: "the order places it twice",
+        }));
+        Screening {
+            label: "work order",
+            found: "disagreeing",
+            // ⚠ The DENOMINATOR is what was admitted, not what the order returned — register item
+            // 924 and the whole point of this screening. An order that returned nothing would
+            // otherwise report `0 judged, 0 disagreeing`, which is the vacuous green it exists to
+            // refuse.
+            judged: want.len(),
+            faults,
+        }
+    }
+
     /// ⛔⛔⛔⛔⛔ **THE BACKLOGS WHOSE DECLARED OWNER IS NOT OPEN IN THIS LEDGER** — register item
     /// 937, and asked HERE rather than inside [`read`] for a measured reason.
     ///
@@ -2410,12 +2600,22 @@ impl Reading {
     ///
     /// Whatever `commits` said when it could not answer at all — never a verdict about one id. See
     /// [`Reading::paid_commits`].
-    pub fn screenings(&self, cap: u32, commits: &dyn Commits) -> Result<Screenings, String> {
+    pub fn screenings(
+        &self,
+        cap: u32,
+        reds: &[u32],
+        commits: &dyn Commits,
+    ) -> Result<Screenings, String> {
         Ok(Screenings {
             deferrals: self.deferred_unread(cap),
             paid_commits: self.paid_commits(commits)?,
             judged_commits: self.judged_commits(commits)?,
             backlog_owners: self.backlog_owners(),
+            // ⚠⚠ `reds` IS TAKEN HERE ONLY FOR THIS ONE — register item 1052. The work order's
+            // population is what the ledger ADMITS, and a standing red is one of the two declared
+            // overrides that decides it; screening the order against a set derived without them
+            // would compare two different questions and call the difference a fault.
+            work_order: self.order_covers(cap, reds),
         })
     }
 
@@ -3386,6 +3586,8 @@ pub struct Screenings {
     pub judged_commits: Screening,
     /// Backlogs whose declared owner is no longer open — register item 937.
     pub backlog_owners: Screening,
+    /// Whether the derived work order is the whole of what this ledger admits — register item 1052.
+    pub work_order: Screening,
 }
 
 impl Screenings {
@@ -3394,14 +3596,21 @@ impl Screenings {
     /// `Self` makes a fourth screening a compile error in **this one place**, and everything that
     /// prints or judges a screening walks it through here.
     #[must_use]
-    pub fn each(&self) -> [&Screening; 4] {
+    pub fn each(&self) -> [&Screening; 5] {
         let Self {
             deferrals,
             paid_commits,
             judged_commits,
             backlog_owners,
+            work_order,
         } = self;
-        [deferrals, paid_commits, judged_commits, backlog_owners]
+        [
+            deferrals,
+            paid_commits,
+            judged_commits,
+            backlog_owners,
+            work_order,
+        ]
     }
 
     /// Whether every gate here found nothing. ⚠ The verdict `north-star.rs` reads — see this
@@ -4008,6 +4217,243 @@ mod tests {
 896. ⛔ **Outside section A**
      @ns: open — must not be counted
 ";
+
+    /// A ledger whose open items differ ONLY in the terms the work order sorts by — register item
+    /// 1052. `800` has no `@from` at all (depth unrecorded), `801` is a root, `802` and `803` sit
+    /// one and two deep, and `804` states nothing, so it is the unclassified backlog.
+    ///
+    /// ⛔⛔⛔⛔⛔ **`805` IS HERE BECAUSE A MUTATION WENT GREEN WITHOUT IT.** With the first four,
+    /// depth ascending and number ascending are the SAME order, so deleting the depth term changed
+    /// no answer and the clause that asserts the order was holding nothing up. `805` is a root with
+    /// the highest number: depth puts it third, number puts it last, and the two rules are finally
+    /// distinguishable on this ledger.
+    const ORDERED: &str = "\
+# Ledger
+## A. THE SHARPEST THINGS OPEN
+@ns-unclassified: 1
+@sev-unclassified: 0
+@from-unclassified: 2
+@paid-uncommitted: 0
+
+800. ⛔ **Older than the mark**
+     @ns: open — nobody wrote a chain for it
+     @sev: ordinary — it is the standing backlog
+
+801. ⛔ **A root**
+     @ns: open — met while paying something else
+     @sev: ordinary — it is the standing backlog
+     @from: none
+
+802. ⛔ **One deep**
+     @ns: open — opened by the round that paid 801
+     @sev: ordinary — it is the standing backlog
+     @from: 801
+
+803. ⛔ **Two deep**
+     @ns: open — opened by the round that paid 802
+     @sev: ordinary — it is the standing backlog
+     @from: 802
+
+804. ⛔ **States nothing**
+     no mark at all
+
+805. ⛔ **A root, and the HIGHEST number**
+     @ns: open — met while paying something else
+     @sev: ordinary — it is the standing backlog
+     @from: none
+";
+
+    /// ⛔⛔⛔⛔⛔ **THE ORDER A ROUND TAKES WORK IN IS DERIVED, AND EVERY TERM OF IT IS DRIVEN** —
+    /// register item 1052.
+    ///
+    /// Working rule 11 forbids choosing by eye and then hands the round a SENTENCE for the case it
+    /// leaves — *population 을 이음매가 맞는 순서로* — with no seam named. MEASURED 2026-09-11: the
+    /// binary printed no `next`, this module derived no order, `critical` read 0 on all twelve
+    /// readings of one session, and the supervisor chose by eye eight times in a day.
+    ///
+    /// ⚠⚠ **Each clause changes ONE input and asserts the answer moves.** A rule that always says
+    /// *the lowest number* would pass an assertion about this ledger's first item and nothing else;
+    /// the control below is what makes the terms load-bearing rather than decorative.
+    #[test]
+    fn the_work_order_is_derived_from_terms_that_can_each_be_driven() {
+        let reading = read(ORDERED);
+        assert!(reading.is_green(), "faults: {:?}", reading.faults);
+        let order: Vec<u32> = reading
+            .work_order(9, &[])
+            .into_iter()
+            .map(|placed| placed.number)
+            .collect();
+        assert_eq!(
+            order,
+            vec![800, 801, 805, 802, 803],
+            "with nothing critical the terms are chain depth ascending, then number: `800` has no \
+             chain written down and `801` and `805` are roots, so all three sort ahead of the two \
+             that were opened while something else was being paid — even though `805` carries the \
+             highest number in the ledger. That last part is the whole of the depth term: without \
+             it this list is `800 801 802 803 805` and the rule is just *lowest number first*.",
+        );
+
+        // ⛔⛔⛔ THE CONTROL, AND IT IS LOAD-BEARING: without it, *always the lowest number* passes
+        // the assertion above unchanged. Making the DEEPEST item critical is the one edit that
+        // separates the two rules — a declared override has to jump a queue it would otherwise sit
+        // at the end of.
+        let steered = ORDERED.replace(
+            "803. ⛔ **Two deep**\n     @ns: open — opened by the round that paid 802\n     @sev: ordinary — it is the standing backlog",
+            "803. ⛔ **Two deep**\n     @ns: open — opened by the round that paid 802\n     @sev: critical — a person put it here",
+        );
+        let steered = read(&steered);
+        assert!(steered.is_green(), "faults: {:?}", steered.faults);
+        let first = steered.work_order(9, &[]);
+        assert_eq!(
+            first.iter().map(|p| p.number).collect::<Vec<_>>(),
+            vec![803],
+            "a `critical` severity is the person's lever, and rule 11 says a round takes from that \
+             line while it is not empty — so the order is that item and NOTHING ELSE, even though \
+             it is the deepest thing in the ledger and four shallower items are open.",
+        );
+        assert!(
+            first[0].critical && first[0].why.contains("critical"),
+            "and the placement says which term put it there, or the order is an eye-choice with \
+             extra steps: {:?}",
+            first[0],
+        );
+
+        // ⛔ A STANDING RED IS THE OTHER DECLARED OVERRIDE, and it comes from the suite rather than
+        // from a person — so it is driven separately, or `critical` alone would be holding this arm
+        // up and the reds half would be untested.
+        let by_red = reading.work_order(9, &[802]);
+        assert_eq!(
+            by_red.iter().map(|p| p.number).collect::<Vec<_>>(),
+            vec![802],
+            "a standing red tiers the same way a person's `critical` does. Got: {:?}",
+            by_red.iter().map(|p| p.number).collect::<Vec<_>>(),
+        );
+
+        // ⛔⛔⛔⛔⛔ **DEPTH-UNRECORDED SORTS WITH THE ROOTS, NOT BEHIND THEM** — and this clause is
+        // the one that would go silently wrong. On the real ledger 379 of 602 items have no chain
+        // written down; sorting them last puts every freshly-opened child in front of every old
+        // debt, which points term 2 AT the drift it exists to avoid.
+        let placed = reading.work_order(9, &[]);
+        let unrecorded = placed
+            .iter()
+            .find(|p| p.number == 800)
+            .expect("800 is in the order");
+        assert!(
+            unrecorded.depth.is_none() && unrecorded.why.contains("unrecorded"),
+            "800 has no chain, and the order must SAY so rather than reporting it as a root: {:?}",
+            unrecorded,
+        );
+        assert!(
+            placed.iter().position(|p| p.number == 800)
+                < placed.iter().position(|p| p.number == 802),
+            "an item with no chain written down is not drift, so it sorts ahead of one that is",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE UNCLASSIFIED BACKLOG IS NOT NEXT WHILE ANYTHING IS TAKEABLE, AND THE ORDER
+    /// SAYS WHY** — register item 1052's fourth condition, resting on item 1050's measurement.
+    ///
+    /// A round CANNOT take one: measured 2026-09-11 against the real ledger,
+    /// `--admits … "Take item 2"` is refused with *"item 2 is not in this register's open
+    /// population"*. So it is [`Reading::admits`]'s third tier, and the order inherits that
+    /// sequencing rather than inventing a second one — item 213.
+    ///
+    /// ⚠ It is not EXCLUDED, which would be rule 6's escape hatch. When nothing is takeable it is
+    /// the work, and it says so in the words a reader can check.
+    #[test]
+    fn the_unclassified_backlog_is_the_third_tier_and_says_so() {
+        let reading = read(ORDERED);
+        let order = reading.work_order(9, &[]);
+        assert!(
+            !order.iter().any(|placed| placed.number == 804),
+            "804 states nothing, and while four items are takeable it is not what a round takes \
+             next: {:?}",
+            order.iter().map(|p| p.number).collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            reading.unclassified(),
+            vec![804],
+            "it is still carried as its own number — left out of the order is not left out of the \
+             ledger",
+        );
+
+        // Every open item paid, so nothing is takeable — the one state in which the backlog IS the
+        // work. ⚠ Driven rather than argued: this is the branch a reader is most likely to assume.
+        let emptied = ORDERED
+            .replace(
+                "@ns: open — nobody wrote a chain for it",
+                "@ns: out — not this loop's",
+            )
+            .replace(
+                "@ns: open — met while paying something else",
+                "@ns: out — not this loop's",
+            )
+            .replace(
+                "@ns: open — opened by the round that paid 801",
+                "@ns: out — not this loop's",
+            )
+            .replace(
+                "@ns: open — opened by the round that paid 802",
+                "@ns: out — not this loop's",
+            );
+        // ⚠ `801` and `805` share a line, so the replace above took both — stated rather than left
+        // to be noticed, because a fixture edit that silently missed one would leave this arm
+        // asserting about a ledger that still has takeable work in it.
+        let emptied = read(&emptied);
+        let order = emptied.work_order(9, &[]);
+        assert_eq!(
+            order.iter().map(|p| p.number).collect::<Vec<_>>(),
+            vec![804],
+            "with nothing takeable the unclassified backlog is what is left, which is \
+             `admits`'s own third tier",
+        );
+        assert!(
+            order[0].why.contains("nothing is takeable"),
+            "and it must say WHY it is here, because a reader who takes it for an ordinary first \
+             place would conclude a round may take an unclassified number — which the instrument \
+             refuses: {:?}",
+            order[0],
+        );
+    }
+
+    /// ⭐ **THE NON-VACUITY FLOOR** — register item 1052. `next` reads perfectly well when the order
+    /// returns one item and silently drops a hundred, so what is asserted is a BIJECTION with
+    /// [`Reading::admits`], which fails in both directions and cannot be passed by returning less.
+    #[test]
+    fn the_work_order_is_every_admitted_item_exactly_once() {
+        let reading = read(ORDERED);
+        let covered = reading.order_covers(9, &[]);
+        assert!(
+            covered.faults.is_empty(),
+            "the order and what this ledger admits must be the same set: {:?}",
+            covered.faults,
+        );
+        assert_eq!(
+            covered.judged,
+            reading.admits(9, &[]).len(),
+            "and the screening's DENOMINATOR is what was admitted — register item 924. Counting \
+             what the order returned instead would report `0 judged, 0 disagreeing` for an order \
+             that returned nothing, which is the vacuous green this floor exists to refuse.",
+        );
+        assert_eq!(
+            reading.work_order(9, &[]).len(),
+            reading.admits(9, &[]).len(),
+            "and the same size — a bijection is what an order that could return less cannot fake",
+        );
+
+        // ⛔ THE CONTROL FOR THE FLOOR ITSELF: `order_covers` must be able to FIND a disagreement,
+        // or its silence proves nothing. A cap that defers an item changes what is admitted, so an
+        // order taken at a different cap is a genuine mismatch — the shape a real bug would have.
+        let narrow = reading.work_order(0, &[]);
+        let wide: Vec<u32> = reading.admits(9, &[]).into_iter().collect();
+        assert!(
+            narrow.len() < wide.len(),
+            "a cap of 0 must admit fewer items than a cap of 9, or this control is staging \
+             nothing: {} vs {}",
+            narrow.len(),
+            wide.len(),
+        );
+    }
 
     #[test]
     fn the_population_is_the_marks_and_nothing_else() {
@@ -6685,6 +7131,7 @@ mod tests {
             | Fault::UntaggedCandidate { .. }
             | Fault::UnknownSeverity { .. }
             | Fault::ConflictingSeverities { .. }
+            | Fault::WorkOrderDisagrees { .. }
             | Fault::SeverityDeclaration { .. }
             | Fault::UnreadableSeverityDeclaration { .. }
             | Fault::UnknownParent { .. }
@@ -7581,7 +8028,7 @@ mod tests {
         // its own; the labels below are what refuse that, one per screening, sourced from the
         // struct so a fourth screening's label is checked the moment it exists.
         let screenings = read(LEDGER)
-            .screenings(1, &EveryIdResolves)
+            .screenings(1, &[], &EveryIdResolves)
             .expect("the fixture asker never fails");
         for screening in screenings.each() {
             assert!(
