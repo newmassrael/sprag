@@ -692,18 +692,62 @@ fn wait_bounded(
 ) {
     let deadline = Instant::now() + within;
     let mut last = "nothing was observed at all".to_owned();
+    // ⛔⛔⛔⛔⛔ **WAS ANYTHING STILL ARRIVING** — register item 519, and the residue its own repair
+    // wrote down rather than hid: *"이 절은 데드라인 «시점»의 페인을 말한다 … 다만 «언제»
+    // 도착했는지는 여전히 말하지 않는다."*
+    //
+    // A single snapshot at the deadline cannot tell **stalled** from **slow**, and those ask for
+    // opposite repairs — the first is a defect to go and find, the second is this test's margin
+    // against a loaded runner (item 880's fork, one level down). MEASURED on `85912d3a`: the screen
+    // held 54 characters of `L03` and the pane held 56, and nothing in the message said whether
+    // that gap had stood for 45 seconds or had been closing when the clock ran out.
+    //
+    // ⚠ The count is of CHANGES rather than of looks, because a poll that reads the same state
+    // twice is not evidence of movement. The first observation always differs from the placeholder
+    // above, so one change means *nothing moved after the first look*.
+    let mut changes = 0usize;
+    let mut changed_at = Instant::now();
     while Instant::now() < deadline {
         match observe() {
             Ok(()) => return,
-            Err(state) => last = state,
+            Err(state) => {
+                if state != last {
+                    last = state;
+                    changes += 1;
+                    changed_at = Instant::now();
+                }
+            }
         }
         std::thread::sleep(POLL);
     }
     panic!(
-        "timed out after {within:?} waiting for {what}\n  last observation: {last}{}\n  {}",
+        "timed out after {within:?} waiting for {what}\n  last observation: {last}{}\n  {}\n  {}",
         standing(),
+        arrival(changes, changed_at, deadline),
         how_loaded(),
     );
+}
+
+/// **WHETHER THE THING BEING WAITED ON WAS STILL MOVING WHEN THE CLOCK RAN OUT** — register item
+/// 519.
+///
+/// ⚠⚠ It states a FORK, not a number. *Stalled* and *slow* leave the same timeout and want opposite
+/// repairs, and the gap between them is the one fact a deadline holds that a snapshot cannot: how
+/// long ago the observation last moved.
+///
+/// ⚠ `changes` counts changes and not looks — see [`wait_bounded`], where the placeholder makes the
+/// first observation a change by construction, so `1` means *nothing moved after the first look*.
+fn arrival(changes: usize, changed_at: Instant, deadline: Instant) -> String {
+    match changes {
+        0 => "arrival: the condition was never even observed, so nothing here says whether anything was moving".to_owned(),
+        1 => "arrival: the observation never changed after the first look — whatever this was waiting for was STALLED, not slow".to_owned(),
+        _ => {
+            let quiet = deadline.saturating_duration_since(changed_at);
+            format!(
+                "arrival: the observation changed {changes} time(s), last {quiet:?} before the deadline — it was still moving, so read the bound and the load below before reading a defect",
+            )
+        }
+    }
 }
 
 /// **WHAT THE MACHINE WAS DOING WHEN A WAIT RAN OUT** — register item 880, and the fork a deadline
@@ -744,6 +788,69 @@ fn how_loaded() -> String {
             format!("machine: load {over} over {cores}")
         }
         Err(why) => format!("machine: load unreadable on this host ({why}), {cores}"),
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **WHICH SIDE IS BEHIND — STATED, NOT LEFT FOR THE READER TO COMPUTE** — register item
+/// 519, and the second time this exact misreading has been made off this clause's own output.
+///
+/// # ⚠⚠⚠⚠⚠ The clause handed over materials and the verdict was done by eye, twice, wrongly
+///
+/// Item 787 records the first: a live failure answered `pane 0 holds 5 char(s), tail "hello"` and
+/// the round reading it took *5 characters* for a short pane, when the pane held **everything** ever
+/// put in it. That was repaired by changing the WORDS (`holds all` against `last 160`), which fixes
+/// *truncated against complete* and leaves the fork this clause exists for untouched.
+///
+/// **The second is measured here.** Reading `85912d3a` (`headless (linux)`, 2026-09-10), this round
+/// called it a short pane twice — because the pane's tail and the screen's last row both ended in
+/// `L03---…` and they look alike. Counted rather than eyeballed, the screen held **54** characters
+/// of that line and the pane held **56**: the pane was two characters ahead, so the client was
+/// behind as well. A fork whose inputs are two strings a person must line up is a fork that gets
+/// made wrong, and this file's own history now has two readings to prove it.
+///
+/// # ⚠⚠ It is a free function so that it can be DRIVEN
+///
+/// The verdict used to be impossible to test: it lived inside a method that needs a daemon, a
+/// socket and a session. Everything it actually decides is a comparison of two values that are
+/// already in hand, so it is stated where a gate can hand it both —
+/// [`the_pane_clause_says_which_side_is_behind`].
+///
+/// # ⛔ An unmakeable fork says so (rule 6)
+///
+/// A re-wrapped client paints rows that are not prefixes of the pane's own line, and a pane ending
+/// in a newline has no last line to compare. Neither may render as *the client is up to date*: an
+/// absence that reads like a measurement is the disease one level up, and this clause was built to
+/// cure it.
+fn who_is_behind(pane_text: &str, screen: &[String]) -> String {
+    let last_line = pane_text.rsplit('\n').next().unwrap_or("");
+    if last_line.is_empty() {
+        return "which side is behind cannot be said here: the pane ends on a newline, so it has no \
+                last line to find on the screen"
+            .to_owned();
+    }
+    let wanted = last_line.chars().count();
+    // ⚠ Empty rows are EXCLUDED, and not as tidying: the empty string is a prefix of everything, so
+    // a blank screen would otherwise score a match of length zero and be reported as *the client is
+    // behind by the whole line* — true by accident, and indistinguishable from a real measurement.
+    let painted = screen
+        .iter()
+        .filter(|row| !row.is_empty() && last_line.starts_with(row.as_str()))
+        .map(|row| row.chars().count())
+        .max();
+    match painted {
+        Some(seen) if seen == wanted => format!(
+            "and the client has painted that last line WHOLE ({wanted} char(s)), so nothing is \
+             missing from its paint — what is short is the PANE"
+        ),
+        Some(seen) => format!(
+            "and the client has painted {seen} of that last line's {wanted} char(s), so the CLIENT \
+             is {} behind as well",
+            wanted - seen
+        ),
+        None => format!(
+            "and which side is behind cannot be said here: no row on the screen is a prefix of the \
+             pane's last {wanted} char(s), which is what a re-wrapped client looks like"
+        ),
     }
 }
 
@@ -796,6 +903,250 @@ fn the_deadline_says_what_it_wanted_and_what_was_standing_there() {
         "⛔⛔⛔ REGISTER ITEM 880: the machine clause must name what the load is spread over, or a \
          `load 8` means nothing — eight on eight cores and eight on thirty-two are opposite \
          readings, and this file's reds have come from oversubscription: {said}",
+    );
+    // ⛔⛔⛔ AND THE FIFTH — register item 519. A deadline that cannot say whether anything was
+    // still arriving leaves STALLED and SLOW as one sentence, which is the fork `arrival` makes.
+    assert!(
+        said.contains("arrival:"),
+        "⛔⛔⛔ REGISTER ITEM 519: the deadline must say whether the observation was still moving \
+         when the clock ran out. Without it a hung product and a starved runner leave the same \
+         message, and this file has produced both: {said}",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **THE DEADLINE SAYS WHETHER ANYTHING WAS STILL ARRIVING** — register item 519, and the
+/// residue its own `1f81f93` repair wrote down instead of hiding.
+///
+/// A snapshot at the deadline cannot separate **stalled** from **slow**. Both are timeouts; one is a
+/// defect to go and find, the other is this test's margin against a loaded runner. So the two states
+/// are driven separately here and each must produce its OWN sentence — a clause that said the same
+/// thing either way would satisfy `the_deadline_says_what_it_wanted_and_what_was_standing_there`'s
+/// substring check while telling a reader nothing.
+///
+/// ⚠⚠ **THE MOVING ARM IS THE CONTROL**, and it is not decoration: an implementation that always
+/// reported *STALLED* would pass the stalled arm, and that is the arm a first draft gets right.
+#[test]
+fn the_deadline_says_whether_anything_was_still_arriving() {
+    let stalled = std::panic::catch_unwind(|| {
+        wait_bounded(
+            Duration::from_millis(120),
+            "a condition whose observation never moves",
+            || Err("the row read \"nothing\"".to_owned()),
+            String::new,
+        );
+    })
+    .expect_err("a wait whose condition never holds must fail");
+    let stalled = stalled
+        .downcast_ref::<String>()
+        .expect("the panic carries its message")
+        .clone();
+    assert!(
+        stalled.contains("STALLED"),
+        "⛔ ITEM 519: an observation that never changed after the first look is a STALL, and saying \
+         so is the whole fork. Read as slow, it sends the next round to widen a bound instead of \
+         finding what stopped: {stalled}",
+    );
+
+    // ⚠ A condition that reports something NEW every look — the runner-is-slow shape, where bytes
+    // keep arriving and simply do not finish arriving in time.
+    let mut look = 0usize;
+    let moving = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        wait_bounded(
+            Duration::from_millis(120),
+            "a condition whose observation moves every look",
+            || {
+                look += 1;
+                Err(format!("the row read {look} char(s)"))
+            },
+            String::new,
+        );
+    }))
+    .expect_err("a wait whose condition never holds must fail");
+    let moving = moving
+        .downcast_ref::<String>()
+        .expect("the panic carries its message")
+        .clone();
+    assert!(
+        !moving.contains("STALLED"),
+        "⛔ ITEM 519: the observation changed on every look and the deadline still called it a \
+         stall. A clause that says one thing whatever happened is the escape hatch this fork was \
+         built to close: {moving}",
+    );
+    assert!(
+        moving.contains("still moving"),
+        "⛔ ITEM 519: an observation that was still changing at the deadline has to SAY so, or the \
+         reader cannot tell this from the stall and pays a reproduce cycle to find out: {moving}",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **THE PANE CLAUSE SAYS WHICH SIDE IS BEHIND** — register item 519, and the fork two
+/// separate rounds have now made wrongly by eye off this clause's own materials.
+///
+/// See [`who_is_behind`] for both misreadings, with the counts. Every arm below is a state that has
+/// actually appeared in this file's failures or is the exact escape hatch rule 6 forbids.
+#[test]
+fn the_pane_clause_says_which_side_is_behind() {
+    // ⭐ THE REAL FAILURE, with the real counts — `85912d3a`, 2026-09-10. The pane's last line is 56
+    // characters and the screen painted 54 of them, which this round first read as a short pane.
+    let pane = format!(
+        "L01{}E01\nL02{}E02\nL03{}",
+        "-".repeat(73),
+        "-".repeat(73),
+        "-".repeat(53)
+    );
+    let screen = vec![
+        format!("L02{}E02", "-".repeat(73)),
+        format!("L03{}", "-".repeat(51)),
+        String::new(),
+        "[0] 0:0*".to_owned(),
+    ];
+    let said = who_is_behind(&pane, &screen);
+    assert!(
+        said.contains("CLIENT is 2 behind"),
+        "⛔ ITEM 519: the pane held 56 char(s) of its last line and the screen showed 54, and the \
+         clause did not say the client was two behind. That subtraction is the fork, and a reader \
+         asked to do it by eye gets it wrong — this round did, and item 787 did before it: {said}",
+    );
+
+    // ⭐ THE OTHER HALF OF THE FORK: the client has caught up, so what is short is the pane. This is
+    // the reading that sends the next round to the daemon, the child and the pty.
+    let caught_up = vec![format!("L03{}", "-".repeat(53)), "[0] 0:0*".to_owned()];
+    let said = who_is_behind(&pane, &caught_up);
+    assert!(
+        said.contains("what is short is the PANE"),
+        "⛔ ITEM 519: the screen showed the pane's last line WHOLE and the clause did not say so. \
+         That is the half of the fork that names the daemon rather than the client, and without it \
+         the diagnostic decides nothing: {said}",
+    );
+
+    // ⛔⛔ THE ESCAPE HATCH, and it is the reason the empty rows are filtered. The empty string is a
+    // prefix of everything, so a blank screen would otherwise score a match and be reported as a
+    // measured *behind by the whole line* — an absence rendered as a reading, which is the disease
+    // item 787 named one level up.
+    let blank = vec![String::new(), String::new()];
+    let said = who_is_behind(&pane, &blank);
+    assert!(
+        said.contains("cannot be said here"),
+        "⛔ ITEM 519 / RULE 6: no row on that screen is a prefix of the pane's last line, and the \
+         clause reported a comparison anyway. An unmakeable fork must say it is unmakeable: {said}",
+    );
+
+    // ⛔ AND A PANE THAT ENDS ON A NEWLINE HAS NO LAST LINE — the same rule, the other input.
+    // ⛔ AND A PANE THAT ENDS ON A NEWLINE HAS NO LAST LINE — the same rule, the other input, and
+    // the REASON is asserted rather than the refusal. Both unmakeable cases refuse, so a gate that
+    // only checked *cannot be said here* would pass a clause that had stopped distinguishing them —
+    // measured: deleting the newline guard entirely left the refusal intact, via a `starts_with`
+    // that no non-empty row can satisfy. Two causes under one sentence is the very disease item 787
+    // named and this round is repairing one level up.
+    let said = who_is_behind("L01---E01\n", &screen);
+    assert!(
+        said.contains("ends on a newline"),
+        "⛔ ITEM 519 / RULE 6: a pane ending on a newline has no last line to find, and the clause \
+         did not say THAT is why it refused. Refusing for an unstated reason reads as the \
+         re-wrapped case, which sends the next reader to look at the client: {said}",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **A WAIT THAT READS A CLIENT'S SCREEN IS A WAIT ON THAT CLIENT** — register item 519,
+/// and the rule this file already states in prose while nothing counts it.
+///
+/// [`Tui::wait_for`]'s own doc says it: *"A wait about a client is a method ON the client, so that
+/// it cannot be spelled without one."* That is why [`Tui::standing`] exists, and it is the only road
+/// by which a failure carries the pane clause and [`who_is_behind`]'s verdict. A condition that
+/// reads `rows()` through the FREE [`wait_for`] gets none of it — it times out with what was painted
+/// and nothing about who was behind, which is the blindness item 519 has been arguing with since
+/// 2026-08-21.
+///
+/// **MEASURED 2026-09-11: eighteen sites are still outside it.** A rule stated in a doc comment and
+/// counted by nobody does not shrink — item 932's lesson, one level up from a declaration.
+///
+/// ⚠⚠ **A RATCHET, NOT A SWEEP.** Moving all eighteen is a round of its own: they are spread across
+/// nine features and some read two clients at once. What this refuses is the nineteenth — and it
+/// refuses a stale floor in the other direction too, because a round that moves one site and leaves
+/// the floor at eighteen has hidden its own progress and the next reader budgets against a number
+/// that was already spent.
+///
+/// ⚠ The needle is ASSEMBLED, for the reason [`the_pane_clause_spends_the_verdict_it_was_given`]
+/// learned the hard way: a gate that reads its own source must not be answerable by its own text.
+#[test]
+fn a_wait_that_reads_a_client_screen_is_a_wait_on_that_client() {
+    /// What the tree measured at 2026-09-11. It may only go DOWN.
+    const FLOOR: usize = 18;
+    /// How far past the call a condition's body is read — these closures are short.
+    const BODY: usize = 14;
+
+    let source = include_str!("pty_round_trip.rs");
+    let lines: Vec<&str> = source.lines().collect();
+    let needle = format!("wait_for{}", "(");
+    let mut sites = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let code = line.trim_start();
+        // A BARE call starts its statement: a method call reads `<client>.wait_for(` and the
+        // definition reads `fn wait_for(`, so neither begins with the needle.
+        if code.starts_with("//") || !code.starts_with(needle.as_str()) {
+            continue;
+        }
+        let body = lines[index..lines.len().min(index + BODY)].join("\n");
+        if body.contains(".rows()") || body.contains(".status_rows()") {
+            sites.push(index + 1);
+        }
+    }
+
+    assert!(
+        sites.len() <= FLOOR,
+        "⛔ ITEM 519: {} wait(s) read a client's screen through the FREE `wait_for`, which is {} \
+         more than the floor of {FLOOR}. Such a wait fails with what was painted and nothing about \
+         whether the pane was ahead of it — the fork `who_is_behind` exists to make. Spell it as a \
+         method on the client being read.\nlines: {sites:?}",
+        sites.len(),
+        sites.len() - FLOOR,
+    );
+    assert_eq!(
+        sites.len(),
+        FLOOR,
+        "⛔ ITEM 519: the floor says {FLOOR} and the tree now has {}. Lower `FLOOR` to {} in the \
+         same edit that moved them, or the next round budgets against a number already spent and \
+         this ratchet stops measuring anything.\nlines: {sites:?}",
+        sites.len(),
+        sites.len(),
+    );
+}
+
+/// ⛔⛔⛔ **AND THE VERDICT IS ACTUALLY SPENT** — register items 519 and 932's rule, applied to a
+/// function instead of a declaration.
+///
+/// [`who_is_behind`] is driven directly above, which is why it could be made a free function at all.
+/// That leaves the half a driven pure function cannot cover: whether [`Tui::pane_behind`] — the only
+/// thing that reaches a real failure — still CALLS it. A verdict nothing invokes is item 932's
+/// *number in a file*, and no arm of the clause above would notice.
+///
+/// ⚠ Asked of this file's own source, and of `pane_behind`'s body rather than the file at large:
+/// the calls in the gate above would satisfy a whole-file search while the diagnostic said nothing.
+#[test]
+fn the_pane_clause_spends_the_verdict_it_was_given() {
+    let source = include_str!("pty_round_trip.rs");
+    // ⛔⛔⛔⛔⛔ **THE MARKER IS ASSEMBLED AT RUN TIME, AND THAT IS NOT CLEVERNESS.** The first draft
+    // wrote the signature as one literal, and `include_str!` then found THIS LINE before the method
+    // — the slice it took was the gate's own body, which names `who_is_behind` in its failure
+    // message, so the gate stayed green over a `pane_behind` that had stopped calling it. MEASURED:
+    // the mutation `let verdict = "";` passed. A gate that reads its own source has to be written so
+    // that its own text cannot answer it, which is this file's `the_probe_reads_a_call_and_not_a_
+    // mention` rule arriving by a different road.
+    let marker = format!("fn pane_behind(&self){} String {{", " ->");
+    let body = source
+        .split_once(marker.as_str())
+        .expect("`pane_behind` is defined in this file")
+        .1;
+    // Its body ends at the first line that closes a method at this indentation.
+    let body = body
+        .split_once("\n    }\n")
+        .expect("`pane_behind` closes")
+        .0;
+    assert!(
+        body.contains("who_is_behind("),
+        "⛔ ITEM 519: `pane_behind` no longer calls `who_is_behind`, so a real failure carries the \
+         materials and not the verdict — which is exactly the state two rounds have now misread by \
+         eye. The clause driving `who_is_behind` directly stays green through this.",
     );
 }
 
@@ -1852,10 +2203,11 @@ impl Tui {
         //
         // ⚠ A rectangle that cannot be read says so rather than being left out: an absent fact and
         // a fact nobody asked for render identically once either is missing from the line.
+        let verdict = who_is_behind(&text, &self.rows());
         if held <= TAIL {
-            format!("pane 0 holds all {held} char(s): {tail:?}, {rect}")
+            format!("pane 0 holds all {held} char(s): {tail:?}, {rect}, {verdict}")
         } else {
-            format!("pane 0 holds {held} char(s), last {TAIL}: {tail:?}, {rect}")
+            format!("pane 0 holds {held} char(s), last {TAIL}: {tail:?}, {rect}, {verdict}")
         }
     }
 
