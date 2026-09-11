@@ -461,6 +461,97 @@ pub const JUDGED: &str = "@judged:";
 /// over, for the same reason.
 pub const WITNESS: &str = "@witness:";
 
+/// ⛔⛔⛔⛔⛔ **THE LINE AN ITEM PUTS ONE OF ITS FINISH CONDITIONS ON, IN THE SAME FORM**:
+/// `` @finish: `<path>` contains|lacks `<text>` `` — register item 1053, and the half [`WITNESS`]
+/// could not reach.
+///
+/// # ⛔⛔⛔⛔⛔ What 488 actually cost, and why a premise alone does not cover it
+///
+/// [`WITNESS`] made the ledger's *measurements* askable and item 488's ⑴ was caught by it — but
+/// **by luck**: that item's premise happened to be the exact negation of its own prescription
+/// (*emits no `cargo:rerun-if-changed`* against *declares `rerun-if-changed`*), so one needle
+/// answered both questions. Measured on this ledger 2026-09-11: **92 of 105 open items state a
+/// prescription**, and for nearly all of them the premise and the prescription are about DIFFERENT
+/// things. A premise that goes on holding says nothing at all about whether the work is done.
+///
+/// ⇒ So this is the other verdict, over the same grammar and the same walk:
+///
+/// | mark | what the item is saying | when it reds | what the reader must do |
+/// |---|---|---|---|
+/// | [`WITNESS`] | *this holds today, and my diagnosis rests on it* | it stops holding | re-measure the block |
+/// | `FINISH` | *this does NOT hold yet, and it holding is my work being done* | it starts holding | strike that clause, or close the item |
+///
+/// # ⭐ Why the two COVER EACH OTHER, which is what makes a guessed name safe
+///
+/// The obvious objection was met by writing one: a finish condition usually has to NAME something
+/// that does not exist yet, and a name guessed wrong is a mark that **never fires** — a silent
+/// green, which is worse than prose. That was nearly enough to abandon this mark.
+///
+/// What answers it is that an item states BOTH. Item 692, measured 2026-09-11 while writing this:
+/// its premise is that `access.rs` still carries `no pane {} to replace` (true), and its finish is
+/// that the same file reaches `seat_of_pane` (false — zero occurrences). **Paid in some third
+/// shape, the finish stays quiet and the PREMISE fires instead**, because that sentence cannot
+/// survive the repair either. A guessed finish therefore degrades to *no help*, never to *wrongly
+/// silent* — the premise is the net under it.
+///
+/// ⚠⚠ **AND THE TWO MUST NOT BE THE SAME NEEDLE.** Written that way — premise *lacks X*, finish
+/// *contains X* — one event raises two faults saying the same thing, and a report that says a
+/// thing twice is one a reader learns to skim. [`Fault::WitnessArguesWithItself`] refuses the
+/// degenerate case where an item states both about the same path and text.
+pub const FINISH: &str = "@finish:";
+
+/// ⛔⛔⛔⛔⛔ **THE VALUE AN ITEM WRITES ON [`FINISH`] WHEN NONE OF ITS CLAUSES CAN BE ASKED** —
+/// register item 1053(3), and this workspace's rule 6 at the newest mark.
+///
+/// # ⛔⛔⛔⛔⛔ A rising coverage floor does NOT say *unclassified is a red*
+///
+/// [`WITNESS_DECLARATION`] keeps the gate's subject from emptying. It says nothing whatever about
+/// the items that state no clause — they are simply absent, which is the silent exemption rule 6
+/// exists to refuse: *분류되지 않은 것은 통과가 아니라 RED 다.* Measured 2026-09-11 while writing
+/// this: **105 of the 106 open items** say nothing at all about whether their prescription can be
+/// asked, and nothing anywhere counts them.
+///
+/// ⇒ So every open item must answer, and `none` is a real answer rather than a missing one:
+///
+/// ```text
+/// @finish: none — 이 항목의 절은 전부 행동이라 파일 텍스트로 못 묻는다
+/// ```
+///
+/// ⚠⚠ **A REASON MAY FOLLOW `none`, and that is deliberate** — unlike a predicate line, which bans
+/// trailing prose because a reader would believe the half the machine drops. Nothing is executed
+/// here, so the sentence is the whole value of the line: it is a person saying WHY, in the one
+/// place the next reader will look. The same shape [`PARENT`]'s `none` already has.
+///
+/// ⚠ And the backlog this opens has a path to zero that its four neighbours do not give it for
+/// free — see [`FINISH_DECLARATION`].
+pub const FINISH_NONE: &str = "none";
+
+/// ⛔⛔⛔⛔⛔ **HOW MANY OPEN ITEMS HAVE NOT YET ANSWERED [`FINISH`]** — register item 1053(3), a
+/// FALLING ratchet where [`WITNESS_DECLARATION`] beside it rises.
+///
+/// # ⚠⚠⚠ Why this one can fall to zero when a coverage floor cannot
+///
+/// [`WITNESS_DECLARATION`]'s residue is that not every premise is askable, so demanding universal
+/// coverage would be a convention met dishonestly. **This demands something else: an ANSWER.** An
+/// item whose clauses are all behavioural answers [`FINISH_NONE`] and is done with it, which is
+/// exactly what [`DECLARATION`] asks of an unmarked item and what makes 327 unclassified blocks a
+/// backlog rather than a wall. Working rule 5, asked of this number: *is there a path by which it
+/// becomes 0?* — yes, and it runs through reading each block once.
+///
+/// ⚠ Every open item, not only those stating a prescription. Detecting *this block has a Done when*
+/// would be a prose predicate standing at the door of the gate built to end prose predicates, and
+/// the 13 open items that state none can answer `none` in one line like everybody else.
+///
+/// # ⚠⚠⚠ THE RESIDUE, STATED RATHER THAN HIDDEN
+///
+/// **The unit is the ITEM and not the CLAUSE**, so an item with four clauses that states a
+/// predicate for one of them has answered, and the other three leave unremarked. Counting clauses
+/// would mean parsing the prescription's prose — the very shape [`FINISH`] exists to end — so the
+/// honest move is to say this out loud rather than to pretend the number is finer than it is. What
+/// is bought is that an item saying NOTHING is a red; what is not bought is completeness within an
+/// item that said something.
+pub const FINISH_DECLARATION: &str = "@finish-unclassified:";
+
 /// ⛔⛔⛔⛔⛔ **HOW MANY WITNESSES THE OPEN POPULATION IS EXPECTED TO STATE** — register item 488,
 /// and the thing that keeps [`Reading::witnessed`] from going vacuously green.
 ///
@@ -475,6 +566,11 @@ pub const WITNESS: &str = "@witness:";
 /// So the subject is declared, and the direction is the opposite of [`DECLARATION`]'s: this is
 /// COVERAGE, not a backlog, so the number may only go UP. Deleting witnesses, or deleting the
 /// evaluation and leaving the marks, drops the count below the floor and reds.
+///
+/// ⚠⚠ **ONE FLOOR OVER BOTH MARKS** — register item 1053. [`FINISH`] is the same grammar asked of
+/// the same tree by the same walk, differing only in what its answer MEANS, so a second floor
+/// beside this one would be two authorities on *does this gate have a subject* (register item 213)
+/// and the one that printed would not be the one that refused.
 ///
 /// # ⚠⚠⚠ THE RESIDUE, STATED RATHER THAN HIDDEN
 ///
@@ -735,6 +831,9 @@ impl Judged {
 /// [`Reading::witnessed`]'s question, and it is put to the tree — see [`Tree`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Witness {
+    /// ⛔⛔⛔ **WHAT THE ANSWER MEANS FOR THIS ITEM** — register item 1053, and the thing
+    /// [`WITNESS`] shipped with hard-coded and unnamed. See [`Role`].
+    pub role: Role,
     /// The file the claim is about, relative to the repository root.
     pub path: String,
     /// Which way round the claim runs.
@@ -742,6 +841,36 @@ pub struct Witness {
     /// The text the claim is about. Never trimmed and never interpreted: the bytes between the
     /// backticks, because a premise about leading space is a premise.
     pub text: String,
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT A [`Witness`]'s ANSWER MEANS** — register item 1053, and the axis [`WITNESS`]
+/// shipped with exactly one value of, unnamed.
+///
+/// # ⚠⚠ Two roles and not two mechanisms
+///
+/// Both are put to the same [`Tree`] by the same walk with the same grammar; what differs is the
+/// POLARITY OF THE CONSEQUENCE and the sentence the reader is handed. Encoding that as a second
+/// parser, a second floor and a second screening would be register item 213's two authors for one
+/// question — so the only thing the mark line decides is this enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// A [`WITNESS`] line: the item ASSERTS this about the tree today. Its ceasing to hold means
+    /// the block is dated — [`Fault::WitnessDated`].
+    Premise,
+    /// A [`FINISH`] line: the item is DONE when this holds. Its holding means the work it names is
+    /// already there — [`Fault::FinishReached`].
+    Finish,
+}
+
+impl Role {
+    /// The mark a line of this role is written on, for a refusal that has to name it.
+    #[must_use]
+    pub const fn mark(self) -> &'static str {
+        match self {
+            Self::Premise => WITNESS,
+            Self::Finish => FINISH,
+        }
+    }
 }
 
 /// Which way round a [`Witness`] runs.
@@ -798,8 +927,12 @@ impl Witness {
     /// [`None`] for anything this grammar does not spell: a value that is not exactly two backticked
     /// tokens around one of [`Holds`]'s two words, an empty token, or a path that is absolute or
     /// climbs out of the tree. The caller raises [`Fault::UnreadWitness`] — never a silence.
+    ///
+    /// ⚠ `role` comes from WHICH MARK the line was on and is never spelled in the value — register
+    /// item 1053. One grammar with a role word inside it would be a second thing to mis-spell, and
+    /// the mark name is already the place a reader looks to see what a line means.
     #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
+    pub fn parse(value: &str, role: Role) -> Option<Self> {
         // ⚠ `split('`')` on a well-formed value yields five parts: the empty space before the
         // first backtick, the path, the verb, the text, and the empty space after the last. Any
         // other count is a line this cannot read, including one with a stray backtick in it.
@@ -819,6 +952,7 @@ impl Witness {
             return None;
         }
         Some(Self {
+            role,
             path: (*path).to_owned(),
             holds,
             text: (*text).to_owned(),
@@ -1204,6 +1338,10 @@ pub struct Item {
     /// ⚠ Several are a CONJUNCTION and each is asked separately: an item may rest on more than one
     /// measured fact, and the one that moved is the one a reader has to be told about.
     pub witnesses: Vec<Witness>,
+    /// ⛔⛔⛔ **WHETHER IT HAS ANSWERED THAT NONE OF ITS CLAUSES CAN BE ASKED** — register item
+    /// 1053(3). [`FINISH_NONE`] on a [`FINISH`] line. An item with neither this nor a predicate is
+    /// in the backlog [`Fault::FinishRatchetGrew`] holds; it is not a pass.
+    pub unaskable: bool,
     /// Whether any block of it names the loop — the alarm's input, never the population's.
     pub names_the_loop: bool,
     /// Whether the prose vocabulary reads it as closed — likewise only the alarm's input.
@@ -1472,6 +1610,33 @@ pub enum Fault {
         /// The text it is about.
         text: String,
     },
+    /// 🎯🎯🎯🎯🎯 **AN OPEN ITEM ASKS FOR SOMETHING THIS TREE ALREADY HAS** — register item 1053,
+    /// and the sentence item 488 was owed on 2026-08-21 and did not get for 21 days.
+    ///
+    /// ⚠ NOT *the item is done*: an item states several clauses and only some are askable, so what
+    /// is known is that THIS clause is. A clause that is satisfied must not go on being prescribed,
+    /// and striking it is always the right work — that is why this is a red rather than a note.
+    FinishReached {
+        /// The item that asks for it.
+        number: u32,
+        /// The file it is about.
+        path: String,
+        /// Which way round the clause ran.
+        holds: Holds,
+        /// The text it is about.
+        text: String,
+    },
+    /// ⛔⛔⛔ **ONE ITEM STATES THE SAME PATH AND TEXT AS BOTH A PREMISE AND A FINISH** — register
+    /// item 1053. Written that way the two are one event wearing two faults, and a report that says
+    /// a thing twice is one a reader learns to skim. See [`FINISH`] for why they must differ.
+    WitnessArguesWithItself {
+        /// The item that states both.
+        number: u32,
+        /// The file both are about.
+        path: String,
+        /// The text both are about.
+        text: String,
+    },
     /// A [`WITNESS`] naming a file this tree does not hold — a claim wearing evidence's clothes,
     /// which is [`Fault::PaidCommitUnresolved`]'s finding at the line one mark over.
     WitnessUnreadable {
@@ -1507,6 +1672,26 @@ pub enum Fault {
     WitnessesUnasked {
         /// How many witnesses section A states, all of them on items that have left the population.
         stated: usize,
+    },
+    /// ⛔⛔⛔⛔⛔ **MORE OPEN ITEMS HAVE NOT ANSWERED [`FINISH`] THAN [`FINISH_DECLARATION`]
+    /// DECLARES** — register item 1053(3). The backlog may shrink, never grow: a NEW open item
+    /// that says nothing about whether its prescription can be asked raises the count and reds on
+    /// the round that opened it.
+    FinishRatchetGrew {
+        /// What this reading counted — the items themselves, register item 934.
+        counted: Vec<u32>,
+        /// What the ledger declared.
+        declared: usize,
+    },
+    /// [`FINISH_DECLARATION`] appears other than exactly once.
+    FinishDeclaration {
+        /// How many lines carried it.
+        found: usize,
+    },
+    /// [`FINISH_DECLARATION`] is present and states no number.
+    UnreadableFinishDeclaration {
+        /// The line as written.
+        line: String,
     },
     /// [`WITNESS_DECLARATION`] appears other than exactly once.
     WitnessDeclaration {
@@ -1916,6 +2101,26 @@ impl fmt::Display for Fault {
                  its `Done when` first. ⛔ Do not delete the witness to make this green: the \
                  repair is the SENTENCE, and the mark is what noticed",
             ),
+            Self::FinishReached {
+                number,
+                path,
+                holds,
+                text,
+            } => write!(
+                f,
+                "item {number} is open and asks that `{path}` {holds} `{text}`, and this tree \
+                 ALREADY says so — the work that clause names is done. Strike it from the \
+                 prescription and drop this line, or close the item. ⚠ This does not say the item \
+                 is finished: it says this clause is, and a satisfied clause must not go on being \
+                 prescribed — item 488 sat open for 21 days after `98b92540` did exactly this",
+            ),
+            Self::WitnessArguesWithItself { number, path, text } => write!(
+                f,
+                "item {number} states `{path}` and `{text}` as BOTH a `{WITNESS}` and a \
+                 `{FINISH}` — one event would then raise two faults saying the same thing. A \
+                 finish condition that is merely the negation of the premise is already covered by \
+                 the premise; name what the repair PUTS THERE instead",
+            ),
             Self::WitnessUnreadable { number, path } => write!(
                 f,
                 "item {number} states a witness about `{path}` and this tree holds no such file — \
@@ -1948,6 +2153,25 @@ impl fmt::Display for Fault {
                  green — put a measurement of an OPEN item into `{WITNESS}` form, which is the \
                  only thing that makes this gate mean anything",
             ),
+            Self::FinishRatchetGrew { counted, declared } => write!(
+                f,
+                "{} open items have not said whether their prescription can be ASKED, and the \
+                 ledger declares {declared} — `{FINISH}` takes a predicate or `{FINISH_NONE}` with \
+                 a reason, and saying nothing is not a third option (rule 6). Newest of what was \
+                 counted: {}",
+                counted.len(),
+                name_some(counted, Ends::Highest),
+            ),
+            Self::FinishDeclaration { found } => write!(
+                f,
+                "found {found} `{FINISH_DECLARATION}` lines, need exactly 1 — a ratchet with no \
+                 floor holds nothing",
+            ),
+            Self::UnreadableFinishDeclaration { line } => write!(
+                f,
+                "`{}` states no number — a floor nobody can read is not a floor",
+                line.trim(),
+            ),
             Self::WitnessDeclaration { found } => write!(
                 f,
                 "found {found} `{WITNESS_DECLARATION}` lines, need exactly 1 — a floor with no \
@@ -1977,6 +2201,8 @@ pub struct Reading {
     pub paid_declared: Option<usize>,
     /// What [`WITNESS_DECLARATION`] said, when exactly one line said it. Register item 488.
     pub witnesses_declared: Option<usize>,
+    /// What [`FINISH_DECLARATION`] said, when exactly one line said it. Register item 1053(3).
+    pub finish_declared: Option<usize>,
     /// Everything that has to be fixed.
     pub faults: Vec<Fault>,
 }
@@ -2124,6 +2350,26 @@ impl Reading {
                 // sentence above is about the KIND of backlog and is true of any ledger; the
                 // number was true of one, and is now read from an `OWNER` line. See `Owned`.
                 reckoning: Reckoning::Owned,
+            },
+            // ⛔⛔⛔⛔⛔ AND THE OPEN ITEMS THAT HAVE NOT SAID WHETHER THEIR PRESCRIPTION CAN BE
+            // ASKED — register item 1053(3). See `FINISH_DECLARATION` for why every open item owes
+            // an answer and why `none` is one.
+            finish_unclassified: Backlog {
+                label: "finish-unclassified",
+                token: FINISH_DECLARATION,
+                items: of(|item| {
+                    item.tag == Some(Tag::Open)
+                        && !item.unaskable
+                        && !item.witnesses.iter().any(|it| it.role == Role::Finish)
+                }),
+                declared: self.finish_declared,
+                // ⚠ SUBSUMED for the reason `unranked` is: it counts OPEN items only, so an empty
+                // population forces it empty and naming it in the ending would count one fact
+                // twice. What it holds is the obligation on a NEW open item, and the queue that
+                // reading each existing block once drains.
+                reckoning: Reckoning::Exempt(
+                    "a subset of the population, so an empty population forces it empty",
+                ),
             },
         }
     }
@@ -3202,17 +3448,46 @@ impl Reading {
             if item.tag != Some(Tag::Open) {
                 continue;
             }
+            // ⛔⛔⛔ AND AN ITEM MUST NOT STATE THE SAME NEEDLE TWICE UNDER BOTH ROLES — register
+            // item 1053. Judged before the tree is asked, because it is a fault about the LEDGER
+            // and true whatever the tree says.
+            for witness in &item.witnesses {
+                if witness.role == Role::Premise
+                    && item.witnesses.iter().any(|other| {
+                        other.role == Role::Finish
+                            && other.path == witness.path
+                            && other.text == witness.text
+                    })
+                {
+                    faults.push(Fault::WitnessArguesWithItself {
+                        number: item.number,
+                        path: witness.path.clone(),
+                        text: witness.text.clone(),
+                    });
+                }
+            }
             for witness in &item.witnesses {
                 judged += 1;
                 match tree.read(&witness.path)? {
                     Some(body) => {
-                        if !witness.holds.satisfied_by(&body, &witness.text) {
-                            faults.push(Fault::WitnessDated {
+                        let says = witness.holds.satisfied_by(&body, &witness.text);
+                        // ⛔⛔⛔⛔⛔ ONE WALK, TWO VERDICTS — register item 1053. A premise is owed
+                        // its own truth and a finish is owed its own falsehood, so the SAME answer
+                        // means opposite things and the reader is handed opposite work.
+                        match (witness.role, says) {
+                            (Role::Premise, false) => faults.push(Fault::WitnessDated {
                                 number: item.number,
                                 path: witness.path.clone(),
                                 holds: witness.holds,
                                 text: witness.text.clone(),
-                            });
+                            }),
+                            (Role::Finish, true) => faults.push(Fault::FinishReached {
+                                number: item.number,
+                                path: witness.path.clone(),
+                                holds: witness.holds,
+                                text: witness.text.clone(),
+                            }),
+                            (Role::Premise, true) | (Role::Finish, false) => {}
                         }
                     }
                     None => faults.push(Fault::WitnessUnreadable {
@@ -3521,9 +3796,17 @@ fn judged_value(line: &str) -> Option<&str> {
     line.trim_start().strip_prefix(JUDGED)
 }
 
-/// The value of a [`WITNESS`] line, by the same whole-line rule [`mark_value`] holds.
-fn witness_value(line: &str) -> Option<&str> {
-    line.trim_start().strip_prefix(WITNESS)
+/// The value of a [`WITNESS`] or [`FINISH`] line with the role that mark gives it, by the same
+/// whole-line rule [`mark_value`] holds.
+///
+/// ⚠ ONE READER FOR BOTH — register item 1053. A second `finish_value` beside a `witness_value`
+/// would be two places to keep the trimming rule in step, which is register item 213 at the
+/// smallest scale this file has one.
+fn witness_value(line: &str) -> Option<(&str, Role)> {
+    let bare = line.trim_start();
+    [Role::Premise, Role::Finish]
+        .into_iter()
+        .find_map(|role| bare.strip_prefix(role.mark()).map(|value| (value, role)))
 }
 
 /// The value of an [`OWNER`] line, by the same whole-line rule [`mark_value`] holds.
@@ -3890,6 +4173,9 @@ pub struct Backlogs {
     pub unrooted: Backlog,
     /// PAID items naming no commit — register item 902.
     pub paid_unnamed: Backlog,
+    /// OPEN items that have not said whether their prescription can be asked — register item
+    /// 1053(3).
+    pub finish_unclassified: Backlog,
 }
 
 impl Backlogs {
@@ -3908,14 +4194,21 @@ impl Backlogs {
     /// struct has four fields and three destructurings, none of them using `..`, so the judgement
     /// was already forced everywhere — only its checking was not.
     #[must_use]
-    pub fn each(&self) -> [&Backlog; 4] {
+    pub fn each(&self) -> [&Backlog; 5] {
         let Self {
             unclassified,
             unranked,
             unrooted,
             paid_unnamed,
+            finish_unclassified,
         } = self;
-        [unclassified, unranked, unrooted, paid_unnamed]
+        [
+            unclassified,
+            unranked,
+            unrooted,
+            paid_unnamed,
+            finish_unclassified,
+        ]
     }
 }
 
@@ -4291,6 +4584,15 @@ pub fn read(text: &str) -> Reading {
         |found| Fault::WitnessDeclaration { found },
         |line| Fault::UnreadableWitnessDeclaration { line },
     );
+    // ⛔⛔⛔⛔⛔ AND THE BACKLOG OF OPEN ITEMS THAT HAVE NOT ANSWERED — register item 1053(3). This
+    // one FALLS, like its three backlog neighbours and unlike the coverage floor above it.
+    let finish_declared = declared_floor(
+        text,
+        FINISH_DECLARATION,
+        &mut faults,
+        |found| Fault::FinishDeclaration { found },
+        |line| Fault::UnreadableFinishDeclaration { line },
+    );
 
     let mut items: Vec<Item> = Vec::new();
     for (number, bodies) in &blocks {
@@ -4311,6 +4613,11 @@ pub fn read(text: &str) -> Reading {
         // ⛔ Register item 488: the measurements this item states in askable form, settled by the
         // topmost block that states any — see below.
         let mut witnesses: Vec<Witness> = Vec::new();
+        // ⛔ Register item 1053(3): whether it has answered that none of its clauses is askable,
+        // and whether any block has settled that question yet — see the walk below for why the
+        // second flag is not `witnesses.is_empty()`.
+        let mut unaskable = false;
+        let mut settled = false;
         for body in bodies {
             let mut in_block: Vec<Tag> = Vec::new();
             let mut named: Vec<String> = Vec::new();
@@ -4321,6 +4628,8 @@ pub fn read(text: &str) -> Reading {
             let mut judgements: Vec<Judged> = Vec::new();
             let mut owned: Vec<&'static str> = Vec::new();
             let mut witnessed: Vec<Witness> = Vec::new();
+            // ⛔ Register item 1053(3): whether this block says its prescription cannot be asked.
+            let mut answered_finish = false;
             for line in body {
                 if let Some(value) = parent_value(line) {
                     match Parent::parse(value) {
@@ -4393,13 +4702,26 @@ pub fn read(text: &str) -> Reading {
                 // three lines up: a witness this instrument cannot put to the tree would sit in
                 // the ledger looking like a checked one, which is the whole shape this mark exists
                 // to end.
-                if let Some(value) = witness_value(line) {
-                    match Witness::parse(value) {
-                        Some(found) => witnessed.push(found),
-                        None => faults.push(Fault::UnreadWitness {
-                            number: *number,
-                            line: (*line).to_string(),
-                        }),
+                // ⚠⚠ BOTH MARKS, ONE GRAMMAR — register item 1053. The role comes from which line
+                // it was on and nothing else, so a finish condition cannot be spelled wrong in a
+                // way that turns it into a premise.
+                if let Some((value, role)) = witness_value(line) {
+                    // ⛔⛔⛔ AND `none` IS AN ANSWER, NOT A PREDICATE — register item 1053(3). Read
+                    // before the grammar, because it is the one value that is deliberately allowed
+                    // a trailing sentence: see `FINISH_NONE`.
+                    if role == Role::Finish
+                        && value.trim_start().starts_with(&format!("{FINISH_NONE} "))
+                        || (role == Role::Finish && value.trim() == FINISH_NONE)
+                    {
+                        answered_finish = true;
+                    } else {
+                        match Witness::parse(value, role) {
+                            Some(found) => witnessed.push(found),
+                            None => faults.push(Fault::UnreadWitness {
+                                number: *number,
+                                line: (*line).to_string(),
+                            }),
+                        }
                     }
                 }
                 if let Some(value) = severity_value(line) {
@@ -4469,8 +4791,21 @@ pub fn read(text: &str) -> Reading {
             // the tie is a premise this item is no longer asserting, and holding the ledger to one
             // of those would be a fault about a sentence nobody is making. Several in ONE block
             // are all kept — they are a conjunction, and the one that moved is the one to name.
-            if witnesses.is_empty() {
+            // ⛔⛔⛔⛔⛔ **THE TOPMOST BLOCK THAT SAYS ANYTHING SETTLES BOTH, AND `witnesses
+            // .is_empty()` IS NOT THAT TEST** — register item 1053(3). Written as *if the
+            // witnesses are still empty*, a block answering `none` never counted as having spoken,
+            // so a LOWER block silently overwrote the answer with its own silence. Measured: item
+            // 898's fixture answers in the block that wins the tie and was counted as unanswered
+            // anyway, because the `@ns: out` block below it ran last. A settled flag is the only
+            // shape that says *this one spoke* when what it said was an absence.
+            if !settled && (!witnessed.is_empty() || answered_finish) {
+                settled = true;
                 witnesses = std::mem::take(&mut witnessed);
+                // ⚠ IN THE SAME BREATH AS THE WITNESSES IT STANDS IN FOR — register item 1053(3),
+                // the rule `judged` follows one field over: an answer gathered a step later could
+                // come off a block whose witnesses lost the tie, and would then discharge an
+                // obligation it was never written about.
+                unaskable = answered_finish;
             }
             if parent.is_none() {
                 parent = parents.first().copied();
@@ -4520,6 +4855,7 @@ pub fn read(text: &str) -> Reading {
             commits,
             owns,
             witnesses,
+            unaskable,
             names_the_loop,
             reads_as_closed,
         });
@@ -4575,6 +4911,7 @@ pub fn read(text: &str) -> Reading {
         parent_declared,
         paid_declared,
         witnesses_declared,
+        finish_declared,
         faults,
     };
 
@@ -4626,6 +4963,14 @@ pub fn read(text: &str) -> Reading {
         |counted, declared| Fault::PaidRatchetGrew { counted, declared },
         &mut reading.faults,
     );
+    // ⛔ And the fifth — register item 1053(3), and the shape [`ratchet`]'s own doc promised: a
+    // backlog added later gets BOTH directions by calling this, and cannot get only one by
+    // forgetting.
+    ratchet(
+        &backlogs.finish_unclassified,
+        |counted, declared| Fault::FinishRatchetGrew { counted, declared },
+        &mut reading.faults,
+    );
 
     // A cycle is only visible once the walk exists, and it must be a fault rather than a silent
     // `None` — an item whose chain eats itself would otherwise read as merely unstated.
@@ -4671,10 +5016,12 @@ mod tests {
 @from-unclassified: 3
 @paid-uncommitted: 1
 @witness-floor: 0
+@finish-unclassified: 0
 
 900. ⛔ **An open loop item**
      @ns: open — the loop's own driver
      @sev: critical — it stops the loop dead
+     @finish: none — a fixture states no prescription, so it answers rather than staying silent
      @from: none
      body mentioning ai_loop here
 
@@ -4710,24 +5057,29 @@ mod tests {
 @from-unclassified: 2
 @paid-uncommitted: 0
 @witness-floor: 0
+@finish-unclassified: 0
 
 800. ⛔ **Older than the mark**
      @ns: open — nobody wrote a chain for it
      @sev: ordinary — it is the standing backlog
+     @finish: none — a fixture states no prescription
 
 801. ⛔ **A root**
      @ns: open — met while paying something else
      @sev: ordinary — it is the standing backlog
+     @finish: none — a fixture states no prescription
      @from: none
 
 802. ⛔ **One deep**
      @ns: open — opened by the round that paid 801
      @sev: ordinary — it is the standing backlog
+     @finish: none — a fixture states no prescription
      @from: 801
 
 803. ⛔ **Two deep**
      @ns: open — opened by the round that paid 802
      @sev: ordinary — it is the standing backlog
+     @finish: none — a fixture states no prescription
      @from: 802
 
 804. ⛔ **States nothing**
@@ -4736,6 +5088,7 @@ mod tests {
 805. ⛔ **A root, and the HIGHEST number**
      @ns: open — met while paying something else
      @sev: ordinary — it is the standing backlog
+     @finish: none — a fixture states no prescription
      @from: none
 ";
 
@@ -5652,7 +6005,8 @@ mod tests {
         let link = |number: u32, from: u32| {
             format!(
                 "{number}. ⛔ **Found while paying {from}**\n     @ns: open\n     @sev: ordinary\n \
-                 \u{20}   @from: {from} — {from} 을 갚으며 «만들었다»\n\n"
+                 \u{20}   @from: {from} — {from} 을 갚으며 «만들었다»\n     @finish: none — a \
+                 fixture states no prescription\n\n"
             )
         };
         LEDGER.replace(
@@ -6470,8 +6824,8 @@ mod tests {
             .replace(
                 "899. ✅✅ **PAID 2026-09-02**",
                 "898. ⛔ **An ordinary item that is RED**\n     @ns: open\n     @sev: ordinary\n     \
-                 @from: none\n     @red: -p sprag-gate --lib north_star\n\n899. ✅✅ **PAID \
-                 2026-09-02**",
+                 @from: none\n     @finish: none — a fixture states no prescription\n     @red: -p \
+                 sprag-gate --lib north_star\n\n899. ✅✅ **PAID 2026-09-02**",
             )
             // ⚠⚠ AND THE FLOOR FOLLOWS THE LEDGER THIS BUILDS — register item 926. The block above
             // is inserted ABOVE the existing 898 and therefore wins the topmost-block tie, so item
@@ -7505,12 +7859,16 @@ mod tests {
             unranked,
             unrooted,
             paid_unnamed,
+            // ⚠ Register item 1053(3)'s backlog names its items exactly as its four neighbours do,
+            // and on this fixture item 900 is in it — so it is asserted with them rather than
+            // beside them.
+            finish_unclassified,
         } = &backlogs;
         // ⚠ `unranked` is EMPTY in this fixture and is asserted about separately below: a line
         // with nothing to name must name nothing, and folding it in here would either weaken this
         // assertion to *0 or more* or make an empty backlog print a phantom.
         assert!(unranked.items.is_empty(), "{unranked:?}");
-        for backlog in [unclassified, unrooted, paid_unnamed] {
+        for backlog in [unclassified, unrooted, paid_unnamed, finish_unclassified] {
             let line = backlog.to_string();
             let named = numbers_named_by(&line);
             assert_eq!(
@@ -7600,6 +7958,10 @@ mod tests {
             | Fault::SeverityRatchetGrew { counted, .. }
             | Fault::ParentRatchetGrew { counted, .. }
             | Fault::PaidRatchetGrew { counted, .. }
+            // ⛔ AND REGISTER ITEM 1053(3)'s, which is a backlog exactly like the four above it —
+            // a reader told *105, but the ledger declares 104* has a ledger of six hundred blocks
+            // and nothing to search for unless the set comes with it.
+            | Fault::FinishRatchetGrew { counted, .. }
             // ⛔ AND REGISTER ITEM 488's FLOOR, which is a floor over the same kind of thing even
             // though it rises where its neighbours fall: a reader told *2 declared, 1 stated* has
             // a ledger of six hundred blocks and nothing to search for unless the set comes too.
@@ -7652,8 +8014,16 @@ mod tests {
             | Fault::WitnessUnreadable { .. }
             | Fault::UnreadWitness { .. }
             | Fault::WitnessesUnasked { .. }
+            // ⚠ Register item 1053's two name ONE item each, with the path and the text in the
+            // message. This arm is the same gate working a fifth time.
+            | Fault::FinishReached { .. }
+            | Fault::WitnessArguesWithItself { .. }
             | Fault::WitnessDeclaration { .. }
-            | Fault::UnreadableWitnessDeclaration { .. } => None,
+            | Fault::UnreadableWitnessDeclaration { .. }
+            // ⚠ Register item 1053(3)'s two declaration faults are about ONE line each, which
+            // their messages quote — the shape every `…Declaration` pair here has.
+            | Fault::FinishDeclaration { .. }
+            | Fault::UnreadableFinishDeclaration { .. } => None,
             // ⛔ AND ITS SECOND ONE DOES CARRY A SET — register item 939. The items claiming a
             // backlog are what a reader has to go and look at, and there is no other line naming
             // them; the empty case is the one where the set is the point.
@@ -7741,6 +8111,7 @@ mod tests {
 @from-unclassified: 2
 @paid-uncommitted: 1
 @witness-floor: 0
+@finish-unclassified: 0
 
 900. Everything the loop ever owed, paid
      @ns: paid
@@ -7906,11 +8277,12 @@ mod tests {
         // exemption cannot be added quietly; whoever adds one has to come here and say so.
         assert_eq!(
             exempt.len(),
-            2,
-            "⛔⛔⛔⛔⛔ REGISTER ITEM 937: exactly two backlogs stand on an exemption today — \
-             `unranked` (a subset of the population) and `unrooted` (a ratchet on new items, which \
-             counts paid items so paying never lowers it). A third means a backlog stopped being \
-             owned or counted, and that is the defect item 937 is: {exempt:?}",
+            3,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 937: exactly three backlogs stand on an exemption today — \
+             `unranked` and `finish-unclassified` (each a subset of the population, so an empty \
+             population forces it empty) and `unrooted` (a ratchet on new items, which counts paid \
+             items so paying never lowers it). A fourth means a backlog stopped being owned or \
+             counted, and that is the defect item 937 is: {exempt:?}",
         );
     }
 
@@ -8391,6 +8763,7 @@ mod tests {
 @from-unclassified: 1
 @paid-uncommitted: 0
 @witness-floor: 0
+@finish-unclassified: 0
 
 900. The root debt, owed
      @ns: open
@@ -8478,6 +8851,7 @@ mod tests {
             unranked,
             unrooted,
             paid_unnamed,
+            finish_unclassified,
         } = read(LEDGER).backlogs();
         assert!(
             BIN.contains("reading.backlogs()"),
@@ -8566,6 +8940,10 @@ mod tests {
             (&unranked, "backlogs.unranked"),
             (&unrooted, "backlogs.unrooted"),
             (&paid_unnamed, "backlogs.paid_unnamed"),
+            // ⚠ Register item 1053(3)'s backlog is held to both halves like its four neighbours:
+            // a fifth backlog that the binary never printed would be a ratchet nobody could see
+            // move, which is register item 914's finding at the newest one.
+            (&finish_unclassified, "backlogs.finish_unclassified"),
         ] {
             assert!(
                 BIN.contains(&format!("println!(\"{{}}\", {field})")),
@@ -8680,6 +9058,7 @@ mod tests {
 @from-unclassified: 0
 @paid-uncommitted: 0
 @witness-floor: 1
+@finish-unclassified: 1
 
 700. ⛔ **It rests on a thing the tree says**
      @ns: open — the premise below is why
@@ -8814,7 +9193,7 @@ mod tests {
             ("`` contains `latch`", "no path"),
         ] {
             assert!(
-                Witness::parse(spelling).is_none(),
+                Witness::parse(spelling, Role::Premise).is_none(),
                 "⛔⛔⛔⛔⛔ REGISTER ITEM 488: `{spelling}` was read as a witness and it is {why}",
             );
             let ledger = WITNESSED.replace(
@@ -8885,7 +9264,14 @@ mod tests {
     #[test]
     fn a_floor_that_disagrees_with_what_section_a_states_is_a_red_either_way() {
         let tree = Holding(vec![("src/door.rs", "// the latch is declared here\n")]);
-        for (floor, stated) in [("@witness-floor: 2", 1usize), ("@witness-floor: 0", 1)] {
+        for (floor, stated) in [
+            ("@witness-floor: 2", 1usize),
+            (
+                "@witness-floor: 0
+@finish-unclassified: 0",
+                1,
+            ),
+        ] {
             let ledger = WITNESSED.replace("@witness-floor: 1", floor);
             let screening = read(&ledger)
                 .witnessed(&tree)
@@ -8900,6 +9286,224 @@ mod tests {
         }
     }
 
+    // ── register item 1053: the other verdict — a prescription this tree already meets ──────────
+
+    /// A ledger whose open item states a FINISH condition rather than a premise.
+    const FINISHED: &str = "\
+# Ledger
+## A. THE SHARPEST THINGS OPEN
+@ns-unclassified: 0
+@sev-unclassified: 0
+@from-unclassified: 0
+@paid-uncommitted: 0
+@witness-floor: 1
+@finish-unclassified: 0
+
+700. ⛔ **It asks for a thing the tree has not got**
+     @ns: open — the clause below is what it is waiting for
+     @sev: ordinary — it is the standing backlog
+     @from: none
+     @finish: `src/door.rs` contains `the latch is declared here`
+";
+
+    /// 🎯🎯🎯🎯🎯 **A PRESCRIPTION THIS TREE ALREADY MEETS IS A RED** — register item 1053, and the
+    /// sentence item 488 was owed on 2026-08-21.
+    ///
+    /// ⛔⛔ The CONTROL is the half that matters more here than for a premise: a finish condition is
+    /// green in the ordinary case — *the work is not done yet* — so an implementation that faulted
+    /// every one of them would be caught by nothing else.
+    #[test]
+    fn a_prescription_this_tree_already_meets_is_a_red() {
+        let reading = read(FINISHED);
+        let waiting = Holding(vec![("src/door.rs", "// nothing about latches yet\n")]);
+        let screening = reading
+            .witnessed(&waiting)
+            .expect("a tree that can be asked");
+        assert_eq!(
+            (screening.judged, screening.faults.len()),
+            (1, 0),
+            "⛔ work that is NOT done yet is the ordinary state and must be clean — and it must \
+             have been ASKED: {screening}",
+        );
+
+        let arrived = Holding(vec![("src/door.rs", "// the latch is declared here\n")]);
+        let screening = reading
+            .witnessed(&arrived)
+            .expect("a tree that can be asked");
+        assert_eq!(
+            screening.faults,
+            vec![Fault::FinishReached {
+                number: 700,
+                path: "src/door.rs".to_owned(),
+                holds: Holds::Contains,
+                text: "the latch is declared here".to_owned(),
+            }],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1053: the tree has what this item is waiting for and nothing \
+             said so. That is item 488's twenty-one days, exactly: {screening}",
+        );
+        let said = screening.faults[0].to_string();
+        assert!(
+            said.contains("does not say the item is finished"),
+            "⛔ the refusal must NOT be read as *this item is done* — it knows about one clause: \
+             {said}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE SAME ANSWER MEANS OPPOSITE THINGS, AND THE ROLE IS WHAT DECIDES** — register
+    /// item 1053. Two items, one tree, one needle: the one that ASSERTS it is clean and the one
+    /// that WAITS for it is red.
+    #[test]
+    fn one_answer_two_verdicts_and_the_mark_is_what_separates_them() {
+        let ledger = WITNESSED
+            .replace("@witness-floor: 1", "@witness-floor: 2")
+            .replace(
+                "700. ⛔ **It rests on a thing the tree says**",
+                "701. ⛔ **It waits for that same thing**\n     @ns: open — waiting\n     @sev: \
+                 ordinary — it is the standing backlog\n     @from: none\n     @finish: \
+                 `src/door.rs` contains `the latch is declared here`\n\n700. ⛔ **It rests on a \
+                 thing the tree says**",
+            );
+        let there = Holding(vec![("src/door.rs", "// the latch is declared here\n")]);
+        let screening = read(&ledger)
+            .witnessed(&there)
+            .expect("a tree that can be asked");
+        assert_eq!(
+            screening.judged, 2,
+            "both items must be ASKED, or this test is about one of them: {screening}",
+        );
+        assert_eq!(
+            screening.faults,
+            vec![Fault::FinishReached {
+                number: 701,
+                path: "src/door.rs".to_owned(),
+                holds: Holds::Contains,
+                text: "the latch is declared here".to_owned(),
+            }],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1053: one tree answer, and only the item WAITING for it may \
+             red — the item ASSERTING it is simply right: {screening}",
+        );
+    }
+
+    /// ⛔⛔⛔ **AN ITEM MUST NOT STATE ONE NEEDLE UNDER BOTH ROLES** — register item 1053. A finish
+    /// that is merely the negation of the premise is one event wearing two faults, and the premise
+    /// already covers it.
+    #[test]
+    fn a_finish_that_is_only_the_premise_inverted_is_refused() {
+        let ledger = WITNESSED
+            .replace("@witness-floor: 1", "@witness-floor: 2")
+            .replace(
+                "@witness: `src/door.rs` contains `the latch is declared here`",
+                "@witness: `src/door.rs` contains `the latch is declared here`\n     @finish: \
+             `src/door.rs` lacks `the latch is declared here`",
+            );
+        let there = Holding(vec![("src/door.rs", "// the latch is declared here\n")]);
+        let screening = read(&ledger)
+            .witnessed(&there)
+            .expect("a tree that can be asked");
+        assert!(
+            screening.faults.contains(&Fault::WitnessArguesWithItself {
+                number: 700,
+                path: "src/door.rs".to_owned(),
+                text: "the latch is declared here".to_owned(),
+            }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1053: the same path and text under both marks must be \
+             refused: {screening}",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **AND THE HISTORICAL CASE, PUT TO THE REAL TREE.** Item 488's ⑴ — *`build.rs`
+    /// declares `rerun-if-changed` for each statechart* — is a finish condition this repository has
+    /// met since `98b92540` on 2026-08-21. Written as a `FINISH` line it reds, which is the whole
+    /// claim of register item 1053 asserted against the file itself rather than a fixture.
+    #[test]
+    fn the_clause_item_488_waited_twenty_one_days_on_reds_against_this_tree() {
+        let stated = "`crates/sprag-plugin/build.rs` contains `cargo:rerun-if-changed`";
+        let clause = Witness::parse(stated, Role::Finish).expect("488's own clause parses");
+        let body = include_str!("../../sprag-plugin/build.rs");
+        assert!(
+            clause.holds.satisfied_by(body, &clause.text),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1053: `98b92540` put this in the tree on 2026-08-21 and this \
+             test is the record of it. If it is gone, the history this gate is built on changed \
+             and the block must be re-measured before this assertion is touched",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **AN OPEN ITEM THAT HAS NOT SAID WHETHER ITS PRESCRIPTION CAN BE ASKED IS
+    /// COUNTED, NOT EXEMPT** — register item 1053(3), and this workspace's rule 6.
+    ///
+    /// ⛔⛔ **A COVERAGE FLOOR DOES NOT DO THIS.** [`WITNESS_DECLARATION`] says *at least N marks
+    /// exist* and is silent about every item that states none; the silence is the pass rule 6
+    /// refuses. The three arms below are the whole of what this backlog distinguishes.
+    #[test]
+    fn saying_nothing_about_whether_a_prescription_can_be_asked_is_not_a_pass() {
+        let counted =
+            |ledger: &str| -> Vec<u32> { read(ledger).backlogs().finish_unclassified.items };
+        assert_eq!(
+            counted(WITNESSED),
+            vec![700],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1053(3): an item that states a premise and says nothing about \
+             its prescription is NOT covered by the premise — it has answered a different question",
+        );
+        assert_eq!(
+            counted(FINISHED),
+            Vec::<u32>::new(),
+            "⛔ an item that states a finish condition has answered",
+        );
+        let declined = WITNESSED
+            .replace("@finish-unclassified: 1", "@finish-unclassified: 0")
+            .replace(
+                "@witness: `src/door.rs` contains `the latch is declared here`",
+                "@witness: `src/door.rs` contains `the latch is declared here`\n     @finish: none \
+                 — every clause of this one is behaviour, and no file text can ask it",
+            );
+        assert_eq!(
+            counted(&declined),
+            Vec::<u32>::new(),
+            "⛔⛔⛔ REGISTER ITEM 1053(3): `none` with a reason IS an answer — without it the \
+             backlog could never reach zero, which is working rule 5's refusal",
+        );
+        // ⚠⚠ AND IT IS NOT READ AS A PREDICATE, which would make it an unreadable witness and a
+        // fault: the answer and the grammar must not collide.
+        let reading = read(&declined);
+        assert!(
+            reading.is_green(),
+            "⛔ `none` must not be read as a malformed predicate: {:?}",
+            reading.faults,
+        );
+        assert_eq!(
+            reading
+                .witnessed(&Holding(vec![(
+                    "src/door.rs",
+                    "// the latch is declared here\n"
+                )]))
+                .expect("a tree that can be asked")
+                .judged,
+            1,
+            "⛔ `none` must put no question to the tree — it says there is none to put",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE FIFTH BACKLOG IS HELD IN BOTH DIRECTIONS, BY THE SAME DOOR AS THE FOUR.**
+    /// [`ratchet`]'s doc promised exactly this — *a fifth ratchet added tomorrow gets both
+    /// directions by calling this, and cannot get only one by forgetting* — and an assertion is
+    /// what turns that from a comment into a fact.
+    #[test]
+    fn the_fifth_backlog_reds_when_it_grows_and_when_its_floor_drifts_above_it() {
+        for (floor, why) in [
+            ("@finish-unclassified: 0", "it GREW past the floor"),
+            (
+                "@finish-unclassified: 2",
+                "the floor drifted ABOVE the count",
+            ),
+        ] {
+            let ledger = WITNESSED.replace("@finish-unclassified: 1", floor);
+            assert!(
+                !read(&ledger).is_green(),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 1053(3): {why} and nothing said so — `{floor}`",
+            );
+        }
+    }
+
     /// ⛔⛔⛔⛔⛔ **AND THE MARK IS ACTUALLY REACHED FROM THE LEDGER THIS REPOSITORY RUNS ON.** Every
     /// test above builds its own fixture, and a mark that parses beautifully in a fixture and is
     /// spelled differently in the register would be a gate over nothing — which is register item
@@ -8908,7 +9512,8 @@ mod tests {
     fn the_witness_the_register_itself_states_is_one_this_grammar_reads() {
         let stated =
             "`crates/sprag-plugin/src/ai_loop.scxml` contains `deliberately NOT a wire key`";
-        let witness = Witness::parse(stated).expect("the register's own line parses");
+        let witness =
+            Witness::parse(stated, Role::Premise).expect("the register's own line parses");
         assert_eq!(
             (witness.path.as_str(), witness.holds),
             ("crates/sprag-plugin/src/ai_loop.scxml", Holds::Contains),

@@ -47,6 +47,7 @@ const LEDGER: &str = "\
 @from-unclassified: 0
 @paid-uncommitted: 0
 @witness-floor: 0
+@finish-unclassified: 0
 
 900. **One root this register is holding a run to**
      @ns: open — it stops the loop dead

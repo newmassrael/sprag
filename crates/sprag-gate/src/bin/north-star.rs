@@ -174,6 +174,10 @@ fn main() -> std::process::ExitCode {
     let ranked: Vec<String> = critical.iter().map(ToString::to_string).collect();
     println!("critical {}: {}", critical.len(), ranked.join(" "));
     println!("{}", backlogs.unranked);
+    // ⛔⛔⛔⛔⛔ AND THE OPEN ITEMS THAT HAVE NOT SAID WHETHER THEIR PRESCRIPTION CAN BE ASKED —
+    // register item 1053(3). Printed beside `unranked` because it is the same kind of statement
+    // about the same population: a demand on every open item, held by a floor that only falls.
+    println!("{}", backlogs.finish_unclassified);
     // ⚠⚠ THE CAP IS THE DOCUMENT'S, NOT THIS BINARY'S — register item 833(1) and 773's axis ("the
     // subject is the launcher's, the policy is the document's"). See [`cap`], which is where that
     // sentence stopped being a comment.
