@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# A STAND-IN FOR THE BUILD-MACHINE WRAPPER THAT IS NEVER RUN — register items 467 and 1010.
+#
+# `a_lane_bound_that_cannot_be_taken_names_its_own_cause` drives the bound READERS of
+# `.githooks/rust-gates.sh`, not the lanes themselves. Those readers ask one question about the
+# wrapper — `rust_gates_wrapper_present`, which is `[ -n "$BX" ] && [ -x "$BX" ]` — and the answer
+# decides which sentence they print. So the fixture needs a path that EXISTS and is EXECUTABLE, and
+# it needs nothing else at all.
+#
+# ⚠⚠ IT IS A TRACKED FILE RATHER THAN ONE THE TEST WRITES, and that is item 467 rather than style:
+# Rust's harness runs cases on threads of one process, so a case that writes its own stand-in holds
+# a write handle every sibling inherits until its own `exec` — measured at 10 failures in 30 runs
+# before that class was fixed. A file the repository carries has no such window.
+#
+# ⛔ REACHING THIS CODE IS A STAGING FAILURE, NOT A PRODUCT ONE. The readers under test hand the
+# wrapper nothing; if this ever runs, a fixture is driving a lane rather than its bound reader, and
+# the exit code below is how that says so instead of passing quietly.
+echo "lane-bound/bx: this double exists to be TESTED for, never run (register item 1010). Argv: $*" >&2
+exit 97

@@ -461,11 +461,19 @@ fn a_report_with_no_peak_in_it_is_never_green() {
 /// about what the wrapper RUNS. Measured 2026-09-06 from the wrapper's own logs: it has been given
 /// **2,514 distinct commands** for this repository across 10,029 runs, and **2,600** of those runs
 /// printed the divisor derived from the two rows in `[peak_measured]`. Nothing said so, because
-/// `bx` reads exactly one key from this file — `peak_gb_per_task` — and never reads either table.
+/// `bx` budgets by exactly one key from this file — `peak_gb_per_task` — and never reads either
+/// table.
+///
+/// ⛔⛔ **THAT SENTENCE USED TO SAY «READS EXACTLY ONE KEY» AND ITEM 1009 REFUTED IT**: `bx
+/// --explain-declaration` names TEN extractors, six of them filled here. One of the ten BUDGETS,
+/// which is the true half, and the false half mattered — it read as *a requirement written here is
+/// a requirement nobody reads*. ⚠ Re-measured 2026-09-11 for item 1010: `grep -c peak_measured
+/// ~/.claude/remote-build/bin/bx` still answers **0**, so the table that DERIVES the budgeted key
+/// is read by nobody but this repository.
 ///
 /// So the population here is the one thing this repository controls: its own `"${BX}"` call sites.
-/// Today there is exactly one, and rule 5's question has a plain answer — a site is one `[routed]`
-/// row away, and a row is one `measure-peak` run away.
+/// Item 1011 made that two, and rule 5's question has a plain answer — a site is one `[routed]` row
+/// away, and a row is one `measure-peak` run away.
 ///
 /// ⚠⚠ **AND THE READING HAS TO BE USED, NOT MERELY RECORDED.** A row nobody divides by is a number
 /// in a file. The bound is applied at the call site because that is the only place that covers the
@@ -554,8 +562,29 @@ fn every_command_this_repository_hands_the_wrapper_is_one_it_measured() {
             "⛔ ITEM 1009: `{site}` divides by `{name}_kb` and never reads `{name}_platform`. That \
              reading was taken on one platform and this hook runs on every platform this project \
              is developed on — on macOS there is no procfs to have taken it with at all. Read the \
-             platform beside the number and say so when they differ; leaving the lane unbounded is \
-             a valid answer, spending somebody else's peak silently is not.",
+             platform beside the number and say so when they differ; declining to divide is a \
+             valid answer, spending somebody else's peak silently is not.",
+        );
+        // ⛔⛔⛔ THE THIRD AXIS — register item 1010, and it is about the divisor this hook does NOT
+        // control. Declining to divide leaves the lane to the wrapper, and the wrapper divides by
+        // `peak_gb_per_task` — MEASURED 2026-09-11: `bx --local` with nothing exported answered
+        // `peak 2GB/task -> RUST_TEST_THREADS=10`. So a site that hands the wrapper a command is a
+        // site where that scalar gets spent, and the hook behind it is the only thing in either
+        // repository that can say whose platform the scalar describes: `grep -c peak_measured
+        // bin/bx` answers 0.
+        //
+        // ⚠ THE `sed` FORM AND NOT THE BARE KEY, for the reason the axis above spells out one
+        // assertion earlier: this hook now NAMES `peak_gb_per_task` in its own messages, so a
+        // bare-name check would pass over a hook that only talks about the scalar. What is required
+        // is the extraction.
+        assert!(
+            hook.contains("s/^peak_gb_per_task = "),
+            "⛔ ITEM 1010: `{site}` hands the wrapper a command and its hook never EXTRACTS \
+             `peak_gb_per_task` from `{DECL}`. That scalar is what bounds the lane whenever this \
+             hook declines to — measured 2026-09-11 at `peak 2GB/task -> RUST_TEST_THREADS=10` — \
+             and it is derived from `[peak_measured]`, a table the wrapper does not read. A hook \
+             that cannot name the figure being spent can only report the lane as unbounded, which \
+             is the false sentence item 1010 was opened for.",
         );
     }
 }

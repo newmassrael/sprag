@@ -79,6 +79,30 @@ peak_gb_per_task = 2
 # OWN call sites — `.githooks/rust-gates.sh` now reads `precommit_platform` beside `precommit_kb`
 # and refuses to spend another platform's peak — and the fleet half is the wrapper's owner's.
 #
+# ⛔⛔⛔⛔⛔ AND DECLINING TO DIVIDE DOES NOT LEAVE THE LANE UNBOUNDED — register item 1010, measured
+# 2026-09-11 and it is why `[peak_measured] platform` below finally has a reader.
+#
+#     bx --local -- bash -c 'echo "SAW ${RUST_TEST_THREADS:-unset}"'   # nothing exported
+#     -> bx: local: 25 free core(s) of 32, 21GB available, peak 2GB/task -> RUST_TEST_THREADS=10
+#     -> SAW 10
+#
+# What item 1009's arms hand back is not an unbounded lane; it is a lane bounded by `peak_gb_per_
+# task` — the scalar `[routed]` exists to keep this hook AWAY from, since the lint lane peaks at
+# 8.83 GiB and that scalar hands out eleven tasks of it. The arms said *running UNBOUNDED*, which
+# denied the thing that was happening. They now name the figure that gets spent and the platform it
+# came from, and `a_lane_bound_that_cannot_be_taken_names_its_own_cause` holds every arm to it.
+#
+# ⚠⚠ THE SCALAR IS ONE PLATFORM'S AND THE WRAPPER CANNOT KNOW WHICH: it is derived from
+# `[peak_measured]`, and `grep -c peak_measured ~/.claude/remote-build/bin/bx` answers **0**
+# (measured the same day). So the `platform` field item 1008 recorded there was, by item 932's own
+# rule, a number in a file — this hook is the only reader either repository can give it.
+#
+# ⚠ AND A BOUND THIS REPOSITORY DOES SET ONLY TRAVELS ONE WAY. `bin/bx` local (1749) takes
+# `RUST_TEST_THREADS="${RUST_TEST_THREADS:-$lthreads}"`, so an exported bound wins — measured by
+# exporting 3 and reading 3 back; remote (2786) writes `RUST_TEST_THREADS=$threads` unconditionally
+# into the ssh payload, and no environment crosses that seam. The hook says so rather than letting
+# a reader assume the quotient it printed is the one a build machine will use.
+#
 # ⚠⚠ MEASURED, AT 2026-09-06, from the wrapper's own logs rather than from memory:
 #     ls target/bx-logs/*.log | wc -l                                   -> 10029 runs
 #     grep -h '^# cmd:' target/bx-logs/*.log | sort -u | wc -l          ->  2514 distinct commands
@@ -388,6 +412,13 @@ verify = "rc=0 ; cargo test --workspace --exclude sprag-gui --no-fail-fast > /tm
 date = "2026-08-23"
 # ⛔⛔ ONE PLATFORM FOR THE TABLE, the way `date` and `host` are one for it: both rows below were
 # taken in the same session on the same machine. Item 1008's reason is at `precommit_platform`.
+#
+# ⚠⚠ AND SINCE 2026-09-11 IT HAS A READER — register item 1010. `rust_gates_say_what_spends_instead`
+# reads this field with a line-anchored `sed` whenever the wrapper is in the chain, because the
+# scalar derived from this table is what bounds a lane the hook itself declined to bound, and the
+# wrapper cannot say whose platform that scalar describes. ⛔ THE `sed` TAKES THE FIRST `^platform =`
+# LINE IN THE FILE, so a second bare `platform` key arriving in any table would make that reading a
+# guess: `a_declaration_names_one_platform_for_the_wrappers_divisor` refuses one.
 platform = "Linux"
 host = "pc2, a 32-core build machine, rustc stable, via bx"
 worst = "rustc --crate-name sce_build, in the first cargo test clause of verify"

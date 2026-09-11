@@ -156,15 +156,18 @@ rust_gates_bound_from() {
 
     if [ -z "$routed_kb" ] || [ "$routed_kb" -le 0 ] 2>/dev/null; then
         # The declaration is there and says nothing about this lane — the original case, unchanged.
-        [ -f "$routed_decl" ] && echo "rust-gates: ⚠ no usable reading for the $lane lane in $routed_decl — it is running UNBOUNDED (register item 932)" >&2
+        [ -f "$routed_decl" ] && echo "rust-gates: ⚠ no usable reading for the $lane lane in $routed_decl — this hook divides by nothing (register item 932)" >&2
+        rust_gates_say_what_spends_instead "$lane" unbound "$host_platform" "$routed_decl"
         return 0
     fi
     if [ -n "$routed_platform" ] && [ "$routed_platform" != "$host_platform" ]; then
-        echo "rust-gates: ⚠ the $lane lane's reading was taken on $routed_platform and this host is $host_platform — that number is one platform's memory behaviour, so this lane is running UNBOUNDED rather than bounded by somebody else's peak (register item 1009). Take a reading here: bash crates/sprag-gate/tests/doubles/declared-verify/measure-peak $lane" >&2
+        echo "rust-gates: ⚠ the $lane lane's reading was taken on $routed_platform and this host is $host_platform — that number is one platform's memory behaviour, so this hook does not divide by it (register item 1009). Take a reading here: bash crates/sprag-gate/tests/doubles/declared-verify/measure-peak $lane" >&2
+        rust_gates_say_what_spends_instead "$lane" unbound "$host_platform" "$routed_decl"
         return 0
     fi
     if [ -z "$free_kb" ]; then
-        echo "rust-gates: ⚠ cannot read this host's free memory from $meminfo — the reading in [routed] is fine and it is the HOST that cannot be measured, so the $lane lane is running UNBOUNDED (register item 1009)" >&2
+        echo "rust-gates: ⚠ cannot read this host's free memory from $meminfo — the reading in [routed] is fine and it is the HOST that cannot be measured, so this hook divides by nothing (register item 1009)" >&2
+        rust_gates_say_what_spends_instead "$lane" unbound "$host_platform" "$routed_decl"
         return 0
     fi
     routed_jobs=$(( free_kb / routed_kb ))
@@ -173,6 +176,101 @@ rust_gates_bound_from() {
     RUST_TEST_THREADS="${RUST_TEST_THREADS:-$routed_jobs}"
     export CARGO_BUILD_JOBS RUST_TEST_THREADS
     echo "rust-gates: the $lane lane peaks at $((routed_kb / 1024))MB/task (declared in [routed], measured on $host_platform); ${free_kb}kB free -> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS" >&2
+    rust_gates_say_what_spends_instead "$lane" bound "$host_platform" "$routed_decl"
+}
+
+# ⛔⛔⛔⛔⛔ IS THE WRAPPER IN THE CHAIN — ASKED IN ONE PLACE — register item 213.
+#
+# Three sites need this question and two of them used to spell it inline. The answer decides what is
+# TRUE of a lane this hook did not bound, so a second spelling would be a second thing to keep true
+# about the same seam. `rust_gates_say_what_spends_instead` is the third, and it is the one that
+# made the duplication matter: it prints a sentence whose truth depends on this answer.
+rust_gates_wrapper_present() {
+    [ -n "${BX:-}" ] && [ -x "${BX}" ]
+}
+
+# ⛔⛔⛔⛔⛔ **WHAT SPENDS THIS LANE'S MEMORY WHEN THIS HOOK DOES NOT** — register item 1010, and the
+# sentence three arms above used to get WRONG.
+#
+# Each arm of `rust_gates_bound_from` used to end *"it is running UNBOUNDED"*. **MEASURED 2026-09-11
+# and that is false whenever the wrapper is in the chain**, which is every commit that does not run
+# under `env -u BX`:
+#
+#     bx --local -- bash -c 'echo "SAW ${RUST_TEST_THREADS:-unset}"'   # nothing exported
+#     -> bx: local: 25 free core(s) of 32, 21GB available, peak 2GB/task -> RUST_TEST_THREADS=10
+#     -> SAW 10
+#
+# The lane is not unbounded. It is bounded by `peak_gb_per_task` — the workspace scalar this file's
+# own header explains it must NOT be bounded by, since this lane peaks at 8.83 GiB and that scalar
+# hands out eleven tasks of it. So the arms announced the absence of the very thing that happened,
+# which is item 1006's rule (*a refusal naming the wrong cause is worse than none*) reached for the
+# third time — and this time by item 1009's own repair.
+#
+# ⚠⚠ **AND IT IS THE PLATFORM QUESTION, WHICH IS WHY THIS IS ITEM 1010 RATHER THAN A TYPO.** The
+# scalar is derived from `[peak_measured]`, whose `platform` field item 1008 added — and MEASURED:
+# `grep -c peak_measured ~/.claude/remote-build/bin/bx` answers **0**, so the wrapper never reads
+# that table and cannot know whose platform the number describes. Item 932's rule says a row nobody
+# divides by is a number in a file; this hook is the only reader this repository can give it.
+#
+# ⚠ TWO DIRECTIONS, and the wrapper's own source is what separates them — `bin/bx`:
+#   * local (1749): `RUST_TEST_THREADS="${RUST_TEST_THREADS:-$lthreads}"` — an exported bound WINS,
+#     measured above by exporting 3 and reading 3 back.
+#   * remote (2786): `RUST_TEST_THREADS=$threads CARGO_BUILD_JOBS=$threads` — unconditional, and ssh
+#     carries no environment across, so a bound this hook set is REPLACED on a build machine.
+# So "this hook bounded the lane" is itself only true on one side of that seam, and the bound arm
+# says so rather than letting a reader assume the number travels.
+#
+# ⚠ This changes nothing about what runs. The wrapper's budget is the wrapper's to compute and this
+# repository cannot reach it — the fleet half of item 1010 is its owner's. What changes is that the
+# sentence is true and names the platform the spent number came from.
+#
+#   $1  the lane's name in `[routed]`
+#   $2  `bound` if this hook exported a budget for it, `unbound` otherwise
+#   $3  this host's platform, as `uname -s` answered it
+#   $4  the declaration to read the wrapper's divisor out of
+rust_gates_say_what_spends_instead() {
+    local lane="$1" state="$2" host_platform="$3" routed_decl="$4"
+    local peak_gb="" measured_platform=""
+
+    if ! rust_gates_wrapper_present; then
+        # No wrapper, no budget: the old sentence, now said only where it is true.
+        [ "$state" = unbound ] && echo "rust-gates: ⚠ and nothing else bounds the $lane lane — no wrapper is in the chain, so it is running UNBOUNDED (register item 1010)" >&2
+        return 0
+    fi
+    # ⛔ TESTED BEFORE READ, for the reason this file's header gives at length: `sed` on an absent
+    # file exits 2, `pipefail` carries it to the assignment and `set -e` kills the hook at that line
+    # in silence. Item 467's throwaway repository has no declaration at all.
+    if [ -f "$routed_decl" ]; then
+        # ⛔ `[0-9][0-9]*` AND NOT `[0-9]\+` — item 1006: `\+` is a GNU extension and BSD reads it as
+        # a literal `+`, which is how a correct declaration came back empty on macOS.
+        peak_gb=$(sed -n 's/^peak_gb_per_task = \([0-9][0-9]*\).*/\1/p' "$routed_decl" | head -1)
+        # ⚠ `[peak_measured] platform` — the TABLE's one platform, the way `date` and `host` are one
+        # for it. A bare `^platform = ` is unambiguous because `[routed]` spells its own per-lane
+        # fields `<name>_platform`; `a_declaration_names_one_platform_for_the_wrappers_divisor`
+        # holds that there is exactly one such line, so this stays a reading rather than a guess.
+        measured_platform=$(sed -n 's/^platform = "\([^"]*\)".*/\1/p' "$routed_decl" | head -1)
+    fi
+    if [ -z "$peak_gb" ]; then
+        echo "rust-gates: ⚠ the wrapper is in the chain and $routed_decl gives it no peak_gb_per_task, so it bounds the $lane lane by free cores alone and nothing bounds its MEMORY (register item 1010)" >&2
+        return 0
+    fi
+    # ⚠⚠ EVERY ARM FROM HERE NAMES THREE THINGS: the scalar, the platform it was measured on, and
+    # the platform this host IS. A reader cannot tell whether a figure applies without all three,
+    # and the BOUND arm needs them exactly as much as the unbound one does — the wrapper replaces
+    # a bound of this hook's own the moment it ships the lane, so a foreign scalar reaches a remote
+    # host whether or not this hook managed to divide here.
+    local whose="measured on ${measured_platform:-a platform [peak_measured] does not name}, this host is $host_platform"
+    if [ -n "$measured_platform" ] && [ "$measured_platform" != "$host_platform" ]; then
+        whose="⚠ measured on $measured_platform and this host is $host_platform — the wrapper never reads [peak_measured], so nothing over there can tell"
+    fi
+    if [ "$state" = bound ]; then
+        echo "rust-gates: the wrapper honours that bound when it runs the $lane lane here, and replaces it with peak_gb_per_task = ${peak_gb}GB/task ($whose) when it ships the lane to a build machine (bin/bx:2786 sets it unconditionally; register item 1010)" >&2
+        return 0
+    fi
+    # ⚠ THE WORD «UNBOUNDED» IS NOT SPELLED HERE, IN ANY CASE, and that is deliberate rather than
+    # incidental: this is the branch where it would be false, and a sentence that says it only to
+    # deny it reads as the old one to anybody scanning. The lane IS bounded — by the wrapper.
+    echo "rust-gates: ⚠ so the $lane lane is bounded after all, by the wrapper: peak_gb_per_task = ${peak_gb}GB/task ($whose; register item 1010)" >&2
 }
 
 # ⚠⚠ THE TWO THIN READERS BELOW EXIST TO HOLD THE KEY NAMES AS LITERAL TEXT, and that is a
@@ -285,7 +383,7 @@ rust_gates_run() {
         # ⚠ INSIDE THE SUBSHELL, so the bound this exports belongs to this lane and does not leak
         # onto the one below it, which has its own reading and a peak an order of magnitude smaller.
         rust_gates_bound_lint_lane
-        if [ -n "${BX:-}" ] && [ -x "${BX}" ]; then
+        if rust_gates_wrapper_present; then
             "${BX}" --label pre-commit-lint -- bash -c "$lint_and_doc"
         else
             bash -c "$lint_and_doc"
@@ -312,7 +410,7 @@ rust_gates_run() {
     (
         cd "$mirror" || exit 1
         rust_gates_bound_ratchet_lane
-        if [ -n "${BX:-}" ] && [ -x "${BX}" ]; then
+        if rust_gates_wrapper_present; then
             "${BX}" --label pre-commit-ratchets -- bash -c "$ratchets"
         else
             bash -c "$ratchets"
