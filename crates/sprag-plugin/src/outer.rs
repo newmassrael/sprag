@@ -1056,6 +1056,10 @@ const STALL_AFTER_KEY: &str = "stall_after_steps";
 /// [`STALL_AFTER_KEY`], and the half that keeps its predicate from being one signal. Register item
 /// 942, and see [`OuterLoop::authored_paths_in`].
 const PROGRESS_MARKS_KEY: &str = "progress_marks";
+/// **WHAT A MARK NOTHING COULD STAT READS AS** — the one fixed word register item 943's whole
+/// argument turns on, spelled once so the reading and the question *was this mark readable* cannot
+/// come to disagree. See [`OuterLoop::progress_reading`] and [`OuterLoop::unreadable_mark`].
+const UNREADABLE_MARK: &str = "unreadable";
 /// The datamodel variable counting **how far this run has re-aimed itself already** — incremented by
 /// the `reflect.applied` arm that moves the milestone, and read by [`OuterLoop::re_aimed`]. See
 /// [`REAIM_MAX`].
@@ -6077,6 +6081,12 @@ impl Faced {
 /// ⚠ Every arm says something, on [`Faced::noted`]'s rule: telling *the axis is whole* apart from
 /// *nobody looked* by the ABSENCE of a sentence is the reading this workspace has burned wire
 /// numbers over.
+///
+/// ⛔⛔⛔⛔⛔ **AND WHAT THIS RUN HAS MOVED IS A SECOND FACT WITH A SECOND LEVEL** — [`Moved`],
+/// register item 1037. Both come out of one `stat` of one list and they are still two answers: this
+/// one is an ARITY that changes when an instrument breaks, and that one changes every turn. Folded
+/// into one diffed value, the arity sentence is republished on every turn that moves anything —
+/// measured, and `a_run_says_how_many_of_its_progress_marks_it_can_actually_read` went red on it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Watching {
     /// How many of the named marks answered a `stat`.
@@ -6134,6 +6144,93 @@ impl Watching {
             "only {read} of the {named} mark(s) its work is supposed to move can be read, so its \
              stall count is spent on {read} signal(s) and not the {named} its document argued for"
         )
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **WHICH OF THE MARKS ITS WORK IS SUPPOSED TO MOVE THIS TURN HAS ACTUALLY MOVED** —
+/// register item 1037, and [`Watching`]'s sibling out of the same `stat`.
+///
+/// # ⛔⛔⛔⛔⛔ The defect: the reading was JOINED, so *which* was not a question anything could ask
+///
+/// `OuterLoop::progress_reading` rendered the whole list as one string, because the only caller was
+/// a ceiling asking *did anything move*. Every other question about it therefore had one answer:
+/// **a run that moved its register reads exactly like a run that moved its tree.** That is item
+/// 943's flattening one order further along — that one was *how many terms does this predicate
+/// have*, and this one is *which of them fired*.
+///
+/// # ⚠⚠⚠⚠⚠ Where it costs something, which is a run that ends at a person — register item 835
+///
+/// `awaiting_human` is reached by a dialog no rule claimed, and it is reported `blocked` with
+/// `no_rule` whatever the run had just done. So the next watcher cannot tell a run that wrote its
+/// finding down and stopped from one that stopped holding nothing — **the ending word is the same
+/// sentence for both**, and item 835 is that misreading costing somebody a morning. The marks a
+/// kind already names ARE the difference, once anybody asks them one at a time.
+///
+/// ⚠⚠⚠ **AND THE TURN IS THE UNIT, NOT THE RUN.** A debt run lasts many rounds and commits in most
+/// of them, so *this run has moved the tree* is true of nearly every run there is and separates
+/// nothing. What has a reader is *the turn that ended at a person moved the tree* — so the baseline
+/// is armed by `OuterLoop::say`, beside the four marks that are already armed there for the same
+/// reason, and never by the pass that reads them.
+///
+/// ⚠ That name is in backticks rather than linked, which is this file's convention for a private
+/// item named from a PUBLIC doc: a link resolves only under `--document-private-items` and breaks
+/// for the reader the doc is written for. `progress_reading` and `said_seq_at` are named the same
+/// way, a few types up.
+///
+/// # ⚠⚠ Why it is a type of its own beside [`Watching`], measured rather than tidied
+///
+/// Both come out of one `stat` of one list, and the first build of this put the list INSIDE
+/// `Watching`. They are diffed levels (`Told`), and an arity changes when an instrument breaks
+/// while this changes every turn — so folded, the arity sentence was republished on every turn that
+/// moved anything, and `a_run_says_how_many_of_its_progress_marks_it_can_actually_read` went red
+/// saying exactly that. Two facts, two levels, two sentences.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Moved {
+    /// **NO PROMPT HAS GONE IN YET**, so there is no turn to measure against.
+    ///
+    /// ⚠ It is a WORD and not an empty list, on [`Unstated`]'s rule: *nobody has been asked* and
+    /// *the turn moved nothing* are different findings, and the second is the one that means
+    /// something about a run standing at a person.
+    NoTurnYet,
+    /// The marks whose reading has changed since this turn's prompt went in, in the order the
+    /// document names them. **Empty is a finding** — the reading a turn that left nothing behind
+    /// produces.
+    ThisTurn(Vec<String>),
+}
+
+impl Moved {
+    /// **THE MARKS THIS TURN MOVED**, or [`None`] where no turn has been opened — see the type.
+    #[must_use]
+    pub fn marks(&self) -> Option<&[String]> {
+        match self {
+            Self::NoTurnYet => None,
+            Self::ThisTurn(moved) => Some(moved),
+        }
+    }
+
+    /// **THE SENTENCE A JOURNAL LINE CARRIES**, for the reader who has only this one line.
+    ///
+    /// ⚠ Every arm says something, on [`Watching::noted`]'s rule beside it: telling *this turn
+    /// moved nothing* apart from *no turn has started* by the ABSENCE of a sentence is the reading
+    /// this workspace keeps paying for.
+    ///
+    /// ⛔⛔ **AND IT SHARES NO PHRASE WITH [`Watching::noted`], WHICH THE SUITE MEASURED.** The
+    /// first draft spelled the empty arm *none of the mark(s) its work is supposed to move*, and
+    /// `a_run_says_how_many_of_its_progress_marks_it_can_actually_read` went red: that is the
+    /// arity sentence's own wording for *the axis is blind*, and the two clauses ride on one line.
+    /// Two facts whose sentences read alike are one fact to whoever is reading them.
+    #[must_use]
+    pub fn noted(&self) -> String {
+        match self {
+            Self::NoTurnYet => {
+                "and no prompt has gone in yet, so nothing has been asked about what a turn moves"
+                    .to_owned()
+            }
+            Self::ThisTurn(moved) if moved.is_empty() => {
+                "and this turn has moved nothing its work is supposed to move".to_owned()
+            }
+            Self::ThisTurn(moved) => format!("and this turn has moved {}", moved.join(", ")),
+        }
     }
 }
 
@@ -7043,6 +7140,30 @@ pub struct OuterLoop {
     /// the count [`crate::Ceiling::Stall`] is spent from. Reset by any reading that differs, so
     /// there is a path back to zero from every value it can hold.
     stalled: u64,
+    /// ⛔⛔⛔⛔⛔ **WHAT EACH MARK READ WHEN THIS TURN'S PROMPT WENT IN** — register item 1037, and
+    /// the FIFTH baseline [`say`](Self::say) arms, beside the four that are already armed there.
+    ///
+    /// # ⚠⚠⚠ Why it is not one of those four, and why it is not `progress_seen` either
+    ///
+    /// The four in `Session` are facts about ONE PANE and are dropped when a session is replaced.
+    /// This is a reading of the FILESYSTEM — of what the run's work is supposed to move — so it
+    /// belongs beside the axis it is a baseline for. And `progress_seen` one field up is the
+    /// PREVIOUS PASS's reading, which is the right comparand for *is this run stalled* and the
+    /// wrong one for *what has this turn moved*: a mark that moved ten passes ago is still
+    /// something this turn moved, and against the previous pass it reads as still.
+    ///
+    /// ⚠⚠ Per MARK and not joined, which is the whole of item 1037: the joined string can only
+    /// answer *something moved*, and the question a run standing at a person has to answer is
+    /// WHICH — see [`Moved`].
+    ///
+    /// ⚠⚠ **KEYED BY THE MARK AND NOT BY ITS POSITION**, because the list is re-read on every pass:
+    /// a document edited mid-run can present a different list than this was taken over, and a
+    /// positional comparison would then read one mark's `stat` against another's and call both of
+    /// them moved.
+    ///
+    /// ⚠ [`None`] until the first prompt goes in, and that absence is carried all the way out as
+    /// [`Moved::NoTurnYet`] rather than rendered as an empty list.
+    progress_at_turn: Option<std::collections::BTreeMap<String, String>>,
     /// ⚠⚠⚠ **THE LAST PROMPT WAS TYPED AND NEVER SUBMITTED** — the run's clock landed between the
     /// two. Written by [`say`](Self::say) on every prompt, so it describes the CURRENT turn and
     /// cannot go stale; read by [`asked_nothing`](Self::asked_nothing).
@@ -7352,6 +7473,13 @@ pub struct OuterLoop {
     /// of zero. Folding the two would make *nobody looked* and *nothing answered* one value, and
     /// those are the two facts this item exists to separate.
     marks: Option<Watching>,
+    /// ⛔⛔⛔⛔⛔ **AND WHICH OF THEM THIS TURN HAS MOVED** — [`Moved`], register item 1037, taken in
+    /// the same breath as the slot above and emptied at the top of every pump exactly as it is.
+    ///
+    /// ⚠⚠ A SECOND SLOT AND NOT A FIELD OF THAT ONE, which the suite measured: the two are diffed
+    /// levels, and an arity that changes when an instrument breaks must not be republished every
+    /// time a turn moves a file. See [`Moved`]'s own doc for the gate that said so.
+    moved: Option<Moved>,
     /// ⚠⚠⚠ **THE EVIDENCE THIS RUN HAS ALREADY TOLD ITS READER ABOUT** — the level
     /// [`witnessed`](Self#structfield.witnessed)'s event is DIFFED against, so a walk carries the
     /// answer once and then again whenever it CHANGES.
@@ -7465,6 +7593,9 @@ struct Told {
     faced: Option<Faced>,
     /// How many of its progress marks the run was last told it could read — register item 943.
     watched: Option<Watching>,
+    /// Which of them the run was last told this turn had moved — register item 1037, and its own
+    /// slot beside the arity above for the reason [`Moved`]'s doc measures.
+    moved: Option<Moved>,
 }
 
 impl Told {
@@ -7520,6 +7651,22 @@ impl Told {
             return None;
         }
         self.watched = Some(now);
+        Some(now)
+    }
+
+    /// **WHAT THIS PASS SHOULD SAY ABOUT WHAT ITS TURN HAS MOVED** — [`None`] where that is what
+    /// this run was already told. Register item 1037, and [`watching`](Self::watching)'s act about
+    /// the second fact that comes out of the same `stat`.
+    ///
+    /// ⚠⚠ **A SEPARATE SLOT IS WHAT KEEPS THE ARITY SENTENCE RARE.** This value changes every turn
+    /// — a fresh baseline says *nothing yet*, and the first act of the turn says what it moved — so
+    /// a shared diff would republish item 943's count on every turn that moved a file, which is the
+    /// level-as-event this crate has measured the cost of twice.
+    fn moved(&mut self, now: Moved) -> Option<Moved> {
+        if self.moved.as_ref() == Some(&now) {
+            return None;
+        }
+        self.moved = Some(now.clone());
         Some(now)
     }
 }
@@ -7658,6 +7805,9 @@ impl OuterLoop {
             stopping_short: None,
             progress_seen: None,
             stalled: 0,
+            // ⚠ No prompt has gone in, so there is no turn to measure movement against — which is
+            // what `None` means here all the way out to [`Watching::moved`].
+            progress_at_turn: None,
             unasked: false,
             // ⚠ Nothing has been typed at this peer, so nothing can have been refused by it — see
             // the field, and [`Retyped`] for why the memory belongs to the run rather than to the
@@ -7699,6 +7849,10 @@ impl OuterLoop {
             // ⚠ No pass has looked at a mark yet, which is not the same as a mark that could not be
             // read — see the field's own doc.
             marks: None,
+            // ⚠ And the same absence about the same look — register item 1037. A pass that has not
+            // looked says nothing; `Moved::NoTurnYet` is what a pass that HAS looked says before a
+            // prompt has gone in, and the two are not the same answer.
+            moved: None,
             told: Told::default(),
             deliveries: crate::plugin::Deliveries::NONE,
             folds: FoldsByReason::NONE,
@@ -7839,11 +7993,8 @@ impl OuterLoop {
         if self.stopping_short.is_some() {
             return;
         }
-        let Some(Counted::Of(bound)) = self.authored_count(STALL_AFTER_KEY) else {
-            return;
-        };
         let marks = self.authored_paths(PROGRESS_MARKS_KEY).unwrap_or_default();
-        if marks.is_empty() || bound < 0 {
+        if marks.is_empty() {
             return;
         }
         // ⚠⚠ RESOLVED AGAINST THE TREE THE PANE WAS OPENED IN, which is the same read `works_in`
@@ -7854,11 +8005,61 @@ impl OuterLoop {
         let standing_in = panes
             .origin()
             .and_then(|origin| origin.pane_start_dir(self.driving.pane));
-        let (reading, watching) = Self::progress_reading(&marks, standing_in.as_deref());
+        let (per_mark, read) = Self::progress_reading(&marks, standing_in.as_deref());
+        // ⛔⛔⛔⛔⛔ **AND WHICH OF THEM THIS TURN HAS MOVED** — register item 1037. The baseline is
+        // the reading taken when this turn's prompt went in (`say`), never the previous PASS's:
+        // a mark this turn moved ten passes ago is still something this turn moved, and against
+        // the previous pass it reads as still.
+        //
+        // ⚠⚠ AN UNREADABLE MARK CANNOT BE SAID TO HAVE MOVED, on `progress_reading`'s own terms:
+        // its reading is one fixed word, so a file that was never there reads identically at both
+        // ends and a file that VANISHED reads as a change — which is the safe direction for the
+        // ceiling and the wrong sentence for a person. The word is therefore excluded from this
+        // answer and left to the arity clause beside it, which is what item 943 built to say it.
+        //
+        // ⚠⚠⚠ **LOOKED UP BY MARK AND NEVER BY POSITION.** The list is re-read on every pass
+        // (`rules_in`'s rule), so a document edited mid-run can hand this a different list than the
+        // baseline was taken over — and positional pairing would then compare one mark's reading
+        // against another's and report both as moved. A mark with no baseline is one no turn has
+        // opened over, which is not a movement.
+        self.moved = Some(
+            self.progress_at_turn
+                .as_ref()
+                .map_or(Moved::NoTurnYet, |opened| {
+                    Moved::ThisTurn(
+                        marks
+                            .iter()
+                            .zip(per_mark.iter())
+                            .filter(|(mark, now)| {
+                                opened
+                                    .get(*mark)
+                                    .is_some_and(|then| then != *now && !Self::unreadable_mark(now))
+                            })
+                            .map(|(mark, _)| mark.clone())
+                            .collect(),
+                    )
+                }),
+        );
+        let watching = Watching::of(read, marks.len());
         // ⛔⛔⛔⛔⛔ **WHAT THE AXIS REALLY IS, PUT WHERE SOMEBODY CAN SEE IT** — register item 943.
         // The slot is diffed and rendered by [`Self::watching`] where the journal line is written;
         // this only records what this pass read.
+        //
+        // ⛔⛔⛔⛔ **AND IT IS PUBLISHED BEFORE THE BOUND IS ASKED FOR, WHICH MOVED IN ITEM 1037.**
+        // The reading is a fact about what this run's work has moved; the bound is a ceiling that
+        // spends it. A document that names marks and declines the bound used to publish NOTHING —
+        // so the one question a person reading a stopped run has (*did it write anything down*)
+        // was answerable only for kinds that had also asked to be stopped for going nowhere, which
+        // is two decisions wearing one switch.
+        let blind = watching.blind();
         self.marks = Some(watching);
+        let Some(Counted::Of(bound)) = self.authored_count(STALL_AFTER_KEY) else {
+            return;
+        };
+        if bound < 0 {
+            return;
+        }
+        let reading = per_mark.join(" ");
         // ⛔⛔⛔⛔⛔ **A RUN THAT CAN READ NONE OF ITS MARKS IS NOT MEASURED BY THIS CEILING AT ALL**
         // — register item 943, and this line is what makes the doc's third promise above TRUE. It
         // read *a mark that cannot be stat'd leaves the count where it was* while the code did the
@@ -7878,7 +8079,7 @@ impl OuterLoop {
         //
         // ⚠ A mark that DISAPPEARS from a list with a readable one left is a change like any other,
         // because the joined reading changes; that arm is the `else` below and is untouched.
-        if watching.blind() {
+        if blind {
             return;
         }
         if self.progress_seen.as_deref() == Some(reading.as_str()) {
@@ -7892,8 +8093,14 @@ impl OuterLoop {
         }
     }
 
-    /// **WHAT THE MARKS READ, AS ONE STRING** — register item 942, and the value
-    /// [`watch_for_progress`](Self::watch_for_progress) compares.
+    /// **WHAT EACH MARK READ**, one entry per mark in the order the document names them — register
+    /// item 942, and the value [`watch_for_progress`](Self::watch_for_progress) compares.
+    ///
+    /// ⛔⛔⛔⛔⛔ **PER MARK AND NOT JOINED, WHICH IS REGISTER ITEM 1037.** It answered one string,
+    /// so every caller there could ever be could ask *did anything move* and none could ask
+    /// *which* — and *which* is the only form of the question a person reading a run that stopped
+    /// at them can act on. The join is now the STALL CEILING's own business, done at the one caller
+    /// that spends a count, and the list is what everybody else reads.
     ///
     /// # ⚠⚠⚠ Why a length AND a modified-at, and why both of them
     ///
@@ -7929,7 +8136,7 @@ impl OuterLoop {
     fn progress_reading(
         marks: &[String],
         standing_in: Option<&std::path::Path>,
-    ) -> (String, Watching) {
+    ) -> (Vec<String>, usize) {
         let mut read = 0_usize;
         let reading = marks
             .iter()
@@ -7951,12 +8158,21 @@ impl OuterLoop {
                                 .map_or(0, |since| since.as_nanos()),
                         )
                     }
-                    Err(_) => format!("{mark}=unreadable"),
+                    Err(_) => format!("{mark}={UNREADABLE_MARK}"),
                 }
             })
-            .collect::<Vec<_>>()
-            .join(" ");
-        (reading, Watching::of(read, marks.len()))
+            .collect::<Vec<_>>();
+        (reading, read)
+    }
+
+    /// **THIS READING IS THE FIXED WORD A MARK NOTHING COULD STAT RENDERS AS** — the one
+    /// [`progress_reading`](Self::progress_reading) writes, asked rather than re-spelled.
+    ///
+    /// ⚠⚠ It exists because *moved* and *could not be read* are different answers and only one of
+    /// them belongs in a sentence a person acts on: a mark that VANISHED between two readings has
+    /// changed, which is right for the stall ceiling and wrong for *what did this turn move*.
+    fn unreadable_mark(reading: &str) -> bool {
+        reading.ends_with(UNREADABLE_MARK)
     }
 
     /// **HOW LONG ONE OF THIS LOOP'S TURNS MAY TAKE**, as its DOCUMENT authors it — [`None`] for a
@@ -8828,6 +9044,21 @@ impl OuterLoop {
     pub fn watching(&mut self) -> Option<Watching> {
         let reading = self.marks.take()?;
         self.told.watching(reading)
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHAT THIS PASS SHOULD SAY ABOUT WHAT ITS TURN HAS MOVED** — [`Moved`], or [`None`]
+    /// both for a pass that read no marks and for one whose answer is what this run was already
+    /// told. Register item 1037.
+    ///
+    /// ⚠⚠ **THE DIFF IS HERE AND NOT AT THE READING**, which is [`watching`](Self::watching)'s own
+    /// measured reason one fact over: `AiLoop::step` has early returns that compose no journal line
+    /// at all, and a diff taken at the reading would let one of those consume the finding with
+    /// nothing ever saying it.
+    ///
+    /// ⚠ So this TAKES: the reading is consumed whatever it decides, on `watching`'s rule.
+    pub fn moved(&mut self) -> Option<Moved> {
+        let reading = self.moved.take()?;
+        self.told.moved(reading)
     }
 
     /// **WHAT THE LAST PUMP SAW BEHIND THE EVENT IT RAISED** — see [`Noticed`].
@@ -10219,6 +10450,9 @@ impl OuterLoop {
         // mid-run (`rules_in`'s re-read is per pass) cannot leave a stale count standing on a
         // journal line about a pass that looked at nothing.
         self.marks = None;
+        // ⚠⚠ AND THE FOURTH, on the same rule — register item 1037. What a pass saw move belongs
+        // to the pass that saw it.
+        self.moved = None;
         // ⚠⚠⚠ A PERSON'S ORDER IS CARRIED IN FIRST, BEFORE ANYTHING IS DECIDED THIS PASS. The flag
         // is raised by a host thread at a moment nothing here controls, so the only place it can be
         // read without racing a decision is at the top of a pass — the same reason the barrier
@@ -14101,6 +14335,41 @@ impl OuterLoop {
         // one arms on what the AGENT has stated, so the judgement can ask the peer what it said
         // rather than reading what it painted. See [`Session::said_at`].
         self.driving.said_at = Self::said_seq_at(panes, self.driving.pane);
+        // ⛔⛔⛔⛔⛔ **AND THE FIFTH MARK, WHICH IS THE ONLY ONE THAT ASKS NEITHER THE PANE NOR THE
+        // PEER** — register item 1037. The three above ask the TERMINAL what happened and the
+        // fourth asks the AGENT; this one asks the FILESYSTEM what the run's own work is supposed
+        // to move, so the question *what did this turn leave behind* can be answered by something
+        // other than the agent's word for it.
+        //
+        // ⚠⚠⚠ **WHICH IS WHY IT IS ARMED HERE AND NOT WHERE THE MARKS ARE READ.** They are stat'd
+        // at the top of every pump for the stall ceiling, and that comparand is the PREVIOUS PASS —
+        // the right question for *is this run going nowhere* and the wrong one for *what has this
+        // turn moved*, because a mark this turn moved ten passes ago reads as still against it.
+        //
+        // ⚠⚠ BEFORE THE INJECTION, on the three marks above's rule exactly: the acts this baseline
+        // exists to see are the ones the prompt asks for, so a baseline taken afterwards could miss
+        // a peer that acted the instant it read the text.
+        //
+        // ⚠ A run whose document names no marks arms `Some([])`, which is *this turn has moved
+        // nothing and never could* — the arity clause beside it is what says nobody is watching,
+        // and folding that back into this absence is the merge item 943 already unpicked once.
+        let opening = self.authored_paths(PROGRESS_MARKS_KEY).unwrap_or_default();
+        self.progress_at_turn = Some(
+            opening
+                .iter()
+                .cloned()
+                .zip(
+                    Self::progress_reading(
+                        &opening,
+                        panes
+                            .origin()
+                            .and_then(|origin| origin.pane_start_dir(self.driving.pane))
+                            .as_deref(),
+                    )
+                    .0,
+                )
+                .collect(),
+        );
         // ⚠⚠⚠ AND THE FOURTH: WHAT THIS PEER IS ABOUT TO BE TOLD, kept because the readers above
         // have to be able to tell the peer's answer from this run's own question coming back — and
         // the question NAMES the answer, since a marker nobody asks for is one nobody ever says.
@@ -18900,7 +19169,20 @@ mod tests {
         /// * `standing` — empty until a screen rule fires; it ACCUMULATES mid-run.
         /// * `carried` — written by `reviewing`, so a door has never seen one.
         /// * `done_instruction` — this document's own constant, the same in every run there is.
-        const CANNOT_SEE: [&str; 4] = ["milestone_age", "standing", "carried", "done_instruction"];
+        /// * `where_to_fix` — `done_instruction`'s class exactly (register item 1037): this
+        ///   document's own three clauses about where a fix goes, composed in `priming` and
+        ///   identical in every run of every kind, so a door holds nothing of it to count.
+        ///   ⚠ THE RESIDUE, STATED: like `done_instruction` it IS re-typed into every session, so
+        ///   the number a run reports is short by both of them. What [`Briefing`] measures is what
+        ///   a CALLER handed the door — the thing a person can shorten — and neither of these is
+        ///   anybody's to shorten but this template's.
+        const CANNOT_SEE: [&str; 5] = [
+            "milestone_age",
+            "standing",
+            "carried",
+            "done_instruction",
+            "where_to_fix",
+        ];
 
         let unclassified: Vec<&str> = named
             .iter()

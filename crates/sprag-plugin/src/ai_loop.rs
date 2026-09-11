@@ -257,7 +257,16 @@ struct Learned<'a> {
     /// [`faced`](Self::faced) above is and for that field's stated reason: the slot is emptied at
     /// the top of every pump, so what is in it belongs to the pass that just ran, and a field on
     /// `Pumped` would put one fact at nine construction sites.
+    ///
     watching: Option<crate::outer::Watching>,
+    /// ⛔⛔⛔⛔⛔ **AND WHICH OF THOSE MARKS THIS TURN HAS MOVED** — register item 1037, and [`None`]
+    /// both on a pass that read no marks and on one whose answer is what the run was already told.
+    ///
+    /// ⚠ Borrowed, like [`faced`](Self::faced) and [`found`](Self::found) above: the reading
+    /// carries the LIST of marks, and an owned one here would take this struct's `Copy` — the
+    /// property its own doc says keeps a caller from half-filling it — away for a value the
+    /// renderer only reads.
+    moved: Option<&'a crate::outer::Moved>,
 }
 
 impl AiLoop {
@@ -585,6 +594,7 @@ impl AiLoop {
             witnessed,
             faced,
             watching,
+            moved,
         } = learned;
         let mut note = if raised == AiLoopEvent::Null {
             format!("{from:?}: looked, nothing had happened")
@@ -759,6 +769,17 @@ impl AiLoop {
         // would fill a bounded journal with one fact (item 277, measured).
         if let Some(axis) = watching {
             note = format!("{note} — {}", axis.noted());
+        }
+        // ⛔⛔⛔⛔⛔ **AND THE FIFTH — REGISTER ITEM 1037 — BESIDE THE FOURTH, out of the same look at
+        // the same list and said separately for the reason `OuterLoop::moved` measures: the arity
+        // above changes when an instrument breaks, and this changes every turn.
+        //
+        // ⚠⚠⚠ **THIS IS THE CLAUSE A RUN THAT STOPPED AT A PERSON IS READ FOR** — register item
+        // 835. `awaiting_human` reports `blocked` with `no_rule` whatever the turn had just done,
+        // so the ending word cannot tell a run that wrote its finding down from one that stopped
+        // holding nothing, and until this clause nothing else could either.
+        if let Some(acts) = moved {
+            note = format!("{note} — {}", acts.noted());
         }
         note
     }
@@ -1843,6 +1864,10 @@ impl Plugin for AiLoop {
                 // where the sentence is written rather than where the reading happened; see
                 // `OuterLoop::watching`, which holds that measurement.
                 let watching = self.inner.watching();
+                // ⚠⚠ AND THE SECOND FACT OUT OF THAT SAME LOOK — register item 1037, taken here on
+                // `watching`'s rule exactly and diffed in its own slot, which is what keeps the
+                // arity sentence beside it rare.
+                let moved = self.inner.moved();
                 let note = Self::walked(
                     from,
                     raised,
@@ -1873,6 +1898,10 @@ impl Plugin for AiLoop {
                         // finding nobody ever said — and the next pass would read as a change and
                         // say it twice.
                         watching,
+                        // ⚠⚠ AND THE SECOND ANSWER OUT OF THE SAME LOOK, on the same road for the
+                        // same reason — register item 1037. It is taken separately because it is
+                        // diffed separately: see `OuterLoop::moved`.
+                        moved: moved.as_ref(),
                     },
                 );
                 // ⚠⚠⚠⚠⚠ **WHETHER THAT ARRIVAL WAS AN ENDING IS THE DOCUMENT'S TO SAY** — register
@@ -5155,6 +5184,190 @@ mod tests {
              have ended is being sent to the wrong end of the bound. Walked {walked:?}",
         );
         access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A TURN THAT MET A BASE THIS REPOSITORY DOES NOT OWN LEFT A RECORD AND STOOD, AND
+    /// IT DID NOT EDIT THIS TREE** — register item 1037, and the arm the clause had been shipping
+    /// without.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The defect: a clause with consequences that nothing measured
+    ///
+    /// The owner's ruling of 2026-09-11 put a sentence into every working turn — *if the base is
+    /// UPSTREAM of this repository, do not patch it here: register what you found, then ask a
+    /// question and stop* — and **nothing anywhere went red when an agent met one and patched it
+    /// here anyway.** Measured when the item was filed: there is no marker an agent can say to halt
+    /// a run for a person (the four are `done_marker`, `north_star_marker`, `milestone_marker` and
+    /// `reference_marker`), the only door to `awaiting_human` is a dialog `screening` cannot claim,
+    /// and that ending is reported `blocked` / `no_rule` — **the same two words a permission dialog
+    /// produces.** So neither the run's own row nor its pane could say what had happened.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What is measured is the ACT, never the word — item 1037's own ⑵
+    ///
+    /// A predicate reading *did the word `upstream` appear* would be the defect this register calls
+    /// rule 10: a sentence about a sentence. The three facts are what the clause actually asks for
+    /// and all three are behaviour:
+    ///
+    /// | the clause's act | the fact | read from |
+    /// |---|---|---|
+    /// | *do not patch it here* | the turn moved no mark standing for this tree | [`Moved`] |
+    /// | *register what you found* | the turn moved the mark standing for the record | [`Moved`] |
+    /// | *ask a question and stop* | the run ended at a person | [`OutcomeState::Blocked`] |
+    ///
+    /// **Both peers say the sentence out loud** ([`crate::testing::Acted::SAYS`]) and differ in
+    /// nothing but what they DO, so a reading that told them apart on their words would tell them
+    /// apart wrongly — and the contrast arm is what makes that more than a promise: *anything that
+    /// mentions the word must stop* is a constant, and without a run that mentions it and carries
+    /// on working that constant is green here too.
+    ///
+    /// # ⚠⚠⚠ The two halves each have their own arm, which is item 1037's ⑶
+    ///
+    /// This is the DEED. The WORDS are
+    /// [`crate::outer`]`::tests::a_base_this_repository_does_not_own_is_sent_upstream_in_acts_a_run_can_be_asked_about`,
+    /// and deleting the clause from the template makes that one red. The mutation for this one is
+    /// the peer STANDING WITHOUT REGISTERING: pointing [`Acted::RegisteredAndStood`]'s writes at
+    /// the tree mark instead of the record makes the *it left a record* assertion below red while
+    /// the run still stops in exactly the same place.
+    ///
+    /// # ⚠⚠ Why the marks are a scratch tree and not this repository's own two
+    ///
+    /// `debt_loop.scxml` names `.git/logs/HEAD` and this machine's register, and a gate that moved
+    /// either would be a test writing into the thing it is about. What the driver reads is whatever
+    /// the brief names, so the fixture names two files of its own — and the NAMES say which is
+    /// which, because that is the only thing about them a reader of the assertion can check.
+    #[test]
+    fn a_turn_that_met_a_base_upstream_left_a_record_and_stood_and_an_ordinary_one_did_neither() {
+        // ⛔ `sprag_scratch::scratch_for` AND NOT `std::env::temp_dir()` — register item 794.
+        let home = sprag_scratch::scratch_for("sprag-upstream-acts", "");
+        std::fs::create_dir_all(&home).expect("a directory to put the marks in");
+
+        /// The mark standing for THIS TREE — what *do not patch it here* is about.
+        const TREE: &str = "this-tree-gained-an-edit";
+        /// The mark standing for THE RECORD — what *register what you found* is about.
+        const RECORD: &str = "the-record-gained-an-item";
+
+        /// Out of reach, so nothing below ends on the progress ceiling: this gate reads the axis,
+        /// it does not spend it.
+        const NEVER_STALLS: i64 = 1_000_000;
+
+        let acted = |then: crate::testing::Acted, writes: &str| {
+            let tree = home.join(format!("{TREE}-{writes}"));
+            let record = home.join(format!("{RECORD}-{writes}"));
+            for mark in [&tree, &record] {
+                std::fs::write(mark, b"as it was").expect("a mark that starts somewhere");
+            }
+            let target = if writes == TREE { &tree } else { &record };
+            let (workspace, pane) = crate::testing::standin_agent_acting(target, then);
+            let access = crate::testing::supervised_asking(&workspace);
+            let brief = Brief {
+                stall_after_steps: Some(crate::outer::Counted::Of(NEVER_STALLS)),
+                progress_marks: Some(vec![
+                    tree.display().to_string(),
+                    record.display().to_string(),
+                ]),
+                // ⚠ OUT OF REACH, so the contrast arm is ended by the iteration backstop rather
+                // than by a budget — a run that converged would have stopped for its own reason
+                // and the *it did not stand* assertion would be about the wrong ending.
+                ..brief_for(1_000_000)
+            };
+            let mut loops =
+                AiLoop::new(engine(), pane, &brief, &standin_spec()).expect("a well-briefed loop");
+            let progress = ProgressCell::default();
+            let outcome = Driver::new(Guardrails {
+                max_iterations: Some(24),
+                max_cost: None,
+                max_duration: Some(Duration::from_secs(60)),
+            })
+            .reporting_to(Arc::clone(&progress))
+            .run(&mut loops, &access, &RunContext::uncancellable());
+            let walked: Vec<String> = progress
+                .lock()
+                .expect("the progress cell")
+                .journal
+                .iter()
+                .filter_map(|entry| entry.note.clone())
+                .collect();
+            for live in access.pane_ids() {
+                access.lifecycle().expect("lifecycle").close(live);
+            }
+            let held = |at: &std::path::Path| std::fs::read(at).expect("a mark this gate wrote");
+            (outcome.state, walked, held(&tree), held(&record))
+        };
+        let moved = |walked: &[String], mark: &str| {
+            walked
+                .iter()
+                .any(|note| note.contains("this turn has moved") && note.contains(mark))
+        };
+
+        // ══ THE HONOURED SHAPE: it registered, it stood, and it left this tree alone ═══════════
+        let (stood, stood_walk, stood_tree, stood_record) =
+            acted(crate::testing::Acted::RegisteredAndStood, RECORD);
+        assert!(
+            matches!(stood, OutcomeState::Blocked(Some(_))),
+            "⚠⚠⚠ THE STAGING: this arm is about a run that ASKED A QUESTION AND STOPPED, so a run \
+             that ended any other way has not reached the thing every assertion below is about. \
+             Ended {stood:?}, walked {stood_walk:?}",
+        );
+        assert!(
+            moved(&stood_walk, RECORD),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1037: the run was told *register what you found, then ask a \
+             question and stop*, it stopped, and NOTHING said whether it had written anything \
+             down. `blocked` is the same word a permission dialog leaves, so the next watcher \
+             cannot tell a run that registered its finding from one holding nothing — which is \
+             register item 835's harm, arriving through this door. Walked {stood_walk:?}",
+        );
+        assert!(
+            !moved(&stood_walk, TREE),
+            "⚠⚠⚠⚠ AND IT SAID THIS TREE MOVED ON A TURN THAT NEVER TOUCHED IT, so the reading is \
+             not asking the marks one at a time and *do not patch it here* has no witness at all. \
+             Walked {stood_walk:?}",
+        );
+        assert_eq!(
+            stood_tree, b"as it was",
+            "⚠⚠⚠ AND THE DEED ITSELF, asked of the filesystem rather than of the loop: the arm \
+             above is only worth anything if the peer really did leave this tree alone",
+        );
+        assert_ne!(
+            stood_record, b"as it was",
+            "⚠⚠ AND THE OTHER HALF OF THE FIXTURE'S OWN PRECONDITION — a peer that wrote nothing \
+             would make the first assertion a claim about a run with nothing to report",
+        );
+
+        // ══ THE CONTRAST: it said the same sentence, edited this tree, and never stood ═════════
+        //
+        // ⚠⚠⚠⚠⚠ WITHOUT THIS ARM, *anything that mentions the word must stop* IS GREEN. Both peers
+        // print `Acted::SAYS`; this one works on, so a predicate that had been reading the words
+        // rather than the acts would stop a run that was doing exactly what it should.
+        let (worked, worked_walk, worked_tree, worked_record) =
+            acted(crate::testing::Acted::SaidItAndWorkedOn, TREE);
+        assert_eq!(
+            worked,
+            OutcomeState::Exhausted(Ceiling::Iterations),
+            "⛔⛔⛔⛔⛔ THE CONTRAST FAILED: a turn that merely SAID the base was upstream and \
+             carried on working must be as quiet as any other. A run stopped here is the constant \
+             *mentioning it stops the loop* — which would be green on the arm above too, and would \
+             halt every honest round that ever discusses where a defect came from. \
+             Walked {worked_walk:?}",
+        );
+        assert!(
+            moved(&worked_walk, TREE),
+            "⚠⚠⚠ AND THE CONTRAST MUST BE VISIBLY DOING SOMETHING, or *it did not register* below \
+             is true of a run that did nothing at all. Walked {worked_walk:?}",
+        );
+        assert!(
+            !moved(&worked_walk, RECORD),
+            "⚠⚠⚠⚠ AND THE TWO MARKS ARE NOT ONE SIGNAL: this run moved the tree and no record, and \
+             a reading that named the record here is joining the list back together — which is the \
+             flattening register item 1037 was filed on. Walked {worked_walk:?}",
+        );
+        assert_eq!(
+            worked_record, b"as it was",
+            "⚠⚠ AND THE DEED, asked of the filesystem: the contrast peer registers nothing",
+        );
+        assert_ne!(
+            worked_tree, b"as it was",
+            "⚠⚠ AND IT REALLY DID EDIT THIS TREE, which is what makes it the opposite arm rather \
+             than a second quiet one",
+        );
     }
 
     /// ⚠⚠⚠ **A CLOCK THAT RUNS OUT *INSIDE* A TURN IS NOT A PERSON'S CANCEL** — the one shape a

@@ -715,6 +715,35 @@
       are what it filled in.
     -->
     <data id="done_instruction" expr="''"/>
+    <!--
+      ⛔⛔⛔⛔⛔ **WHERE A FIX GOES**, composed in `priming` beside `done_instruction`
+      and for that part's reason exactly — register item 1037.
+
+      ⚠⚠⚠⚠⚠ IT IS A PART BECAUSE THE THREE ROADS INTO A WORKING TURN ARE THREE,
+      AND THAT WAS MEASURED RATHER THAN ARGUED. The three clauses were literals
+      inside `turn_prompt` when item 1037 came to measure them, and asking the
+      document which prompts a WORKING turn can arrive under gave three —
+      `start_prompt` (a session's first turn), `turn_prompt` (every turn after
+      it) and `changed_prompt` (a live session handed a new checkpoint) — of
+      which exactly ONE carried them. So a fresh session's first turn, and every
+      turn after a reflection moved the milestone, was told nothing about where a
+      fix goes. With this kind's `reflect_every` at 5 that is not a corner.
+
+      ⛔ **AND AN INSTRUCTION ONE ROAD IN THREE NEVER CARRIES IS AN EXEMPTION
+      NOBODY WROTE DOWN** — the shape this register calls an escape hatch that
+      disables its own gate. A gate over `turn_prompt` alone would have been
+      green over it.
+
+      ⚠⚠ THEY ARE ONE PART AND NOT THREE, because they are one ruling read at
+      three depths: **where** the fix goes, **what it costs** to put it there,
+      and **what to do when *there* is outside this tree**. Their order is
+      load-bearing — see `priming`, which composes them.
+
+      ⚠ It carries its own line terminator, on `standing`'s rule: a part glued
+      into the middle of a prompt decides its own line breaks, or every reader
+      has to remember to add one.
+    -->
+    <data id="where_to_fix" expr="''"/>
     <!-- Sent once, into a freshly opened session. -->
     <data id="start_prompt" expr="''"/>
     <!-- Sent on every turn after the first. -->
@@ -3737,6 +3766,71 @@
               expr="'When the milestone is fully reached AND verified, make the last line of your ' +
                     'reply exactly: ' + done_marker"/>
       <!--
+        ⛔⛔⛔⛔⛔ **WHERE A FIX GOES — THE THREE CLAUSES, COMPOSED ONCE FOR THE
+        THREE PROMPTS A WORKING TURN CAN ARRIVE UNDER.** Register item 1037. See
+        the `<data>` declaration for why this is a part rather than three
+        literals in one prompt, and for the measurement that made it one.
+
+        ⚠ HERE AND NOT BELOW THE PROMPTS, on `done_instruction`'s rule one
+        assignment up: executable content runs in document order, so a part
+        composed after its readers appends the PREVIOUS entry's text — silently,
+        and correctly for every entry but the first.
+
+        ⭐⭐ **THE FIRST IS THE OWNER'S RULING OF 2026-09-11 AND IT FILLS THE SLOT
+        `smallest` HELD.** Deleting a selection rule leaves the agent still
+        having to select with nothing to select BY, so the answer was replaced
+        rather than removed: **pick the candidate nearest the BASE** — the
+        structure that is most fundamentally wrong, the place where no structure
+        exists at all, or whatever GENERATES the defect. The three are one rule
+        read at three depths, and the third is the one that can be refuted: fix
+        the generator and the family above it closes, so a second instance of the
+        same face is evidence the wrong site was chosen.
+
+        ⚠ The line it makes false is the one an agent reaches for when a right
+        answer looks too big: *finish inside this round*. Nothing here asks for
+        that — `max_turns` is the kind's to bound, `reaim_max` bounds only how
+        far a run may WANDER, and neither is a reason to choose a smaller fix.
+
+        ⚠⚠ THE FIRST TWO ARE A PAIR AND THE ORDER IS LOAD-BEARING. A base fix is
+        usually the bigger one, so the rule that permits several rounds is what
+        removes the excuse for refusing it; shipping either alone leaks.
+
+        ⚠⚠ WHAT STAYS THE KIND'S, so this does not become the thing
+        `a_template_names_nothing_of_this_repository_and_decides_nothing_for_the_next_one`
+        measures: what counts as correct IN a repository, and the standing rules
+        that spell it, are `working_rules` — this says only WHERE a fix goes and
+        that taking several rounds is allowed, never what the right answer is.
+
+        ⛔⛔ **THE THIRD NAMES A DOOR THAT ALREADY EXISTS** — measured 2026-09-11
+        rather than built. There is NO marker an agent can say to halt a run for a
+        person: the four are `done_marker`, `north_star_marker`,
+        `milestone_marker` and `reference_marker`, and `blocked` is reached only
+        through a dialog `screening` finds. So the clause routes through that door
+        instead of inventing one: a question no `screen_rules` entry claims takes
+        `screen.none` to `awaiting_human`, and the run stops driving.
+
+        ⚠ AND `register what you found` COMES FIRST FOR A REASON, also measured:
+        an ending of `blocked` reads IDENTICALLY to a permission dialog, so the
+        run's own row cannot say *upstream* — and the pane cannot be read for it
+        either (run 306: 12 of 64 prompts folded away by the peer's composer).
+        Whatever record a kind keeps is where the reason survives, the dialog is
+        what stops the loop, and neither half does the other's job.
+
+        ⛔⛔⛔⛔⛔ **AND WHAT USED TO BE UNMEASURED IS NOW AN ARM** — register item
+        1037, paid. *Nothing went red when an agent met an upstream base and
+        patched it here anyway* stood in this comment as a registered gap; the
+        two halves are now
+        `sprag-gate`'s `a_base_this_repository_does_not_own_is_sent_upstream_in_acts`
+        for these WORDS, and `ai_loop.rs`'s
+        `a_turn_that_met_a_base_upstream_left_a_record_and_stood_and_an_ordinary_one_did_neither`
+        for the ACTS — the latter reading which of a run's progress marks the turn
+        moved, never which words it said.
+      -->
+      <assign location="where_to_fix"
+              expr="'Fix at the BASE: the structure that is most fundamentally wrong, the place where no structure exists at all, or whatever GENERATES the defect — never the instance it surfaced in.' + '\n' +
+                    'Take the most correct approach even when it needs several rounds — never trade the right design for finishing in one.' + '\n' +
+                    'If the base is UPSTREAM of this repository, do not patch it here: register what you found, then ask a question and stop.' + '\n'"/>
+      <!--
         ⚠⚠⚠ `standing` IS COMPOSED INTO BOTH WORKING PROMPTS, and it is what makes
         a standing instruction outlive the turn it was given in. It holds its own
         line terminators and is EMPTY until a rule has fired, so a loop that has
@@ -3791,6 +3885,7 @@
                     working_rules +
                     standing +
                     carried +
+                    where_to_fix +
                     'Report what you did and what is left.' + '\n' +
                     done_instruction"/>
       <!--
@@ -3854,64 +3949,22 @@
 
         ⭐ WHAT REPLACES IT IS STRUCTURE PLUS THE ONE RULING THAT BELONGS HERE.
         A turn must leave something `Judging` can read, which is why `that is
-        verifiable` and `then report` stay. And the sentence after them is the
-        owner's, placed in the TEMPLATE on purpose (ruling of 2026-09-11, given
-        against this file having sent it to a kind's `working_rules` instead):
-        **how many rounds a piece of work may take is a fact about THIS MACHINE,
-        not a taste one repository has.** A loop that reflects, re-aims and
-        replaces its session exists precisely so a correct answer can span
-        rounds; a consumer copying this template inherits that machine, so it
-        inherits the sentence that says what the machine is for.
+        verifiable` and `then report` stay.
 
-        ⚠ The line it makes false is the one an agent reaches for when a right
-        answer looks too big: *finish inside this round*. Nothing here asks for
-        that — `max_turns` is the kind's to bound, `reaim_max` bounds only how
-        far a run may WANDER, and neither is a reason to choose a smaller fix.
-
-        ⚠⚠ WHAT STAYS THE KIND'S, so this does not become the thing
-        `a_template_names_nothing_of_this_repository_and_decides_nothing_for_the_next_one`
-        measures: what counts as correct IN a repository, and the standing rules
-        that spell it, are `working_rules` — this file says only that taking
-        several rounds is allowed, never what the right answer is.
-
-        ⭐⭐ AND THE LINE BEFORE IT IS WHAT ACTUALLY FILLS THE SLOT `smallest` HELD.
-        Deleting a selection rule leaves the agent still having to select, with
-        nothing to select BY, so the owner's ruling of 2026-09-11 replaces the
-        answer rather than removing the question: **pick the candidate nearest
-        the BASE** — the structure that is most fundamentally wrong, the place
-        where no structure exists at all, or whatever GENERATES the defect. The
-        three are one rule read at three depths, and the third is the one that
-        can be refuted: fix the generator and the family above it closes, so a
-        second instance of the same face is evidence the wrong site was chosen.
-
-        ⚠ The two clauses are a PAIR and the order is load-bearing. A base fix is
-        usually the bigger one, so the rule that permits several rounds is what
-        removes the excuse for refusing it; shipping either alone leaks.
-
-        ⛔⛔ THE UPSTREAM CLAUSE NAMES A DOOR THAT ALREADY EXISTS — measured
-        2026-09-11 rather than built. There is NO marker an agent can say to halt
-        a run for a person: the four are `done_marker`, `north_star_marker`,
-        `milestone_marker` and `reference_marker`, and `blocked` is reached only
-        through a dialog `screening` finds. So the clause routes through that
-        door instead of inventing one: a question no `screen_rules` entry claims
-        takes `screen.none` to `awaiting_human`, and the run stops driving.
-        ⚠ AND `register what you found` COMES FIRST FOR A REASON, also measured:
-        an ending of `blocked` reads IDENTICALLY to a permission dialog, so the
-        run's own row cannot say *upstream* — and the pane cannot be read for it
-        either (run 306: 12 of 64 prompts folded away by the peer's composer).
-        Whatever record a kind keeps is where the reason survives, the dialog is
-        what stops the loop, and neither half does the other's job.
-        ⛔ WHAT IS STILL UNMEASURED, said rather than implied: nothing goes red
-        when an agent meets an upstream base and patches it here anyway. That gap
-        is registered rather than papered over — see this repository's register.
+        ⭐⭐ **AND WHAT ACTUALLY FILLS THE SLOT `smallest` HELD IS NO LONGER IN THIS
+        PROMPT** — register item 1037. Deleting a selection rule leaves the agent
+        still having to select with nothing to select BY, and the owner's ruling
+        of 2026-09-11 replaced the answer rather than removing the question; the
+        three clauses that replace it are `where_to_fix`, composed above, because
+        asking the document which prompts a WORKING turn arrives under gave three
+        and only this one carried them. The argument for each clause, and for
+        their order, is on that assignment.
       -->
       <assign location="turn_prompt"
               expr="'Continue toward the milestone this session was given.' + '\n' +
                     standing +
                     'Do the next thing that is verifiable, then report.' + '\n' +
-                    'Fix at the BASE: the structure that is most fundamentally wrong, the place where no structure exists at all, or whatever GENERATES the defect — never the instance it surfaced in.' + '\n' +
-                    'Take the most correct approach even when it needs several rounds — never trade the right design for finishing in one.' + '\n' +
-                    'If the base is UPSTREAM of this repository, do not patch it here: register what you found, then ask a question and stop.' + '\n' +
+                    where_to_fix +
                     done_instruction"/>
       <!--
         ⛔⛔⛔⛔⛔ **AND THE ONE FOR A SESSION THAT IS ALREADY HERE** — register item 800's
@@ -3929,6 +3982,7 @@
               expr="'The milestone has moved. Milestone: ' + milestone + milestone_age + '\n' +
                     'What to carry: ' + reference + '\n' +
                     standing +
+                    where_to_fix +
                     'Report what you did and what is left.' + '\n' +
                     done_instruction"/>
       <!--

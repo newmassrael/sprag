@@ -2070,6 +2070,109 @@ pub(crate) fn standin_agent_finishing(prompts_before_done: u32) -> (Arc<Mutex<Wo
     (workspace, pane)
 }
 
+/// **WHAT A RUN THAT HAS MET A BASE THIS REPOSITORY DOES NOT OWN DOES NEXT** — the two behaviours
+/// register item 1037's arm has to be able to tell apart, staged as ACTS rather than as words.
+///
+/// # ⛔⛔⛔⛔⛔ Why the fixture is two peers and not one peer saying two things
+///
+/// The clause the template hands every working turn is *if the base is UPSTREAM of this repository,
+/// do not patch it here: register what you found, then ask a question and stop*. A gate keyed on
+/// the WORD would be item 1037's own warning coming true — it is the behaviour that is the subject,
+/// and these two peers differ in nothing else: **what each one writes, and whether it stands**.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Acted {
+    /// **IT WROTE ITS FINDING DOWN AND THEN STOPPED FOR A PERSON** — the honoured shape. The peer
+    /// shows a question no rule claims, which is `screening`'s road to `awaiting_human` and the
+    /// only door a template that invents no marker has.
+    RegisteredAndStood,
+    /// **IT MENTIONED THE WORD AND CARRIED ON WORKING** — the CONTRAST, and the arm without which
+    /// *anything that says `upstream` must stop* is green too. It says the sentence out loud, edits
+    /// on, and never asks.
+    SaidItAndWorkedOn,
+}
+
+impl Acted {
+    /// The line the peer prints while it works, which NAMES THE THING both arms are about.
+    ///
+    /// ⚠⚠ Both arms print it, which is the point: a reading that separated them would have to be
+    /// reading the ACT. ⚠ No apostrophe — see [`SERVICE_IS_DOWN`], whose own draft paid for that.
+    pub(crate) const SAYS: &'static str = "the base for this is upstream of this repository";
+}
+
+/// **A STAND-IN AGENT THAT WRITES TO A FILE BEFORE IT ANSWERS, AND THEN EITHER STANDS OR WORKS ON**
+/// — the peer register item 1037's deed arm is driven against.
+///
+/// `writes` is appended to on every working turn, so *what this turn moved* is a fact about the
+/// filesystem that the loop's own progress marks can read. A peer handed a path outside its
+/// caller's mark list moves nothing anybody is watching, which is how the contrast is staged
+/// without a second fixture.
+///
+/// ⚠⚠ **IT IS [`standin_agent`] WITH TWO THINGS ADDED AND NOTHING TAKEN AWAY** — it answers the
+/// reflection and both endings' questions, for that peer's measured reasons (a stand-in that
+/// ignores what it is asked never ends a turn, and four gates died of it).
+///
+/// ⚠ The dialog arm prints the same menu [`standin_agent_refusing`] does and then `exec cat`s, so
+/// the question STAYS on the screen: a run that ends `blocked` stops driving, and a peer that
+/// cleared its own dialog would leave nothing for a person to find.
+pub(crate) fn standin_agent_acting(
+    writes: &std::path::Path,
+    then: Acted,
+) -> (Arc<Mutex<Workspace>>, PaneId) {
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
+    let after = match then {
+        Acted::RegisteredAndStood => concat!(
+            "printf 'Choose an approach\\n'; ",
+            "printf 'Which way should I build this?\\n'; ",
+            "printf '\\342\\235\\257 1. The quick one\\n'; ",
+            "printf '  2. The thorough one\\n'; ",
+            "exec cat; ",
+        ),
+        Acted::SaidItAndWorkedOn => "printf 'ACK %s\\n' \"$n\"; ",
+    };
+    let script = format!(
+        "stty -echo; printf 'AGENT-READY\\n'; n=0; s=0; \
+         while read line; do \
+           printf '%s\\n' \"$line\"; \
+           case \"$line\" in \
+             *'{REFLECT}'*) \
+               printf 'ACK nothing to change\\n'; \
+               s=$((s+1)); printf '{SEQ} %s\\n' \"$s\"; continue;; \
+           esac; \
+           case \"$line\" in \
+             *exactly:*|*Summarise*|*'{STOP}'*) ;; \
+             *) continue;; \
+           esac; \
+           n=$((n+1)); \
+           printf 'turn %s\\n' \"$n\" >> '{WRITES}'; \
+           printf '{SAYS}\\n'; \
+           {after}\
+           s=$((s+1)); printf '{SEQ} %s\\n' \"$s\"; \
+         done",
+        SEQ = SEQ_MARKER,
+        REFLECT = REFLECTION_MILESTONE_LABEL,
+        STOP = STOP_QUESTION,
+        SAYS = Acted::SAYS,
+        WRITES = writes.display(),
+    );
+    let pane = {
+        let mut command = CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg(script);
+        command.env("TERM", "dumb");
+        workspace
+            .lock()
+            .unwrap()
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
+            .expect("spawn pane")
+    };
+    started(
+        &WorkspacePaneAccess::new(Arc::clone(&workspace)),
+        pane,
+        AGENT_READY,
+    );
+    (workspace, pane)
+}
+
 /// **WHAT A PEER PRINTS WHEN ITS SERVICE IS OUT** — the sentence
 /// [`standin_agent_whose_service_fails`] puts on its pane and the one a gate briefs as a needle,
 /// spelled ONCE so the fixture and the brief cannot drift apart.
