@@ -1384,6 +1384,12 @@ fn the_instrument_behind_item_1040_is_in_this_tree() {
         "== run ",
         "== pressure after:",
         "== RUNS=",
+        // ⛔ AND THE AXIS ROWS — register item 1043. Without them a reading says a load was applied
+        // and never which one, which is how this instrument's own `110/0 five times` went into the
+        // register as *survives load* when what it establishes is *survives CPU contention*.
+        "== axis ",
+        "worked=",
+        "visible=",
     ] {
         assert!(
             said.contains(owed),
@@ -1392,6 +1398,101 @@ fn the_instrument_behind_item_1040_is_in_this_tree() {
              the readings and rewrite what quotes them.\nsaid:\n{said}",
         );
     }
+}
+
+/// ⛔⛔⛔⛔⛔ **AND THE AXIS IT PUSHES IS A CLOSED SET, WITH NO DEFAULT** — register item 1043.
+///
+/// # ⚠⚠⚠ The defect this holds shut is a MISSING SENTENCE, not a missing experiment
+///
+/// `reproduce-under-load` originally took busy loops as its only load and reported
+/// `RUNS=5 SPINNERS=4 -> 110/0 five times, load 11.75 -> 20.39`. Every number there is true. It
+/// went into the register as *the suite survives load*, and what it establishes is *the suite
+/// survives CPU contention* — busy loops raise CPU pressure and nothing else. One hypothesis dying
+/// read as all of them dying, because the script pushed one axis and never said which.
+///
+/// So the axis is REQUIRED, and this drives the three answers that matter:
+///
+/// * a name the script pushes is accepted,
+/// * a name it does NOT push is REFUSED rather than falling back — rule 6, where an unclassified
+///   case must never be silently a pass, and a fallback to `cpu` would be the original defect
+///   wearing a flag,
+/// * and asking for the empty axis is refused too, which is what a caller who set nothing gets.
+///
+/// ⚠ Driven through `--check-axis`, which runs no load and builds nothing, because the alternative
+/// is a five-minute run holding four cores — the same reason the clause above drives
+/// `--report-shape`.
+#[test]
+fn the_load_instrument_refuses_an_axis_it_does_not_push() {
+    let instrument = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/instruments")
+        .join("reproduce-under-load");
+    let check = |axis: &str| {
+        Command::new("bash")
+            .arg(&instrument)
+            .arg("--check-axis")
+            .arg(axis)
+            .output()
+            .expect("the instrument answers what axes it pushes")
+    };
+    for known in ["cpu", "io"] {
+        let out = check(known);
+        assert!(
+            out.status.success(),
+            "⛔ ITEM 1043: the instrument no longer pushes {known:?} ({:?}). The register quotes \
+             readings taken on this axis; a reading whose axis the instrument has stopped \
+             recognising cannot be re-taken.\nstderr:\n{}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr),
+        );
+    }
+    // ⛔ RULE 6. A load whose axis nobody chose is what item 1040's reading was, and a script that
+    // quietly picks one for the caller reproduces that exactly — with the added harm that the
+    // report would then NAME an axis the caller never thought about.
+    for unknown in ["", "memory", "cpu io", "CPU"] {
+        let out = check(unknown);
+        assert!(
+            !out.status.success(),
+            "⚠⚠⚠ ITEM 1043: the instrument accepted {unknown:?} as an axis. An axis it cannot push \
+             must be a refusal: the whole subject of this item is that a run which does not say \
+             which hypothesis it tested gets read as having tested all of them.\nstdout:\n{}",
+            String::from_utf8_lossy(&out.stdout),
+        );
+    }
+
+    // ⛔⛔⛔⛔⛔ AND A REAL INVOCATION WITH NO AXIS SET IS REFUSED TOO — which is a different claim
+    // from the one above, and the one that actually covers a caller. `--check-axis` answers about a
+    // NAME; this answers about the DEFAULT. A `${AXIS:-cpu}` would leave every arm above green
+    // while handing the silent choice back to the script, which is precisely item 1040's reading.
+    //
+    // ⛔⛔⛔⛔⛔ AND THE AXIS HAS NO DEFAULT, which is a different claim from every arm above: those
+    // are about a NAME, this is about what a caller who named nothing gets. A `${AXIS:-cpu}` would
+    // leave all of them green while handing the silent choice back to the script — precisely item
+    // 1040's reading, where the round that ran it never chose and the register never said.
+    //
+    // ⚠⚠ ASKED, NOT ENTERED. The obvious spelling is to run the instrument bare and watch it
+    // refuse; MEASURED 2026-09-11, that spelling is unusable. When the mutation is live the
+    // instrument does NOT refuse — it starts a real five-run reproduction from inside `cargo test`
+    // (a build, four busy cores, minutes), and wrapping it in `timeout` does not help, because the
+    // surviving `cargo` holds the stdout pipe open and `Command::output` waits on the pipe rather
+    // than on the shell. Both attempts had to be killed by hand. A gate must be able to OBSERVE the
+    // broken state without entering it, so the instrument answers about its own `AXIS` instead —
+    // the same variable and the same predicate its real entry point uses, defined once above them.
+    //
+    // `env_remove` because the shell that runs a reproduction exports AXIS, and an inherited one
+    // would make this vacuous.
+    let bare = Command::new("bash")
+        .arg(&instrument)
+        .arg("--check-axis")
+        .env_remove("AXIS")
+        .output()
+        .expect("the instrument answers what a bare invocation would push");
+    assert!(
+        !bare.status.success(),
+        "⚠⚠⚠ ITEM 1043: with no axis set the instrument still names one to push. A default is the \
+         original defect wearing a name — the round that ran it would still not have chosen, and \
+         the register would still not say which hypothesis a green run killed.\nstdout:\n{}",
+        String::from_utf8_lossy(&bare.stdout),
+    );
 }
 
 /// ⛔⛔⛔⛔⛔ **EVERY INSTRUMENT IN THIS CRATE, AND NOT A NAMED LIST OF THEM** — register item 1041,

@@ -1,82 +1,124 @@
 #!/usr/bin/env bash
-# ⛔⛔⛔⛔⛔ **REPRODUCE A pty_round_trip TIMEOUT UNDER LOAD — register items 1040 and 519.**
+# ⛔⛔⛔⛔⛔ **REPRODUCE A pty_round_trip TIMEOUT UNDER LOAD — register items 1043, 1040 and 519.**
 #
 # # Why this file exists rather than a scratch script
 #
-# The `DEADLINE` comment in `pty_round_trip.rs` cites a measurement — *"1 char 222ms, 10 chars
-# 384ms, 20 chars 2.1s, 40 chars 5.0s"* — taken with a **throwaway probe**. That probe is not in this
-# tree (looked for, 2026-09-11: no file under `crates/` carries it), so the numbers it produced can
-# be read and never re-taken. Item 1040's round was about to do the same thing: its reproduction ran
-# from a scratch directory that the next round would not find.
+# The `DEADLINE` comment in `pty_round_trip.rs` once cited a measurement taken with a **throwaway
+# probe** that was not in this tree, so its numbers could be read and never re-taken. Item 1040's
+# round was about to do the same thing: its reproduction ran from a scratch directory that the next
+# round would not find.
 #
 # ⇒ A measurement whose instrument was discarded is a number nobody can dispute, which is the
-# opposite of what this repository means by a measurement. So the instrument is tracked and the
-# numbers it produced are recorded beside it, in the register, with the arguments that produced them.
+# opposite of what this repository means by a measurement.
 #
-# # What it does
+# # ⛔⛔⛔⛔⛔ IT NAMES THE AXIS IT PUSHES, AND THAT IS ITEM 1043'S WHOLE SUBJECT
 #
-# Pins the suite to four cores — the shape of the `headless (linux)` runner — and puts spinners on
-# those same cores so they are cores somebody else is already using. A bare `taskset` does NOT
-# reproduce the runner: measured 2026-09-11, four cores ran the suite in **43.08s** against
-# **53.85s** on all thirty-two, because this suite waits rather than computes.
+# The first version of this script took `SPINNERS` busy loops as its only load and reported
+# `RUNS=5 SPINNERS=4 -> 110/0 five times, load 11.75 -> 20.39`. That reading is true and it was
+# READ WRONG, by the round that took it and by the register it was written into: it went in as
+# *the suite survives load*, when what it actually establishes is *the suite survives CPU
+# CONTENTION*. Busy loops raise CPU pressure and nothing else.
 #
-# # ⚠ What it measured, and what that refuted — READ THE QUALIFIER
+# The gap was not a missing experiment. It was a missing SENTENCE: the script pushed one axis and
+# never said which, so one hypothesis dying read as all of them dying. **Measured on this
+# workstation 2026-09-11, the axis it never touched is the dominant one here:**
 #
-#     RUNS=5 SPINNERS=4  ->  110/0 five times, 58.55-68.42s, load 11.75 -> 20.39 over 4 masked cores
+#     loadavg              12.33          "very busy"
+#     cpu.pressure some    avg10=0.23     the CPU is not starved at all
+#     io.pressure  some    avg10=18.93    avg300=35.10
+#     io.pressure  full    avg10=14.58    EVERY task stalled, a seventh of the time
 #
-# The runner needed a **23x** slowdown to fail the way item 1040 records (45s, 376 of 1600 chars in
-# the pane). Local load of 11-20 on four cores — far past the runner's own `load 4.76 over 4 cores`
-# — costs 1.4-1.6x and loses nothing.
+# So `AXIS` is REQUIRED and has no default. ⚠ A default would have been the same defect wearing a
+# name: the round that ran this would still not have chosen, and the register would still not say.
 #
-# ⛔⛔⛔⛔⛔ **SO «CPU COMPETITION» IS NOT THE CAUSE. NOT «LOAD».** A first draft of this comment said
-# *load is not the cause* and that sentence was FALSE, for the same reason the numbers beside it are
-# not enough: the spinners above are busy loops, so they raise CPU pressure and nothing else, while
-# `loadavg` counts RUNNABLE and UNINTERRUPTIBLE tasks together and cannot say which was which.
+# # ⛔⛔ AND THE DECLARATION IS CHECKED AGAINST WHAT ACTUALLY HAPPENED, IN TWO LAYERS
 #
-# **Measured on this workstation 2026-09-11, all three at the same instant:**
+# Saying `AXIS=io` does not make a run an IO experiment. This script asks two different questions
+# and treats them differently, because measurement found that only one of them can be answered on
+# this machine — see the four readings beside the `io` arm below.
 #
-#     loadavg              10.20            "very busy"
-#     cpu.pressure some    avg10=0.04       the CPU is barely starved
-#     io.pressure  some    avg10=36.38      a third of the time, something is waiting on IO
+#   `worked`   did the load processes do anything? ticks burnt, or passes completed. A NO here is a
+#              REFUSAL (exit 3): a green suite under a load that never started is evidence pointing
+#              the wrong way, and that is exactly how item 1040's reading came to be quoted.
+#   `visible`  did it show on `/proc/pressure`? REPORTED, never a refusal — this workstation answers
+#              NO for every arrangement tried, for reasons that are the instrument's and not the
+#              load's, and a verdict with no path to yes is a wall rather than a gate (rule 5).
 #
-# Three axes, two opposite stories. That is why this script now records the pressure rows as well:
-# a run that says only `load 11.75 -> 20.39` cannot be asked, afterwards, WHICH kind of starvation
-# it was carried out under — and an experiment whose conditions were written in the wrong unit
-# refutes nothing in particular.
-#
-# # ⚠⚠ It cleans up after itself, and that is not politeness
-#
-# A spinner that outlives this script is a busy core on the developer's machine for ever. The trap
-# covers the signal paths as well as the normal end.
-#
+#   AXIS      REQUIRED: cpu (busy loops on the mask) or io (buffered writes, fsync per pass)
 #   RUNS      how many times to run the suite (default 5)
-#   SPINNERS  how many busy loops to pin to the masked cores (default 4)
-#   CORES     the mask (default 0-3, four cores, the runner's shape)
-#   --report-shape  print the report format and exit, running nothing — what the gate drives
+#   LOADERS   how many load processes (default 4). ⚠ Item 1040's own reading called this SPINNERS.
+#   CORES     the mask the SUITE runs under (default 0-3, four cores, the runner's shape)
+#   WINDOW    seconds per stall-clock window (default 5)
+#   --report-shape     print the report format and exit, running nothing — what the gate drives
+#   --check-axis NAME  say whether NAME is an axis this pushes, and exit — also what the gate drives
 #
-# ⛔⛔⛔⛔⛔ **IT IS NOT SPELLED `--selftest`, AND THAT IS PRECISION RATHER THAN EVASION** — register
-# items 799 and 964. In this repository `--selftest` already MEANS something: a shell harness that
-# drives arms and reports `N/M arm(s) pass`, which `a_declared_selftest_is_one_this_suite_runs`
-# walks `.githooks/` for and EXECUTES. This flag drives no arms — it prints the report format so a
-# gate can check that the shape the register quotes is still the shape emitted. Measured 2026-09-11:
-# calling it `--selftest` put this file in front of that gate, which refused it three ways at once,
-# correctly. Two meanings under one name is the covering item 776's family is about; the fix is a
-# different name, not a widened population.
+# ⚠ **IT IS NOT SPELLED `--selftest`** — register items 799 and 964. In this repository `--selftest`
+# already MEANS a shell harness that drives arms and reports `N/M arm(s) pass`, which
+# `a_declared_selftest_is_one_this_suite_runs` walks `.githooks/` for and EXECUTES.
 set -u
+
+AXES="cpu io"
+
+# ⛔⛔⛔⛔⛔ **ONE DEFINITION OF THE AXIS, ABOVE THE FLAGS** — register item 1043. `--check-axis` with
+# no name and the real entry point at the bottom answer about THIS variable and this predicate, so a
+# default added here is visible to a gate that never starts a run. The alternative was measured and
+# it does not work: driving the real entry point to see it refuse means that when it does NOT refuse
+# the gate starts a five-run reproduction — a build, four busy cores, minutes — and `timeout` does
+# not save it, because the surviving `cargo` keeps the stdout pipe open and `Command::output` waits
+# on the pipe rather than on the shell. A gate must be able to observe the broken state, not enter it.
+AXIS="${AXIS:-}"
+
+axis_ok() {
+    [ -n "${1:-}" ] || return 1
+    for known in $AXES; do
+        [ "$1" = "$known" ] && return 0
+    done
+    return 1
+}
 
 if [ "${1:-}" = "--report-shape" ]; then
     echo "reproduce-under-load: report shape"
+    echo "== axis <cpu|io> declared, suite masked to <cores>"
+    echo "== stall <axis> base=<us/s> loaded=<us/s> ratio=<x> noise=<x>"
+    echo "== axis <axis> worked=<yes|no> spent=<n> <unit>"
+    echo "== axis <axis> visible=<yes|no> ratio=<x> noise=<x> — <why>"
     echo "== load before the runs: <1m> <5m> <15m> over N masked cores"
-    echo "== pressure before: cpu <some-row> | io <some-row>"
+    echo "== pressure before: cpu some <row> full <row> | io some <row> full <row>"
     echo "== run <i> rc=<rc> :: test result: ..."
-    echo "== pressure after: cpu <some-row> | io <some-row>"
-    echo "== RUNS=<n> SPINNERS=<n> FAILED=<n>"
+    echo "== pressure after: cpu some <row> full <row> | io some <row> full <row>"
+    echo "== RUNS=<n> LOADERS=<n> AXIS=<axis> FAILED=<n>"
     exit 0
 fi
 
+# ⛔ RULE 6: an axis this script does not push is a REFUSAL, never a pass. The gate drives this arm
+# with a name that is not in the list precisely because "unrecognised" silently becoming "cpu" is
+# how the original defect would come back wearing a flag.
+#
+# ⚠ With NO name it answers about what a BARE invocation would use, which is how a gate asks
+# "does this have a default?" without starting one — see the note on `AXIS` above for why it must
+# not ask by running.
+if [ "${1:-}" = "--check-axis" ]; then
+    if [ "$#" -ge 2 ]; then want="$2"; else want="$AXIS"; fi
+    if axis_ok "$want"; then
+        echo "reproduce-under-load: $want is an axis this pushes"
+        exit 0
+    fi
+    echo "reproduce-under-load: ${want:-<none>} is not an axis this pushes (have: $AXES)" >&2
+    exit 2
+fi
+
+if ! axis_ok "$AXIS"; then
+    echo "reproduce-under-load: AXIS is required and has no default — one of: $AXES." >&2
+    echo "  Item 1043: the first version of this script pushed CPU and never said so, and its" >&2
+    echo "  reading went into the register as 'the suite survives load'. Choose, so the next" >&2
+    echo "  reader knows which hypothesis a green run actually killed." >&2
+    exit 2
+fi
+
 RUNS="${RUNS:-5}"
-SPINNERS="${SPINNERS:-4}"
+LOADERS="${LOADERS:-4}"
 CORES="${CORES:-0-3}"
+WINDOW="${WINDOW:-5}"
 root="$(git rev-parse --show-toplevel 2>/dev/null || printf '.')"
 out="${OUT:-$root/target/reproduce-under-load}"
 mkdir -p "$out"
@@ -85,8 +127,39 @@ pids=()
 cleanup() {
     for p in "${pids[@]:-}"; do kill "$p" 2>/dev/null || true; done
     wait 2>/dev/null || true
+    # ⚠ THE BALLAST GOES TOO. The io axis writes gigabytes; a run interrupted halfway would
+    # otherwise leave them on the developer's disk for ever, which is the same rule the spinner
+    # kills above are there for and the same reason the trap covers the signal paths.
+    rm -f "$out"/ballast-* 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
+
+# ⛔ A KERNEL THAT KEEPS NO PRESSURE ACCOUNTING SAYS SO, rather than reading as calm. A missing file
+# rendered as zeroes is an absence wearing a measurement's clothes — `sprag-terminal`'s own
+# `Waiting::NotAccounted` exists for this, and the shell side owes the same honesty.
+pressure_row() {
+    if [ -r "/proc/pressure/$1" ]; then
+        awk -v kind="$2" '$1 == kind { $1 = ""; sub(/^ /, ""); print; exit }' "/proc/pressure/$1"
+    else
+        printf 'not accounted on this kernel'
+    fi
+}
+say_pressure() {
+    echo "== pressure $1: cpu some $(pressure_row cpu some) full $(pressure_row cpu full) |" \
+        "io some $(pressure_row io some) full $(pressure_row io full)"
+}
+
+# ⚠⚠ THE STALL CLOCK, NOT THE MOVING AVERAGE. `avg10` is a ten-second average, so a window shorter
+# than that reports the past rather than the present; `total=` is a microsecond counter, and its
+# delta over a window is exactly "how long something waited during that window".
+stall_total() {
+    if [ -r "/proc/pressure/$1" ]; then
+        awk '/^some/ { for (i = 2; i <= NF; i++) if ($i ~ /^total=/) { sub(/^total=/, "", $i); print $i; exit } }' \
+            "/proc/pressure/$1"
+    else
+        printf 0
+    fi
+}
 
 # ⛔ REGISTER ITEM 491: a suite run right after a commit measures the STALENESS GUARD, because
 # `sprag-rpc/build.rs` stamps the commit into the binary and `rerun-if-changed`s the ref. A red that
@@ -96,26 +169,134 @@ if ! (cd "$root" && cargo build -p sprag-host --bins); then
     exit 2
 fi
 
-for _ in $(seq "$SPINNERS"); do
-    taskset -c "$CORES" sh -c 'while :; do :; done' &
-    pids+=($!)
-done
-sleep 2
+echo "== axis $AXIS declared, suite masked to $CORES"
 
-# ⛔ A KERNEL THAT KEEPS NO PRESSURE ACCOUNTING SAYS SO, rather than reading as calm. A missing file
-# rendered as zeroes is an absence wearing a measurement's clothes — `sprag-terminal`'s own
-# `Waiting::NotAccounted` exists for this, and the shell side owes the same honesty.
-pressure_row() {
-    if [ -r "/proc/pressure/$1" ]; then
-        awk '/^some/ { print; exit }' "/proc/pressure/$1"
-    else
-        printf 'not accounted on this kernel'
-    fi
+# THE BASELINE, TWICE. Two idle windows give this machine's own noise between them, so the threshold
+# the loaded window is judged against is MEASURED here rather than chosen. On this workstation the
+# io figure wanders between avg10=18.93 and avg300=35.10 on its own, and a fixed factor would have
+# been a guess sitting on top of that.
+b0_cpu=$(stall_total cpu); b0_io=$(stall_total io)
+sleep "$WINDOW"
+b1_cpu=$(stall_total cpu); b1_io=$(stall_total io)
+sleep "$WINDOW"
+b2_cpu=$(stall_total cpu); b2_io=$(stall_total io)
+
+case "$AXIS" in
+    cpu)
+        for _ in $(seq "$LOADERS"); do
+            taskset -c "$CORES" sh -c 'while :; do :; done' &
+            pids+=($!)
+        done
+        ;;
+    io)
+        # ⛔⛔⛔⛔⛔ **BUFFERED WRITES, AND O_DIRECT READS WERE TRIED FIRST AND MEASURED WRONG** —
+        # register item 1043. The first draft read a 46 MB binary with `iflag=direct`, reasoning that
+        # the page cache would otherwise serve every read after the first. It bypassed the cache and
+        # it bypassed the ACCOUNTING with it: PSI's io clock counts waiting on memory reclaim,
+        # writeback and page faults, and O_DIRECT is the one path that touches none of them.
+        #
+        # Measured on this workstation 2026-09-11, twice, and the direction is the tell:
+        #
+        #     LOADERS=4  WINDOW=5   io stall ratio 0.44 against noise 1.79
+        #     LOADERS=16 WINDOW=15  io stall ratio 0.15 against noise 1.04
+        #
+        # Sixteen readers did not raise this machine's io stall clock, they sat BELOW its idle
+        # baseline — so the load was not weak, it was invisible to the instrument judging it. The
+        # baseline it failed to clear is 671782 us/s, **85x the cpu axis's 7734**, and `free`
+        # says why: 14 GB of swap in use, `pswpin` and `pswpout` past four hundred million each.
+        # This machine's io pressure is RECLAIM. Writeback is the load that shares that path.
+        free_kb=$(df -Pk "$out" | awk 'NR == 2 { print $4 }')
+        want_kb=$((LOADERS * 512 * 1024))
+        if [ "$free_kb" -lt "$want_kb" ]; then
+            echo "reproduce-under-load: $LOADERS writer(s) want ${want_kb}K under $out and the" >&2
+            echo "  filesystem has ${free_kb}K. Lower LOADERS or free space." >&2
+            exit 2
+        fi
+        echo "== axis io ballast ${LOADERS}x512M buffered writes under $out, fsync per pass"
+        for n in $(seq "$LOADERS"); do
+            # Each completed pass appends a line, which is how `worked` below counts what this
+            # axis actually did: `/proc/<pid>/io` would answer about the `sh` wrapper and not the
+            # `dd` child doing the writing.
+            sh -c "while :; do dd if=/dev/zero of='$out/ballast-$n' bs=1M count=512 conv=fsync status=none || exit; echo pass >> '$out/passes-$n'; done" &
+            pids+=($!)
+        done
+        ;;
+esac
+
+# ⛔⛔⛔⛔⛔ **TWO LAYERS, BECAUSE ONE OF THEM CANNOT SEE THIS EXPERIMENT AT ALL** — register item
+# 1043, and the first draft of this script asserted only the second.
+#
+# `worked` asks whether the load PROCESSES did anything: ticks burnt for cpu, passes completed for
+# io. `visible` asks whether that showed up in the machine's PSI clock. They are different
+# questions and only the first can be a refusal, because measured here on 2026-09-11 the second is
+# NO for every arrangement tried:
+#
+#     AXIS=io  O_DIRECT reads   LOADERS=4  W=5    io ratio 0.44  noise 1.79
+#     AXIS=io  O_DIRECT reads   LOADERS=16 W=15   io ratio 0.15  noise 1.04
+#     AXIS=io  buffered writes  LOADERS=4  W=15   io ratio 0.36  noise 1.19  (cpu ratio 2.72!)
+#     AXIS=cpu busy loops       LOADERS=4  W=15   cpu ratio 0.57 noise 1.17
+#
+# Four runs, two axes, three kinds of load, and the loaded window sat BELOW the idle baseline every
+# time. The reasons are in the instrument, not in the load:
+#
+# ⑴ **`/proc/pressure` is SYSTEM-WIDE and `taskset` is not a scope.** Four busy cores out of
+#    thirty-two produce no global CPU stall at all, so the contention item 1040 built — the
+#    runner's four-core shape — is invisible here by construction.
+# ⑵ **This machine's io stall is RECLAIM, at 570-673 ms/s.** 14 GB of swap in use, `pswpin` and
+#    `pswpout` past four hundred million each. File IO cannot be stacked on top of that.
+# ⑶ **The baseline window catches the tail of `cargo build`**, which is why the loaded window
+#    reads lower rather than merely equal.
+#
+# ⇒ A refusal keyed on `visible` would refuse every run this machine can produce, which is rule 5's
+# question answered the wrong way: a verdict with no path to yes is not a gate, it is a wall. So
+# `worked` is the refusal and `visible` is REPORTED — and reported as a NO, which is what stops a
+# green suite being quoted as "survives load" the way item 1040's was.
+spent_cpu() {
+    total=0
+    for p in "${pids[@]:-}"; do
+        [ -r "/proc/$p/stat" ] || continue
+        ticks=$(awk '{ print $14 + $15 }' "/proc/$p/stat" 2>/dev/null || printf 0)
+        total=$((total + ticks))
+    done
+    printf '%s' "$total"
 }
-say_pressure() { echo "== pressure $1: cpu $(pressure_row cpu) | io $(pressure_row io)"; }
+spent_io() { cat "$out"/passes-* 2>/dev/null | wc -l; }
+case "$AXIS" in
+    cpu) w0=$(spent_cpu); unit="ticks" ;;
+    io)  w0=$(spent_io);  unit="passes" ;;
+esac
+
+sleep "$WINDOW"
+case "$AXIS" in
+    cpu) w1=$(spent_cpu) ;;
+    io)  w1=$(spent_io)  ;;
+esac
+spent=$((w1 - w0))
+
+# ⛔⛔⛔⛔⛔ A LOAD THAT NEVER RAN MUST NOT PRODUCE A GREEN RUN — register item 1043. Five green runs
+# under a load that never started read exactly like five green runs under one that did, and the
+# register cannot tell them apart afterwards. A missing experiment is recoverable; a WRONG one is
+# quoted, which is what happened to item 1040's reading. This is the arm that CAN be checked before
+# the suite runs, so it is the one that refuses.
+echo "== axis $AXIS worked=$([ "$spent" -gt 0 ] && echo yes || echo no) spent=$spent $unit"
+if [ "$spent" -le 0 ]; then
+    echo "== axis $AXIS visible=no ratio=0 noise=0 — not judged: the load did nothing"
+    echo "== RUNS=0 LOADERS=$LOADERS AXIS=$AXIS FAILED=0"
+    echo "== logs: $out"
+    exit 3
+fi
 
 echo "== load before the runs: $(awk '{print $1, $2, $3}' /proc/loadavg) over $CORES masked cores"
 say_pressure before
+
+# ⛔⛔⛔⛔⛔ **THE LOADED WINDOW IS THE SUITE'S OWN, AND MEASURING IT WITHOUT THE SUITE WAS WRONG** —
+# register item 1043. A draft of this script judged `visible` from a window with the load running
+# and NOTHING ELSE, and reported `cpu ratio 0.05` — four busy cores out of thirty-two stall nobody.
+# The very next run, with the suite in the window, recorded `cpu some avg10=33.41%` in its own
+# failure text: the contention exists only when the suite is competing for the masked cores, which
+# is the whole arrangement item 1040 built. So the load is confirmed to have RUN before the suite
+# starts, and confirmed to have been FELT across the suite's own span.
+s0_cpu=$(stall_total cpu); s0_io=$(stall_total io); s_start=$(date +%s)
 
 fails=0
 for i in $(seq "$RUNS"); do
@@ -127,8 +308,40 @@ for i in $(seq "$RUNS"); do
     [ "$rc" -eq 0 ] || fails=$((fails + 1))
     [ "$rc" -eq 0 ] || grep -m1 -A 8 '^---- a_re_wrapped' "$out/run-$i.log" || true
 done
+
+s1_cpu=$(stall_total cpu); s1_io=$(stall_total io)
+suite_seconds=$(( $(date +%s) - s_start ))
+[ "$suite_seconds" -gt 0 ] || suite_seconds=1
+
+# base/loaded in microseconds of stall per second; noise is the two idle windows against each other.
+say_axis() {
+    awk -v name="$1" -v bw="$WINDOW" -v lw="$suite_seconds" \
+        -v a="$2" -v b="$3" -v c="$4" -v d="$5" -v e="$6" '
+        BEGIN {
+            base1 = (b - a) / bw; base2 = (c - b) / bw; loaded = (e - d) / lw;
+            hi = base1 > base2 ? base1 : base2; lo = base1 < base2 ? base1 : base2;
+            noise = lo > 0 ? hi / lo : (hi > 0 ? 1e9 : 1);
+            ratio = hi > 0 ? loaded / hi : (loaded > 0 ? 1e9 : 1);
+            printf "== stall %s base=%.0f loaded=%.0f ratio=%.2f noise=%.2f\n", name, hi, loaded, ratio, noise;
+        }'
+}
+say_axis cpu "$b0_cpu" "$b1_cpu" "$b2_cpu" "$s0_cpu" "$s1_cpu"
+say_axis io "$b0_io" "$b1_io" "$b2_io" "$s0_io" "$s1_io"
+case "$AXIS" in
+    cpu) verdict=$(say_axis cpu "$b0_cpu" "$b1_cpu" "$b2_cpu" "$s0_cpu" "$s1_cpu") ;;
+    io)  verdict=$(say_axis io "$b0_io" "$b1_io" "$b2_io" "$s0_io" "$s1_io") ;;
+esac
+ratio=$(echo "$verdict" | sed -n 's/.*ratio=\([0-9.]*\).*/\1/p')
+noise=$(echo "$verdict" | sed -n 's/.*noise=\([0-9.]*\).*/\1/p')
+moved=$(awk -v r="$ratio" -v n="$noise" 'BEGIN { print (r > n) ? "yes" : "no" }')
+if [ "$moved" = yes ]; then
+    echo "== axis $AXIS visible=yes ratio=$ratio noise=$noise — the stall clock moved across the suite's span"
+else
+    echo "== axis $AXIS visible=no ratio=$ratio noise=$noise — the load ran but this machine's" \
+        "system-wide PSI does not show it across the suite's span"
+fi
 say_pressure after
-echo "== RUNS=$RUNS SPINNERS=$SPINNERS FAILED=$fails"
+echo "== RUNS=$RUNS LOADERS=$LOADERS AXIS=$AXIS FAILED=$fails"
 echo "== load after: $(awk '{print $1, $2, $3}' /proc/loadavg)"
 echo "== logs: $out"
 exit 0
