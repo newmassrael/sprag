@@ -2916,8 +2916,11 @@ const REPORT_FIELDS: usize = 32;
 /// do HERE. At zero, moving this file onto the shared scanner would have bought it nothing, and
 /// that is a sentence worth being red about.
 ///
-/// MEASURED 2026-09-12 on the tree this landed in: **19 of 4,744 comments**, against 4,725
-/// whole-line ones. Small, and that is the shape of the item — the hazard was never common, it was
+/// MEASURED 2026-09-12: **19**, out of about 4,700 comments in this file. ⚠ The total is left
+/// vague ON PURPOSE and the run prints it (`== ITEM-1051 comments=… whole_line=… hidden=…`): a
+/// total written here moves every time a paragraph in this file is edited, including the paragraph
+/// stating it, and a number a reader finds stale teaches them to stop checking the ones that are
+/// not. Small either way, and that is the shape of the item — the hazard was never common, it was
 /// unopposed.
 const COMMENTS_NO_WHOLE_LINE_FILTER_SEES: usize = 19;
 
@@ -2958,9 +2961,11 @@ const REPORT_FIELDS_WITH_A_SECOND_HOME: usize = 11;
 /// shape was present — **0 lines of the first on 2026-09-11, 12,576 lines read** — and nothing kept
 /// either at 0, which is the whole of what that item says.
 ///
-/// [`sprag_gate::rust_source`] is where it went, rather than being widened here: the same
-/// approximation is written at **ten call sites in six files** of this workspace, and the crate
+/// [`sprag_gate::rust_source`] is where it went, rather than being widened here: this was one of
+/// **eleven code lines in seven files** spelling that approximation for themselves, and the crate
 /// that already owns *what a comment is* for the other language is where the Rust answer belongs.
+/// ⚠ That count is held by `what_a_comment_is_has_one_spelling_in_this_workspace` rather than
+/// asserted here — register item 1055 is the nine that have not moved.
 ///
 /// # ⚠⚠ WHAT THE SCAN NOW GUARDS AND WHAT IT STILL DOES NOT, in numbers rather than in a hedge
 ///

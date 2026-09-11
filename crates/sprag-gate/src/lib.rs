@@ -203,10 +203,12 @@ pub mod ambient;
 ///
 /// Beside [`loop_shape`], whose [`loop_shape::uncommented`] answers the same question about SCXML
 /// and was made public saying *a second copy is where two readers of one file come to disagree*.
-/// The Rust side had ten copies of that question, `sources::code_lines` among them, all of them
+/// The Rust side had eleven copies of that question, `sources::code_lines` among them, all of them
 /// the same `starts_with("//")` approximation — and every one of them keeps a comment written after
 /// code on the same line. Item 1051 is what that costs: a gate that reads a suite's own source for
-/// the field names it prints, answered by one trailing comment spelling one of them.
+/// the field names it prints, answered by one trailing comment spelling one of them. That one is
+/// moved; `what_a_comment_is_has_one_spelling_in_this_workspace` counts the nine left, which is
+/// register item 1055.
 pub mod rust_source;
 
 use std::ffi::OsString;

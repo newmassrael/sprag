@@ -1,11 +1,17 @@
 //! What a comment is in RUST source, spelled once — register item 1051.
 //!
-//! # ⛔⛔⛔⛔⛔ Ten copies of one approximation, and not one of them measured
+//! # ⛔⛔⛔⛔⛔ Eleven copies of one approximation, and not one of them measured
 //!
 //! Every gate in this workspace that wants *what the code says, rather than what its prose says
-//! about itself* writes `line.trim_start().starts_with("//")` and drops the line. Counted
-//! 2026-09-12: **ten call sites** across six files, `sources::code_lines` among them, and that one
-//! is the widest-reach — `Source::code` is what most gates here read.
+//! about itself* writes `line.trim_start().starts_with("//")` and drops the line. **Eleven code
+//! lines in seven files** when this module was written; ten after it took the first of them.
+//! `sources::code_lines` is the widest-reach — `Source::code` is what most gates here read, and it
+//! holds four of the ten.
+//!
+//! ⚠⚠ Those numbers are not a claim here: `what_a_comment_is_has_one_spelling_in_this_workspace`
+//! walks the tree for them and holds the count as an equality, because the first draft of this
+//! paragraph said *six files* off a grep read by eye and no reader could have re-taken it. Register
+//! item 1055 is the nine that are left.
 //!
 //! That spelling is an APPROXIMATION of *not in a comment*, and it misses two shapes:
 //!
