@@ -261,7 +261,7 @@ fn main() -> std::process::ExitCode {
     // is not in `north_star::Screenings` cannot red at all. The lines are `Screening`'s and never
     // this file's — the split register item 934 drew for the four backlogs, held by the same gate
     // in `north_star`'s tests.
-    let screenings = match reading.screenings(cap.depth(), &standing, &Repository) {
+    let screenings = match reading.screenings(cap.depth(), &standing, &Repository, &Repository) {
         Ok(screenings) => screenings,
         // ⚠⚠ A FAILURE TO ASK IS ITS OWN FAULT and never forty item faults — see
         // `north_star::Reading::paid_commits`. Being unable to reach `git` says nothing about any
@@ -457,6 +457,29 @@ impl north_star::Commits for Repository {
                 asked.status,
                 String::from_utf8_lossy(&asked.stderr).trim(),
             )),
+        }
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **AND THE SAME REPOSITORY, ASKED WHAT ITS FILES SAY** — register item 488.
+///
+/// # ⚠⚠⚠ The working directory is the subject, and that is already this binary's contract
+///
+/// [`north_star::Commits`] above resolves ids by running `git` here, so this binary has always
+/// meant *the repository I am standing in* and the register's own operating note says so in as many
+/// words: *cwd 는 저장소*. A witness path is read the same way and against the same tree, so the two
+/// answers cannot come from two different repositories.
+///
+/// ⚠ A path that is not there is `Ok(None)` — a FACT about this tree, which the caller turns into
+/// one item's fault. A directory, or bytes that are not UTF-8, is the same answer for the same
+/// reason: no text to search is not a broken environment, it is a witness naming the wrong thing.
+/// Only being unable to look at all would be an `Err`, and `std::fs::read_to_string` reports that
+/// as the same `io::Error` it reports absence with, so this reads absence as absence and says so.
+impl north_star::Tree for Repository {
+    fn read(&self, path: &str) -> Result<Option<String>, String> {
+        match std::fs::read_to_string(path) {
+            Ok(body) => Ok(Some(body)),
+            Err(_) => Ok(None),
         }
     }
 }

@@ -397,6 +397,94 @@ pub const RED: &str = "@red:";
 /// silence.
 pub const JUDGED: &str = "@judged:";
 
+/// ⛔⛔⛔⛔⛔ **THE LINE AN ITEM PUTS ONE OF ITS OWN MEASUREMENTS ON, IN A FORM THIS TREE CAN BE
+/// ASKED**: `` @witness: `<path>` contains|lacks `<text>` `` — register item 488.
+///
+/// # ⛔⛔⛔⛔⛔ The one sentence a round EXECUTES was the one claim nothing re-measured
+///
+/// Every other claim an item makes about itself is put to something. A `paid` mark's commit id goes
+/// to `git` ([`Reading::paid_commits`], 198 judged on this ledger), a [`RED`] goes to `cargo`
+/// ([`Reading::standing_reds`]), a [`JUDGED`] line's evidence goes to `git`, a [`PARENT`] link goes
+/// to the depth cap, and the derived order goes back to [`Reading::admits`]. **The `Done when` —
+/// the prescription a round reads and then acts on — goes nowhere.** Measured 2026-09-11: 92 of
+/// this ledger's 105 open items carry one, and the word appears in this crate only inside doc
+/// comments.
+///
+/// ⇒ So a block's measurements rot in place, and the register goes on handing them out. Item 488 is
+/// that state, and it was the item this instrument DERIVED as `next` on the round that built this:
+///
+/// * its head says its diagnosis is refuted five ways and its red is not reproducible;
+/// * its `Done when` ⑴ — *`build.rs` declares `rerun-if-changed` for each statechart* — was
+///   satisfied on 2026-08-21 by `98b92540`, a commit about something else entirely;
+/// * it sat `@ns: open` in the population for the **21 days** after that, and
+/// * `next 488` printed *depth unrecorded — it predates the mark* and nothing else.
+///
+/// The only thing that stopped a round from building a gate for a cause that does not exist was a
+/// warning a person typed into that round's prompt. **A warning carried in a prompt dies with the
+/// prompt**, which is this workspace's rule 10 in the place it costs most.
+///
+/// # ⚠⚠⚠ What a witness IS, and why it is a PREMISE rather than a finish condition
+///
+/// The first draft of this mark asked an item to state the condition under which it would be DONE,
+/// and that was refused by trying to write one: a finish condition is a guess about a tree that
+/// does not exist yet, so almost no item can state one honestly and the ones that can would be
+/// guessing. A PREMISE is the opposite — it is a measurement the block ALREADY made and wrote down,
+/// so it is writable for nearly every item, and re-asking it is exactly what working rule 4 makes
+/// each round do by hand, once, if it remembers: *원장의 문장을 명령으로 다시 재라.*
+///
+/// So a witness says **what this item asserts about the tree today**, and this instrument holds the
+/// ledger to it on every run. A witness that no longer holds is [`Fault::WitnessDated`]: not *the
+/// item is wrong*, but *this block's ground has moved and somebody has to read it.*
+///
+/// # ⚠⚠ Read from OPEN items only, and that is a decision with a reason
+///
+/// A PAID block describes the tree as it WAS at the moment it was paid, so a witness on one would
+/// go dated by design and the gate would fill with noise a reader learns to skip — the death
+/// [`JUDGED`]'s doc records for a standing notice. The claim being re-asked here is one the ledger
+/// is still MAKING, which is what `open` means.
+///
+/// # The grammar, and why it is this strict
+///
+/// ```text
+/// @witness: `crates/sprag-plugin/src/ai_loop.scxml` contains `deliberately NOT a wire key`
+/// ```
+///
+/// Two backticked tokens with one verb between them and nothing after — the shape `named_commits`
+/// already established for reading evidence off a mark line, and strict so that **the sentence a
+/// person reads and the predicate the machine evaluates are the same text.** A line this cannot
+/// parse is [`Fault::UnreadWitness`] rather than a line that quietly does not count, for
+/// [`Fault::UnknownTag`]'s reason: a typo must not read as absent.
+///
+/// ⚠ SPELLED rather than linked, because that reader is private and this constant is public, which
+/// is `private_intra_doc_links` under `-D warnings` — register item 365, and the doc gate refused
+/// this file for it on the round that wrote this line. [`RED`]'s doc takes the same care one mark
+/// over, for the same reason.
+pub const WITNESS: &str = "@witness:";
+
+/// ⛔⛔⛔⛔⛔ **HOW MANY WITNESSES THE OPEN POPULATION IS EXPECTED TO STATE** — register item 488,
+/// and the thing that keeps [`Reading::witnessed`] from going vacuously green.
+///
+/// # ⛔⛔⛔ Why a floor at all, and why it RISES where its four neighbours fall
+///
+/// [`Reading::witnessed`] examines the open items that state a witness. On a ledger that states
+/// none it examines nothing and reports `witnesses 0 judged, 0 dated` — which is register item
+/// 924's finding exactly: *asked, and found nothing wrong* and *never asked* are the same silence.
+/// [`Reading::order_covers`]'s rule is the one applied here — **an assertion whose subject can
+/// empty out is restated, not deleted.**
+///
+/// So the subject is declared, and the direction is the opposite of [`DECLARATION`]'s: this is
+/// COVERAGE, not a backlog, so the number may only go UP. Deleting witnesses, or deleting the
+/// evaluation and leaving the marks, drops the count below the floor and reds.
+///
+/// # ⚠⚠⚠ THE RESIDUE, STATED RATHER THAN HIDDEN
+///
+/// This does NOT demand that every open item state a witness, and it must not: many of this
+/// ledger's premises are rates, timings and counts that no `contains` can ask, and a convention
+/// that cannot be met honestly is one that gets met dishonestly. What is bought is that the
+/// coverage cannot silently fall to zero, and that a round which adds one has to say so. **The
+/// pressure toward covering the other ninety is the floor rising, and nothing else.**
+pub const WITNESS_DECLARATION: &str = "@witness-floor:";
+
 /// ⛔⛔⛔⛔⛔ **THE PLATFORMS A [`RED`] CLAIM MAY BE ABOUT** — register item 949.
 ///
 /// # ⛔⛔⛔ Why a closed set and not whatever `std::env::consts::OS` says
@@ -638,6 +726,116 @@ impl Judged {
             at: at.to_owned(),
         })
     }
+}
+
+/// ⛔⛔⛔⛔⛔ **ONE MEASUREMENT AN OPEN ITEM STATES, IN A FORM THIS TREE CAN BE ASKED** — register
+/// item 488. See [`WITNESS`] for why a premise and not a finish condition.
+///
+/// ⚠ A CLAIM AND NOT A FACT, exactly as [`Item::red`] is one. Whether it still holds is
+/// [`Reading::witnessed`]'s question, and it is put to the tree — see [`Tree`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Witness {
+    /// The file the claim is about, relative to the repository root.
+    pub path: String,
+    /// Which way round the claim runs.
+    pub holds: Holds,
+    /// The text the claim is about. Never trimmed and never interpreted: the bytes between the
+    /// backticks, because a premise about leading space is a premise.
+    pub text: String,
+}
+
+/// Which way round a [`Witness`] runs.
+///
+/// ⚠⚠ **BOTH DIRECTIONS, AND THE ABSENT ONE IS NOT THE AFTERTHOUGHT.** Item 488's own premise is an
+/// ABSENCE — *`build.rs` emits no `cargo:rerun-if-changed` (measured: zero occurrences)* — and it
+/// is the half that went stale. A mark that could only say *contains* could not have stated the
+/// claim that rotted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Holds {
+    /// The file contains the text.
+    Contains,
+    /// The file does not contain the text.
+    Lacks,
+}
+
+impl Holds {
+    /// The word this is spelled with on a [`WITNESS`] line.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Contains => "contains",
+            Self::Lacks => "lacks",
+        }
+    }
+
+    /// Whether a file whose text is known satisfies this claim.
+    #[must_use]
+    pub fn satisfied_by(self, body: &str, text: &str) -> bool {
+        match self {
+            Self::Contains => body.contains(text),
+            Self::Lacks => !body.contains(text),
+        }
+    }
+}
+
+impl fmt::Display for Holds {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.word())
+    }
+}
+
+impl Witness {
+    /// Read a [`WITNESS`] line's value: `` `<path>` contains|lacks `<text>` ``.
+    ///
+    /// # ⚠⚠ Why the grammar admits nothing after the second backtick
+    ///
+    /// A trailing sentence would be the half a reader believes and the machine ignores, which is
+    /// the whole defect this mark was opened by. Everything a person wants to add goes on the next
+    /// line of the block, where it is prose and is honestly labelled as prose.
+    ///
+    /// # Errors
+    ///
+    /// [`None`] for anything this grammar does not spell: a value that is not exactly two backticked
+    /// tokens around one of [`Holds`]'s two words, an empty token, or a path that is absolute or
+    /// climbs out of the tree. The caller raises [`Fault::UnreadWitness`] — never a silence.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        // ⚠ `split('`')` on a well-formed value yields five parts: the empty space before the
+        // first backtick, the path, the verb, the text, and the empty space after the last. Any
+        // other count is a line this cannot read, including one with a stray backtick in it.
+        let parts: Vec<&str> = value.split('`').collect();
+        let [before, path, verb, text, after] = parts.as_slice() else {
+            return None;
+        };
+        if !before.trim().is_empty() || !after.trim().is_empty() {
+            return None;
+        }
+        let holds = match verb.trim() {
+            "contains" => Holds::Contains,
+            "lacks" => Holds::Lacks,
+            _ => return None,
+        };
+        if text.is_empty() || !safe_path(path) {
+            return None;
+        }
+        Some(Self {
+            path: (*path).to_owned(),
+            holds,
+            text: (*text).to_owned(),
+        })
+    }
+}
+
+/// Whether a [`WITNESS`] path is one this instrument may open.
+///
+/// ⛔⛔ **RELATIVE, AND NEVER UPWARD.** The ledger lives outside the repository it talks about, and
+/// a path that escapes the tree would make a claim about a file no reader of the ledger can find —
+/// which is the shape [`Fault::PaidCommitUnresolved`] refuses one claim over. Empty is refused for
+/// the same reason a `paid` mark naming no commit is.
+fn safe_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.split('/').any(|part| part == ".." || part == ".")
 }
 
 impl RedClaim {
@@ -999,6 +1197,13 @@ pub struct Item {
     /// [`Fault::UnknownOwned`] rather than a line that quietly does not count, which is this
     /// workspace's rule 6 in the place a typo would otherwise retire the gate.
     pub owns: Vec<&'static str>,
+    /// ⛔⛔⛔⛔⛔ **THE MEASUREMENTS IT STATES IN ASKABLE FORM** — register item 488. The values of
+    /// its [`WITNESS`] lines, in document order; empty for every item that states none, which is
+    /// nearly all of them.
+    ///
+    /// ⚠ Several are a CONJUNCTION and each is asked separately: an item may rest on more than one
+    /// measured fact, and the one that moved is the one a reader has to be told about.
+    pub witnesses: Vec<Witness>,
     /// Whether any block of it names the loop — the alarm's input, never the population's.
     pub names_the_loop: bool,
     /// Whether the prose vocabulary reads it as closed — likewise only the alarm's input.
@@ -1247,6 +1452,69 @@ pub enum Fault {
     },
     /// [`PAID_DECLARATION`] is present and states no number.
     UnreadablePaidDeclaration {
+        /// The line as written.
+        line: String,
+    },
+    /// ⛔⛔⛔⛔⛔ **A [`WITNESS`] THIS TREE NO LONGER AGREES WITH** — register item 488, and the
+    /// whole of what this mark buys: the item is still asserting something the repository has
+    /// stopped saying, so its block is dated and every sentence built on that premise — its
+    /// `Done when` first — has to be read again.
+    ///
+    /// ⚠ NOT a verdict that the item is wrong. It is the sentence *working rule 4 is owed here*,
+    /// said by a machine on every run instead of by a round that happens to remember.
+    WitnessDated {
+        /// The item that states it.
+        number: u32,
+        /// The file it is about.
+        path: String,
+        /// Which way round the claim ran.
+        holds: Holds,
+        /// The text it is about.
+        text: String,
+    },
+    /// A [`WITNESS`] naming a file this tree does not hold — a claim wearing evidence's clothes,
+    /// which is [`Fault::PaidCommitUnresolved`]'s finding at the line one mark over.
+    WitnessUnreadable {
+        /// The item that states it.
+        number: u32,
+        /// The path it named.
+        path: String,
+    },
+    /// A [`WITNESS`] line this grammar cannot spell. A typo must not read as absent — the rule
+    /// [`Fault::UnknownTag`] holds, for its reason.
+    UnreadWitness {
+        /// The item it was found in.
+        number: u32,
+        /// The line as written.
+        line: String,
+    },
+    /// ⛔⛔⛔ **FEWER WITNESSES THAN [`WITNESS_DECLARATION`] DECLARES, OR MORE.** The coverage floor
+    /// that keeps [`Reading::witnessed`] from examining an empty population and reading like a gate
+    /// that passed — register items 488 and 924. Unlike its four backlog neighbours this may only
+    /// RISE: see [`WITNESS_DECLARATION`].
+    WitnessFloor {
+        /// The items whose witnesses this pass counted — register item 934's rule, so a reader is
+        /// handed something to open rather than a number.
+        counted: Vec<u32>,
+        /// How many witnesses those items state between them.
+        stated: usize,
+        /// What the ledger declared.
+        declared: usize,
+    },
+    /// ⛔⛔⛔⛔⛔ **THE LEDGER STATES WITNESSES AND NOT ONE OF THEM IS ON AN OPEN ITEM**, so
+    /// [`Reading::witnessed`] put no question and exited green — register items 488 and 924, and
+    /// the hole [`WITNESS_DECLARATION`]'s floor cannot cover by construction.
+    WitnessesUnasked {
+        /// How many witnesses section A states, all of them on items that have left the population.
+        stated: usize,
+    },
+    /// [`WITNESS_DECLARATION`] appears other than exactly once.
+    WitnessDeclaration {
+        /// How many lines carried it.
+        found: usize,
+    },
+    /// [`WITNESS_DECLARATION`] is present and states no number.
+    UnreadableWitnessDeclaration {
         /// The line as written.
         line: String,
     },
@@ -1636,6 +1904,60 @@ impl fmt::Display for Fault {
                 "`{}` states no number — a floor nobody can read is not a floor",
                 line.trim(),
             ),
+            Self::WitnessDated {
+                number,
+                path,
+                holds,
+                text,
+            } => write!(
+                f,
+                "item {number} states that `{path}` {holds} `{text}` and this tree no longer says \
+                 so — the block is dated, so read it and re-measure what rests on that premise, \
+                 its `Done when` first. ⛔ Do not delete the witness to make this green: the \
+                 repair is the SENTENCE, and the mark is what noticed",
+            ),
+            Self::WitnessUnreadable { number, path } => write!(
+                f,
+                "item {number} states a witness about `{path}` and this tree holds no such file — \
+                 a claim wearing evidence's clothes. Name the file it is really about, or say in \
+                 prose that the file is gone and why",
+            ),
+            Self::UnreadWitness { number, line } => write!(
+                f,
+                "item {number}'s `{}` cannot be read: a witness is exactly `` `<path>` `` then \
+                 `contains` or `lacks` then `` `<text>` `` and nothing after it, so that the \
+                 sentence a person reads and the predicate this asks are the same text",
+                line.trim(),
+            ),
+            Self::WitnessFloor {
+                counted,
+                stated,
+                declared,
+            } => write!(
+                f,
+                "section A states {stated} witness(es) and `{WITNESS_DECLARATION}` declares \
+                 {declared} — this floor may only RISE, and paying a witnessed item does not lower \
+                 it because a paid block keeps its lines. A smaller count means witnesses were \
+                 DELETED. Stated by: {}",
+                name_some(counted, Ends::Highest),
+            ),
+            Self::WitnessesUnasked { stated } => write!(
+                f,
+                "section A states {stated} witness(es) and every one of them sits on an item that \
+                 has left the population, so this gate examined nothing and would have exited \
+                 green — put a measurement of an OPEN item into `{WITNESS}` form, which is the \
+                 only thing that makes this gate mean anything",
+            ),
+            Self::WitnessDeclaration { found } => write!(
+                f,
+                "found {found} `{WITNESS_DECLARATION}` lines, need exactly 1 — a floor with no \
+                 number cannot keep a gate's population from emptying",
+            ),
+            Self::UnreadableWitnessDeclaration { line } => write!(
+                f,
+                "`{}` states no number — a floor nobody can read is not a floor",
+                line.trim(),
+            ),
         }
     }
 }
@@ -1653,6 +1975,8 @@ pub struct Reading {
     pub parent_declared: Option<usize>,
     /// What [`PAID_DECLARATION`] said, when exactly one line said it. Register item 902.
     pub paid_declared: Option<usize>,
+    /// What [`WITNESS_DECLARATION`] said, when exactly one line said it. Register item 488.
+    pub witnesses_declared: Option<usize>,
     /// Everything that has to be fixed.
     pub faults: Vec<Fault>,
 }
@@ -2605,12 +2929,17 @@ impl Reading {
         cap: u32,
         reds: &[u32],
         commits: &dyn Commits,
+        tree: &dyn Tree,
     ) -> Result<Screenings, String> {
         Ok(Screenings {
             deferrals: self.deferred_unread(cap),
             paid_commits: self.paid_commits(commits)?,
             judged_commits: self.judged_commits(commits)?,
             backlog_owners: self.backlog_owners(),
+            // ⚠⚠ THE TREE IS TAKEN FOR THIS ONE ALONE — register item 488, and injected for
+            // `commits`' reason rather than reached for: the ledger is not in the repository it
+            // talks about, and this crate opens neither.
+            witnesses: self.witnessed(tree)?,
             // ⚠⚠ `reds` IS TAKEN HERE ONLY FOR THIS ONE — register item 1052. The work order's
             // population is what the ledger ADMITS, and a standing red is one of the two declared
             // overrides that decides it; screening the order against a set derived without them
@@ -2841,6 +3170,84 @@ impl Reading {
         })
     }
 
+    /// 🎯🎯🎯🎯🎯 **AND THE MEASUREMENTS THE OPEN POPULATION STATES, PUT BACK TO THE TREE** —
+    /// register item 488, and this crate's answer to working rule 4 becoming a machine.
+    ///
+    /// # What is asked, and of whom
+    ///
+    /// Every [`WITNESS`] of every [`Tag::Open`] item — see that constant for why open only. One
+    /// question per witness, so `judged` is questions PUT and never distinct files, which is the
+    /// rule [`Screening`]'s own doc sets down.
+    ///
+    /// # ⛔⛔⛔ The floor is judged HERE, beside what it is a floor over
+    ///
+    /// [`WITNESS_DECLARATION`] is not one of the four backlog ratchets and must not be judged with
+    /// them: it rises where they fall, and it exists to keep THIS screening's population from
+    /// emptying out. A floor judged somewhere else would be a second authority on whether this gate
+    /// has a subject — register item 213 — and the one that PRINTS would not be the one that
+    /// refuses.
+    ///
+    /// # Errors
+    ///
+    /// Whatever `tree` said when it could not be asked at all — never a verdict about one path. The
+    /// split [`Reading::paid_commits`] keeps, for the reason recorded there.
+    pub fn witnessed(&self, tree: &dyn Tree) -> Result<Screening, String> {
+        let mut judged = 0;
+        let mut faults = Vec::new();
+        let mut counted: Vec<u32> = Vec::new();
+        let mut stated = 0;
+        for item in self.items.iter().filter(|it| !it.witnesses.is_empty()) {
+            counted.push(item.number);
+            stated += item.witnesses.len();
+            if item.tag != Some(Tag::Open) {
+                continue;
+            }
+            for witness in &item.witnesses {
+                judged += 1;
+                match tree.read(&witness.path)? {
+                    Some(body) => {
+                        if !witness.holds.satisfied_by(&body, &witness.text) {
+                            faults.push(Fault::WitnessDated {
+                                number: item.number,
+                                path: witness.path.clone(),
+                                holds: witness.holds,
+                                text: witness.text.clone(),
+                            });
+                        }
+                    }
+                    None => faults.push(Fault::WitnessUnreadable {
+                        number: item.number,
+                        path: witness.path.clone(),
+                    }),
+                }
+            }
+        }
+        if let Some(floor) = self.witnesses_declared {
+            if stated != floor {
+                faults.push(Fault::WitnessFloor {
+                    counted,
+                    stated,
+                    declared: floor,
+                });
+            }
+            // ⛔⛔⛔⛔⛔ AND THE ONE STATE THE FLOOR ABOVE CANNOT SEE: every witness the ledger
+            // states sits on an item that is no longer open, so this gate PUT NO QUESTION and
+            // exited green — register item 924's finding, which is why the floor alone is not
+            // enough. The floor is over every witness line in section A so that PAYING a witnessed
+            // item never lowers it; that is exactly the move which can empty this screening's own
+            // population while the floor stays satisfied.
+            if floor > 0 && judged == 0 {
+                faults.push(Fault::WitnessesUnasked { stated });
+            }
+        }
+        Ok(Screening {
+            label: "witnesses",
+            found: "dated",
+            judged,
+            faults,
+        })
+    }
+
     /// Whether this reading is clean.
     #[must_use]
     pub fn is_green(&self) -> bool {
@@ -2875,6 +3282,26 @@ pub trait Commits {
     /// A sentence naming why the question could not be PUT. Two commits on unrelated histories are
     /// `Ok(false)` in both directions — a FACT about the pair, and the caller says what it means.
     fn descends(&self, ancestor: &str, descendant: &str) -> Result<bool, String>;
+}
+
+/// ⛔⛔⛔⛔⛔ **WHO ANSWERS WHAT A FILE OF THE REPOSITORY SAYS** — register item 488, injected for
+/// [`Commits`]'s reason and not a different one: the ledger is not in the tree it talks about, and
+/// this crate must not decide where that tree is.
+pub trait Tree {
+    /// The text of `path`, or [`None`] where the tree holds no such file.
+    ///
+    /// # ⛔⛔⛔ A missing file is an ANSWER; an unreachable tree is not
+    ///
+    /// [`None`] is a fact about the repository — *there is no such file* — and the caller turns it
+    /// into [`Fault::WitnessUnreadable`] for that one line, exactly as an unresolvable commit id
+    /// becomes one item's fault in [`Reading::paid_commits`]. An error is reserved for not being
+    /// able to ASK at all, because forty item faults from one broken environment is a RED readers
+    /// learn to skip, which is how a gate dies.
+    ///
+    /// # Errors
+    ///
+    /// A sentence naming why the question could not be PUT — never why one path failed.
+    fn read(&self, path: &str) -> Result<Option<String>, String>;
 }
 
 /// The `<data>` id a loop document declares its re-aim cap under.
@@ -3092,6 +3519,11 @@ fn red_value(line: &str) -> Option<&str> {
 /// The value of a [`JUDGED`] line, by the same whole-line rule [`mark_value`] holds.
 fn judged_value(line: &str) -> Option<&str> {
     line.trim_start().strip_prefix(JUDGED)
+}
+
+/// The value of a [`WITNESS`] line, by the same whole-line rule [`mark_value`] holds.
+fn witness_value(line: &str) -> Option<&str> {
+    line.trim_start().strip_prefix(WITNESS)
 }
 
 /// The value of an [`OWNER`] line, by the same whole-line rule [`mark_value`] holds.
@@ -3588,6 +4020,8 @@ pub struct Screenings {
     pub backlog_owners: Screening,
     /// Whether the derived work order is the whole of what this ledger admits — register item 1052.
     pub work_order: Screening,
+    /// The open population's stated measurements, put back to the tree — register item 488.
+    pub witnesses: Screening,
 }
 
 impl Screenings {
@@ -3596,13 +4030,14 @@ impl Screenings {
     /// `Self` makes a fourth screening a compile error in **this one place**, and everything that
     /// prints or judges a screening walks it through here.
     #[must_use]
-    pub fn each(&self) -> [&Screening; 5] {
+    pub fn each(&self) -> [&Screening; 6] {
         let Self {
             deferrals,
             paid_commits,
             judged_commits,
             backlog_owners,
             work_order,
+            witnesses,
         } = self;
         [
             deferrals,
@@ -3610,6 +4045,7 @@ impl Screenings {
             judged_commits,
             backlog_owners,
             work_order,
+            witnesses,
         ]
     }
 
@@ -3845,6 +4281,16 @@ pub fn read(text: &str) -> Reading {
         |found| Fault::PaidDeclaration { found },
         |line| Fault::UnreadablePaidDeclaration { line },
     );
+    // ⛔⛔⛔⛔⛔ AND THE COVERAGE FLOOR FOR WITNESSES — register item 488, read the same way its
+    // four neighbours are. ⚠ Its DIRECTION is the opposite of theirs and that is stated where it
+    // can be read: see [`WITNESS_DECLARATION`].
+    let witnesses_declared = declared_floor(
+        text,
+        WITNESS_DECLARATION,
+        &mut faults,
+        |found| Fault::WitnessDeclaration { found },
+        |line| Fault::UnreadableWitnessDeclaration { line },
+    );
 
     let mut items: Vec<Item> = Vec::new();
     for (number, bodies) in &blocks {
@@ -3862,6 +4308,9 @@ pub fn read(text: &str) -> Reading {
         // ⛔ Register item 939: the backlogs this item claims, settled by the topmost block that
         // claims anything — see below.
         let mut owns: Vec<&'static str> = Vec::new();
+        // ⛔ Register item 488: the measurements this item states in askable form, settled by the
+        // topmost block that states any — see below.
+        let mut witnesses: Vec<Witness> = Vec::new();
         for body in bodies {
             let mut in_block: Vec<Tag> = Vec::new();
             let mut named: Vec<String> = Vec::new();
@@ -3871,6 +4320,7 @@ pub fn read(text: &str) -> Reading {
             let mut reds: Vec<RedClaim> = Vec::new();
             let mut judgements: Vec<Judged> = Vec::new();
             let mut owned: Vec<&'static str> = Vec::new();
+            let mut witnessed: Vec<Witness> = Vec::new();
             for line in body {
                 if let Some(value) = parent_value(line) {
                     match Parent::parse(value) {
@@ -3938,6 +4388,20 @@ pub fn read(text: &str) -> Reading {
                         }
                     }
                 }
+                // ⛔⛔⛔⛔⛔ AND THE MEASUREMENTS IT STATES IN ASKABLE FORM — register item 488.
+                // An unreadable value is a FAULT and never a silence, for `UnrunnableRed`'s reason
+                // three lines up: a witness this instrument cannot put to the tree would sit in
+                // the ledger looking like a checked one, which is the whole shape this mark exists
+                // to end.
+                if let Some(value) = witness_value(line) {
+                    match Witness::parse(value) {
+                        Some(found) => witnessed.push(found),
+                        None => faults.push(Fault::UnreadWitness {
+                            number: *number,
+                            line: (*line).to_string(),
+                        }),
+                    }
+                }
                 if let Some(value) = severity_value(line) {
                     match Severity::parse(value) {
                         Some(found) => severities.push(found),
@@ -4000,6 +4464,14 @@ pub fn read(text: &str) -> Reading {
             if owns.is_empty() {
                 owns = std::mem::take(&mut owned);
             }
+            // ⚠⚠ AND SO DO THE WITNESSES — register item 488, by the same rule and for the same
+            // reason the ownership claim above it follows: a premise stated by a block that lost
+            // the tie is a premise this item is no longer asserting, and holding the ledger to one
+            // of those would be a fault about a sentence nobody is making. Several in ONE block
+            // are all kept — they are a conjunction, and the one that moved is the one to name.
+            if witnesses.is_empty() {
+                witnesses = std::mem::take(&mut witnessed);
+            }
             if parent.is_none() {
                 parent = parents.first().copied();
                 // ⚠ In the SAME breath as the parent it explains, for the reason item 902 gives
@@ -4047,6 +4519,7 @@ pub fn read(text: &str) -> Reading {
             judged,
             commits,
             owns,
+            witnesses,
             names_the_loop,
             reads_as_closed,
         });
@@ -4101,6 +4574,7 @@ pub fn read(text: &str) -> Reading {
         severity_declared,
         parent_declared,
         paid_declared,
+        witnesses_declared,
         faults,
     };
 
@@ -4196,6 +4670,7 @@ mod tests {
 @sev-unclassified: 0
 @from-unclassified: 3
 @paid-uncommitted: 1
+@witness-floor: 0
 
 900. ⛔ **An open loop item**
      @ns: open — the loop's own driver
@@ -4234,6 +4709,7 @@ mod tests {
 @sev-unclassified: 0
 @from-unclassified: 2
 @paid-uncommitted: 0
+@witness-floor: 0
 
 800. ⛔ **Older than the mark**
      @ns: open — nobody wrote a chain for it
@@ -7124,6 +7600,10 @@ mod tests {
             | Fault::SeverityRatchetGrew { counted, .. }
             | Fault::ParentRatchetGrew { counted, .. }
             | Fault::PaidRatchetGrew { counted, .. }
+            // ⛔ AND REGISTER ITEM 488's FLOOR, which is a floor over the same kind of thing even
+            // though it rises where its neighbours fall: a reader told *2 declared, 1 stated* has
+            // a ledger of six hundred blocks and nothing to search for unless the set comes too.
+            | Fault::WitnessFloor { counted, .. }
             | Fault::RatchetSlack { counted, .. } => Some(counted),
             // Everything else is about ONE line or ONE item, which its own message already names.
             Fault::UnknownTag { .. }
@@ -7163,7 +7643,17 @@ mod tests {
             | Fault::JudgedElsewhere { .. }
             | Fault::JudgedCommitUnresolved { .. }
             // ⚠ Register item 939's first fault is about ONE line, which its message quotes.
-            | Fault::UnknownOwned { .. } => None,
+            | Fault::UnknownOwned { .. }
+            // ⚠⚠ Register item 488's four name ONE item each — the item, the path and the text it
+            // is about, all in the message — except the last, which is about the LEDGER and names
+            // no item because there is none to name: every witness it counts has left the
+            // population. These arms are the same gate working a fourth time.
+            | Fault::WitnessDated { .. }
+            | Fault::WitnessUnreadable { .. }
+            | Fault::UnreadWitness { .. }
+            | Fault::WitnessesUnasked { .. }
+            | Fault::WitnessDeclaration { .. }
+            | Fault::UnreadableWitnessDeclaration { .. } => None,
             // ⛔ AND ITS SECOND ONE DOES CARRY A SET — register item 939. The items claiming a
             // backlog are what a reader has to go and look at, and there is no other line naming
             // them; the empty case is the one where the set is the point.
@@ -7250,6 +7740,7 @@ mod tests {
 @sev-unclassified: 0
 @from-unclassified: 2
 @paid-uncommitted: 1
+@witness-floor: 0
 
 900. Everything the loop ever owed, paid
      @ns: paid
@@ -7899,6 +8390,7 @@ mod tests {
 @sev-unclassified: 0
 @from-unclassified: 1
 @paid-uncommitted: 0
+@witness-floor: 0
 
 900. The root debt, owed
      @ns: open
@@ -8049,7 +8541,7 @@ mod tests {
         // its own; the labels below are what refuse that, one per screening, sourced from the
         // struct so a fourth screening's label is checked the moment it exists.
         let screenings = read(LEDGER)
-            .screenings(1, &[], &EveryIdResolves)
+            .screenings(1, &[], &EveryIdResolves, &Holding(Vec::new()))
             .expect("the fixture asker never fails");
         for screening in screenings.each() {
             assert!(
@@ -8157,5 +8649,277 @@ mod tests {
                  longer prints `{printed}`, so its population is once again a number nobody sees",
             );
         }
+    }
+
+    // ── register item 488: the ledger's own measurements, put back to the tree ──────────────────
+
+    /// A tree that holds exactly the files it was built with — the shape the fakes for [`Commits`]
+    /// take one gate over, and for their reason: a test about a witness must never be red because
+    /// a real repository happened to move.
+    struct Holding(Vec<(&'static str, &'static str)>);
+
+    impl Tree for Holding {
+        fn read(&self, path: &str) -> Result<Option<String>, String> {
+            Ok(self
+                .0
+                .iter()
+                .find(|(at, _)| *at == path)
+                .map(|(_, body)| (*body).to_owned()))
+        }
+    }
+
+    /// A ledger whose open item rests on one measured fact, stated in askable form.
+    ///
+    /// ⚠ `@witness-floor: 1` rather than 0, so every test below that does not mean to disturb the
+    /// floor is counting a subject that exists — the floor's own reason, applied to its fixture.
+    const WITNESSED: &str = "\
+# Ledger
+## A. THE SHARPEST THINGS OPEN
+@ns-unclassified: 0
+@sev-unclassified: 0
+@from-unclassified: 0
+@paid-uncommitted: 0
+@witness-floor: 1
+
+700. ⛔ **It rests on a thing the tree says**
+     @ns: open — the premise below is why
+     @sev: ordinary — it is the standing backlog
+     @from: none
+     @witness: `src/door.rs` contains `the latch is declared here`
+";
+
+    /// 🎯🎯🎯🎯🎯 **THE MEASUREMENT IS PUT BACK TO THE TREE, AND A TREE THAT HAS MOVED IS A RED** —
+    /// register item 488, and the whole of what the mark buys.
+    ///
+    /// ⛔⛔⛔⛔⛔ **THE CONTROL IS HALF OF THIS TEST AND NOT A COURTESY.** Asserting only the red
+    /// would pass on an implementation that faults every witness, which is the vacuous direction
+    /// this file has met before: a gate that is always red teaches its reader to delete it.
+    #[test]
+    fn a_measurement_this_tree_no_longer_agrees_with_is_a_red() {
+        let reading = read(WITNESSED);
+        let agreeing = Holding(vec![("src/door.rs", "// the latch is declared here\n")]);
+        let screening = reading
+            .witnessed(&agreeing)
+            .expect("a tree that can be asked");
+        assert_eq!(
+            (screening.judged, screening.faults.len()),
+            (1, 0),
+            "⛔ a tree that still says what the ledger says must be CLEAN, and it must have been \
+             ASKED: {screening}",
+        );
+
+        let moved = Holding(vec![("src/door.rs", "// the latch moved to the frame\n")]);
+        let screening = reading.witnessed(&moved).expect("a tree that can be asked");
+        assert_eq!(
+            screening.faults,
+            vec![Fault::WitnessDated {
+                number: 700,
+                path: "src/door.rs".to_owned(),
+                holds: Holds::Contains,
+                text: "the latch is declared here".to_owned(),
+            }],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 488: the ledger asserts something this tree has stopped \
+             saying and nothing said so. That is the state item 488 sat in for 21 days while \
+             `next` handed it out.",
+        );
+        assert!(
+            screening.faults[0].to_string().contains("`Done when`"),
+            "⛔ the refusal must send the reader to the sentence that rests on the premise, or it \
+             is a notice: {}",
+            screening.faults[0],
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE OTHER DIRECTION, WHICH IS THE ONE ITEM 488 ITSELF NEEDED.** Its premise
+    /// was an ABSENCE — *`build.rs` emits no `cargo:rerun-if-changed`* — so a mark that could only
+    /// say *contains* could not have stated the claim that went stale.
+    #[test]
+    fn an_absence_is_a_premise_and_it_is_the_one_that_went_stale() {
+        let ledger = WITNESSED.replace(
+            "contains `the latch is declared here`",
+            "lacks `the latch is declared here`",
+        );
+        let reading = read(&ledger);
+        let silent = Holding(vec![("src/door.rs", "// nothing about latches\n")]);
+        assert!(
+            reading
+                .witnessed(&silent)
+                .expect("a tree that can be asked")
+                .faults
+                .is_empty(),
+            "⛔ an absence that is still absent is the ledger being RIGHT",
+        );
+        let arrived = Holding(vec![("src/door.rs", "// the latch is declared here\n")]);
+        let screening = reading
+            .witnessed(&arrived)
+            .expect("a tree that can be asked");
+        assert_eq!(
+            screening.faults.len(),
+            1,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 488: what the ledger said was ABSENT has arrived, and that is \
+             exactly how item 488's diagnosis died — `98b92540` added the line the block says is \
+             not there, and the register went on handing the block out: {screening}",
+        );
+    }
+
+    /// ⛔⛔⛔ **A WITNESS IS ASKED OF OPEN ITEMS ONLY** — see [`WITNESS`]. A paid block describes
+    /// the tree as it WAS, so holding one to today's tree would fill this gate with noise by
+    /// design, and a gate whose reader learns to skip it is a dead gate.
+    #[test]
+    fn a_paid_block_states_history_and_is_not_held_to_todays_tree() {
+        let paid = WITNESSED.replace(
+            "@ns: open — the premise below is why",
+            "@ns: paid `abc1234`",
+        );
+        let reading = read(&paid);
+        let moved = Holding(vec![("src/door.rs", "// the latch moved to the frame\n")]);
+        let screening = reading.witnessed(&moved).expect("a tree that can be asked");
+        assert_eq!(
+            screening.judged, 0,
+            "⛔ a paid item's premise must not be PUT to the tree at all: {screening}",
+        );
+        assert_eq!(
+            screening.faults,
+            vec![Fault::WitnessesUnasked { stated: 1 }],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 924: every witness the ledger states has left the population, \
+             so this gate examined nothing — and without this it would have exited GREEN, which is \
+             the one shape that cannot be told from *asked and clean*: {screening}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A LINE THIS GRAMMAR CANNOT SPELL IS A FAULT, NEVER A SILENCE** — [`UnknownTag`]'s
+    /// rule at the newest mark, and sharper here: a witness that quietly did not count would be a
+    /// premise the ledger believes is checked and nothing ever asks.
+    ///
+    /// [`UnknownTag`]: Fault::UnknownTag
+    #[test]
+    fn a_witness_line_this_grammar_cannot_spell_is_a_fault() {
+        for (spelling, why) in [
+            ("src/door.rs contains latch", "no backticks at all"),
+            ("`src/door.rs` contains latch", "the text is not quoted"),
+            ("`src/door.rs` holds `latch`", "a verb outside the two"),
+            (
+                "`src/door.rs` contains `latch` — and that matters",
+                "a trailing sentence, which is the half a reader believes and the machine drops",
+            ),
+            ("`/etc/passwd` contains `root`", "an absolute path"),
+            (
+                "`../elsewhere/door.rs` contains `latch`",
+                "a path that climbs out",
+            ),
+            (
+                "`src/door.rs` contains ``",
+                "empty text, which every file contains",
+            ),
+            ("`` contains `latch`", "no path"),
+        ] {
+            assert!(
+                Witness::parse(spelling).is_none(),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 488: `{spelling}` was read as a witness and it is {why}",
+            );
+            let ledger = WITNESSED.replace(
+                "`src/door.rs` contains `the latch is declared here`",
+                spelling,
+            );
+            let reading = read(&ledger);
+            assert!(
+                reading
+                    .faults
+                    .iter()
+                    .any(|fault| matches!(fault, Fault::UnreadWitness { number: 700, .. })),
+                "⛔ the PARSE must raise it too, or a bad line is only refused by a unit test \
+                 nobody runs the ledger through: {spelling}",
+            );
+        }
+    }
+
+    /// A witness naming a file this tree does not hold is a claim wearing evidence's clothes —
+    /// register item 902's finding at the newest mark.
+    ///
+    /// ⚠⚠ AND IT IS NOT AN ERROR. A missing file is an ANSWER about this repository; an error is
+    /// reserved for not being able to ask at all, which is [`Tree::read`]'s stated split and the
+    /// reason forty faults never come out of one broken environment.
+    #[test]
+    fn a_witness_about_a_file_this_tree_does_not_hold_is_that_items_fault() {
+        let reading = read(WITNESSED);
+        let empty = Holding(Vec::new());
+        let screening = reading.witnessed(&empty).expect("a tree that can be asked");
+        assert_eq!(
+            screening.faults,
+            vec![Fault::WitnessUnreadable {
+                number: 700,
+                path: "src/door.rs".to_owned(),
+            }],
+            "⛔ a path that is not there must be ONE item's fault and never an inability to ask: \
+             {screening}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE FLOOR IS OVER EVERY WITNESS LINE IN SECTION A, SO PAYING NEVER LOWERS IT.**
+    ///
+    /// This is the half that makes *may only rise* true rather than aspirational: counted over the
+    /// OPEN items alone, closing a witnessed item would drop the count below the floor and a round
+    /// would have to lower a ratchet in order to pay something — which is a ratchet that teaches
+    /// its own evasion.
+    #[test]
+    fn paying_a_witnessed_item_does_not_lower_the_floor() {
+        let paid = WITNESSED.replace(
+            "@ns: open — the premise below is why",
+            "@ns: paid `abc1234`",
+        );
+        let reading = read(&paid);
+        let moved = Holding(vec![("src/door.rs", "// the latch moved to the frame\n")]);
+        let screening = reading.witnessed(&moved).expect("a tree that can be asked");
+        assert!(
+            !screening
+                .faults
+                .iter()
+                .any(|fault| matches!(fault, Fault::WitnessFloor { .. })),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 488: paying a witnessed item moved the FLOOR. A ratchet that \
+             a repayment breaks is one every repayment is taught to lower: {screening}",
+        );
+    }
+
+    /// ⛔⛔⛔ **AND THE FLOOR REDS IN BOTH DIRECTIONS** — [`ratchet`]'s own lesson, which is that a
+    /// floor asserted in one direction goes on reading fine while it drifts in the other.
+    #[test]
+    fn a_floor_that_disagrees_with_what_section_a_states_is_a_red_either_way() {
+        let tree = Holding(vec![("src/door.rs", "// the latch is declared here\n")]);
+        for (floor, stated) in [("@witness-floor: 2", 1usize), ("@witness-floor: 0", 1)] {
+            let ledger = WITNESSED.replace("@witness-floor: 1", floor);
+            let screening = read(&ledger)
+                .witnessed(&tree)
+                .expect("a tree that can be asked");
+            assert!(
+                screening.faults.iter().any(|fault| matches!(
+                    fault,
+                    Fault::WitnessFloor { stated: found, .. } if *found == stated
+                )),
+                "⛔ `{floor}` against {stated} stated witness(es) must red: {screening}",
+            );
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE MARK IS ACTUALLY REACHED FROM THE LEDGER THIS REPOSITORY RUNS ON.** Every
+    /// test above builds its own fixture, and a mark that parses beautifully in a fixture and is
+    /// spelled differently in the register would be a gate over nothing — which is register item
+    /// 856's *건널목마다 지워 보고 손목록 모집단은 세어 봐라* at the newest mark.
+    #[test]
+    fn the_witness_the_register_itself_states_is_one_this_grammar_reads() {
+        let stated =
+            "`crates/sprag-plugin/src/ai_loop.scxml` contains `deliberately NOT a wire key`";
+        let witness = Witness::parse(stated).expect("the register's own line parses");
+        assert_eq!(
+            (witness.path.as_str(), witness.holds),
+            ("crates/sprag-plugin/src/ai_loop.scxml", Holds::Contains),
+        );
+        let body = include_str!("../../sprag-plugin/src/ai_loop.scxml");
+        assert!(
+            witness.holds.satisfied_by(body, &witness.text),
+            "⛔⛔⛔ REGISTER ITEM 1038's premise no longer holds in this tree. That is not a bug in \
+             this test — it is this gate working: read item 1038 and re-measure what rests on \
+             `{}`",
+            witness.text,
+        );
     }
 }
