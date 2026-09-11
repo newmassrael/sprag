@@ -675,19 +675,11 @@ pub fn region_roots(scxml: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// ⚠ Through [`Source::of`] since register item 1046. This used to re-implement the walk's own
+    /// line split here, which is a second reader of "what is a comment" (item 213) and was one
+    /// field behind the moment a field was added.
     fn source(file: &str, text: &str) -> Source {
-        let code: Vec<_> = text
-            .lines()
-            .enumerate()
-            .map(|(index, line)| (index + 1, line.trim().to_owned()))
-            .filter(|(_, line)| !line.starts_with("//") && !line.starts_with('#'))
-            .collect();
-        Source {
-            file: file.to_owned(),
-            product: code.clone(),
-            code,
-            attributes: crate::sources::attribute_lines(text),
-        }
+        Source::of(file, text)
     }
 
     #[test]

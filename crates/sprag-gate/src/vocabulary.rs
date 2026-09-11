@@ -127,6 +127,25 @@ pub fn foreign_writers(sources: &[Source]) -> BTreeSet<String> {
 mod tests {
     use super::*;
 
+    /// The text of a file whose only non-blank lines are `at`, each on the line number it names.
+    ///
+    /// ⚠⚠ **The padding IS the file** — register item 1046. These cases assert on line numbers, and
+    /// before that item they got them by assembling a `Source` whose `product` held lines its
+    /// `code` did not: a shape no real file can produce, and therefore a control proving something
+    /// about an input the scan will never be handed. Writing the blank lines out costs nothing and
+    /// keeps every fixture here derivable from a text.
+    fn a_file_with(at: &[(usize, &str)]) -> String {
+        let last = at.iter().map(|(line, _)| *line).max().unwrap_or(0);
+        (1..=last)
+            .map(|line| {
+                at.iter()
+                    .find(|(named, _)| *named == line)
+                    .map_or("", |(_, text)| text)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// ⚠⚠⚠⚠⚠ THE SCAN'S OWN CONTROL, over text this test owns.
     ///
     /// The gate beside this asserts an EMPTY answer, and `is_empty()` is equally true of a scan that
@@ -135,17 +154,14 @@ mod tests {
     /// that, because once the item is paid there is nothing left there to find.
     #[test]
     fn the_scan_finds_a_hand_spelled_anchor_and_leaves_the_neighbouring_words_alone() {
-        let source = Source {
-            file: "crates/made-up/src/lib.rs".to_owned(),
-            code: Vec::new(),
-            // ⚠ No attribute in this case; empty says so rather than standing in — item 1044.
-            attributes: Vec::new(),
-            product: vec![
-                (7, "json!({ \"key\": key, \"ctrl\": mods.ctrl })".to_owned()),
-                (9, "let key = \"Enter\";".to_owned()),
-                (11, "match kind { Button::Left => \"button\", }".to_owned()),
-            ],
-        };
+        let source = Source::of(
+            "crates/made-up/src/lib.rs",
+            &a_file_with(&[
+                (7, "json!({ \"key\": key, \"ctrl\": mods.ctrl })"),
+                (9, "let key = \"Enter\";"),
+                (11, "match kind { Button::Left => \"button\", }"),
+            ]),
+        );
         let found = hand_spelled(std::slice::from_ref(&source), ANCHORS, &[]);
         assert_eq!(
             found,
@@ -164,13 +180,10 @@ mod tests {
     /// could not gate one.
     #[test]
     fn a_fixture_may_spell_what_a_writer_may_not() {
-        let source = Source {
-            file: "crates/made-up/tests/wire.rs".to_owned(),
-            code: Vec::new(),
-            // ⚠ No attribute in this case; empty says so rather than standing in — item 1044.
-            attributes: Vec::new(),
-            product: vec![(3, "json!({ \"key\": \"Enter\" })".to_owned())],
-        };
+        let source = Source::of(
+            "crates/made-up/tests/wire.rs",
+            &a_file_with(&[(3, "json!({ \"key\": \"Enter\" })")]),
+        );
         assert!(
             hand_spelled(std::slice::from_ref(&source), ANCHORS, &[]).is_empty(),
             "an integration test is where this wire is PROVEN, so its hand-built requests are the \

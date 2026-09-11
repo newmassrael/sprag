@@ -1978,19 +1978,10 @@ const fn american_colon() -> char {
 mod tests {
     use super::*;
 
+    /// ⚠ Through [`Source::of`] since register item 1046 — see `loop_shape`'s twin for why a
+    /// fixture that re-implements the line split is a second reader that drifts.
     fn source(file: &str, text: &str) -> Source {
-        let code: Vec<_> = text
-            .lines()
-            .enumerate()
-            .map(|(index, line)| (index + 1, line.trim().to_owned()))
-            .filter(|(_, line)| !line.starts_with("//") && !line.starts_with('#'))
-            .collect();
-        Source {
-            file: file.to_owned(),
-            product: code.clone(),
-            code,
-            attributes: crate::sources::attribute_lines(text),
-        }
+        Source::of(file, text)
     }
 
     fn chart(file: &str, text: &str) -> Statechart {

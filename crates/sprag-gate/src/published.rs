@@ -392,20 +392,7 @@ mod tests {
     /// Build a source the way the walk builds one, so a case cannot pass against a shape the real
     /// walk would never hand it — [`crate::sources`]'s own rule, one crate in.
     fn source(file: &str, lines: &[&str]) -> Source {
-        let product: Vec<(usize, String)> = lines
-            .iter()
-            .enumerate()
-            .map(|(index, text)| (index + 1, (*text).trim().to_owned()))
-            .collect();
-        Source {
-            file: file.to_owned(),
-            code: product.clone(),
-            product,
-            // ⚠ This fixture's cases carry no attribute, and an empty vector here says exactly
-            // that rather than standing in for one — register item 1044, whose gate spent a draft
-            // reading a field that had already thrown its subject away.
-            attributes: Vec::new(),
-        }
+        Source::of(file, &lines.join("\n"))
     }
 
     /// ⚠⚠⚠⚠⚠ THE SCAN'S OWN CONTROL, over text this test owns.

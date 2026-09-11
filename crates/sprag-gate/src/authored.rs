@@ -562,12 +562,7 @@ mod tests {
     /// a hardcoded path could not do, and the direction it failed in was the silent one.
     #[test]
     fn a_kind_is_found_by_the_road_its_readers_travel() {
-        let source = |file: &str, body: &str| Source {
-            file: file.to_owned(),
-            code: code(body),
-            product: code(body),
-            attributes: crate::sources::attribute_lines(body),
-        };
+        let source = |file: &str, body: &str| Source::of(file, body);
         let reads = "pub fn ceiling(&self) -> Option<i64> {\n    \
                      OuterLoop::authored_number_in(&self.script, &self.session, \"context_ceiling\")\n}";
 

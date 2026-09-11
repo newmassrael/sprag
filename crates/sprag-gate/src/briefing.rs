@@ -349,19 +349,7 @@ mod tests {
     use super::*;
 
     fn source(file: &str, lines: &[&str]) -> Source {
-        let product: Vec<(usize, String)> = lines
-            .iter()
-            .enumerate()
-            .map(|(index, text)| (index + 1, (*text).trim().to_owned()))
-            .filter(|(_, text)| !text.starts_with("//"))
-            .collect();
-        Source {
-            file: file.to_owned(),
-            code: product.clone(),
-            product,
-            // ⚠ No attribute in this fixture's cases; empty says so — register item 1044.
-            attributes: Vec::new(),
-        }
+        Source::of(file, &lines.join("\n"))
     }
 
     /// ⚠⚠⚠⚠⚠ THE SCAN'S OWN CONTROL, over a payload this test owns.

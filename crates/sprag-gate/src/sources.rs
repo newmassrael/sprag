@@ -20,7 +20,17 @@
 use std::path::{Path, PathBuf};
 
 /// One source file, with its comment lines already dropped.
+/// ⛔⛔⛔⛔⛔ **`#[non_exhaustive]` IS NOT THE FIX HERE, AND IT WAS MEASURED RATHER THAN ARGUED** —
+/// register item 1046. Clippy reads the private field below as a hand-rolled version of that
+/// attribute and says so (`manual_non_exhaustive`), which refused a commit on 2026-09-11. Taking
+/// the advice was tried the same hour: with `#[non_exhaustive]` on and the field published, a
+/// struct literal in `vocabulary.rs` **compiled clean**. That attribute binds at the CRATE
+/// boundary, and every fixture this closes — six of them — is in this same crate.
+///
+/// ⚠ So the lint is allowed with its reason beside it, not silenced: the escape it offers leads
+/// back to exactly the hole item 1046 is about.
 #[derive(Debug, Clone)]
+#[allow(clippy::manual_non_exhaustive)]
 pub struct Source {
     /// Relative to the workspace root, so a gate's message is a path a person can open.
     pub file: String,
@@ -61,9 +71,58 @@ pub struct Source {
     /// in a rustdoc code block, which a reader's eye sees as an attribute — is not here. That is
     /// the point: `grep` for the same needle answers **41** against this field's **33**.
     pub attributes: Vec<(usize, String)>,
+    /// ⛔⛔⛔⛔⛔ **PRIVATE, SO NO `Source` CAN BE ASSEMBLED BY HAND** — register item 1046.
+    ///
+    /// It carries nothing. What it does is make the struct literal unavailable outside this module,
+    /// so [`Source::of`] is the only way in and every field of a given `Source` comes from one
+    /// text. That is not tidiness; it closes a hole this workspace had already fallen into twice.
+    ///
+    /// # ⚠⚠⚠ The compiler shouts once, and then it is silent for ever
+    ///
+    /// Adding a field breaks every hand-built literal — eight of them, on 2026-09-11 — and each is
+    /// then filled in by the round that added it. After that the type checks out no matter what is
+    /// in there, so `attributes: Vec::new()` on a fixture that HAS attributes reads exactly like
+    /// one that has none. Item 1044's gate was written against a field chosen the same way and
+    /// **counted 0 in a workspace holding 33**; it compiled, it ran, it measured nothing.
+    ///
+    /// ⚠⚠ A comment saying *this case has no attribute* is not a fix — four were written and they
+    /// forbid nothing (item 1046's own `Done when` says so). A `Default` impl or a builder would be
+    /// worse: they make the eight errors go away, which is turning the alarm off.
+    _derived: (),
 }
 
 impl Source {
+    /// A source derived from its whole text — every field from one place.
+    ///
+    /// ⛔ **THE ONLY CONSTRUCTOR**, by way of the private field above. A caller that wants specific
+    /// line numbers writes the text that would produce them, blank lines included: that is a real
+    /// file, and a `Source` that no file could produce is a fixture proving something about an
+    /// input the gate will never see.
+    ///
+    /// # Panics
+    ///
+    /// When `text` cannot be split into shipping and proving code — the same refusal
+    /// [`rust_sources`] makes, for the same reason: a source that cannot be read must not arrive
+    /// looking clean.
+    #[must_use]
+    pub fn of(file: &str, text: &str) -> Self {
+        let code = code_lines(text);
+        let proving = proving_lines(text)
+            .unwrap_or_else(|why| panic!("{file} is a source of this workspace: {why}"));
+        let product = code
+            .iter()
+            .filter(|(line, _)| !proving.contains(line))
+            .cloned()
+            .collect();
+        Self {
+            file: file.to_owned(),
+            code,
+            product,
+            attributes: attribute_lines(text),
+            _derived: (),
+        }
+    }
+
     /// The file's code with every space gone, for a needle that spans lines in the real source.
     ///
     /// `child\n    .stdin\n    .take()` and `child.stdin.take()` are the same expression written
@@ -548,27 +607,11 @@ pub fn rust_sources() -> Vec<Source> {
                 .to_string();
             let text = std::fs::read_to_string(&path)
                 .unwrap_or_else(|why| panic!("{file} is a source of this workspace: {why}"));
-            let code = code_lines(&text);
-            let proving = proving_lines(&text)
-                .unwrap_or_else(|why| panic!("{file} is a source of this workspace: {why}"));
-            let product = code
-                .iter()
-                .filter(|(line, _)| !proving.contains(line))
-                .cloned()
-                .collect();
             // ⚠⚠⚠ READ OFF THE RAW TEXT AND NOT OFF `code`, AND THE FIRST DRAFT GOT THIS WRONG:
             // `code` drops every line starting with `#`, so the attribute this looks for is exactly
             // what it had already thrown away. The gate went green measuring nothing.
             let modules = test_only_modules(&file, &text);
-            (
-                Source {
-                    file,
-                    code,
-                    product,
-                    attributes: attribute_lines(&text),
-                },
-                modules,
-            )
+            (Source::of(&file, &text), modules)
         })
         .unzip();
 
@@ -1172,15 +1215,7 @@ mod tests {
     /// * **a declaration ends at its `;`** and is not a body, so the walk goes on to the real one.
     #[test]
     fn a_function_is_read_whole_and_its_prose_is_not_read_as_its_calls() {
-        fn made_up(text: &str) -> Source {
-            let code = code_lines(text);
-            Source {
-                file: "made-up.rs".to_owned(),
-                product: code.clone(),
-                code,
-                attributes: attribute_lines(text),
-            }
-        }
+        let made_up = |text: &str| Source::of("made-up.rs", text);
 
         let text = "trait Asked {\n\
                     fn witness(&self);\n\
@@ -1290,13 +1325,12 @@ mod tests {
     }
 
     /// A source built the way the walk builds one, so a case is fed the shape a gate really reads.
+    ///
+    /// ⚠ Through [`Source::of`] since register item 1046: an earlier spelling assembled the fields
+    /// by hand and set `product` to empty, which no real file produces — and a case proving
+    /// something about an input the walk cannot make is a case about nothing.
     fn source_of(text: &str) -> Source {
-        Source {
-            file: "crates/made-up/src/case.rs".to_owned(),
-            code: code_lines(text),
-            attributes: attribute_lines(text),
-            product: Vec::new(),
-        }
+        Source::of("crates/made-up/src/case.rs", text)
     }
 
     /// ⛔⛔⛔⛔⛔ **EVERY SHAPE AN ASSERTION IN THIS WORKSPACE REALLY HAS** — register item 813, and
