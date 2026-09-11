@@ -414,6 +414,35 @@ pub enum TreeUnderTest {
         /// What stopped the walk from naming the running workspace.
         why: String,
     },
+    /// ⛔⛔⛔⛔⛔ **THE TREE THIS CRATE WAS COMPILED IN IS GONE FROM THIS FILESYSTEM** — register
+    /// item 1064, and the state [`Unknown`](Self::Unknown) was reporting as somebody else's fault.
+    ///
+    /// # Why it is its own answer and not a shade of `Unknown`
+    ///
+    /// `Unknown` means *the RUNNING tree cannot be named* — a fact about the process, whose repair
+    /// is to run from somewhere nameable. This is the opposite fact: the running tree is named
+    /// perfectly well, and it is the COMPILED one that no longer exists. Folded together, the
+    /// sentence blamed the running tree by construction: measured 2026-09-12, a suite in a healthy
+    /// `/home/coin/sprag` was told *"/home/coin/sprag cannot be resolved on this filesystem"* while
+    /// that directory sat there, because the one `let-else` covering both `canonicalize` calls
+    /// could only name one of them.
+    ///
+    /// # ⚠⚠ And it is the one state that names its own cause
+    ///
+    /// A compiled-in root that has VANISHED is not an ordinary skew. It is the signature of a
+    /// build that happened in a temporary tree which has since been deleted — which on this box is
+    /// exactly what a milestone check does (`sprag_host::checkout::IsolatedCheckout`, removed on
+    /// `Drop`) while a shared compiler cache hands its output to the next build that asks. That
+    /// module's own doc records the mechanism and the measurement: *"`~/.cargo/config.toml` sets
+    /// `rustc-wrapper = "sccache"` … Measured 2026-09-01: **5341 Rust cache hits**. A separate
+    /// `target/` is not a separate BUILD."*
+    Vanished {
+        /// Where `env!("CARGO_MANIFEST_DIR")` says this crate's source is — a path that is not
+        /// there any more.
+        compiled_in: PathBuf,
+        /// The workspace the running process is standing in, which was named without difficulty.
+        running_in: PathBuf,
+    },
 }
 
 /// The root this crate was compiled against — `crates/sprag-gate/` is two levels down from it.
@@ -476,9 +505,25 @@ pub fn verdict_of(compiled_in: PathBuf, running_in: Result<PathBuf, String>) -> 
         Ok(root) => root,
         Err(why) => return TreeUnderTest::Unknown { compiled_in, why },
     };
-    let (Ok(built), Ok(run)) = (compiled_in.canonicalize(), running_in.canonicalize()) else {
-        return TreeUnderTest::Unknown {
+    // ⛔⛔⛔⛔⛔ **THE TWO RESOLUTIONS ARE ASKED SEPARATELY, AND THAT IS REGISTER ITEM 1064.**
+    // One `let-else` covered both calls and its message named `running_in` unconditionally — so
+    // the failure that actually happens on this box (the COMPILED root is gone) was reported as
+    // *"/home/coin/sprag cannot be resolved on this filesystem"* about a directory sitting right
+    // there. Measured 2026-09-12: it stopped two rounds, and both times the reader began by
+    // investigating the one path the sentence had ruled out.
+    //
+    // ⚠⚠ THE COMPILED ROOT IS ASKED FIRST, because its absence is the STRONGER fact. A tree that
+    // is not on the filesystem cannot be the one this run is standing in whatever the other answer
+    // turns out to be, and it carries a cause the other does not — see `TreeUnderTest::Vanished`.
+    let Ok(built) = compiled_in.canonicalize() else {
+        return TreeUnderTest::Vanished {
             compiled_in,
+            running_in,
+        };
+    };
+    let Ok(run) = running_in.canonicalize() else {
+        return TreeUnderTest::Unknown {
+            compiled_in: built,
             why: format!(
                 "{} cannot be resolved on this filesystem",
                 running_in.display()
@@ -500,6 +545,17 @@ pub fn verdict_of(compiled_in: PathBuf, running_in: Result<PathBuf, String>) -> 
 /// ⚠ It names BOTH, because *your gate read the wrong tree* without saying which two leaves the
 /// reader with nothing to act on; and it names the repair, because the repair is not obvious
 /// (nothing in the source changed, so the ordinary instinct is to look for a source bug).
+/// ⛔⛔⛔⛔ **THE REPAIR, SPELLED ONCE** — register item 1064, and the reason it is a constant is
+/// this function's own doc one line up: *it names the repair, because the repair is not obvious*.
+/// Two arms owe the same instruction, and two copies of it are two things that can come to
+/// disagree the day the crate moves or the command changes.
+///
+/// ⚠ It is a RECOMPILE and not a `cargo clean`: cleaning throws away every artifact of this
+/// package, where touching the sources invalidates exactly the fingerprints whose output came from
+/// somewhere else. Both were driven on 2026-09-12 and both worked; this is the cheaper one.
+const RECOMPILE: &str = "Recompile this crate from here -- \
+                         `find crates/sprag-gate/src -name '*.rs' -exec touch {} +` then re-run";
+
 #[must_use]
 pub fn tree_skew_sentence(verdict: &TreeUnderTest) -> String {
     match verdict {
@@ -512,9 +568,30 @@ pub fn tree_skew_sentence(verdict: &TreeUnderTest) -> String {
         } => format!(
             "⛔ REGISTER ITEM 809: this gate would judge {}, but the run is standing in {}. \
              `sprag-gate` was compiled against another tree, so every walk it does is about that \
-             one. Nothing in the source is wrong. Recompile this crate from here -- \
-             `find crates/sprag-gate/src -name '*.rs' -exec touch {{}} +` then re-run -- and if it \
-             comes back, the build output of two trees is reaching one place.",
+             one. Nothing in the source is wrong. {RECOMPILE} -- and if it comes back, the build \
+             output of two trees is reaching one place.",
+            compiled_in.display(),
+            running_in.display(),
+        ),
+        // ⛔⛔⛔⛔⛔ **THE ARM THAT USED TO BLAME THE RUNNING TREE** — register item 1064. It says
+        // three things the old sentence could not: WHICH path is missing, that the running tree was
+        // named without difficulty, and WHY a vanished compiled root happens on this box at all.
+        //
+        // ⚠⚠ THE CAUSE IS NAMED AS A LIKELIHOOD AND THE MECHANISM AS A FACT. That a compiler cache
+        // is configured is a property of somebody's box and this crate must not assert it; that an
+        // isolated checkout is deleted when a check ends is this workspace's own code, and a reader
+        // who knows both can tell in one step whether they are in that case.
+        TreeUnderTest::Vanished {
+            compiled_in,
+            running_in,
+        } => format!(
+            "⛔ REGISTER ITEM 1064: this gate was compiled against {}, and THAT PATH IS NOT ON \
+             THIS FILESYSTEM -- so it is not the tree this run is standing in ({}, which was \
+             named without difficulty). Nothing in the source is wrong, and the missing path is \
+             not yours to restore. A compiled root that has vanished is the signature of a build \
+             that happened in a temporary tree: `sprag_host::checkout::IsolatedCheckout` makes one \
+             for every milestone check and deletes it on `Drop`, and a shared compiler cache \
+             (`rustc-wrapper`) then hands that output to the next build that asks. {RECOMPILE}.",
             compiled_in.display(),
             running_in.display(),
         ),

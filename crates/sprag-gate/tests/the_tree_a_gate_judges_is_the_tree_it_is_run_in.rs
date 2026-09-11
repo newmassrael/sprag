@@ -157,6 +157,78 @@ fn a_tree_that_agrees_one_that_is_skewed_and_one_that_cannot_be_named_are_three_
     );
 }
 
+/// ⛔⛔⛔⛔⛔ **A COMPILED ROOT THAT IS GONE IS NOT THE RUNNING ROOT'S FAULT** — register item 1064.
+///
+/// # The sentence that accused a directory that was sitting right there
+///
+/// `verdict_of` resolved both paths in ONE `let-else`, and its failure message named `running_in`
+/// unconditionally. The failure that actually happens on this box is the other one — the COMPILED
+/// root is gone — so a suite running in a perfectly healthy `/home/coin/sprag` was told
+/// *"/home/coin/sprag cannot be resolved on this filesystem"*. Measured 2026-09-12: it stopped two
+/// rounds, and both times the reader began by investigating the one path the sentence had ruled out.
+///
+/// # ⚠⚠ Why a vanished compiled root is its own answer and not a shade of `Unknown`
+///
+/// `Unknown` is *the running tree cannot be named*, whose repair is to run from somewhere nameable.
+/// This is the opposite fact, and it carries a CAUSE the other does not: a build that happened in a
+/// temporary tree which has since been deleted — which is what `IsolatedCheckout` does for every
+/// milestone check while a shared compiler cache hands its output to the next build that asks.
+///
+/// # ⚠ What is asserted
+///
+/// The arm is reached; the sentence names the MISSING path; it does not accuse the running root;
+/// it reads differently from both siblings; and it carries the repair — which is the rule
+/// `tree_skew_sentence`'s own doc states and which only one of the two refusing arms obeyed.
+#[test]
+fn a_compiled_root_that_is_gone_is_not_reported_as_the_running_roots_fault() {
+    // ⚠⚠ A PATH THAT CANNOT EXIST, and a running root that plainly does. The pairing is the whole
+    // subject: one side is unresolvable and the other is not, and the old code could only name one
+    // of them whichever way round it was.
+    let gone = PathBuf::from("/nonexistent-tree-1064/crates/sprag-gate/../..");
+    let running = PathBuf::from("/usr");
+
+    let verdict = sprag_gate::sources::verdict_of(gone.clone(), Ok(running.clone()));
+    assert!(
+        matches!(verdict, TreeUnderTest::Vanished { .. }),
+        "⛔⛔⛔⛔⛔ ITEM 1064: a compiled root that is not on the filesystem folded into the answer \
+         that means *the RUNNING tree cannot be named*. The running tree was named without \
+         difficulty; it is the other one that is missing: {verdict:?}",
+    );
+
+    let said = tree_skew_sentence(&verdict);
+    assert!(
+        said.contains("/nonexistent-tree-1064"),
+        "⚠⚠⚠ THE MISSING PATH IS THE ONE FACT A READER CAN ACT ON, and naming the other one sends \
+         them to the healthy directory: {said}",
+    );
+    assert!(
+        !said.contains("/usr cannot be resolved"),
+        "⛔⛔⛔⛔ AND IT MUST NOT ACCUSE THE RUNNING ROOT. That accusation is the defect itself — a \
+         sentence about a directory that resolves perfectly well, which cost two rounds: {said}",
+    );
+    assert!(
+        said.contains("touch"),
+        "⚠⚠ AND IT NAMES THE REPAIR, which is `tree_skew_sentence`'s own stated rule — *it names \
+         the repair, because the repair is not obvious*. The skew arm obeyed it and this one did \
+         not, and the asymmetry is what made this arm the expensive one to meet: {said}",
+    );
+
+    // ── AND IT READS DIFFERENTLY FROM BOTH SIBLINGS, or there are not four answers ──────────
+    let unknown = sprag_gate::sources::verdict_of(
+        PathBuf::from("/usr"),
+        Err("nothing above declares it".to_owned()),
+    );
+    let skewed = sprag_gate::sources::verdict_of(PathBuf::from("/usr"), Ok(PathBuf::from("/tmp")));
+    for other in [&unknown, &skewed] {
+        assert_ne!(
+            said,
+            tree_skew_sentence(other),
+            "⚠⚠⚠ two refusals that read alike are one refusal to whoever has to act, which is the \
+             collapse item 809 is about met one answer further along",
+        );
+    }
+}
+
 /// ── 3. THE DETECTOR FIRES END TO END, NOT ONLY IN ITS CLASSIFIER ─────────────────────────────
 ///
 /// # ⛔⛔⛔⛔⛔ Why a classifier arm is not enough — register item 810
