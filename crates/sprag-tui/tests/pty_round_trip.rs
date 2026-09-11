@@ -51,11 +51,13 @@ use serde_json::{Value, json};
 use sprag_host::keymap::{Keymap, PrefixMode, Routed};
 use sprag_host::wire::{
     FULL_TEXT_SLOT, KILL_SESSION_ACTION, KILL_WINDOW_ACTION, LAYOUT_SLOT, NEW_SESSION_ACTION,
-    NEW_WINDOW_ACTION, PANES_SLOT, RENAME_SESSION_ACTION, RESIZE_WINDOW_ACTION, SELECT_PANE_ACTION,
-    SESSIONS_SLOT, SPLIT_ACTION, TEXT_ACTION, TREE_SLOT, WINDOWS_SLOT,
+    NEW_WINDOW_ACTION, PANE_PARAM, PANE_REVISION_FIELD, PANE_REVISION_SLOT,
+    PANE_WAIT_REVISION_METHOD, PANES_SLOT, RENAME_SESSION_ACTION, RESIZE_WINDOW_ACTION,
+    SELECT_PANE_ACTION, SESSIONS_SLOT, SINCE_PARAM, SPLIT_ACTION, TEXT_ACTION, TREE_SLOT,
+    WINDOWS_SLOT,
 };
 use sprag_host::{mux_action_path, pane_input_path};
-use sprag_rpc::HostConn;
+use sprag_rpc::{HostConn, Outstanding};
 use sprag_terminal::CommandBuilder;
 use sprag_terminal::pty::Pty;
 use sprag_vt::{Emulator, InputModes, MouseProtocol, ScreenKind, VtPort};
@@ -82,25 +84,33 @@ use sprag_vt::{Emulator, InputModes, MouseProtocol, ScreenKind, VtPort};
 /// which build it ran in. [`the_input_path_costs_what_this_instrument_measures`] asks both, and
 /// `tests/instruments/input-throughput` drives it.
 ///
-/// **Measured 2026-09-11 on 32 cores, load 3.9–4.2, io pressure ~35%, with [`POLL`] at 20 ms:**
+/// **Measured 2026-09-11 on 32 cores, load 2.1–2.5, io pressure ~30%, with the arrival clock parked
+/// on the daemon (item 1042) and its resolution measured at 0.65 ms `debug` / 0.08 ms `release`:**
 ///
 /// | build | shape | 80 chars reach the pane in | marginal, 40→80 | knee |
 /// |---|---|---|---|---|
-/// | debug | per-char | 716 ms | ~10.9 ms/char | n=20 |
-/// | debug | bulk | 808 ms | ~12.1 ms/char | n=20 |
-/// | release | per-char | **20.6 ms** | 0.00 ms/char | none |
-/// | release | bulk | **21.2 ms** | 0.00 ms/char | none |
+/// | debug | per-char | 758 ms | ~5.4 ms/char | n=5 |
+/// | debug | bulk | 832 ms | ~14.0 ms/char | n=5 |
+/// | release | per-char | **10.6 ms** | ~0.17 ms/char | n=5 |
+/// | release | bulk | **9.2 ms** | ~0.10 ms/char | n=5 |
+///
+/// ⛔⛔⛔⛔⛔ **THE RELEASE ROW USED TO READ 20.6 ms AND 0.00 ms/char, AND BOTH WERE THE
+/// INSTRUMENT** — register item 1042. Those readings were taken through a 20 ms sleep, which every
+/// one of twelve sweep points landed inside, so one character and eighty cost the same and the
+/// marginal cost was zero because nothing below the sleep could be seen. Re-taken through a park,
+/// `release` costs **~0.10–0.17 ms per character**: not the same claim, and about **40x cheaper than
+/// the ~5 ms/char R246 has on record** for the same build — so the input path has moved since that
+/// reading rather than merely being fast enough to stop asking about.
 ///
 /// **The quoted figures were wrong about what they described, and the verdict was wrong about what
 /// to do.** Four ways, each of them a number rather than a reading of the old prose:
 ///
 /// * **Not a shape.** `per-char` — one `write` per byte, as a keyboard types — and `bulk` — one
-///   `write_all`, as this file and a paste do — land within 13% of each other in both builds. The
+///   `write_all`, as this file and a paste do — land within 13% of each other in `debug`. The
 ///   summary's *"in bulk"* named an axis that is not one.
-/// * **A build.** In `release` the whole sweep finishes inside ONE poll, so 20.6 ms is this
-///   instrument's resolution and not the path's cost; `debug`, which is what `cargo test` runs,
-///   costs ~9–12 ms per character. The 60x between the two builds was on record already (R246:
-///   ~5 ms/char release against ~124–304 ms debug) — the quoted figures sit in that debug range.
+/// * **A build.** `release` costs ~0.1 ms per character where `debug`, which is what `cargo test`
+///   runs, costs ~5–14. The 60x between the two builds was on record already (R246: ~5 ms/char
+///   release against ~124–304 ms debug) — the quoted figures sit in that debug range.
 /// * **A first trip, not a character.** `1 char 222ms` is a warm-up: the instrument spends one
 ///   round trip before timing anything, precisely because that first trip reads 151–155 ms here and
 ///   would otherwise make the next step's marginal cost NEGATIVE.
@@ -721,8 +731,37 @@ fn wait_for(what: &str, observe: impl FnMut() -> Result<(), String>) {
 fn wait_bounded(
     within: Duration,
     what: &str,
+    observe: impl FnMut() -> Result<(), String>,
+    standing: impl Fn() -> String,
+) {
+    wait_paced(within, what, observe, standing, || {
+        std::thread::sleep(POLL);
+    });
+}
+
+/// [`wait_bounded`] with the REST between looks named by the caller — the seam a wait that is
+/// TIMING an arrival needs, and the only difference between the two.
+///
+/// # ⛔⛔⛔⛔⛔ Why a sleep cannot be the pacing of a clock — register item 1042
+///
+/// [`wait_bounded`]'s rest is `sleep(POLL)`, which is right for a wait that asks *has it happened
+/// yet*: the cost of being 20 ms late to a fact is nothing, and the cost of asking a thousand times
+/// a second is real. It is WRONG for a wait whose answer IS the instant, because a sleep quantises
+/// that instant onto its own grid. MEASURED 2026-09-11 with [`POLL`] at 20 ms: a `release` build's
+/// whole 1→80 character sweep reported **20.6–21.2 ms at every one of twelve points**, so one
+/// character and eighty cost the same and the marginal cost came out `0.00 ms/char` — the figure was
+/// the poll, and the instrument said so (`floor_is_poll=yes`) without being able to do better.
+///
+/// ⚠⚠ **A condition given this must do its own waiting.** Nothing here sleeps, so a condition that
+/// returns immediately spins this loop on a core. The one that does — [`arrival_of`] — spends each
+/// turn parked on the daemon's own `pane/waitForRevision`, which is where the resolution goes from a
+/// constant to a round trip.
+fn wait_paced(
+    within: Duration,
+    what: &str,
     mut observe: impl FnMut() -> Result<(), String>,
     standing: impl Fn() -> String,
+    mut rest: impl FnMut(),
 ) {
     let deadline = Instant::now() + within;
     let mut last = "nothing was observed at all".to_owned();
@@ -752,7 +791,7 @@ fn wait_bounded(
                 }
             }
         }
-        std::thread::sleep(POLL);
+        rest();
     }
     panic!(
         "timed out after {within:?} waiting for {what}\n  last observation: {last}{}\n  {}\n  {}",
@@ -1589,6 +1628,34 @@ const THROUGHPUT_SIZES: &[usize] = &[1, 5, 10, 20, 40, 80];
 /// actually being asked.
 const KNEE_FACTOR: f64 = 2.0;
 
+/// How long [`arrival_of`] stays parked before coming back to look at the client's screen.
+///
+/// ⛔⛔⛔⛔⛔ **THIS IS NOT [`POLL`] MADE SMALLER, AND THE DIFFERENCE IS THE WHOLE OF ITEM 1042.** A
+/// slice does not bound how late the PANE clock can be: the park is answered by the daemon writing
+/// to a socket this wait is blocked reading, so it comes back the instant the pane moves whatever
+/// this number is. What the slice bounds is how late the SCREEN clock can be — there is nothing to
+/// park on for a local emulator — and how often a park that has not fired is re-entered, which costs
+/// a socket timeout and nothing on the wire.
+///
+/// One millisecond because the screen's own figure runs 0.1–0.3 ms behind the pane's in `release`,
+/// and a resolution coarser than the quantity is the mistake this item is named for.
+const SLICE: Duration = Duration::from_millis(1);
+
+/// How many round trips [`resolution_of`] takes before answering.
+///
+/// Odd, so the median is a reading this machine actually produced rather than the mean of two.
+/// Twenty-one because the first few carry a cold path (the first read of the sweep's own warm-up
+/// measured 151–155 ms against a 22 ms second) and a median over twenty-one is not moved by them.
+const RESOLUTION_READS: usize = 21;
+
+/// How many times its own resolution a floor must exceed before the report stops calling the floor
+/// unmeasurable.
+///
+/// The same 1.5 the poll-based verdict this replaces used, and for the same reason: a floor sitting
+/// at one resolution is the instrument, a floor at three is the path, and the margin between is
+/// where a round trip's own jitter lives.
+const RESOLUTION_FACTOR: f64 = 1.5;
+
 /// Which build this test binary is, in the word the register and the instrument both use.
 ///
 /// ⛔⛔⛔⛔⛔ **THE AXIS THE DISCARDED PROBE'S FIGURES WERE MISSING** — register item 1041. A number
@@ -1611,23 +1678,158 @@ fn held(ch: u8, text: &str) -> usize {
     text.bytes().filter(|byte| *byte == ch).count()
 }
 
-/// Type `n` copies of `ch` at `tui` the way `shape` spells typing, and return how long each of the
-/// two ends took to hold all of them: the DAEMON's pane first, the CLIENT's screen second, both in
-/// milliseconds from the instant the first byte was written.
+/// What one timed sweep point cost, and what it cost to WATCH it — see [`arrival_of`].
 ///
-/// ⚠⚠ **BOTH CLOCKS RUN IN ONE POLLING LOOP.** Timed in sequence, the second would start only once
-/// the first had been observed, and the screen's figure would then be an artefact of when this loop
-/// happened to look rather than of when the client painted.
-fn arrival_of(
-    ch: u8,
-    n: usize,
-    shape: &str,
-    conn: &mut HostConn,
-    session: &str,
+/// ⚠ The two observation counts are reported rather than kept private because they are the size of
+/// this instrument's own footprint on what it measures: every wake is a socket read this test was
+/// woken for, and every probe is a whole rendered screen the daemon built while it was also
+/// carrying the bytes being timed. A reading taken with 80 probes behind it and one taken with 2
+/// were not taken under the same conditions, and nothing else in the report would say so.
+#[derive(Debug, Clone, Copy)]
+struct Reached {
+    /// Milliseconds from the first byte written until the DAEMON's pane held them all.
+    pane_ms: f64,
+    /// Milliseconds from the same instant until the CLIENT's screen held them all.
+    screen_ms: f64,
+    /// How many times the daemon woke this wait to say the pane had moved.
+    wakes: usize,
+    /// How many whole pane texts were read to decide whether the move was the last one.
+    probes: usize,
+    /// Milliseconds spent inside those reads.
+    ///
+    /// ⚠⚠ **IT IS NOT SUBTRACTED FROM [`Reached::pane_ms`], AND IT IS NOT IN IT EITHER.** The pane
+    /// clock is stopped at the WAKE, before the probe that decides what the wake meant, so a probe
+    /// cannot lengthen the reading it belongs to. What it can do is keep the daemon busy while the
+    /// next bytes are arriving, and that is a load this instrument applies to its own subject —
+    /// MEASURED 2026-09-11: a release 80-character per-char sweep point spends 42 probes against a
+    /// 10.58 ms reading. A reader owed the figure is owed that too.
+    probe_ms: f64,
+}
+
+/// The pane's REVISION — the count of times it has moved, which is a lock take and an integer read
+/// on the daemon's side where [`pane_text_of`] is a rendered screen.
+///
+/// It is the cursor [`arrival_of`]'s park is taken from: a park needs a revision it has already
+/// accounted for, and the daemon REFUSES one that omits it rather than defaulting to zero (which
+/// would answer instantly for ever — the polling the address exists to remove).
+fn pane_revision_of(conn: &mut HostConn, session: &str, pane: u64) -> u64 {
+    conn.call(
+        "scene/query",
+        json!({ "session": session, "path": pane_input_path(pane, PANE_REVISION_SLOT) }),
+    )
+    .ok()
+    .and_then(|value| value.as_u64())
+    .expect("the pane's revision is a number")
+}
+
+/// Park on `pane` moving past `since`, and hand back the outstanding request — the first half of
+/// [`HostConn::settle`]'s two-part wait.
+///
+/// ⚠ **The connection given here is SPENT on the park.** A `HostConn` answers one id at a time, so
+/// [`arrival_of`] holds two: this one parks and the other reads.
+fn park_on(park: &mut HostConn, session: &str, pane: u64, since: u64) -> Outstanding {
+    park.begin(
+        PANE_WAIT_REVISION_METHOD,
+        json!({ "session": session, PANE_PARAM: pane, SINCE_PARAM: since }),
+    )
+    .expect("park on the pane's revision")
+}
+
+/// WHAT IT COSTS THIS INSTRUMENT TO LOOK ONCE, measured rather than declared — register item 1042.
+///
+/// # ⛔⛔⛔⛔⛔ The number this replaces was a constant, and it was the whole reading
+///
+/// The report used to publish `poll_ms=20` and a `floor_is_poll` verdict against it. That is honest
+/// about a floor sitting ON the grid and useless below it: a sweep whose twelve points all read
+/// 20.6–21.2 ms has measured the sleep, and no rearrangement of a constant can say how far under it
+/// the real cost lies. With the sleep gone the floor is a ROUND TRIP, and a round trip is a thing
+/// that can be TAKEN — so it is, on this machine, in this run, against this daemon.
+///
+/// # ⚠⚠ Why the median and not the minimum or the maximum
+///
+/// The minimum is the best trip this process ever got and nothing arrives at it twice; the maximum
+/// is one descheduled moment. What bounds [`arrival_of`]'s error is the TYPICAL read: the wait can
+/// be late by at most one probe, because a move that lands while a probe is in flight is answered by
+/// the next park without waiting for another. So the middle of the distribution is the figure that
+/// describes the error, and it is taken over reads of the same slot the sweep will read.
+fn resolution_of(conn: &mut HostConn, session: &str, pane: u64) -> f64 {
+    let mut taken: Vec<f64> = (0..RESOLUTION_READS)
+        .map(|_| {
+            let started = Instant::now();
+            let _ = pane_text_of(conn, session, pane);
+            started.elapsed().as_secs_f64() * 1000.0
+        })
+        .collect();
+    taken.sort_by(f64::total_cmp);
+    taken[taken.len() / 2]
+}
+
+/// What a reading is taken ON — the two ends of the input path and the two connections it takes to
+/// time them.
+///
+/// # ⚠⚠ Why the two connections are BOTH here rather than one being made where it is needed
+///
+/// A [`HostConn`] answers one request id at a time, and [`HostConn::begin`]'s own rule is that a
+/// caller which parks must give that connection to the park. So a reading needs two by construction:
+/// one held open on `pane/waitForRevision`, one free to read the pane's text when the park fires.
+/// Holding them apart in a type is what stops a later edit reaching for whichever is in scope — the
+/// failure that would produce is a park whose answer is dropped by id, which looks like a slow input
+/// path and is a lost reply.
+///
+/// ⚠ It exists at all because the reading function took eight arguments and clippy said so. The
+/// five gathered here are one thing — the rig — and the three left are what is being typed.
+struct Rig<'a> {
+    /// Reads the pane: its text, and the revision a park is taken from.
+    conn: &'a mut HostConn,
+    /// Spent on the park, and on nothing else.
+    park: &'a mut HostConn,
+    /// The session both connections address.
+    session: &'a str,
+    /// The pane the bytes are typed into.
     pane: u64,
-    tui: &mut Tui,
-) -> (f64, f64) {
+    /// The client whose screen is the second clock.
+    tui: &'a mut Tui,
+}
+
+/// Type `n` copies of `ch` at the rig's client the way `shape` spells typing, and return how long
+/// each of the two ends took to hold all of them: the DAEMON's pane first, the CLIENT's screen
+/// second, both in milliseconds from the instant the first byte was written.
+///
+/// ⚠⚠ **BOTH CLOCKS RUN IN ONE LOOP.** Timed in sequence, the second would start only once the
+/// first had been observed, and the screen's figure would then be an artefact of when this loop
+/// happened to look rather than of when the client painted.
+///
+/// # ⛔⛔⛔⛔⛔ The pane clock is stopped by the DAEMON, not by a sleep — register item 1042
+///
+/// The two clocks are paced differently on purpose, because the two ends can be asked differently:
+///
+/// * The **pane** is over a socket, and the daemon will WAKE a parked caller the moment the pane
+///   moves (`pane/waitForRevision`). So the wait is a park, and the instant is the one the socket
+///   became readable — not the one a sleeper next happened to look. Every wake is followed by ONE
+///   read of the pane's text to decide whether this move was the one that completed the payload;
+///   the reading is therefore late by at most a single round trip, which [`resolution_of`] measures
+///   and the report publishes.
+/// * The **screen** is this process's own emulator, fed by a reader thread — there is nothing to
+///   park on, so it is looked at on each turn of the loop. Its turn costs a mutex and a screen
+///   copy, and the loop's turn is the park's slice, so the screen's resolution is [`SLICE`].
+///
+/// MEASURED with the sleep still in place: twelve release readings spanning 1 to 80 characters all
+/// came back 20.6–21.2 ms, with a marginal cost of `0.00 ms/char`. The cost was not small; it was
+/// unobservable, and the two readings are not the same claim.
+fn arrival_of(ch: u8, n: usize, shape: &str, rig: &mut Rig) -> Reached {
+    let Rig {
+        conn,
+        park,
+        session,
+        pane,
+        tui,
+    } = rig;
+    let (session, pane) = (&**session, *pane);
     let payload = vec![ch; n];
+    // ⛔ THE CURSOR IS TAKEN BEFORE THE FIRST BYTE IS WRITTEN. Read after typing, it could already
+    // have passed the move being timed, and the park would then wait for the NEXT one — a reading
+    // that is late by a whole further arrival and looks like a slow input path.
+    let mut since = pane_revision_of(conn, session, pane);
     let started = Instant::now();
     match shape {
         "bulk" => tui.type_bytes(&payload),
@@ -1641,32 +1843,65 @@ fn arrival_of(
              the keyboard's (one write per byte) and the paste's (one write_all).",
         ),
     }
+    let mut parked = Some(park_on(park, session, pane, since));
     let (mut at_pane, mut at_screen) = (None, None);
-    tui.wait_for(
+    let (mut wakes, mut probes, mut probe_ms) = (0usize, 0usize, 0.0f64);
+    tui.wait_woken(
         &format!(
             "{n} copies of {:?} to arrive, typed {shape}",
             char::from(ch)
         ),
         || {
-            if at_pane.is_none() && held(ch, &pane_text_of(conn, session, pane)) >= n {
-                at_pane = Some(started.elapsed());
-            }
             if at_screen.is_none() && held(ch, &tui.rows().join("")) >= n {
                 at_screen = Some(started.elapsed());
+            }
+            match parked.clone() {
+                // Still waiting on the pane: this turn is spent parked, and the daemon decides how
+                // long it lasts.
+                Some(outstanding) => match park.settle(&outstanding, SLICE) {
+                    Ok(Some(answer)) => {
+                        let woke = started.elapsed();
+                        wakes += 1;
+                        since = answer[PANE_REVISION_FIELD]
+                            .as_u64()
+                            .expect("a revision came back with the wake");
+                        probes += 1;
+                        let probing = Instant::now();
+                        let held_now = held(ch, &pane_text_of(conn, session, pane));
+                        probe_ms += probing.elapsed().as_secs_f64() * 1000.0;
+                        if held_now >= n {
+                            at_pane = Some(woke);
+                            parked = None;
+                        } else {
+                            parked = Some(park_on(park, session, pane, since));
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => panic!(
+                        "⛔ ITEM 1042: the park on pane {pane}'s revision failed, so this reading \
+                         has no arrival clock at all: {error:?}",
+                    ),
+                },
+                // The pane is in; only the screen is left, and there is nothing to park on for it.
+                None => std::thread::sleep(SLICE),
             }
             match (at_pane, at_screen) {
                 (Some(_), Some(_)) => Ok(()),
                 (pane_at, screen_at) => Err(format!(
-                    "pane {pane_at:?}, screen {screen_at:?} of {n} copies of {:?}",
+                    "pane {pane_at:?}, screen {screen_at:?} of {n} copies of {:?}, \
+                     {wakes} wake(s), {probes} probe(s)",
                     char::from(ch),
                 )),
             }
         },
     );
-    (
-        at_pane.expect("the pane clock stopped").as_secs_f64() * 1000.0,
-        at_screen.expect("the screen clock stopped").as_secs_f64() * 1000.0,
-    )
+    Reached {
+        pane_ms: at_pane.expect("the pane clock stopped").as_secs_f64() * 1000.0,
+        screen_ms: at_screen.expect("the screen clock stopped").as_secs_f64() * 1000.0,
+        wakes,
+        probes,
+        probe_ms,
+    }
 }
 
 /// ⛔⛔⛔⛔⛔ **WHAT A KEYSTROKE COSTS ON THE WAY IN — BY SHAPE, BY SIZE AND BY BUILD PROFILE** —
@@ -1743,19 +1978,29 @@ fn the_input_path_costs_what_this_instrument_measures() {
         points + 1,
     );
 
-    let (_daemon, _sock, mut conn, session, mut tui) = attached_client();
+    let (_daemon, sock, mut conn, session, mut tui) = attached_client();
+    // ⚠ A SECOND CONNECTION, because a `HostConn` answers one id at a time and a caller that parks
+    // must give that connection to the park — [`HostConn::begin`]'s own rule. One parks, one reads.
+    let mut park = observe(&sock);
     let pane = *pane_ids(&mut conn, &session)
         .first()
         .expect("the boot pane exists");
-    // ⛔⛔⛔⛔⛔ **THE POLL IS IN THE HEADER BECAUSE IT IS THE FLOOR OF WHAT THIS CAN SEE** — register
-    // item 1041. Both clocks stop when a POLLING loop next looks, so no arrival can be reported
-    // faster than [`POLL`], and a release build's whole sweep lands inside one tick. A reader given
-    // `20.7 ms` and not given the poll would read this instrument's resolution as the input path's
-    // cost — which is the exact mistake that put four unattributable figures in the comment above.
+    // ⛔⛔⛔⛔⛔ **THE RESOLUTION IS IN THE HEADER BECAUSE IT IS THE FLOOR OF WHAT THIS CAN SEE** —
+    // register items 1041 and 1042. It used to be `poll_ms=20`, a CONSTANT, and every release
+    // reading came back on that grid: twelve points from 1 to 80 characters, all 20.6–21.2 ms, a
+    // marginal cost of `0.00 ms/char` and a `floor_is_poll=yes` beside each one. Honest, and unable
+    // to say anything about a cost below its own sleep.
+    //
+    // The sleep is gone (see [`arrival_of`]): the pane clock is stopped by the daemon waking a park,
+    // so what remains is one round trip, and a round trip is a thing that can be MEASURED on the
+    // machine the sweep is about to run on. A reader given `0.8 ms` and not given this would make
+    // the same mistake with a smaller number.
+    let resolution = resolution_of(&mut conn, &session, pane);
     println!(
-        "== input-throughput: profile={} pane={pane} poll_ms={}",
+        "== input-throughput: profile={} pane={pane} pane_clock=park screen_clock=poll \
+         slice_ms={} resolution_ms={resolution:.2}",
         this_profile(),
-        POLL.as_millis(),
+        SLICE.as_millis(),
     );
     // ⛔⛔⛔⛔⛔ **WHAT THE MACHINE WAS DOING WHILE THIS WAS TAKEN** — register items 1040 and 880,
     // and the lesson the instrument beside this one learned on the same day. A timing whose
@@ -1772,8 +2017,15 @@ fn the_input_path_costs_what_this_instrument_measures() {
     // client that has not yet painted, a daemon that has not yet been asked — and attributing it to
     // the character that happened to go first is how a probe reports `1 char 222ms` and leaves a
     // reader to conclude that one character costs 222 ms.
-    let warm = arrival_of(b'a', 1, "bulk", &mut conn, &session, pane, &mut tui);
-    println!("== warmup ms={:.1} (not a reading)", warm.0);
+    let mut rig = Rig {
+        conn: &mut conn,
+        park: &mut park,
+        session: &session,
+        pane,
+        tui: &mut tui,
+    };
+    let warm = arrival_of(b'a', 1, "bulk", &mut rig);
+    println!("== warmup ms={:.1} (not a reading)", warm.pane_ms);
 
     let mut readings: Vec<(String, usize, f64, f64)> = Vec::new();
     for (index, (shape, n)) in shapes
@@ -1782,13 +2034,18 @@ fn the_input_path_costs_what_this_instrument_measures() {
         .enumerate()
     {
         let ch = b'b' + index as u8;
-        let (pane_ms, screen_ms) = arrival_of(ch, n, shape, &mut conn, &session, pane, &mut tui);
+        let reached = arrival_of(ch, n, shape, &mut rig);
         println!(
-            "== reading shape={shape} n={n} pane_ms={pane_ms:.1} screen_ms={screen_ms:.1} \
-             per_char_ms={:.2}",
-            pane_ms / n as f64,
+            "== reading shape={shape} n={n} pane_ms={:.2} screen_ms={:.2} per_char_ms={:.3} \
+             wakes={} probes={} probe_ms={:.2}",
+            reached.pane_ms,
+            reached.screen_ms,
+            reached.pane_ms / n as f64,
+            reached.wakes,
+            reached.probes,
+            reached.probe_ms,
         );
-        readings.push((shape.clone(), n, pane_ms, screen_ms));
+        readings.push((shape.clone(), n, reached.pane_ms, reached.screen_ms));
     }
     println!("== conditions at=after {}", how_loaded());
 
@@ -1819,11 +2076,16 @@ fn the_input_path_costs_what_this_instrument_measures() {
             .iter()
             .find(|(_, ms)| *ms > floor * KNEE_FACTOR)
             .map(|(n, ms)| (*n, ms / floor));
-        // ⚠⚠ AND WHETHER THAT FLOOR IS THIS INSTRUMENT'S OWN RESOLUTION. A floor at the poll means
-        // the cheapest trip finished inside one tick, so the figure bounds the cost from ABOVE and
-        // says nothing about how far below it lies. Left unsaid, a reader takes the poll for a
-        // measurement — rule 6, where the unclassified case must not read as a pass.
-        let bound = match floor <= POLL.as_secs_f64() * 1000.0 * 1.5 {
+        // ⚠⚠ AND WHETHER THAT FLOOR IS THIS INSTRUMENT'S OWN RESOLUTION — register item 1042. A
+        // floor inside one round trip bounds the cost from ABOVE and says nothing about how far
+        // below it lies. Left unsaid, a reader takes the instrument for a measurement — rule 6,
+        // where the unclassified case must not read as a pass.
+        //
+        // ⛔ THE COMPARISON IS AGAINST A MEASURED QUANTITY. It was `POLL`, which made the verdict a
+        // statement about a constant this file chose, and the constant is no longer in the arrival
+        // path at all: a floor of 0.3 ms would still have been `floor_is_poll=yes` against a 20 ms
+        // sleep, so keeping that spelling would have turned a true sentence into a false one.
+        let bound = match floor <= resolution * RESOLUTION_FACTOR {
             true => "yes",
             false => "no",
         };
@@ -1832,12 +2094,12 @@ fn the_input_path_costs_what_this_instrument_measures() {
             // the factor has measured that the cost does NOT break inside the range it walked, and
             // the floor is printed either way so a reader can see what it was measured against.
             Some((n, over)) => println!(
-                "== knee shape={shape} n={n} over_floor={over:.2}x floor_ms={floor:.1} \
-                 floor_is_poll={bound}",
+                "== knee shape={shape} n={n} over_floor={over:.2}x floor_ms={floor:.2} \
+                 floor_is_resolution={bound}",
             ),
             None => println!(
-                "== knee shape={shape} n=none over_floor=1.00x floor_ms={floor:.1} \
-                 floor_is_poll={bound}",
+                "== knee shape={shape} n=none over_floor=1.00x floor_ms={floor:.2} \
+                 floor_is_resolution={bound}",
             ),
         }
     }
@@ -1865,6 +2127,25 @@ fn the_input_path_costs_what_this_instrument_measures() {
 /// So the declaration is READ and every row of it is required to exist in this suite's own source.
 /// ⚠ The prefixes are taken from what the instrument prints rather than written out here — a list
 /// spelled in this file would be found in this file, and the gate would hold against itself.
+///
+/// # ⛔⛔⛔⛔⛔ EVERY FIELD, NOT THE PREFIX — register item 1042
+///
+/// The first version of this compared each row **up to its first placeholder**, which is the row's
+/// NAME and nothing after it. That is the half of the drift that matters least: a row keeps its
+/// name while its fields are renamed under it, and item 1042 renamed four of them in one edit
+/// (`poll_ms` → `resolution_ms`, `floor_is_poll` → `floor_is_resolution`, and two clock fields
+/// added). Every one of those would have passed this gate untouched — it was already green on the
+/// declaration and the suite disagreeing about what the numbers were.
+///
+/// ⚠⚠ **The population is the `key=` TOKENS, and that is a decision rather than a convenience.**
+/// A row is part format and part prose: `machine: load <n> over <n> cores; starved:` is assembled
+/// by [`how_loaded`] out of pieces no literal in this file spells, so requiring the prose would
+/// force the declaration to describe the code rather than the report. What a reader matches a
+/// quoted number against is the FIELD NAME, and a field name is exactly what carries an `=`.
+///
+/// ⚠ Read against this file with its COMMENTS GONE, for item 1041's own lesson one level down: a
+/// field name survives in the prose discussing it (this doc comment names four), so a scan that
+/// counted comments would be answered by the paragraph you are reading.
 #[test]
 fn the_input_path_instrument_and_this_suite_speak_one_report() {
     let instrument = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1882,8 +2163,8 @@ fn the_input_path_instrument_and_this_suite_speak_one_report() {
         String::from_utf8_lossy(&out.stderr),
     );
     let said = String::from_utf8_lossy(&out.stdout).to_string();
-    let source = include_str!("pty_round_trip.rs");
-    let mut checked = 0;
+    let source = uncommented(include_str!("pty_round_trip.rs"));
+    let (mut checked, mut fields) = (0, 0);
     for row in said.lines().filter(|line| line.starts_with("== ")) {
         // The row up to its first placeholder: the literal part a `println!` must contain.
         let fixed = row
@@ -1898,6 +2179,16 @@ fn the_input_path_instrument_and_this_suite_speak_one_report() {
              matched against a format no run emits.\nsaid:\n{said}",
         );
         checked += 1;
+        for field in declared_fields(row) {
+            assert!(
+                source.contains(&field),
+                "⛔ ITEM 1042: the instrument declares the field {field:?} on row {fixed:?}, and \
+                 nothing outside a comment in this suite prints it. A row whose NAME still matches \
+                 while its fields have been renamed under it is the drift this gate missed until \
+                 item 1042 renamed four at once.\nsaid:\n{said}",
+            );
+            fields += 1;
+        }
     }
     assert!(
         checked >= 7,
@@ -1905,6 +2196,330 @@ fn the_input_path_instrument_and_this_suite_speak_one_report() {
          header, the machine's conditions, a warm-up, a reading, a marginal, a knee and a footer. \
          A declaration that lost rows checks less than it did.\nsaid:\n{said}",
     );
+    // ⛔⛔⛔⛔⛔ **A FLOOR, BECAUSE EVERY CHECK ABOVE IS OVER WHAT THE DECLARATION HAPPENS TO SAY** —
+    // register item 1042, and rule 6. Deleting `resolution_ms=<ms>` from the instrument makes this
+    // suite's agreement with it PERFECT: nothing is declared, so nothing disagrees, and the round
+    // that renamed the field back would meet no red at all. The count is what a deletion cannot
+    // leave alone. ⚠ It is a floor and not an equality — declaring MORE is the direction this gate
+    // wants — and it refuses with the number to write, so a deliberate removal is one edit and an
+    // accidental one is a stop (register item 926).
+    assert!(
+        fields >= REPORT_FIELDS,
+        "⛔ ITEM 1042: the instrument declares {fields} report field(s) and this gate is written \
+         against {REPORT_FIELDS}. Fields went missing from the declaration, which makes the \
+         agreement above vacuous for every one of them. Put them back, or — if they are gone on \
+         purpose — write `REPORT_FIELDS = {fields}` and say why in the register.\nsaid:\n{said}",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **THE ARRIVAL CLOCK IS STOPPED BY THE DAEMON, NOT BY A SLEEP** — register item 1042.
+///
+/// # What was wrong, in numbers
+///
+/// [`arrival_of`] used to wait on [`POLL`], a 20 ms sleep. Every `release` reading of a 1→80
+/// character sweep then came back **20.6–21.2 ms** — one character and eighty at the same price —
+/// with a marginal cost of `0.00 ms/char`. Re-taken through the daemon's own park the same sweep
+/// reads **0.14–10.58 ms**, and the marginal cost is **~0.10–0.17 ms/char**. The first set was not a
+/// slow input path measured well; it was a fast one measured through a grid coarser than itself.
+///
+/// # ⚠⚠ Why this is a gate on SPELLING, and what carries the other half
+///
+/// This asks how [`arrival_of`] is written, which is a question about text — the honest limit of
+/// any scan without a parser. It is worth holding anyway, because the regression it guards is a
+/// one-line edit that leaves every test green: putting a sleep back between the looks costs nothing
+/// a suite run would notice and silently re-quantises every figure the register quotes.
+///
+/// What it CANNOT say is that a park is actually faster than that sleep on this machine.
+/// [`a_pane_move_reaches_a_parked_wait_sooner_than_this_file_polls`] measures exactly that, and the
+/// two are the pair: one holds the spelling, the other holds the reason the spelling is worth
+/// having.
+///
+/// # ⚠ The clauses are a PRODUCT
+///
+/// Five of them, over the two functions that decide when a byte has landed — register item 1041's
+/// own lesson, where a first draft asked for four words *anywhere* and was answered by prose that
+/// merely discussed them. Any one clause alone is satisfiable while the clock is a sleep again: a
+/// body can call `park_on` and then sleep between looks, or park and never settle.
+#[test]
+fn the_arrival_clock_is_woken_by_the_daemon_rather_than_by_a_sleep() {
+    let source = include_str!("pty_round_trip.rs");
+    let timing = body_of(source, "arrival_of");
+    let parking = body_of(source, "park_on");
+    // ⚠ ASSEMBLED, so this gate cannot be answered by its own text — the rule
+    // `the_pane_clause_spends_the_verdict_it_was_given` learned and this file states.
+    let poll = format!("{}{}", "PO", "LL");
+    for (clause, holds) in [
+        (
+            "opens a park on the pane's revision",
+            timing.contains(&format!("{}{}", "park_", "on(")),
+        ),
+        (
+            "waits on that park in slices",
+            timing.contains(&format!(".{}{}", "sett", "le(")),
+        ),
+        (
+            "does not sleep on this file's poll between looks",
+            !timing.contains(poll.as_str()),
+        ),
+        (
+            "waits through the client's unpaced wait, not the polling one",
+            timing.contains(&format!("{}{}", "wait_wo", "ken(")),
+        ),
+        (
+            "and the park it opens is the daemon's revision wait",
+            parking.contains(&format!("{}{}", "PANE_WAIT_REVIS", "ION_METHOD")),
+        ),
+    ] {
+        assert!(
+            holds,
+            "⛔ ITEM 1042: the arrival clock no longer {clause}. Its resolution is then whatever \
+             paces the loop instead, and a release sweep measured that way reported 20.6-21.2 ms \
+             at every one of twelve points from 1 to 80 characters — the sleep, not the path.",
+        );
+    }
+}
+
+/// ⭐ **THE CONTROL FOR THE SCAN ABOVE**, on [`the_scan_behind_that_prohibition_can_actually_find_one`]'s
+/// reasoning: a gate whose clauses are all `contains` is green when the extent it searches is empty,
+/// wrong, or the whole file.
+///
+/// Staged source where the answer is known and DIFFERENT for the two functions — the second body
+/// holds the needle the first is required to lack — so a [`body_of`] that returned the whole file,
+/// or the wrong function, could not produce this.
+#[test]
+fn the_scan_behind_that_arrival_clause_takes_one_function_at_a_time() {
+    let staged = "fn before() {\n\
+                  \x20   sleep(POLL);\n\
+                  }\n\
+                  \n\
+                  fn arrival_of(ch: u8) -> f64 {\n\
+                  \x20   let what = \"a brace } in a string, and a ( too\";\n\
+                  \x20   park_on(park, session, pane, since);\n\
+                  \x20   // POLL is named in a comment here and that is not a call\n\
+                  \x20   if let Ok(Some(answer)) = park.settle(&outstanding, SLICE) {\n\
+                  \x20       drop(what);\n\
+                  \x20   }\n\
+                  }\n\
+                  \n\
+                  fn after() {\n\
+                  \x20   sleep(POLL);\n\
+                  }\n";
+    let body = body_of(staged, "arrival_of");
+    assert!(
+        body.contains("park_on(") && body.contains(".settle("),
+        "⛔ the scan must reach the whole body, including past a string holding an unbalanced \
+         brace and paren — it found: {body:?}",
+    );
+    assert!(
+        !body.contains("sleep("),
+        "⛔ the scan must stop at the function's own closing brace: neither neighbour's `sleep` \
+         belongs to this body, and a scan that takes the rest of the file would find both — which \
+         is a gate that can never go red. It found: {body:?}",
+    );
+    assert!(
+        body_of(staged, "before").contains("sleep("),
+        "⛔ and it must be able to find a body that DOES hold the needle, or its silence proves \
+         nothing",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **AND A PARK ACTUALLY BEATS THE SLEEP IT REPLACED, ON THIS MACHINE** — register item
+/// 1042, and the half [`the_arrival_clock_is_woken_by_the_daemon_rather_than_by_a_sleep`] cannot
+/// reach.
+///
+/// That gate reads how the clock is SPELLED. Spelling is not speed: a park that answered in 25 ms
+/// would satisfy every clause it holds and leave the instrument's readings quantised exactly as
+/// badly as before, just with a different word on them. The claim item 1042 rests on is a
+/// comparison, so it is taken as one.
+///
+/// # ⚠⚠ What is timed, and why it is the median of several
+///
+/// One byte is typed at a live client and the clock runs until the daemon WAKES a wait parked on
+/// that pane's revision — the same two calls [`arrival_of`] makes, in the same order. Several,
+/// because a single trip on a loaded box says nothing and this binary's tests run in parallel; the
+/// median, because the minimum is the best trip this process ever got and the maximum is one
+/// descheduled moment.
+///
+/// ⚠ MEASURED 2026-09-11 in `debug` at load 2.1: a single character's whole trip to the pane is
+/// ~1 ms, against [`POLL`]'s 20. The margin asserted is the full twentyfold one rather than
+/// something tighter, because what this must catch is a park that has stopped being a park — not a
+/// slow afternoon.
+#[test]
+fn a_pane_move_reaches_a_parked_wait_sooner_than_this_file_polls() {
+    // ⛔⛔⛔⛔⛔ **AND THE SLICE IS NOT A POLL WEARING A PARK'S NAME.** The park makes the PANE clock
+    // an event — the socket wakes this wait whatever [`SLICE`] is — but the SCREEN clock has nothing
+    // to park on and is looked at once per slice. A slice grown to [`POLL`] would leave
+    // `arrival_of` spelled exactly as the gate above requires, its pane figures honest, and its
+    // screen figures back on the 20 ms grid this item exists to get off. MEASURED before the
+    // repair: every screen reading sat one tick behind its pane reading, 21–43 ms, for all twelve
+    // release points.
+    assert!(
+        SLICE * 10 <= POLL,
+        "⛔ ITEM 1042: the screen clock looks once per {SLICE:?} against a {POLL:?} sleep, which is \
+         not far enough under it to be a different kind of measurement. The screen's own figure \
+         runs 0.1-0.3 ms behind the pane's in release, so a slice near the poll reports the slice.",
+    );
+    let (_daemon, sock, mut conn, session, mut tui) = attached_client();
+    let mut park = observe(&sock);
+    let pane = *pane_ids(&mut conn, &session)
+        .first()
+        .expect("the boot pane exists");
+    let mut taken: Vec<Duration> = Vec::new();
+    for ch in b'a'..=b'g' {
+        // ⛔ THE CURSOR IS READ, THEN THE PARK IS OPENED, THEN THE BYTE IS WRITTEN — [`arrival_of`]'s
+        // own order. Opened after the write, the park could be answered by a move that had already
+        // happened, and this would be timing a round trip rather than a wake.
+        let since = pane_revision_of(&mut conn, &session, pane);
+        let outstanding = park_on(&mut park, &session, pane, since);
+        let started = Instant::now();
+        tui.type_bytes(&[ch]);
+        let answer = park
+            .settle(&outstanding, DEADLINE)
+            .expect("the park on the pane's revision did not fail");
+        let waited = started.elapsed();
+        assert!(
+            answer.is_some(),
+            "⛔ ITEM 1042: a park on pane {pane}'s revision went unanswered for {DEADLINE:?} after \
+             a byte was typed at the client, so the arrival clock in `arrival_of` has nothing to \
+             stop it at all.\n  {}",
+            how_loaded(),
+        );
+        taken.push(waited);
+    }
+    taken.sort();
+    let median = taken[taken.len() / 2];
+    assert!(
+        median < POLL,
+        "⛔ ITEM 1042: a typed byte took a median {median:?} to wake a parked wait, and this file's \
+         sleep is {POLL:?}. The park is what makes the input-path instrument able to see below that \
+         sleep — a sweep paced by the sleep reported 20.6-21.2 ms at all twelve of its points — so \
+         a park no faster than it leaves every reading quantised under a new name.\n  took: \
+         {taken:?}\n  {}",
+        how_loaded(),
+    );
+}
+
+/// The body of `fn <name>(` in `source` — from its opening brace to the matching close, with string
+/// literals and line comments skipped so a `}` inside either cannot end it early.
+///
+/// ⛔ **A NAME THAT IS NOT THERE IS A PANIC, NOT AN EMPTY STRING** — rule 6. A renamed function
+/// would otherwise leave every clause above `contains`-ing nothing and passing, which is the exact
+/// shape of a gate that measures nothing while staying green.
+fn body_of(source: &str, name: &str) -> String {
+    let opener = format!("fn {name}(");
+    let at = source.find(&opener).unwrap_or_else(|| {
+        panic!(
+            "⛔ ITEM 1042: there is no `{opener}` to read — it was renamed, \
+                                   and the clauses that read it would all be vacuously true"
+        )
+    });
+    let rest = &source[at..];
+    let (mut depth, mut in_string, mut started, mut end) = (0i32, false, false, None);
+    let chars: Vec<char> = rest.chars().collect();
+    let mut index = 0;
+    while index < chars.len() {
+        let c = chars[index];
+        if in_string {
+            match c {
+                '\\' => index += 1,
+                '"' => in_string = false,
+                _ => {}
+            }
+        } else if c == '/' && chars.get(index + 1) == Some(&'/') {
+            while index < chars.len() && chars[index] != '\n' {
+                index += 1;
+            }
+            continue;
+        } else {
+            match c {
+                '"' => in_string = true,
+                '{' => {
+                    depth += 1;
+                    started = true;
+                }
+                '}' => {
+                    depth -= 1;
+                    if started && depth == 0 {
+                        end = Some(index + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        index += 1;
+    }
+    let end = end.unwrap_or_else(|| {
+        panic!(
+            "⛔ ITEM 1042: `{opener}`'s braces never balance, so this scan has stopped \
+                describing the file it reads"
+        )
+    });
+    chars[..end].iter().collect()
+}
+
+/// How many `key=` fields the instrument's report declares, across all of its rows.
+///
+/// MEASURED 2026-09-11 by the gate that reads it — six on the header, one each on the conditions
+/// and warm-up rows, eight on a reading, three on a marginal, five on a knee and four on the
+/// footer. ⚠ It is a FLOOR: see [`the_input_path_instrument_and_this_suite_speak_one_report`], where
+/// a declaration that loses a row loses the agreement about it silently.
+///
+/// ⚠⚠ **THE FIRST NUMBER WRITTEN HERE WAS 28 AND THE SCAN ANSWERED 35**, which is how the `==` row
+/// marker was found sitting in the population — see [`declared_fields`]. Both are 28 now, and the
+/// agreement between a hand count and a program is the only reason to believe either.
+const REPORT_FIELDS: usize = 28;
+
+/// `source` with every line that is only a comment removed — what the code SAYS, rather than what
+/// its prose says about itself.
+///
+/// ⚠ WHOLE-LINE comments only, which is the shape this file writes. A scan that tried to strip
+/// `/* */`, or a trailing comment after code, would be claiming to understand Rust — and it has no
+/// parser. The claim a caller may make on this is *"not on a line that is only a comment"* and no
+/// more.
+fn uncommented(source: &str) -> String {
+    source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The `key=` tokens of one declared report row, with `<placeholder>`s taken as BOUNDARIES rather
+/// than removed.
+///
+/// ⚠ Removed, `over_floor=<factor>x floor_ms=` would join into `over_floor=x`, which no `println!`
+/// contains and no field is called — the gate would then be red about a field that does not exist.
+/// As a boundary it yields `over_floor=` and `floor_ms=`, which are the two names a reader matches.
+///
+/// # ⛔⛔⛔⛔⛔ A field has a NAME in front of its `=`, and the first draft did not say so
+///
+/// It took every token holding an `=`, and the count came back **35** against the 28 fields counted
+/// by hand. The seven are the `==` each row BEGINS with — a row marker, not a field, and one that
+/// `contains` finds in any Rust file ever written, comparison operators and all. Seven of the
+/// declarations this gate checked were therefore satisfied by `==` appearing somewhere in 11,000
+/// lines, which is a clause that cannot fail.
+///
+/// ⚠⚠ It was found by DISAGREEING with the hand count and asking the program which was right
+/// (register items 80 and 762: a hand-made population leaks, and the mark wins) — not by reading
+/// the loop again.
+fn declared_fields(row: &str) -> Vec<String> {
+    let mut pieces = Vec::new();
+    let mut rest = row;
+    while let Some(open) = rest.find('<') {
+        pieces.push(&rest[..open]);
+        let close = rest[open..].find('>').unwrap_or_else(|| {
+            panic!("⛔ ITEM 1042: a declared row leaves a placeholder unclosed: {row:?}")
+        });
+        rest = &rest[open + close + 1..];
+    }
+    pieces.push(rest);
+    pieces
+        .iter()
+        .flat_map(|piece| piece.split_whitespace())
+        .filter(|token| token.contains('=') && !token.starts_with('='))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// ⛔⛔⛔⛔⛔ **AND THE DEADLINE'S OWN FIGURES CARRY THEIR SHAPE AND THEIR PROFILE** — register item
@@ -3099,6 +3714,21 @@ impl Tui {
         observe: impl FnMut() -> Result<(), String>,
     ) {
         wait_bounded(within, what, observe, || self.standing());
+    }
+
+    /// [`Tui::wait_for`] for a condition that DOES ITS OWN WAITING — register item 1042, and the
+    /// road by which a wait that is TIMING something still carries this client's standing facts.
+    ///
+    /// The sister above rests on [`POLL`]; this one rests on nothing, because the condition's answer
+    /// is an INSTANT and a sleep would round it onto a 20 ms grid — see [`wait_paced`], which holds
+    /// the measurement. It is a method on the client for [`Tui::wait_for`]'s reason and not a weaker
+    /// one: the condition reads this client's screen, so its deadline must be able to say whether
+    /// anybody was still painting.
+    ///
+    /// ⚠ The condition must block for its own turn. [`arrival_of`] is the only caller and it parks
+    /// on the daemon.
+    fn wait_woken(&self, what: &str, observe: impl FnMut() -> Result<(), String>) {
+        wait_paced(DEADLINE, what, observe, || self.standing(), || {});
     }
 
     /// Wait for the client to exit, and fail rather than block if it does not.

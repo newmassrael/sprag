@@ -23,6 +23,20 @@
 # any probe run under the suite is a debug figure whether or not it says so. Reporting one profile
 # would repeat the omission this item exists to close.
 #
+# # ⛔⛔⛔⛔⛔ What the first version of this could not see — register item 1042
+#
+# Its arrival clocks were stopped by a POLLING LOOP on a 20 ms sleep, so no arrival could be
+# reported faster than the sleep. In `release` that swallowed the entire measurement: twelve
+# readings from one character to eighty all came back **20.6-21.2 ms**, a marginal cost of
+# `0.00 ms/char`, and a `floor_is_poll=yes` beside each one saying so. The report was honest and
+# the number was the instrument's.
+#
+# The pane's clock is now stopped by the DAEMON — `pane/waitForRevision` wakes the wait the moment
+# the pane moves — so the floor is a round trip rather than a sleep, and the round trip is MEASURED
+# on the machine the sweep runs on and published as `resolution_ms`. That is why the header reads
+# `pane_clock=park` and the knee's verdict reads `floor_is_resolution`: both name a quantity this
+# run took, where the words they replace named a constant the suite chose.
+#
 #   PROFILES   which builds to measure (default "debug release")
 #   SIZES      the sweep, passed through as SPRAG_THROUGHPUT_SIZES (default: the test's own)
 #   SHAPES     which spellings of typing, as SPRAG_THROUGHPUT_SHAPES (default "per-char bulk")
@@ -40,12 +54,12 @@ set -u
 
 if [ "${1:-}" = "--report-shape" ]; then
     echo "input-throughput: report shape"
-    echo "== input-throughput: profile=<debug|release> pane=<id> poll_ms=<ms>"
+    echo "== input-throughput: profile=<debug|release> pane=<id> pane_clock=park screen_clock=poll slice_ms=<ms> resolution_ms=<ms>"
     echo "== conditions at=<before|after> machine: load <n> over <n> cores; starved: <rows>"
     echo "== warmup ms=<ms> (not a reading)"
-    echo "== reading shape=<per-char|bulk> n=<n> pane_ms=<ms> screen_ms=<ms> per_char_ms=<ms>"
+    echo "== reading shape=<per-char|bulk> n=<n> pane_ms=<ms> screen_ms=<ms> per_char_ms=<ms> wakes=<n> probes=<n> probe_ms=<ms>"
     echo "== marginal shape=<shape> upto=<n> ms_per_char=<ms>"
-    echo "== knee shape=<shape> n=<n|none> over_floor=<factor>x floor_ms=<ms> floor_is_poll=<yes|no>"
+    echo "== knee shape=<shape> n=<n|none> over_floor=<factor>x floor_ms=<ms> floor_is_resolution=<yes|no>"
     echo "== INPUT-THROUGHPUT profile=<p> shapes=<n> sizes=<list> readings=<n>"
     exit 0
 fi
