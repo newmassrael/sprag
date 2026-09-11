@@ -7999,6 +7999,27 @@ mod tests {
              reached, so the only mechanical answer to that question is one nobody sees — and the \
              ending goes back to being a sentence an agent judges by eye",
         );
+        // 🎯 AND WHAT TO TAKE NEXT — register item 1052, held here for this gate's own reason one
+        // question over. [`Reading::work_order`]'s tests judge a `Vec<Placed>`; only this says the
+        // derivation reaches a reader. Deleting the `next` line would leave every one of them green
+        // and put the round straight back to choosing by eye, which is the whole of the debt.
+        //
+        // ⚠⚠ THE PRINT AND NOT THE CALL, for the reason spelled two clauses down: `contains
+        // ("work_order")` passes against a binary that computes the order and drops it.
+        assert!(
+            BIN.contains("println!(\"next {}: {}\", first.number, first.why)"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1052: the report no longer prints what to take next, so the \
+             derivation exists and nobody is handed it — which is the state working rule 11 \
+             forbids in its own last clause (*그 판단이 어디에도 안 남는다*)",
+        );
+        // ⚠ AND THAT THE ORDER IS ASKED FOR RATHER THAN COPIED. A round that writes the order into
+        // the ledger has made a snapshot, and the ledger moves under it every time an item is paid
+        // or opened — so the refusal travels with the line that could tempt one.
+        assert!(
+            BIN.contains("Do not write this order down; ask for it (--order)"),
+            "⛔ ITEM 1052: the `next` line no longer says the order must be asked for, and a \
+             reader who copies it down has a snapshot that rots invisibly",
+        );
         // 🎯 AND THE REMEDY, at the one moment an unread block is handed to a round — register
         // item 936(1). Held here because the test above judges the CONSTANT, and only this says
         // the constant is what reaches a reader.
