@@ -32,7 +32,7 @@
 //! follow a quote across a line break; and it cannot see a command assembled at run time. Those are
 //! stated here rather than implied, and every one of them MISSES rather than refusing wrongly.
 
-use crate::sources::{code_lines, workspace_root};
+use crate::sources::workspace_root;
 use std::path::PathBuf;
 
 /// One shell script this workspace carries.
@@ -49,9 +49,32 @@ impl ShellSource {
     ///
     /// ⚠ Whole-line and not a cut at the first `#`: see this module's own doc for the measurement
     /// that chose it. A `#` inside a script is part of the script.
+    ///
+    /// # ⛔⛔⛔⛔⛔ This borrowed `sources::code_lines`, which answers about RUST — register item 1055
+    ///
+    /// That function's name, its doc and its only other caller all say Rust: it is *what
+    /// `Source::code` is*. It was usable here by **coincidence** — it dropped lines starting with
+    /// `#`, which is the Rust ATTRIBUTE rule and also, spelled identically, the shell COMMENT rule
+    /// — and its `//` clause was dead weight over a shell script.
+    ///
+    /// ⚠⚠ The coincidence is exactly why nobody noticed, and the bill came due the moment the Rust
+    /// side got a real scanner. Putting comment-awareness into `code_lines` lexed these scripts as
+    /// Rust — an apostrophe in prose opening a character literal, a `//` in a path opening a
+    /// comment — and `the_walk_reaches_scripts_no_declared_selftest_ever_runs` fell from **121
+    /// commands to 99** in one edit. The floor caught it; nothing else would have.
+    ///
+    /// ⇒ So the rule is spelled HERE, where the module's own doc already explains which of the two
+    /// shell rules each caller wants. One language, one answer — the rule
+    /// `crate::loop_shape::uncommented` was made public for and `crate::rust_source` exists to
+    /// keep.
     #[must_use]
     pub fn code(&self) -> Vec<(usize, String)> {
-        code_lines(&self.text)
+        self.text
+            .lines()
+            .enumerate()
+            .map(|(index, line)| (index + 1, line.trim().to_owned()))
+            .filter(|(_, line)| !line.starts_with('#'))
+            .collect()
     }
 
     /// The file with every line cut at its FIRST `#`, comments and quoted hashes alike.

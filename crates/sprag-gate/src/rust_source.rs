@@ -4,14 +4,16 @@
 //!
 //! Every gate in this workspace that wants *what the code says, rather than what its prose says
 //! about itself* writes `line.trim_start().starts_with("//")` and drops the line. **Eleven code
-//! lines in seven files** when this module was written; ten after it took the first of them.
-//! `sources::code_lines` is the widest-reach — `Source::code` is what most gates here read, and it
-//! holds four of the ten.
+//! lines in seven files** when this module was written; ten after item 1051 took the first;
+//! **five** after item 1055 took `sources::code_lines` — the widest-reach of them, since
+//! `Source::code` is what most gates here read — and the copy of it that was sitting in
+//! `authored`'s own test module.
 //!
 //! ⚠⚠ Those numbers are not a claim here: `what_a_comment_is_has_one_spelling_in_this_workspace`
 //! walks the tree for them and holds the count as an equality, because the first draft of this
 //! paragraph said *six files* off a grep read by eye and no reader could have re-taken it. Register
-//! item 1055 is the nine that are left.
+//! item 1055 carries the five that are left, each with what it calls a comment beside it — and
+//! **zero is not the target**, which is the register's sentence and not this module's to overrule.
 //!
 //! That spelling is an APPROXIMATION of *not in a comment*, and it misses two shapes:
 //!
@@ -188,6 +190,41 @@ pub fn uncommented(source: &str) -> String {
     kept
 }
 
+/// The source's lines with every comment BLANKED rather than removed, one-indexed.
+///
+/// # ⛔⛔⛔⛔⛔ Why this exists beside [`uncommented`], which already drops comments
+///
+/// Removing a comment removes its NEWLINES, so every line after a `/* */` is renumbered — and a
+/// gate built on that reports a line nobody can open. `loop_shape::uncommented_lines` is the same
+/// pair one language over, and the number it measured there was **`ai_loop.scxml:508` for an
+/// `<assign>` on line 3601**, which looked entirely plausible.
+///
+/// ⚠ *Does the needle match?* and *where is it?* are different questions, and only one of them
+/// survives having the text edited underneath it. [`uncommented`] is right for the first; this is
+/// what the second needs — and what [`crate::sources::Source`] needs, because `product` is `code`
+/// with the proving LINE NUMBERS removed.
+///
+/// ⚠⚠ Blanked CHAR BY CHAR, never by byte: this workspace's commentary is not ASCII, and a space
+/// written at a byte offset inside a character is not a string at all.
+#[must_use]
+pub fn uncommented_lines(source: &str) -> Vec<(usize, String)> {
+    let mut blanked = String::with_capacity(source.len());
+    let mut at = 0;
+    for comment in scan(source).comments {
+        blanked.push_str(&source[at..comment.at]);
+        for character in source[comment.at..comment.end].chars() {
+            blanked.push(if character == '\n' { '\n' } else { ' ' });
+        }
+        at = comment.end;
+    }
+    blanked.push_str(&source[at..]);
+    blanked
+        .lines()
+        .enumerate()
+        .map(|(index, line)| (index + 1, line.to_owned()))
+        .collect()
+}
+
 /// Whether a `//` at `at` has code before it on its line.
 fn line_shape(source: &str, at: usize) -> Shape {
     let start = source[..at].rfind('\n').map_or(0, |newline| newline + 1);
@@ -332,7 +369,7 @@ fn is_ident(byte: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Shape, Unclosed, scan, uncommented};
+    use super::{Shape, Unclosed, scan, uncommented, uncommented_lines};
 
     /// Every lexical shape this scanner must tell apart, as a source it could really be handed,
     /// what must survive it, and which comment shape it must report.
@@ -538,6 +575,96 @@ mod tests {
             uncommented(source).lines().count(),
             source.lines().count(),
             "⛔ ITEM 1051: removing a line comment moved the lines under it",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND A BLOCK COMMENT DOES MOVE THEM, WHICH IS THE WHOLE REASON FOR
+    /// [`super::uncommented_lines`]** — register item 1055.
+    ///
+    /// [`super::uncommented`] takes a `/* */`'s newlines with it, so every line under one is
+    /// renumbered. `crate::sources::Source` cannot survive that: `product` is `code` with the
+    /// PROVING LINE NUMBERS removed, so a renumbered `code` ships the wrong lines. The two
+    /// assertions are the pair — removal moves them, blanking does not — because a test that only
+    /// checked the blanked side would pass against a function that had quietly become the other
+    /// one.
+    #[test]
+    fn a_block_comment_renumbers_what_is_removed_and_not_what_is_blanked() {
+        let source = "let a = 1;\n/* probe_ms=\n   still the comment */\nlet d = 4;\n";
+        let removed = uncommented(source);
+        let moved = removed
+            .lines()
+            .position(|line| line.trim() == "let d = 4;")
+            .map(|index| index + 1);
+        assert_eq!(
+            moved,
+            Some(3),
+            "⛔ ITEM 1055: removal is supposed to take the comment's newlines with it, putting the \
+             file's line 4 at 3 — if it has stopped doing that, the reason this function exists \
+             beside it has gone: {removed:?}",
+        );
+
+        let lines = uncommented_lines(source);
+        assert_eq!(
+            lines.len(),
+            source.lines().count(),
+            "⛔ ITEM 1055: blanking moved the lines, so a line number taken from it names \
+             something else: {lines:?}",
+        );
+        assert_eq!(
+            lines.last().map(|(at, line)| (*at, line.trim())),
+            Some((4, "let d = 4;")),
+            "⛔ ITEM 1055: the line under a block comment is not where the file has it: {lines:?}",
+        );
+        assert!(
+            !lines.iter().any(|(_, line)| line.contains("probe_ms=")),
+            "⛔ ITEM 1055: the prose survived blanking: {lines:?}",
+        );
+    }
+
+    /// ⚠⚠ **A trailing comment leaves its code ON ITS OWN LINE, with the columns before it
+    /// intact** — what `crate::sources::code_lines` needs, since it trims what this hands back and
+    /// a line that lost its leading text would be trimmed into a different statement.
+    #[test]
+    fn a_trailing_comment_leaves_the_code_before_it_where_it_was() {
+        let source = "    let n = probe(); // probe_ms= here\n";
+        let lines = uncommented_lines(source);
+        let (at, only) = lines.first().expect("one line").clone();
+        // ⚠ The three clauses are PROPERTIES rather than a hand-counted string: the first draft of
+        // this case spelled the expected spaces out and was wrong by one, which is a case that
+        // fails for a reason having nothing to do with what it is about.
+        assert_eq!(at, 1);
+        assert_eq!(
+            only.chars().count(),
+            source.trim_end_matches('\n').chars().count(),
+            "⛔ ITEM 1055: blanking changed the line's width, so a column taken from it points \
+             somewhere else: {only:?}",
+        );
+        assert!(
+            only.starts_with("    let n = probe();") && only.trim_end() == "    let n = probe();",
+            "⛔ ITEM 1055: the code before the comment did not survive with its columns: {only:?}",
+        );
+        assert!(
+            !only.contains("probe_ms="),
+            "⛔ ITEM 1055: the prose survived blanking: {only:?}",
+        );
+    }
+
+    /// ⛔ **The commentary this workspace writes is not ASCII**, and a blank written at a byte
+    /// offset inside a character is not a string at all — the refusal
+    /// `crate::loop_shape::uncommented_lines` carries, met here in the language whose comments this
+    /// repository actually writes Korean in.
+    #[test]
+    fn a_comment_that_is_not_ascii_is_blanked_without_splitting_a_character() {
+        let lines =
+            uncommented_lines("let n = probe(); // 주석이 여기 있다 probe_ms=\nlet d = 4;\n");
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines[0].1.starts_with("let n = probe();"),
+            "⛔ ITEM 1055: {lines:?}",
+        );
+        assert!(
+            !lines[0].1.contains("probe_ms=") && !lines[0].1.contains('주'),
+            "⛔ ITEM 1055: a non-ASCII comment survived blanking: {lines:?}",
         );
     }
 }

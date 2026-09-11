@@ -425,12 +425,17 @@ pub fn assigned(scxml: &str, id: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// ⛔⛔⛔⛔⛔ **THIS WAS THE SECOND SPELLING `code_lines` WAS EXTRACTED TO PREVENT** — register
+    /// item 1055.
+    ///
+    /// `crate::sources::code_lines`'s own doc says it is a function rather than the four lines it
+    /// replaces *because a test that builds a source by hand must build the same thing the walk
+    /// builds* — and the four lines were sitting here, in the same crate, feeding the fixtures of
+    /// two cases. They agreed while both were `starts_with("//")`. The moment the walk learned what
+    /// a comment is, they stopped, and nothing would have said so: these cases would have gone on
+    /// proving the reader's behaviour against a shape the walk can no longer hand it.
     fn code(text: &str) -> Vec<(usize, String)> {
-        text.lines()
-            .enumerate()
-            .map(|(index, line)| (index + 1, line.trim().to_owned()))
-            .filter(|(_, line)| !line.starts_with("//"))
-            .collect()
+        crate::sources::code_lines(text)
     }
 
     /// ⚠⚠⚠⚠⚠ **BOTH DIRECTIONS.** Each row is a comment block as the template could really carry
@@ -700,15 +705,27 @@ mod tests {
 
     /// ⚠⚠ A comment is not code, so a claim spelled inside a doc comment in `kind.rs` — and every
     /// reader here has one, quoting the template's sentence — must not be mistaken for a read.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The second row is the one item 1055 bought, and the first could never have
+    ///
+    /// A comment written AFTER code is a comment, and the old spelling of [`code`] kept that line
+    /// whole: the reader below was found in a SENTENCE and counted as a read. Measured by putting
+    /// the same call in both places — the whole-line row passed before this round and after it, the
+    /// trailing row only after.
     #[test]
     fn a_doc_comment_quoting_the_id_is_not_a_reader() {
-        let commented = "/// The template says *\"it is the KIND's to author\"* about\n\
-             /// `get_variable(&self.session, \"reflect_after_refusals\")`.\n\
-             pub fn nothing(&self) {}";
-        assert!(
-            read_ids(&code(commented)).is_empty(),
-            "the walk drops comment lines, and this is what depends on it",
-        );
+        let quoted = "get_variable(&self.session, \"reflect_after_refusals\")";
+        for commented in [
+            format!(
+                "/// The template says *\"it is the KIND's to author\"* about\n/// `{quoted}`.\npub fn nothing(&self) {{}}"
+            ),
+            format!("pub fn nothing(&self) {{}} // and it is not `{quoted}` either"),
+        ] {
+            assert!(
+                read_ids(&code(&commented)).is_empty(),
+                "the walk drops what a comment says, and this is what depends on it: {commented:?}",
+            );
+        }
     }
 
     #[test]

@@ -543,17 +543,49 @@ pub fn workspace_root() -> PathBuf {
     }
 }
 
+/// Every line of `text` with its comments GONE and its own line number kept — the one pass
+/// [`code_lines`] and [`attribute_lines`] are both derived from.
+///
+/// # ⛔⛔⛔⛔⛔ The two filters were complements by CONVENTION, and now they are by construction
+///
+/// Their docs have always said *the two filters are complements of one rule, and a round that
+/// changes what counts as a comment must change both or neither* — and nothing made that true. Each
+/// spelled its own `starts_with`, over the raw text, so a round could change one. Register item
+/// 1046's gate checks that they do not OVERLAP; it cannot check that they were drawn by the same
+/// line. Now one pass draws it and each of them is a predicate over the result.
+///
+/// ⚠⚠ **This changes what an attribute line IS, and in the direction the old doc wanted.**
+/// [`attribute_lines`]'s own commentary worried about `/// … #[ignore] …` — a doc comment QUOTING
+/// an attribute, which the raw-text filter kept whenever it was written at the start of a line.
+/// Blanked first, that line holds nothing at all.
+fn without_comments(text: &str) -> Vec<(usize, String)> {
+    crate::rust_source::uncommented_lines(text)
+        .into_iter()
+        .map(|(at, line)| (at, line.trim().to_owned()))
+        .collect()
+}
+
 /// What [`Source::code`] is, spelled ONCE.
 ///
 /// ⚠ A function rather than the four lines it replaces, because a test that builds a source by hand
 /// must build the same thing the walk builds. Two spellings of *what a gate reads* is how a case
 /// passes against a shape the real walk would never hand it — this crate's own subject, one level
 /// down.
+///
+/// # ⛔⛔⛔⛔⛔ It used to drop a line that BEGAN with `//` and keep the rest whole — item 1055
+///
+/// `let n = 1; // probe_ms=` reached every gate in this crate with its prose attached, so a needle
+/// hunted in code was answerable by the sentence beside the code. That is item 1051's defect at the
+/// widest call site there is: `Source::code` is what most gates here read.
+///
+/// ⚠⚠ **And a line that is now EMPTY is not a code line.** The old filter dropped a whole-line
+/// comment and kept a blank one, which was never a rule anybody meant — a line is here if it
+/// carries code, and a comment-only line carries none once the comment is gone. ⚠ `product` is
+/// derived from this by LINE NUMBER, which is why [`without_comments`] blanks rather than removes.
 pub(crate) fn code_lines(text: &str) -> Vec<(usize, String)> {
-    text.lines()
-        .enumerate()
-        .map(|(index, line)| (index + 1, line.trim().to_owned()))
-        .filter(|(_, line)| !line.starts_with("//") && !line.starts_with('#'))
+    without_comments(text)
+        .into_iter()
+        .filter(|(_, line)| !line.is_empty() && !line.starts_with('#'))
         .collect()
 }
 
@@ -571,9 +603,8 @@ pub(crate) fn code_lines(text: &str) -> Vec<(usize, String)> {
 /// not the thing standing between that gate and a doc comment. The line that IS load-bearing is
 /// the `#` in the first place: without it these are `code_lines`, which carry no attribute at all.
 pub(crate) fn attribute_lines(text: &str) -> Vec<(usize, String)> {
-    text.lines()
-        .enumerate()
-        .map(|(index, line)| (index + 1, line.trim().to_owned()))
+    without_comments(text)
+        .into_iter()
         .filter(|(_, line)| line.starts_with('#'))
         .collect()
 }
@@ -719,8 +750,8 @@ fn test_only_modules(file: &str, text: &str) -> Vec<String> {
     };
     let mut found = Vec::new();
     let mut governed = false;
-    for raw in text.lines() {
-        let line = raw.trim();
+    for (_, line) in without_comments(text) {
+        let line = line.as_str();
         if attribute_is_cfg_test(line).is_some_and(str::is_empty) {
             governed = true;
             continue;
@@ -728,9 +759,14 @@ fn test_only_modules(file: &str, text: &str) -> Vec<String> {
         if !governed {
             continue;
         }
-        // Between the attribute and its item there may be more attributes, doc comments or nothing
-        // at all — none of those is the item, so none of them ends the wait.
-        if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
+        // Between the attribute and its item there may be more attributes, comments or nothing at
+        // all — none of those is the item, so none of them ends the wait.
+        //
+        // ⛔ THE COMMENT CLAUSE IS GONE BECAUSE THE COMMENT IS — register item 1055. It used to
+        // read `starts_with("//")`, which is a rule about `//` rather than about commentary: a
+        // `/* */` written between the attribute and its item does not start with `//`, so it ended
+        // the wait and the module that followed was never found.
+        if line.is_empty() || line.starts_with('#') {
             continue;
         }
         governed = false;
@@ -1111,21 +1147,125 @@ mod tests {
 
         let raw = std::fs::read_to_string(workspace_root().join(&mine.file))
             .expect("the file the walker just read");
-        let commented = raw
-            .lines()
-            .filter(|line| line.trim_start().starts_with("//"))
-            .count();
+        let scanned = crate::rust_source::scan(&raw);
+        let commented = scanned.comments.len();
         assert!(
             commented > 20,
             "this file is mostly reasoning, and a claim about dropping comments is vacuous \
              without them: {commented}",
         );
+        // ⛔⛔⛔⛔⛔ **THE CLAIM IS ABOUT COMMENTS, NOT ABOUT TEXT THAT LOOKS LIKE ONE** — and the
+        // first draft of this got that wrong and was told so. It asserted that no code line
+        // CONTAINS `//` or `/*`, and went red on six lines of this file's own fixtures, which hold
+        // comment text inside STRING LITERALS. A string is code; that is the whole distinction
+        // item 1051 built the scanner for, met here from the other side.
+        //
+        // What is left to say about THIS file is the whole-line half: every line the scanner calls
+        // a comment is a line no gate is handed at all. Its other half — a comment written AFTER
+        // code — cannot be asked here, because this file writes none. It is asked of the walk, by
+        // `no_comment_written_after_code_reaches_a_gate`, which is where the population is.
+        let reaching: std::collections::BTreeSet<usize> =
+            mine.code.iter().map(|(at, _)| *at).collect();
+        let prose: Vec<usize> = scanned
+            .comments
+            .iter()
+            .filter(|comment| comment.shape == crate::rust_source::Shape::WholeLine)
+            .map(|comment| raw[..comment.at].matches('\n').count() + 1)
+            .filter(|at| reaching.contains(at))
+            .collect();
         assert!(
-            mine.code.iter().all(|(_, line)| !line.starts_with("//")),
-            "not one comment line may reach a gate — every site the gates forbid now carries a \
-             comment SAYING what it must not do, and a gate that read its own warning as the \
-             offence would go red on the fix",
+            prose.is_empty(),
+            "not one comment line may reach a gate — {} hands a gate its line(s) {prose:?}, which \
+             hold nothing but commentary. Every site the gates forbid now carries a comment SAYING \
+             what it must not do, and a gate that read its own warning as the offence would go red \
+             on the fix",
+            mine.file,
         );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE OTHER HALF: A COMMENT WRITTEN AFTER CODE REACHES NO GATE EITHER** —
+    /// register items 1051 and 1055.
+    ///
+    /// This is the half the old filter could not check and this crate could not even ask: it
+    /// dropped a line that BEGAN with `//` and handed `let n = 1; // probe_ms=` to every gate
+    /// whole. The subject is the WALK rather than any one file, because the file that holds `Source`
+    /// writes no comment after code — measured 2026-09-12, **zero** — so asking it there is a
+    /// clause that passes by having nothing to judge, which rule 6 calls a red.
+    #[test]
+    fn no_comment_written_after_code_reaches_a_gate() {
+        let root = workspace_root();
+        let (mut judged, mut population) = (0usize, 0usize);
+        for source in rust_sources() {
+            let raw = match std::fs::read_to_string(root.join(&source.file)) {
+                Ok(raw) => raw,
+                Err(why) => panic!("{} is a file the walk found: {why}", source.file),
+            };
+            let reaching: std::collections::BTreeMap<usize, &String> =
+                source.code.iter().map(|(at, line)| (*at, line)).collect();
+            for comment in crate::rust_source::scan(&raw).comments {
+                if comment.shape == crate::rust_source::Shape::WholeLine {
+                    continue;
+                }
+                population += 1;
+                let at = raw[..comment.at].matches('\n').count() + 1;
+                let Some(line) = reaching.get(&at) else {
+                    continue;
+                };
+                let prose = raw[comment.at..comment.end].trim();
+                assert!(
+                    !line.contains(prose),
+                    "not one comment may reach a gate — {}:{at} hands a gate {line:?}, which \
+                     carries the sentence {prose:?} beside the code",
+                    source.file,
+                );
+                judged += 1;
+            }
+        }
+        assert!(
+            judged > 0,
+            "this workspace writes {population} comment(s) after code and not one of them landed \
+             on a line a gate reads, so the clause above judged nothing. A probe pointed at \
+             nothing must never read as clean",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE TWO FIELDS ARE DRAWN BY ONE LINE, WHICH IS WHAT THEIR DOCS ALWAYS
+    /// CLAIMED** — register item 1055.
+    ///
+    /// [`code_lines`] and [`attribute_lines`] each used to spell their own `starts_with` over the
+    /// raw text. Item 1046's gate holds that they do not OVERLAP, and two independent filters can
+    /// stop being complements without ever overlapping — a line both of them drop is invisible to
+    /// it. So the third fact is asserted here: every line of a file is code, or an attribute, or
+    /// holds nothing once its comments are gone.
+    #[test]
+    fn every_line_is_code_or_an_attribute_or_nothing_at_all() {
+        let text = "#[cfg(test)] // an attribute with prose\n\
+                    let n = probe(); /* and code with some */\n\
+                    // nothing but prose\n\
+                    \n\
+                    /// #[ignore] quoted in a doc comment\n";
+        let code: Vec<String> = code_lines(text).into_iter().map(|(_, line)| line).collect();
+        let attributes: Vec<String> = attribute_lines(text)
+            .into_iter()
+            .map(|(_, line)| line)
+            .collect();
+        assert_eq!(code, vec!["let n = probe();".to_owned()]);
+        assert_eq!(attributes, vec!["#[cfg(test)]".to_owned()]);
+
+        let (kept, all) = (
+            code_lines(text).len() + attribute_lines(text).len(),
+            text.lines().count(),
+        );
+        assert!(
+            kept < all,
+            "the three lines holding nothing must be in neither list, or one of these filters has \
+             stopped being the complement of the other: {kept} of {all}",
+        );
+        let overlap: Vec<&String> = code
+            .iter()
+            .filter(|line| attributes.contains(line))
+            .collect();
+        assert!(overlap.is_empty(), "a line cannot be both: {overlap:?}");
     }
 
     /// ⚠⚠⚠⚠⚠ **BOTH DIRECTIONS, because a reader that drops everything is as blind as one that
