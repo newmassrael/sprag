@@ -4400,10 +4400,14 @@ impl crate::review::Asked for AskingAnother<'_> {
             Some(question),
             asks.within,
         )
+        // ⚠ Register item 1073 hands the wait's clock back beside the words, and this reader drops
+        // it with the rest: a review has no tally for it to join, which is the same residue the
+        // classifier's asking states — see `admitted`.
+        .0
         .ok()
-        // ⚠ Register item 659 added the child's status as a third element; this reader wants the
+        // ⚠ Register item 659 added the child's status beside the words; this reader wants the
         // WORDS and nothing else, so it drops it here rather than carrying a fact it does not use.
-        .map(|(said, _took, _exit)| said)
+        .map(|(said, _exit)| said)
     }
 }
 
@@ -13604,6 +13608,11 @@ impl OuterLoop {
         let standing_in = panes
             .origin()
             .and_then(|origin| origin.pane_start_dir(self.driving.pane));
+        // ⚠⚠ THE CLOCK IS DROPPED HERE, AND THAT IS A STATED RESIDUE RATHER THAN A DECISION —
+        // register item 1073. `ADMITS_WITHIN` is sized on two readings in its own doc, exactly the
+        // survivor arithmetic that item paid for the milestone check: a classifier that outruns
+        // its bound leaves no record. Nothing in `Checks` counts classifier askings, so there is no
+        // tally yet for this to join; the residue is in the register rather than in silence.
         match crate::judge::asked_of_another(
             panes,
             run,
@@ -13611,7 +13620,9 @@ impl OuterLoop {
             standing_in.as_deref(),
             proposal,
             ADMITS_WITHIN,
-        ) {
+        )
+        .said
+        {
             // ⚠ THE CHAIN WORD IS READ ONLY WHERE THE PROPOSAL WAS ADMITTED. A refusal's sentence
             // is about why it was refused, and looking for a movement word in it would be reading
             // whatever prose happened to start it.
@@ -15387,14 +15398,25 @@ impl OuterLoop {
         // level out would include every run whose author declared no checker, and `asked: 0` is the
         // very thing that separates *nobody was meant to check this* from *the checker is broken*.
         self.checks.asked = self.checks.asked.saturating_add(1);
-        match crate::judge::asked_of_another(
+        let asked = crate::judge::asked_of_another(
             panes,
             run,
             &argv,
             standing_in.as_deref(),
             &question,
             CHECK_WITHIN,
-        ) {
+        );
+        // ⛔⛔⛔⛔⛔ **AND HOW LONG IT TOOK, RECORDED BEFORE ANY ARM READS WHAT IT SAID** — register
+        // item 1073. Here and not inside the arms below, because the clock does not care which of
+        // them this check lands in: an agreement, a refusal and a reply that was no verdict each
+        // took a measurable time, and a wait that ran out is the one observation the margin in
+        // `CHECK_READINGS` most needs and never had. Recording it per arm would be three sites
+        // free to disagree about one fact.
+        self.checks
+            .latency
+            .get_or_insert(crate::judge::CheckLatency::NONE)
+            .record(asked.waited);
+        match asked.said {
             // ⚠⚠ THE WORDS TRAVEL WITH BOTH VERDICTS, not only the refusal. A reader deciding what
             // an AGREEMENT is worth needs them for the same reason register item 428 needs the
             // verdict at all — and publishing them on one arm would tell the two apart by the
@@ -31731,6 +31753,30 @@ mod tests {
                  the level. And the depth is the DOCUMENT's `refusals + 1`, which no judgement \
                  here ever moved — a driver keeping its own streak would report three. Got \
                  {counted:?}",
+            );
+            // ⛔⛔⛔⛔⛔ **AND EVERY ONE OF THE FIVE TOOK A MEASURABLE TIME** — register item 1073.
+            // FIVE and not four: MUMBLES answered no verdict and its process still ended inside the
+            // bound, so its clock is an observation exactly as an agreement's is. A build that kept
+            // the clock only beside a verdict — which is what `Judgement::took` did, read by one
+            // live harness and by nothing in the product — says
+            // four here, and that is the survivor arithmetic this item exists to end, one arm over.
+            let latency = counted
+                .latency
+                .expect("a run that put claims to a checker measured how long they took");
+            assert_eq!(
+                (latency.answered, latency.outran, latency.bound),
+                (5, 0, Some(CHECK_WITHIN)),
+                "⛔⛔⛔⛔⛔ ITEM 1073: five checks ended inside their bound and none outran it, and \
+                 the run has to say both — with the bound they were given, because a stored count \
+                 of checks that ran out of time means nothing without the time. Got {latency:?}",
+            );
+            assert!(
+                latency
+                    .slowest
+                    .is_some_and(|slowest| slowest > Duration::ZERO && slowest < CHECK_WITHIN),
+                "⚠⚠ AND THE SLOWEST IS A REAL READING INSIDE THE BOUND: zero is a clock nobody \
+                 started, and a value at the bound is a wait that ran out being filed as an \
+                 answer. Got {latency:?}",
             );
             assert!(
                 !counted.none_answered(),

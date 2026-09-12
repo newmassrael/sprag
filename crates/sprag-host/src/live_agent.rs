@@ -4827,12 +4827,22 @@ fn the_judge_separates_a_design_dialog_from_a_routine_one() {
     // prompt and comparing them would compare nothing. The finding lives in `render`'s own doc.
     let mut report: Vec<(String, bool, Vec<Option<bool>>)> = Vec::new();
     let mut slowest = Duration::ZERO;
+    // ⛔ REGISTER ITEM 1073: the judgements that outran their bound are counted beside the slowest
+    // one that answered. A maximum over answers alone is taken over the survivors — a judge that
+    // ran out of time is the slowest judgement of all and would not have appeared in it.
+    let mut outran = 0_u32;
 
     println!("\n== the shipped judge, against the owner's labels ==");
     for (label, question, expected) in &dialogs {
         let mut holds = Vec::new();
         for _ in 0..ROUNDS {
-            let judged = judges(&live.access, &run, CRITERION, question, &spec);
+            let asked = judges(&live.access, &run, CRITERION, question, &spec);
+            match asked.waited {
+                sprag_plugin::judge::Waited::Answered { took, .. } => slowest = slowest.max(took),
+                sprag_plugin::judge::Waited::Outran { .. } => outran += 1,
+                sprag_plugin::judge::Waited::Unmeasured => {}
+            }
+            let judged = asked.said;
             // ⚠⚠⚠ AND A SILENCE SAYS WHICH ONE, HERE TOO — register item 593. A live harness that
             // printed `None` for a judge that would not start, one that outran its bound and one
             // that answered prose is the very disease this round paid off, one layer out: the
@@ -4844,9 +4854,6 @@ fn the_judge_separates_a_design_dialog_from_a_routine_one() {
                 println!("    no verdict — {}", unheard.describe().quoted());
             }
             let judged = judged.ok();
-            if let Some(judged) = &judged {
-                slowest = slowest.max(judged.took);
-            }
             holds.push(judged.map(|j| j.holds));
         }
         println!(
@@ -4855,7 +4862,13 @@ fn the_judge_separates_a_design_dialog_from_a_routine_one() {
         );
         report.push(((*label).to_owned(), *expected, holds));
     }
-    step(began, &format!("slowest judgement: {slowest:?}"));
+    step(
+        began,
+        &format!(
+            "slowest judgement that answered: {slowest:?}; {outran} outran the {:?} bound",
+            spec.within,
+        ),
+    );
 
     let agreed: usize = report
         .iter()

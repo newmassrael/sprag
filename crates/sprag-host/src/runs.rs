@@ -3644,6 +3644,56 @@ pub struct PersistedChecks {
     /// that is a claim an author made and this is a claim nobody wrote down.
     #[serde(default)]
     pub milestone_scoring: Option<String>,
+    /// [`sprag_plugin::Checks::latency`] — register item 1073: how long the checks took and how
+    /// many outran their bound.
+    ///
+    /// ⚠⚠ [`None`] is *this record predates the column, or nothing measured*, and it reads back as
+    /// [`None`] — never as a zeroed table, which would say *no check ever outran its bound* about a
+    /// run whose build could not have told. That is `milestone_scoring`'s rule one column up.
+    #[serde(default)]
+    pub latency: Option<PersistedCheckLatency>,
+}
+
+/// **THE STORED SHAPE OF [`sprag_plugin::judge::CheckLatency`]** — register item 1073, in
+/// milliseconds because a log is read by tools that do not share this workspace's `Duration`.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PersistedCheckLatency {
+    /// [`sprag_plugin::judge::CheckLatency::answered`].
+    pub answered: u32,
+    /// [`sprag_plugin::judge::CheckLatency::slowest`], in milliseconds.
+    pub slowest_ms: Option<u64>,
+    /// [`sprag_plugin::judge::CheckLatency::outran`].
+    pub outran: u32,
+    /// [`sprag_plugin::judge::CheckLatency::bound`], in milliseconds.
+    pub bound_ms: Option<u64>,
+}
+
+impl From<sprag_plugin::judge::CheckLatency> for PersistedCheckLatency {
+    fn from(live: sprag_plugin::judge::CheckLatency) -> Self {
+        Self {
+            answered: live.answered,
+            slowest_ms: live.slowest.map(millis),
+            outran: live.outran,
+            bound_ms: live.bound.map(millis),
+        }
+    }
+}
+
+impl From<PersistedCheckLatency> for sprag_plugin::judge::CheckLatency {
+    fn from(stored: PersistedCheckLatency) -> Self {
+        Self {
+            answered: stored.answered,
+            slowest: stored.slowest_ms.map(std::time::Duration::from_millis),
+            outran: stored.outran,
+            bound: stored.bound_ms.map(std::time::Duration::from_millis),
+        }
+    }
+}
+
+/// A duration as whole milliseconds, saturating — a latency past `u64::MAX` ms is not one a check
+/// can have, and wrapping would record the slowest check as the fastest.
+fn millis(took: std::time::Duration) -> u64 {
+    u64::try_from(took.as_millis()).unwrap_or(u64::MAX)
 }
 
 impl From<sprag_plugin::Checks> for PersistedChecks {
@@ -3666,6 +3716,7 @@ impl From<sprag_plugin::Checks> for PersistedChecks {
             // one authority on them, and a fourth arm must arrive as a word this column carries
             // rather than as a match this file forgot to widen.
             milestone_scoring: live.scoring.wire_str().map(str::to_owned),
+            latency: live.latency.map(PersistedCheckLatency::from),
         }
     }
 }
@@ -3692,6 +3743,7 @@ impl From<PersistedChecks> for sprag_plugin::Checks {
             refused: stored.refused,
             refused_in_a_row: stored.refused_in_a_row,
             scoring: sprag_plugin::Scoring::of_wire(stored.milestone_scoring.as_deref()),
+            latency: stored.latency.map(sprag_plugin::judge::CheckLatency::from),
         }
     }
 }
@@ -12125,6 +12177,14 @@ mod tests {
                 milestone_scoring: sprag_plugin::Scoring::Authored
                     .wire_str()
                     .map(str::to_owned),
+                // ⛔ REGISTER ITEM 1073, AND DISTINCT IN EVERY FIELD: a round trip that swapped
+                // the two counts, or the two durations, passes a fixture where they are equal.
+                latency: Some(PersistedCheckLatency {
+                    answered: 11,
+                    slowest_ms: Some(185_200),
+                    outran: 3,
+                    bound_ms: Some(600_000),
+                }),
             }),
             cost: None,
             unit: None,
@@ -12234,6 +12294,15 @@ mod tests {
             reask_landed_deepest: Some(23),
             checks: sprag_plugin::Checks {
                 asked: 13,
+                // ⛔ REGISTER ITEM 1073: a latency table on the LIVE value, so the round trip below
+                // goes through both conversions and the log. Every field distinct, for this
+                // fixture's own reason.
+                latency: Some(sprag_plugin::judge::CheckLatency {
+                    answered: 9,
+                    slowest: Some(std::time::Duration::from_millis(118_200)),
+                    outran: 4,
+                    bound: Some(std::time::Duration::from_secs(600)),
+                }),
                 ..sprag_plugin::Checks::NONE
             },
             ..an_outcome()
@@ -12266,6 +12335,22 @@ mod tests {
                 restored[0].state
             );
         };
+        // ⛔⛔⛔⛔⛔ REGISTER ITEM 1073: the latency table survives the log BOTH WAYS — live value to
+        // stored row, row to disk and back, and back to the live value. The serde half alone was
+        // already driven above by a stored fixture; what this adds is the two conversions, and a
+        // mutation that dropped the table in the first of them left every other gate here green.
+        assert_eq!(
+            outcome.checks.latency,
+            Some(sprag_plugin::judge::CheckLatency {
+                answered: 9,
+                slowest: Some(std::time::Duration::from_millis(118_200)),
+                outran: 4,
+                bound: Some(std::time::Duration::from_secs(600)),
+            }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1073: how long this run's checks took, and how many ran out \
+             of time, did not survive a restart. Every run anybody reads has been through a \
+             restore, so a table that stops at the daemon is a table nobody reads.",
+        );
         assert_eq!(
             (
                 outcome.answered,
@@ -12545,6 +12630,19 @@ mod tests {
              said there was no such road and left this `None` for every out-of-process run — which \
              is every run in the live store. Row: {row:?}",
         );
+        // ⛔⛔⛔⛔⛔ AND THIS BLOCK IS AN OLDER DAEMON'S, WHICH TIMED NO CHECKS — register item 1073.
+        // It carries no latency table, so the row must say *nothing measured* and not a zeroed
+        // table: `outran: 0` is the claim that no check ran out of time, and this daemon could not
+        // have made it. The counts beside it still arrive, which is why the table's absence must
+        // not refuse the tally either.
+        assert_eq!(
+            row.checks.as_ref().map(|it| it.latency.clone()),
+            Some(None),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1073: a progress report with no latency table filed one \
+             anyway. A reader that fills the absent table with zeros tells every population query \
+             that these runs' checks never ran out of time — the reassurance the item was opened \
+             because nobody could give. Row: {row:?}",
+        );
         assert_eq!(
             row.screened, None,
             "⛔⛔⛔⛔⛔ REGISTER ITEM 914, AND THE CONTROL THAT KEEPS THIS HONEST: this run's \
@@ -12586,6 +12684,9 @@ mod tests {
                     // holding only unputtable claims against an empty one, and a column that is
                     // not a count has no business separating them.
                     milestone_scoring: None,
+                    // ⚠ ABSENT ON BOTH SIDES for the reason `milestone_scoring` gives: a latency
+                    // table is not what this pair contrasts.
+                    latency: None,
                 })
                 .sampled(Tally::Checks),
                 row(PersistedChecks {
@@ -12598,6 +12699,7 @@ mod tests {
                     refused: 0,
                     refused_in_a_row: 0,
                     milestone_scoring: None,
+                    latency: None,
                 })
                 .sampled(Tally::Checks),
             ),

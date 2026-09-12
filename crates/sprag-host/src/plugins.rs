@@ -6661,6 +6661,10 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
             // zero as one that authors none, and item 968's subject is exactly such a run — one a
             // ceiling stopped. `null` for the arm that is the absence of an answer.
             RUN_MILESTONE_SCORING_KEY: progress.checks.scoring.wire_str(),
+            // ⛔⛔⛔⛔⛔ AND HOW LONG THE CHECKS TOOK — register item 1073. `null` where nothing
+            // measured, never a zeroed table: a zero `outran` is a claim that no check ran out of
+            // time, and only a daemon that timed its checks may make it.
+            RUN_CHECK_LATENCY_KEY: progress.checks.latency.map(check_latency_json),
         },
         // ⛔⛔⛔⛔⛔ AND THE TWO SIDES OF THE COMPARISON THE DOCUMENT DECIDES BY — register items
         // 856(1b) and 894. The ceiling rode the TOP LEVEL of this answer when it was first
@@ -6827,11 +6831,59 @@ pub struct ReportedProgress {
     pub journal: Option<Vec<Value>>,
 }
 
-/// **THE SPLIT AS IT CROSSES THE WIRE** — one entry per reflect reason word, `{delivered, folded}`.
+/// **THE KEY [`sprag_plugin::Checks::latency`] RIDES UNDER**, inside [`RUN_CHECKS_KEY`] — register
+/// item 1073.
 ///
-/// ⚠ Composed from `rows()` rather than from a list here, so [`sprag_plugin::ReflectReason::ALL`]
-/// stays the only authority on which reasons there are — register item 856(1) and this workspace's
-/// rule 6: a reason nobody classified must not quietly leave the table.
+/// ⚠⚠ DECLARED ABOVE THE DOC BLOCKS BELOW, NOT BETWEEN ONE OF THEM AND ITS FUNCTION: an item put
+/// between a `///` block and the function it documents takes that block, silently. The first draft
+/// of this key did exactly that, and the rustdoc gate caught it only because the stolen text
+/// happened to link a private function.
+pub const RUN_CHECK_LATENCY_KEY: &str = "latency";
+
+/// [`sprag_plugin::judge::CheckLatency`] as it crosses: counts, and durations as whole milliseconds
+/// or `null`.
+fn check_latency_json(latency: sprag_plugin::judge::CheckLatency) -> Value {
+    json!({
+        "answered": latency.answered,
+        "slowest_ms": latency.slowest.map(millis_of),
+        "outran": latency.outran,
+        "bound_ms": latency.bound.map(millis_of),
+    })
+}
+
+/// A duration as whole milliseconds, saturating rather than wrapping.
+fn millis_of(took: std::time::Duration) -> u64 {
+    u64::try_from(took.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// ⛔⛔⛔⛔⛔ **THE LATENCY TABLE, READ BACK** — register item 1073.
+///
+/// ⚠⚠ ITS ABSENCE DOES NOT REFUSE THE TALLY, on `scoring`'s stated exception to this block's rule:
+/// a daemon older than the column is a daemon that did not time its checks, and that is already an
+/// arm — [`None`], *nothing measured* — which hedges the row exactly as a refusal would and keeps
+/// every count that daemon DID publish.
+///
+/// ⚠⚠⚠ **BUT THE TABLE ITSELF IS WHOLE OR NOTHING**: a table carrying `answered` and not `outran`
+/// is [`None`], never a zero filled in. A zero `outran` is the claim that no check ran out of time,
+/// and that is exactly the reassurance item 1073 was opened because nobody could make.
+fn check_latency_in(tally: &Value) -> Option<sprag_plugin::judge::CheckLatency> {
+    let table = tally.get(RUN_CHECK_LATENCY_KEY)?;
+    let millis = |key: &str| -> Option<Option<std::time::Duration>> {
+        match table.get(key)? {
+            Value::Null => Some(None),
+            value => value
+                .as_u64()
+                .map(|ms| Some(std::time::Duration::from_millis(ms))),
+        }
+    };
+    Some(sprag_plugin::judge::CheckLatency {
+        answered: small(table.get("answered"))?,
+        slowest: millis("slowest_ms")?,
+        outran: small(table.get("outran"))?,
+        bound: millis("bound_ms")?,
+    })
+}
+
 /// **EVERY KIND OF CHECKER SILENCE WITH ITS COUNT**, keyed by the arm's own word — register item
 /// 996, on [`folds_by_reason_json`]'s rule one function down.
 ///
@@ -6868,6 +6920,15 @@ fn silent_by_kind_in(tally: &Value) -> Option<sprag_plugin::judge::SilentByKind>
     Some(silent)
 }
 
+/// **THE SPLIT AS IT CROSSES THE WIRE** — one entry per reflect reason word, `{delivered, folded}`.
+///
+/// ⚠ Composed from `rows()` rather than from a list here, so [`sprag_plugin::ReflectReason::ALL`]
+/// stays the only authority on which reasons there are — register item 856(1) and this workspace's
+/// rule 6: a reason nobody classified must not quietly leave the table.
+///
+/// ⚠⚠ BACK ON ITS OWN FUNCTION since register item 1073: item 996 declared two functions between
+/// this block and the item it documents, and from then until now it read as part of
+/// `silent_by_kind_json`'s doc while this function had none.
 fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
     let mut out = serde_json::Map::new();
     for (reason, row) in folds.rows() {
@@ -7162,6 +7223,9 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
             scoring: sprag_plugin::Scoring::of_wire(
                 tally.get(RUN_MILESTONE_SCORING_KEY).and_then(Value::as_str),
             ),
+            // ⛔ REGISTER ITEM 1073, and the same exception as the entry above: an absent table is
+            // `None` — nothing measured — and never refuses the counts beside it.
+            latency: check_latency_in(tally),
         })
     })();
     // ⛔⛔⛔⛔⛔ AND THE TWO SIDES OF THE COMPARISON THE DOCUMENT RESTARTS BY — register items
@@ -9516,16 +9580,18 @@ pub fn checks_sentence(checks: &sprag_plugin::Checks) -> Option<String> {
     if checks.none_answered() {
         return Some(format!(
             "{unasked}⚠ NONE of this run's {} milestone claim(s) was verified — its checker never \
-             answered, so anything it converged on rests on the working agent's own word{why}",
+             answered{}, so anything it converged on rests on the working agent's own word{why}",
             checks.asked,
+            outran_clause(checks),
         ));
     }
     Some(format!(
-        "{unasked}⚠ {} of {} milestone claims went unverified{} — the checker answered for the \
+        "{unasked}⚠ {} of {} milestone claims went unverified{}{} — the checker answered for the \
          rest{why}{refused}",
         checks.silent,
         checks.asked,
         which_silences(checks),
+        outran_clause(checks),
     ))
 }
 
@@ -9550,6 +9616,27 @@ pub fn checks_sentence(checks: &sprag_plugin::Checks) -> Option<String> {
 /// the total and `why_silent` already names the newest one, so a split that only ever restated
 /// them would be noise a reader learns to skip — taking the case that matters with it. The clause
 /// appears exactly when the kinds actually disagree, which is when it changes what somebody does.
+/// ⛔⛔⛔⛔⛔ **HOW MANY OF THE SILENCES WERE A CHECK RUNNING OUT OF TIME** — register item 1073.
+///
+/// `why_silent` names the LAST silence and `which_silences` sums them by remedy, and neither could
+/// say how many checks simply outran their bound: that is folded into `unanswered` beside a checker
+/// that would not start, and it is the one whose remedy is a longer wait or a smaller question
+/// rather than a repair. Empty where nothing measured, or where nothing outran — a clause that
+/// restated a zero would teach a reader to skip it on the rows where it carries something.
+fn outran_clause(checks: &sprag_plugin::Checks) -> String {
+    match checks.latency {
+        Some(latency) if latency.outran > 0 => format!(
+            " — {} of them outran the {} bound",
+            latency.outran,
+            latency.bound.map_or_else(
+                || "recorded".to_owned(),
+                |bound| format!("{} s", bound.as_secs())
+            ),
+        ),
+        _ => String::new(),
+    }
+}
+
 fn which_silences(checks: &sprag_plugin::Checks) -> String {
     let spoken: Vec<String> = checks
         .silent_by
@@ -10376,6 +10463,61 @@ mod tests {
              than a build that stopped reporting: the row must still say how much went \
              unverified.\n  got {alone}",
         );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A ROW SAYS HOW MANY OF ITS SILENCES WERE CHECKS RUNNING OUT OF TIME** — register
+    /// item 1073.
+    ///
+    /// `unanswered` holds a check that outran its bound beside one that never started, and the
+    /// remedies are unrelated: one is a longer wait or a smaller question, the other a repair. The
+    /// clause is the only place a person reading a row can tell, so both of its silences are
+    /// asserted — a table nobody measured, and a measured table where nothing outran.
+    #[test]
+    fn a_row_says_how_many_checks_outran_their_bound() {
+        let of = |latency: Option<sprag_plugin::judge::CheckLatency>| {
+            checks_sentence(&sprag_plugin::Checks {
+                asked: 4,
+                silent: 3,
+                latency,
+                ..sprag_plugin::Checks::NONE
+            })
+            .expect("a run with unverified claims prints a row")
+        };
+        let measured = |outran| {
+            Some(sprag_plugin::judge::CheckLatency {
+                answered: 1,
+                slowest: Some(std::time::Duration::from_secs(48)),
+                outran,
+                bound: Some(std::time::Duration::from_secs(600)),
+            })
+        };
+
+        let ran_out = of(measured(2));
+        assert!(
+            ran_out.contains("2 of them outran the 600 s bound"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1073: two of this run's checks ran out their bound and the row \
+             has to say so, with the bound — told only that claims went unverified, a person \
+             cannot tell a checker that needs a smaller question from one that needs fixing.\n  \
+             got {ran_out}",
+        );
+
+        // ── ⚠⚠ THE CONTROLS: nothing measured, and measured with nothing outrun ───────────────
+        for (why, quiet) in [
+            ("nothing measured", of(None)),
+            ("nothing outran", of(measured(0))),
+        ] {
+            assert!(
+                !quiet.contains("outran"),
+                "⚠⚠⚠ AND IT IS SILENT WHEN THERE IS NOTHING TO SAY ({why}): a clause printed \
+                 over a zero, or over a table nobody kept, reads as a finding and teaches a \
+                 reader to skip it on the rows where it is one.\n  got {quiet}",
+            );
+            assert!(
+                quiet.contains("3 of 4"),
+                "⚠ AND THE ROW STILL SAYS HOW MUCH WENT UNVERIFIED ({why}), which is what makes \
+                 the arm above a control rather than a row that stopped reporting.\n  got {quiet}",
+            );
+        }
     }
 
     #[test]
@@ -23420,6 +23562,16 @@ mod tests {
                             // produces, so a fixture carrying it would be satisfied by the exact
                             // loss the gate is here to catch.
                             scoring: sprag_plugin::Scoring::Authored,
+                            // ⛔⛔⛔ AND NOT `None` — register item 1073, on this gate's own terms:
+                            // `None` is what a transport that dropped the table produces, and
+                            // every field is distinct from its neighbours and from the counts
+                            // above, so a key that crossed into the wrong slot is a red.
+                            latency: Some(sprag_plugin::judge::CheckLatency {
+                                answered: 12,
+                                slowest: Some(std::time::Duration::from_millis(33_330)),
+                                outran: 8,
+                                bound: Some(std::time::Duration::from_secs(600)),
+                            }),
                         },
                         driving: Some(pane),
                         banked: Some(sprag_plugin::Banked {
@@ -23484,6 +23636,15 @@ mod tests {
              says whether `reflect_after_refusals` was ever approached — the question the ceiling \
              was authored without, and the one nothing outside a bounded walk could answer. \
              Said: {said:?}",
+        );
+        assert!(
+            said.contains("8 of them outran the 600 s bound"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1073: how many of this run's checks ran out of time did not \
+             cross the process boundary to a reader. The driver reported a latency table beside \
+             its counts; a transport that drops it leaves the row saying *went unverified* with no \
+             way to tell a checker that needs a smaller question from one that needs fixing. \
+             Measured when this arm was written: every assertion above stayed green with the table \
+             published as `null`. Said: {said:?}",
         );
         assert_eq!(
             row.get(RUN_DRIVING_KEY),

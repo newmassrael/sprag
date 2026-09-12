@@ -927,6 +927,24 @@ pub struct Checks {
     /// numbers rather than another count, and why [`is_empty`](Self::is_empty) does not read it: a
     /// run that put no claim to anybody is empty whichever answer this carries.
     pub scoring: Scoring,
+    /// ⛔⛔⛔⛔⛔ **HOW LONG THE CHECKS THIS RUN ASKED TOOK, AGAINST THE BOUND THEY WERE GIVEN** —
+    /// register item 1073, or [`None`] where nothing measured it.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Without it the only latencies anybody had were the ones a person timed by hand
+    ///
+    /// The asking has always had a clock — `crate::judge` starts one at the spawn — and threw it
+    /// away: the answered arm kept it in a field nothing in the product read (one live harness
+    /// printed its maximum), and every arm that heard nothing kept none. So the table `crate::outer` compares its bound against could only be filled from a
+    /// stopwatch, and a stopwatch only produces a number when the checker ANSWERS. **Measured
+    /// 2026-09-13 over the loop's own store: 89 checks asked, and at least seven runs whose last
+    /// silence was a wait that ran out — not one of which could reach that table, because no record
+    /// said how many there were.** The margin was computed over survivors because survivors were
+    /// all the product ever wrote down.
+    ///
+    /// ⚠⚠ [`None`] IS *NOBODY MEASURED*, NEVER *NOTHING TOOK ANY TIME*: a run restored from a log
+    /// older than this field, and every plugin that asks no checker, carry it — and a zeroed table
+    /// would answer *no check ever outran its bound* on behalf of a build that could not have said.
+    pub latency: Option<crate::judge::CheckLatency>,
 }
 
 impl Checks {
@@ -942,6 +960,7 @@ impl Checks {
         refused: 0,
         refused_in_a_row: 0,
         unasked: 0,
+        latency: None,
         // ⚠⚠⚠ **[`Scoring::Unrecorded`] AND NOT [`Scoring::Unauthored`]**, though three of the four
         // bundled plugins really do author no checker. This constant has a SECOND caller that the
         // name does not suggest: a run restored from a log with no checks record hands back exactly
@@ -988,6 +1007,9 @@ impl Checks {
             && self.refused == 0
             && self.refused_in_a_row == 0
             && self.why_silent.is_none()
+            && self
+                .latency
+                .is_none_or(|latency: crate::judge::CheckLatency| latency.is_empty())
     }
 }
 

@@ -226,6 +226,9 @@ impl JudgedRules {
     ) -> Option<(&JudgedRule, Judgement)> {
         self.rules.iter().find_map(|rule| {
             judges(panes, run, rule.criterion(), question, spec)
+                // ⚠ The clock is dropped by name — register item 1073's stated residue: a dialog
+                // judge's latency has no tally to join, and its bound is the author's own number.
+                .said
                 .ok()
                 .filter(|judged| judged.holds)
                 .map(|judged| (rule, judged))
@@ -303,8 +306,6 @@ pub struct Judgement {
     /// If a ceiling is ever wanted it has to be chosen, named, and made to say
     /// so when it bites; inheriting one from a pane is what this item was.
     pub explained: Option<String>,
-    /// How long the agent stood blocked waiting for it.
-    pub took: Duration,
 }
 
 /// ⛔⛔⛔ **WHY A CHECK SAID NOTHING THIS RUN COULD READ** — register item 593.
@@ -649,6 +650,119 @@ impl SilentByKind {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **HOW LONG ONE CHECK TOOK, AS FAR AS ITS OWN WAIT CAN SAY** — register item 1073.
+///
+/// # ⛔⛔⛔⛔⛔ Three answers, because a latency record with only the first computes over survivors
+///
+/// `said_by_another` starts a clock at the spawn, and for as long as that clock was handed out
+/// only beside an ANSWER, the one number a bound is judged against — *how slow does a check get* —
+/// could be read off nothing but the checks that came back in time. A check that ran out its bound
+/// is the observation that question needs most, and it was the one this crate kept no record of.
+///
+/// ⚠⚠ [`Outran`](Self::Outran) CARRIES THE BOUND AND NOT A DURATION ANYBODY MEASURED: all that is
+/// known of such a check is that it took AT LEAST that long. Reporting it as exactly that long would
+/// pass a censored observation off as an exact one, which is the survivor arithmetic again.
+///
+/// ⚠ [`Unmeasured`](Self::Unmeasured) is not a zero either: nothing was spawned, or the wait ended
+/// for a reason that is not the checker's own clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Waited {
+    /// The checker's program ended inside `within`, `took` after it was spawned — whatever it then
+    /// turned out to have said, because a reply that is not a verdict still took that long.
+    Answered {
+        /// From the spawn to the end of the capture.
+        took: Duration,
+        /// The bound it was given.
+        within: Duration,
+    },
+    /// `within` expired first, so the check took at least that long.
+    Outran {
+        /// The bound it was given and did not finish inside.
+        within: Duration,
+    },
+    /// Nothing about the checker's own time can be read: it was never spawned, or the wait ended
+    /// because the run stopped underneath it, its pane went, or it stopped to ask.
+    Unmeasured,
+}
+
+impl Waited {
+    /// **HOW A WAIT'S ENDING READS AS A LATENCY** — the one place an [`Over`] becomes one.
+    ///
+    /// ⚠ EXHAUSTIVE, with no catch-all: a seventh way for a wait to end fails to compile here until
+    /// somebody says whether it is the checker's clock — this workspace's rule that an unclassified
+    /// case is a RED rather than a pass.
+    #[must_use]
+    pub const fn of(over: &Over, took: Duration, within: Duration) -> Self {
+        match over {
+            Over::Yes => Self::Answered { took, within },
+            Over::NotYet(_) => Self::Outran { within },
+            Over::Asking(_) | Over::PeerGone(_) | Over::Silent(_) | Over::RunEnded => {
+                Self::Unmeasured
+            }
+        }
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **HOW LONG ONE RUN'S CHECKS TOOK** — register item 1073, [`Waited`] summed over a run.
+///
+/// ⚠⚠ THE SLOWEST ANSWER AND NOT A LIST, for `crate::plugin::Checks::why_silent`'s reason: a run's
+/// tally must not grow with the run, and a bound is judged by its worst case. The COUNT of checks
+/// that outran stands beside it because it is the half a maximum over answers can never show — a
+/// run whose every check outran has no slowest answer at all, and would otherwise read as a run
+/// whose checks were never slow.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CheckLatency {
+    /// How many checks ended inside their bound.
+    pub answered: u32,
+    /// The longest any of those took, or [`None`] where none did.
+    pub slowest: Option<Duration>,
+    /// How many checks outran their bound — each one a check that took AT LEAST [`bound`](Self::bound).
+    pub outran: u32,
+    /// The bound the most recently MEASURED check was given, or [`None`] where none was.
+    ///
+    /// ⚠ Recorded rather than assumed, because a stored row outlives the build that wrote it and
+    /// the bound is a constant a later build may change: `outran: 3` says nothing without the
+    /// length of time three checks failed to answer inside.
+    pub bound: Option<Duration>,
+}
+
+impl CheckLatency {
+    /// **NO CHECK WAS MEASURED** — every count zero and nothing slowest.
+    pub const NONE: Self = Self {
+        answered: 0,
+        slowest: None,
+        outran: 0,
+        bound: None,
+    };
+
+    /// **ONE MORE CHECK ENDED THIS WAY.**
+    ///
+    /// ⚠ An [`Unmeasured`](Waited::Unmeasured) wait moves nothing, the bound included: the bound is
+    /// recorded as the time a MEASURED check was given, and a check that never started was given
+    /// none. ⚠ Saturating for `crate::plugin::Checks`' reason: a tally that wrapped would report a
+    /// run's worst checker as its best.
+    pub fn record(&mut self, waited: Waited) {
+        match waited {
+            Waited::Answered { took, within } => {
+                self.answered = self.answered.saturating_add(1);
+                self.slowest = Some(self.slowest.map_or(took, |slowest| slowest.max(took)));
+                self.bound = Some(within);
+            }
+            Waited::Outran { within } => {
+                self.outran = self.outran.saturating_add(1);
+                self.bound = Some(within);
+            }
+            Waited::Unmeasured => {}
+        }
+    }
+
+    /// Whether no check has been measured at all.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.answered == 0 && self.outran == 0
+    }
+}
+
 impl Unheard {
     /// ⛔⛔⛔⛔ **WHICH OF THE TWO SILENCES THIS ONE IS** — register item 741.
     ///
@@ -801,28 +915,36 @@ impl Unheard {
 
 /// Ask `spec`'s agent whether `criterion` holds of `question`.
 ///
-/// [`Err`] when there is no lifecycle to spawn into, the judge could not be started, it did not
-/// finish inside [`JudgeSpec::within`], the run ended underneath, or no word in its reply was a
-/// verdict. Every one of those is *this judge said nothing* — see the module doc for why that must
-/// not be read as either answer, and [`Unheard`] for why they are told apart.
+/// Its [`Asked::said`] is [`Err`] when there is no lifecycle to spawn into, the judge could not be
+/// started, it did not finish inside [`JudgeSpec::within`], the run ended underneath, or no word in
+/// its reply was a verdict. Every one of those is *this judge said nothing* — see the module doc for
+/// why that must not be read as either answer, and [`Unheard`] for why they are told apart. Its
+/// [`Asked::waited`] is how long that took, on every one of those roads — register item 1073.
 ///
-/// ⚠ NO `#[must_use]` HERE, and its absence is the type doing the work: `Result` carries that
-/// attribute itself, so the reason can no longer be dropped without the compiler saying so —
-/// which is precisely what register item 593 was about one layer up. Clippy said so first.
+/// ⚠ NO `#[must_use]` HERE, and its absence is the type doing the work: [`Asked`] carries that
+/// attribute itself, so neither the reason nor the clock can be dropped without the compiler saying
+/// so — which is precisely what register item 593 was about one layer up. Clippy said so first.
 pub fn judges(
     panes: &dyn PaneAccess,
     run: &RunContext,
     criterion: &str,
     question: &Question,
     spec: &JudgeSpec,
-) -> Result<Judgement, Unheard> {
+) -> Asked {
     if criterion.trim().is_empty() {
-        return Err(Unheard::Unasked);
+        return Asked {
+            said: Err(Unheard::Unasked),
+            waited: Waited::Unmeasured,
+        };
     }
     // ⚠ NO DIRECTORY, and that is a decision rather than an omission — register item 710. What this
     // judge is asked about is a DIALOG that is already rendered into the question: the whole of the
     // evidence is the text, there is nothing on a filesystem for it to open, and pointing it at a
     // repository would suggest otherwise. The milestone check is the caller with something to read.
+    //
+    // ⚠⚠ THE WHOLE [`Asked`] GOES BACK, CLOCK INCLUDED — register item 1073. Whether a judge's
+    // latency is kept is the CALLER's decision, made by name: the product's own caller has no
+    // tally for it, and the live harness that prices this judge reads nothing else.
     asked_of_another(
         panes,
         run,
@@ -872,21 +994,45 @@ pub fn asked_of_another(
     cwd: Option<&std::path::Path>,
     question: &str,
     within: Duration,
-) -> Result<Judgement, Unheard> {
-    let (reply, took, exit) = said_by_another(panes, run, argv, cwd, Some(question), within)?;
-    // ⛔⛔⛔⛔⛔ **THE STATUS RENAMES A FAILURE AND NEVER OVERTURNS AN ANSWER** — register item 659.
-    //
-    // Everything below runs exactly as it did, and only an `Err` is reconsidered: a checker that
-    // produced a readable verdict keeps it whatever its exit code was. What changes is the arm a
-    // reader meets when there was NO verdict and the program had said, in the kernel's own
-    // vocabulary, that it failed — `NotAVerdict`'s remedy is *fix its prompt*, which is the wrong
-    // errand for a program that never ran properly.
-    //
-    // ⚠⚠ `None` IS NOT SUCCESS: a status nothing could read leaves every arm exactly where it was.
-    match verdict_in(&promised_shape(argv, &reply)?, question, took) {
-        Ok(judged) => Ok(judged),
-        Err(unheard) => Err(named_by_status(unheard, exit.as_ref(), &reply)),
-    }
+) -> Asked {
+    let (heard, waited) = said_by_another(panes, run, argv, cwd, Some(question), within);
+    let said = heard.and_then(|(reply, exit)| {
+        // ⚠ A reply that broke its promised shape is refused as it always was, before the status is
+        // consulted — the `?` this replaced returned it unrenamed, and so does this.
+        let shaped = promised_shape(argv, &reply)?;
+        // ⛔⛔⛔⛔⛔ **THE STATUS RENAMES A FAILURE AND NEVER OVERTURNS AN ANSWER** — register item
+        // 659.
+        //
+        // Everything below runs exactly as it did, and only an `Err` is reconsidered: a checker
+        // that produced a readable verdict keeps it whatever its exit code was. What changes is the
+        // arm a reader meets when there was NO verdict and the program had said, in the kernel's
+        // own vocabulary, that it failed — `NotAVerdict`'s remedy is *fix its prompt*, which is
+        // the wrong errand for a program that never ran properly.
+        //
+        // ⚠⚠ `None` IS NOT SUCCESS: a status nothing could read leaves every arm exactly where it
+        // was.
+        verdict_in(&shaped, question)
+            .map_err(|unheard| named_by_status(unheard, exit.as_ref(), &reply))
+    });
+    Asked { said, waited }
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT ONE ASKING CAME TO: WHAT WAS SAID, AND HOW LONG THE WAIT FOR IT TOOK** —
+/// register item 1073.
+///
+/// # ⛔⛔⛔⛔⛔ Two fields because they are two facts, and the second used to ride inside the first
+///
+/// The clock was a field of [`Judgement`], so it existed only where a VERDICT did — and the checks
+/// that most need a latency beside them are the ones with no verdict at all. Beside the verdict
+/// rather than inside it, every road out of an asking carries its [`Waited`], and a caller that has
+/// no tally for it drops it by name rather than never having been handed it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[must_use = "an asking's verdict is the reason it was made, and its clock is register item 1073's"]
+pub struct Asked {
+    /// The verdict, or which silence it was — [`asked_of_another`]'s answer as it always was.
+    pub said: Result<Judgement, Unheard>,
+    /// How long the checker's own wait took, on whichever road it ended.
+    pub waited: Waited,
 }
 
 /// ⛔⛔⛔⛔⛔ **WHICH SILENCE THIS IS, ONCE THE PROGRAM'S OWN STATUS IS KNOWN** — register item 659.
@@ -1002,9 +1148,14 @@ fn promised_shape(argv: &[String], reply: &str) -> Result<String, Unheard> {
 /// `asked_of_another` and returns the same variant it did; what moved is only where the boundary
 /// is drawn. The judge's own gates are what say so.
 ///
+/// ⛔⛔⛔⛔⛔ **AND THE CLOCK COMES BACK ON EVERY ROAD, NOT ONLY BESIDE AN ANSWER** — register item
+/// 1073. It used to ride inside the `Ok` alone, into a field of the verdict nothing read, so every
+/// asking that heard nothing — a wait that ran out above all — left no trace of how long it had
+/// taken. It is a [`Waited`] now, returned beside the result.
+///
 /// ⚠⚠ **IT HANDS BACK THE CLOCK TOO**, because the clock starts at the spawn and only this side of
 /// the split can see it — a caller that timed the call from outside would be timing its own
-/// bookkeeping as well ([`Judgement::took`] is what that number is for).
+/// bookkeeping as well ([`Waited`] is what that number is for).
 pub(crate) fn said_by_another(
     panes: &dyn PaneAccess,
     run: &RunContext,
@@ -1012,12 +1163,15 @@ pub(crate) fn said_by_another(
     cwd: Option<&std::path::Path>,
     question: Option<&str>,
     within: Duration,
-) -> Result<(String, Duration, Option<sprag_terminal::PaneExit>), Unheard> {
+) -> (
+    Result<(String, Option<sprag_terminal::PaneExit>), Unheard>,
+    Waited,
+) {
     if argv.is_empty() {
-        return Err(Unheard::Unasked);
+        return (Err(Unheard::Unasked), Waited::Unmeasured);
     }
     let Some(life) = panes.lifecycle() else {
-        return Err(Unheard::NoPane);
+        return (Err(Unheard::NoPane), Waited::Unmeasured);
     };
     let mut argv = argv.to_vec();
     // ⚠⚠ **A QUESTION IS OPTIONAL SINCE REGISTER ITEM 659**, and `None` is not an empty one: a
@@ -1047,7 +1201,9 @@ pub(crate) fn said_by_another(
         // ⚠ THE SPAWN'S OWN SENTENCE, not a word this function invents: item 593 suspected a cwd
         // the checker could not read and had no way to confirm it, because the one thing that knew
         // was thrown away here.
-        Err(why) => return Err(Unheard::Unstarted(why.to_string())),
+        Err(why) => {
+            return (Err(Unheard::Unstarted(why.to_string())), Waited::Unmeasured);
+        }
     };
     // From here every exit path closes the pane. A judge left running would hold a pty and a
     // process for the rest of the run, once per blocked turn.
@@ -1055,6 +1211,13 @@ pub(crate) fn said_by_another(
     // already treats everything but `Yes` as *no verdict came back* — see
     // [`Over::Silent`](crate::completion::Over::Silent)'s own count of this site.
     let over = Completion::new(DoneWhen::Exits).wait(panes, pane, within, None, run);
+    // ⛔⛔⛔⛔⛔ **THE CLOCK IS READ HERE, THE MOMENT THE BOUNDED WAIT ENDS** — register item 1073.
+    // Not at the return, where it used to be taken: everything after this line is this crate's
+    // own bookkeeping (the capture, a bounded reap, closing the pane), and a latency that included
+    // it would be measuring the reader. And it is classified by the wait's own ending, on every
+    // road out, because the road a check takes out of this function is exactly what the survivor
+    // arithmetic in `crate::outer`'s readings table could not see.
+    let waited = Waited::of(&over, began.elapsed(), within);
     let reply = spoke(panes, pane);
     // ⛔⛔⛔⛔⛔ **AND HOW IT ENDED, ASKED AFTER THE CAPTURE IS COMPLETE** — register item 659.
     //
@@ -1082,7 +1245,7 @@ pub(crate) fn said_by_another(
         // ⚠ THE WAIT'S OWN WORD travels: `Over` already tells an expired bound from a stopped run
         // from a peer that went, and re-spelling that here would be a second vocabulary for one
         // fact — the defect this crate names every time it finds two authorities.
-        return Err(Unheard::Unfinished(over));
+        return (Err(Unheard::Unfinished(over)), waited);
     }
     // ⚠⚠⚠⚠⚠ THE ADDRESS COULD NOT ACCOUNT FOR WHAT IT HANDED BACK, SO THERE IS NO VERDICT HERE.
     //
@@ -1097,9 +1260,9 @@ pub(crate) fn said_by_another(
     // was: a scan that reads further into the reply reads further into a reply that may be a
     // fragment, which is the same fabrication one word later.
     let Some(reply) = reply else {
-        return Err(Unheard::Unaccountable);
+        return (Err(Unheard::Unaccountable), waited);
     };
-    Ok((reply, began.elapsed(), exit))
+    (Ok((reply, exit)), waited)
 }
 
 /// ⛔⛔⛔⛔⛔ **ONE LINE FROM A PROGRAM A DOCUMENT NAMED TO REPORT** — [`None`] wherever that line
@@ -1136,7 +1299,11 @@ pub(crate) fn line_from_another(
     cwd: Option<&std::path::Path>,
     within: Duration,
 ) -> Option<String> {
-    let (reply, _took, exit) = said_by_another(panes, run, argv, cwd, None, within).ok()?;
+    // ⚠ The clock is dropped by name — register item 1073's residue: a reporting program's time
+    // has no tally to join.
+    let (reply, exit) = said_by_another(panes, run, argv, cwd, None, within)
+        .0
+        .ok()?;
     let exit = exit?;
     if exit.code != 0 || exit.signal.is_some() {
         return None;
@@ -1168,8 +1335,8 @@ const REAP_WITHIN: Duration = Duration::from_secs(2);
 ///
 /// `question` is the one that was asked, and it is needed here rather than only at the spawn: a
 /// checker that ECHOES its argv sends this run's own prompt back, and the echo has to be cut off
-/// what the judge is quoted as saying. `took` is the asking's own clock, handed over rather than
-/// re-taken — see [`said_by_another`].
+/// what the judge is quoted as saying. How long the asking took is not this function's to know: it
+/// travels beside the verdict as a [`Waited`], on every road — see [`asked_of_another`].
 ///
 /// # ⛔⛔⛔⛔⛔ THE VERDICT IS FOUND, NOT TAKEN — register item 743
 ///
@@ -1228,7 +1395,7 @@ const REAP_WITHIN: Duration = Duration::from_secs(2);
 /// for no restatement, but a partial quotation is reachable and would be read as the word it
 /// quoted. Filtering that phrase would be a needle over somebody's prose, which is the widening
 /// this item refused; it is named here instead so the next measurement knows where to look.
-fn verdict_in(reply: &str, question: &str, took: Duration) -> Result<Judgement, Unheard> {
+fn verdict_in(reply: &str, question: &str) -> Result<Judgement, Unheard> {
     // ⚠⚠⚠⚠ **THE QUESTION WE SENT IS CUT OFF FIRST, BECAUSE AN ECHO IS NOT A STATEMENT.** The
     // rendered question travels as the LAST ARGV, which a print-mode CLI reads positionally and
     // never prints — but a checker spelled `/bin/echo NO` prints its arguments, so everything after
@@ -1283,7 +1450,6 @@ fn verdict_in(reply: &str, question: &str, took: Duration) -> Result<Judgement, 
         // reader comparing them has to see which arrived.
         said: word_in(spoken, &at).to_owned(),
         explained,
-        took,
     })
 }
 
@@ -1684,9 +1850,8 @@ mod tests {
     /// stops a later reader from "fixing" the asymmetry and turning a working answer into silence.
     #[test]
     fn a_verdict_spelled_in_another_language_is_read_as_no_verdict_at_all() {
-        let took = Duration::from_secs(1);
         let asked = "irrelevant to the reading";
-        let read = |reply: &str| verdict_in(reply, asked, took);
+        let read = |reply: &str| verdict_in(reply, asked);
 
         // ── THE LIVE SAMPLE, verbatim ──
         let korean = "재빌드가 rc=0으로 끝났다 — 뮤테이션 되돌린 소스로 `cargo build -p \
@@ -1749,6 +1914,185 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **A WAIT READS AS A LATENCY ONLY WHERE IT IS THE CHECKER'S OWN CLOCK** — register
+    /// item 1073.
+    ///
+    /// ⚠⚠ The arm that matters is `NotYet`: it must carry the BOUND and not the time that elapsed.
+    /// All that is known of a check that ran out is that it took at least that long, and filing
+    /// the elapsed reading as though it were the check's latency passes a censored observation off
+    /// as an exact one — the survivor arithmetic this item exists to end, one step removed.
+    #[test]
+    fn a_wait_reads_as_a_latency_only_where_it_is_the_checkers_own_clock() {
+        use crate::completion::Over;
+        let took = Duration::from_millis(1_234);
+        let within = Duration::from_secs(600);
+        assert_eq!(
+            Waited::of(&Over::Yes, took, within),
+            Waited::Answered { took, within },
+            "⚠ THE CONTROL: a wait that ended in an answer is that answer's reading, with its bound",
+        );
+        assert_eq!(
+            Waited::of(
+                &Over::NotYet(crate::completion::Wanting::unlooked()),
+                took,
+                within,
+            ),
+            Waited::Outran { within },
+            "⛔⛔⛔⛔⛔ ITEM 1073: a wait that ran out is a check that took AT LEAST its bound",
+        );
+        for over in [Over::RunEnded, Over::Asking(None)] {
+            assert_eq!(
+                Waited::of(&over, took, within),
+                Waited::Unmeasured,
+                "⚠⚠ a wait that ended for a reason that is not the checker's clock measures \
+                 nothing about the checker: {over:?}",
+            );
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RUN'S LATENCY TALLY KEEPS THE WORST ANSWER, COUNTS WHAT RAN OUT, AND IGNORES
+    /// WHAT NOBODY TIMED** — register item 1073.
+    #[test]
+    fn a_latency_tally_keeps_the_worst_answer_and_counts_what_ran_out() {
+        let bound = Duration::from_secs(600);
+        let answered = |secs| Waited::Answered {
+            took: Duration::from_secs(secs),
+            within: bound,
+        };
+
+        let mut tally = CheckLatency::NONE;
+        tally.record(Waited::Unmeasured);
+        assert_eq!(
+            tally,
+            CheckLatency::NONE,
+            "⚠⚠ a check nobody timed moves nothing — the bound included, since a check that never \
+             started was given no time at all",
+        );
+
+        // ⚠ The slowest arrives in the MIDDLE, so a tally that kept the last answer is a red.
+        for waited in [
+            answered(48),
+            answered(185),
+            answered(33),
+            Waited::Outran { within: bound },
+        ] {
+            tally.record(waited);
+        }
+        assert_eq!(
+            tally,
+            CheckLatency {
+                answered: 3,
+                slowest: Some(Duration::from_secs(185)),
+                outran: 1,
+                bound: Some(bound),
+            },
+            "⛔⛔⛔⛔⛔ ITEM 1073: three answers with 185 s the worst, and one check that ran out — \
+             counted beside the answers and never folded into the slowest",
+        );
+
+        let mut every_one_ran_out = CheckLatency::NONE;
+        every_one_ran_out.record(Waited::Outran { within: bound });
+        assert_eq!(
+            (
+                every_one_ran_out.slowest,
+                every_one_ran_out.outran,
+                every_one_ran_out.bound,
+                every_one_ran_out.is_empty(),
+            ),
+            (None, 1, Some(bound), false),
+            "⛔⛔⛔ AND A RUN WHOSE EVERY CHECK RAN OUT has no slowest answer and is NOT empty: a \
+             maximum over answers alone would read it as a run whose checks were never slow",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY ROAD OUT OF AN ASKING CARRIES ITS CLOCK** — register item 1073.
+    ///
+    /// Driven through real panes because the claim is about the ROADS: a verdict, a reply that was
+    /// no verdict and a wait that ran out each leave `said_by_another` by a different line, and the
+    /// clock used to reach only the first. The third is the one the readings table in
+    /// `crate::outer` had no way to hold, and a pure function over `Over` cannot show that this
+    /// function actually hands it back.
+    #[test]
+    fn every_road_out_of_an_asking_carries_its_clock() {
+        let host = crate::access::WorkspacePaneAccess::new(Arc::new(Mutex::new(
+            sprag_terminal::Workspace::new((80, 24)),
+        )));
+        let ask = |script: &str, within: Duration| {
+            asked_of_another(
+                &host,
+                &RunContext::uncancellable(),
+                &["/bin/sh".to_owned(), "-c".to_owned(), script.to_owned()],
+                None,
+                "did it hold? answer YES or NO",
+                within,
+            )
+        };
+        let within = Duration::from_secs(20);
+
+        // ── THE CONTROL: a verdict inside its bound is a real reading under that bound ─────────
+        let agreed = ask("printf 'YES\\n'", within);
+        assert!(
+            matches!(&agreed.said, Ok(judged) if judged.holds),
+            "⚠ THE PREMISE: this checker agrees, or the reading below is about something else: \
+             {agreed:?}",
+        );
+        assert!(
+            matches!(
+                agreed.waited,
+                Waited::Answered { took, within: bound }
+                    if took > Duration::ZERO && took < within && bound == within
+            ),
+            "⚠⚠ an answer carries a reading above zero and inside its bound, with the bound: \
+             {agreed:?}",
+        );
+
+        // ── A REPLY THAT IS NO VERDICT STILL TOOK A MEASURABLE TIME ─────────────────────────────
+        let mumbled = ask("printf 'perhaps\\n'", within);
+        assert!(
+            matches!(&mumbled.said, Err(Unheard::NotAVerdict(_))),
+            "⚠ THE PREMISE: this reply is no verdict: {mumbled:?}",
+        );
+        assert!(
+            matches!(mumbled.waited, Waited::Answered { took, .. } if took < within),
+            "⛔⛔⛔ ITEM 1073: a checker that answered no verdict still ended inside its bound, and \
+             the time it took is an observation — dropping it keeps only the verdicts, which is a \
+             survivor sample of its own: {mumbled:?}",
+        );
+
+        // ── ⛔ THE CLAIM: A WAIT THAT RAN OUT COMES BACK AS OUTRAN, CARRYING ITS BOUND ────────────
+        let short = Duration::from_millis(300);
+        let slow = ask("sleep 5", short);
+        assert!(
+            matches!(
+                &slow.said,
+                Err(Unheard::Unfinished(crate::completion::Over::NotYet(_)))
+            ),
+            "⚠ THE PREMISE: this checker did not finish inside its bound: {slow:?}",
+        );
+        assert_eq!(
+            slow.waited,
+            Waited::Outran { within: short },
+            "⛔⛔⛔⛔⛔ ITEM 1073: the check that ran out is the observation a bound most needs and \
+             the one this crate never recorded. It has to come back from the asking itself, with \
+             the bound it failed to answer inside.",
+        );
+
+        // ── AND AN ASKING THAT SPAWNED NOTHING IS UNMEASURED, NEVER A ZERO READING ──────────────
+        let nobody = asked_of_another(
+            &host,
+            &RunContext::uncancellable(),
+            &[],
+            None,
+            "did it hold? answer YES or NO",
+            within,
+        );
+        assert_eq!(
+            nobody.waited,
+            Waited::Unmeasured,
+            "⚠⚠ nothing was spawned, so nothing was timed: {nobody:?}",
+        );
+    }
+
     /// **AN EMPTY CRITERION IS HOW A RUN DECLINES A JUDGE**, and it must cost nothing.
     ///
     /// ⚠ Asserted through a `PaneAccess` with NO lifecycle, so a judge that tried to spawn would
@@ -1768,7 +2112,8 @@ mod tests {
                     criterion,
                     &question(),
                     &spec
-                ),
+                )
+                .said,
                 Err(Unheard::Unasked),
                 "⚠⚠ {criterion:?} declines the judge entirely — and since register item 593 it \
                  says so with the word for *nobody was asked*, which is a DECISION the author took \
@@ -1947,6 +2292,7 @@ mod tests {
                     within: Duration::from_secs(20),
                 },
             )
+            .said
         };
 
         // ── THE CHECKER WOULD NOT START ── item 593's own prime suspect, staged: a program that is
@@ -2121,6 +2467,7 @@ mod tests {
                 "did it hold? answer YES or NO",
                 Duration::from_secs(20),
             )
+            .said
         };
 
         // ── THE CONTROL: A PROMISE KEPT STILL PRODUCES A VERDICT ────────────────────────────
@@ -2240,6 +2587,7 @@ mod tests {
                 "did it hold? answer YES or NO",
                 Duration::from_secs(20),
             )
+            .said
         };
 
         // ── ⭐ THE CLAIM: a program that failed and said nothing is named as having FAILED ─────
@@ -2396,6 +2744,7 @@ mod tests {
                     within: Duration::from_secs(20),
                 },
             )
+            .said
         };
         let says = |said: &str| {
             ask(vec![
@@ -2538,7 +2887,8 @@ mod tests {
                     argv: Vec::new(),
                     within: Duration::from_secs(30)
                 },
-            ),
+            )
+            .said,
             Err(Unheard::Unasked),
             "⚠⚠ an empty argv is the OTHER way a caller names no checker, and it must reach the \
              same word — a reader told *nobody was asked* should not have to know which of the two \
@@ -2585,9 +2935,8 @@ mod tests {
                                 `sprag-term`, which `-p sprag-mcp` doesn't build. Rerunning with \
                                 the workspace bins; I'll report when it lands.";
         let asked = "Has the checkpoint been reached? Reply with YES or NO.";
-        let took = Duration::from_millis(1);
 
-        let unheard = verdict_in(DEFERRED, asked, took)
+        let unheard = verdict_in(DEFERRED, asked)
             .expect_err("⛔ a reply that judged nothing must not come back as a judgement");
         let Unheard::NotAVerdict(line) = &unheard else {
             panic!(
@@ -2610,7 +2959,7 @@ mod tests {
 
         // ── THE CONTROL: the same prose with a marked verdict in front of it IS read ────────
         let judged = format!("NO — {DEFERRED}");
-        let verdict = verdict_in(&judged, asked, took)
+        let verdict = verdict_in(&judged, asked)
             .expect("a marked verdict in front of the same prose is a judgement");
         assert!(
             !verdict.holds,
@@ -2651,9 +3000,8 @@ mod tests {
         const CARRIED_OVER: &str = "The verdict stands, and the one qualification is now closed: \
                                     the GUI stamp test finished green.";
         let asked = "Has the checkpoint been reached? Reply with YES or NO.";
-        let took = Duration::from_millis(1);
 
-        let unheard = verdict_in(CARRIED_OVER, asked, took)
+        let unheard = verdict_in(CARRIED_OVER, asked)
             .expect_err("⛔ a reply that spells no verdict must not come back as a judgement");
         let Unheard::NotAVerdict(line) = &unheard else {
             panic!(
@@ -2682,7 +3030,7 @@ mod tests {
         // place for that repair to be attempted: it AGREES, so a reader that manufactured a
         // refusal here would record the milestone rejected by a checker that had accepted it.
         let judged = format!("YES — {CARRIED_OVER}");
-        let verdict = verdict_in(&judged, asked, took)
+        let verdict = verdict_in(&judged, asked)
             .expect("a marked verdict in front of the same prose is a judgement");
         assert!(
             verdict.holds,
@@ -2734,7 +3082,6 @@ mod tests {
                               repaired gates plus the standing 837 baseline — no fourth gate \
                               anywhere caught any of them.";
         let asked = "Has the checkpoint been reached? Reply with YES or NO.";
-        let took = Duration::from_millis(1);
 
         // ══ THE PREMISE: this sample really does carry a bare `no` ═════════════════════════════
         //
@@ -2747,7 +3094,7 @@ mod tests {
              below is guarding nothing: {LANDED:?}",
         );
 
-        let unheard = verdict_in(LANDED, asked, took).expect_err(
+        let unheard = verdict_in(LANDED, asked).expect_err(
             "⛔⛔⛔⛔⛔ A REPLY WITH NO MARKED VERDICT MUST NOT COME BACK AS A JUDGEMENT — and \
              this is the costliest sample there is for the repair item 741 banned: the reply's \
              only verdict-shaped word is a lowercase `no` inside a sentence whose content \
@@ -2778,7 +3125,7 @@ mod tests {
 
         // ── THE CONTROL: the same prose with a marked verdict in front of it IS read ────────
         let judged = format!("YES — {LANDED}");
-        let verdict = verdict_in(&judged, asked, took)
+        let verdict = verdict_in(&judged, asked)
             .expect("a marked verdict in front of the same prose is a judgement");
         assert!(
             verdict.holds,
@@ -2841,7 +3188,8 @@ mod tests {
             CRITERION,
             &question(),
             &instant_judge(),
-        );
+        )
+        .said;
         let Ok(verdict) = judged else {
             panic!(
                 "⚠⚠⚠ the control must reach a verdict, or the arm below is silent for a reason \
@@ -2869,7 +3217,8 @@ mod tests {
             CRITERION,
             &question(),
             &instant_judge(),
-        );
+        )
+        .said;
         assert!(
             said.is_err(),
             "⚠⚠⚠ a run that is over may not collect a judgement, and this is not a nicety: an \
@@ -2975,7 +3324,8 @@ mod tests {
                 ],
                 within: Duration::from_secs(20),
             },
-        );
+        )
+        .said;
         let Ok(verdict) = judged else {
             panic!(
                 "⚠⚠⚠ the judge must reach a verdict at all, or nothing below is about the reason. \
