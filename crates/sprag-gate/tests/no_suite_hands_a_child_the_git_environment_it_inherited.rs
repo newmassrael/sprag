@@ -25,11 +25,31 @@
 //!
 //! # ⚠⚠⚠ The boundary, stated rather than implied
 //!
-//! **`crates/sprag-gate/tests/` only.** That is what `pre-commit` runs, which is what makes an
-//! inherited index reachable at all; it is not a claim about `src/bin/north-star.rs`, which is a
-//! program the loop runs from a person's own shell and SHOULD answer about the repository that
-//! shell is standing in. Other crates' suites spawn `git` too and are not run by the commit hook —
-//! covering them would be a wider claim than anything here has measured.
+//! **`crates/sprag-gate/tests/` only**, for the Rust half. That is what `pre-commit` runs, which is
+//! what makes an inherited index reachable at all; it is not a claim about `src/bin/north-star.rs`,
+//! which is a program the loop runs from a person's own shell and SHOULD answer about the
+//! repository that shell is standing in. Other crates' suites spawn `git` too and are not run by
+//! the commit hook — covering them would be a wider claim than anything here has measured.
+//!
+//! # ⛔⛔⛔⛔⛔ AND THE HOOKS THEMSELVES, WHICH IS THE HALF THAT WENT MISSING — register item 1082
+//!
+//! The paragraph above says *a rule kept in one test file is a rule the next one does not get*, and
+//! the identical sentence was true one layer down and nobody wrote it. `.githooks/content-gate.sh`
+//! built the constructor (`index_mirror_git`, item 1017) and **no ratchet made the next call site
+//! take it** — so when item 1014 put two `"${BX}"` lanes inside the mirror, every routed commit in
+//! this tree died with `fatal: .git/index: index file open failed: Not a directory` and the
+//! operating answer became *type `env -u BX`*.
+//!
+//! ⚠⚠ **AND THAT LOUD FAILURE IS THE LUCKY HALF.** Measured 2026-09-12 against a linked worktree
+//! made to differ from its main repository: a child there carrying a RELATIVE `GIT_INDEX_FILE` (a
+//! plain commit) dies rc=128, and one carrying an ABSOLUTE one (`git commit -- <pathspec>`, which
+//! is what this file's own opening paragraph is about) answers **rc=0 with the operator's index** —
+//! a file staged after the mirror was cut present, one the mirror holds absent. Silent, plausible
+//! and wrong, which is exactly the shape that published four commits above.
+//!
+//! ⚠ So the hook rule is `.githooks/` only, and it is about ENTERING THE MIRROR rather than about
+//! naming `git`: a hook's own git calls go through `index_mirror_git`, and everything a hook hands
+//! to a CHILD goes through `enter_the_mirror`.
 
 use sprag_gate::sources::{Source, rust_sources};
 use std::path::PathBuf;
@@ -181,5 +201,219 @@ fn a_child_does_not_receive_what_the_cut_took_away() {
          {}{}",
         String::from_utf8_lossy(&cut.stdout),
         String::from_utf8_lossy(&cut.stderr),
+    );
+}
+
+/// Where the hooks live, and the two names the rule below is written in.
+const HOOKS_DIR: &str = ".githooks";
+/// The only way a hook may stand in the mirror — see `.githooks/content-gate.sh`.
+const THE_ONLY_WAY_IN: &str = "enter_the_mirror";
+
+/// Every shell file under `.githooks/`, as text, newest-sorted for a stable message.
+fn hook_sources() -> Vec<(String, String)> {
+    let dir = sprag_gate::sources::workspace_root().join(HOOKS_DIR);
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|why| panic!("{} must be readable: {why}", dir.display()))
+        .map(|entry| entry.expect("a hook entry").path())
+        .filter(|path| path.is_file())
+        .collect();
+    files.sort();
+    files
+        .into_iter()
+        .map(|path| {
+            let name = format!(
+                "{HOOKS_DIR}/{}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            );
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|why| panic!("{name} must be text: {why}"));
+            (name, text)
+        })
+        .collect()
+}
+
+/// ⛔ **THE HOOK LAYER'S RATCHET** — register item 1082, and item 965's own sentence applied where
+/// it had not been: *"nothing makes the NEXT call site take it."*
+///
+/// The rule is over the TEXT of every hook, for the reason the header gives: a missed site's
+/// failure is not a red here, it is a refused commit on somebody's machine — or, on a partial
+/// commit, a child quietly answering about the operator's index.
+///
+/// ⚠ The needle is assembled from two pieces so this arm's own source does not answer its own
+/// question; spelled whole, the scan would find the line you are reading.
+#[test]
+fn no_hook_enters_the_mirror_without_leaving_the_commits_index_behind() {
+    let hooks = hook_sources();
+    assert!(
+        hooks.len() > 5,
+        "a scan that found only {} file(s) under {HOOKS_DIR} is pointed at the wrong tree, and a \
+         probe pointed at nothing must never read as clean",
+        hooks.len(),
+    );
+    let bare = concat!("cd \"$mir", "ror\"");
+    let offenders: Vec<String> = hooks
+        .iter()
+        .flat_map(|(name, text)| {
+            text.lines()
+                .enumerate()
+                .filter(|(_, line)| {
+                    let code = line.trim();
+                    !code.starts_with('#') && code.contains(bare)
+                })
+                .map(move |(index, _)| format!("{name}:{}", index + 1))
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "⛔ ITEM 1082: a hook stands in the mirror without going through `{THE_ONLY_WAY_IN}`. The \
+         mirror is a LINKED WORKTREE, so the `GIT_INDEX_FILE` a commit exported stops being true \
+         there — relative on a plain commit (the child dies rc=128, which refused every routed \
+         commit in this tree) and an absolute `next-index` lock on a partial one (the child \
+         answers rc=0 about the OPERATOR's index, which is item 965's four published commits one \
+         layer down). Use `{THE_ONLY_WAY_IN} \"$mirror\"`. Found at: {offenders:?}",
+    );
+}
+
+/// ⚠⚠ **AND THAT CONSTRUCTOR EXISTS AND IS REACHED** — the arm that stops the ratchet above from
+/// passing because the hooks stopped entering the mirror at all.
+#[test]
+fn the_only_way_into_the_mirror_exists_and_the_hooks_come_through_it() {
+    let hooks = hook_sources();
+    let defines = hooks
+        .iter()
+        .any(|(_, text)| text.contains(&format!("{THE_ONLY_WAY_IN}() {{")));
+    assert!(
+        defines,
+        "⛔ no hook defines `{THE_ONLY_WAY_IN}`, so the rule above forbids something nothing does \
+         and a hook could be standing in the mirror by any other spelling",
+    );
+    let callers: Vec<&String> = hooks
+        .iter()
+        .filter(|(_, text)| {
+            text.lines().any(|line| {
+                let code = line.trim();
+                !code.starts_with('#')
+                    && code.contains(THE_ONLY_WAY_IN)
+                    && !code.contains(&format!("{THE_ONLY_WAY_IN}() {{"))
+            })
+        })
+        .map(|(name, _)| name)
+        .collect();
+    assert!(
+        callers.len() >= 2,
+        "⛔ only {} hook file(s) call `{THE_ONLY_WAY_IN}`. Both the format gate and the Rust lanes \
+         stand in the mirror, so a population of fewer than two is a rule that has stopped reading \
+         one of them: {callers:?}",
+        callers.len(),
+    );
+}
+
+/// ⛔⛔⛔ **AND THE BOUNDARY IS WORTH CROSSING — BOTH FAILURES, DRIVEN** — register item 1082.
+///
+/// The two arms above are about where a name is typed. This is the measurement they stand on, and
+/// it is the one that says the LOUD failure this repository met is the lucky half.
+///
+/// A real linked worktree is built whose tree deliberately differs from its main repository's
+/// index — a file staged after the worktree was cut, and a file the worktree holds that the index
+/// no longer does — and `git ls-files` is asked from inside it three ways:
+///
+///   * carrying a RELATIVE `GIT_INDEX_FILE`, which is what a plain `git commit` exports: dies.
+///   * carrying an ABSOLUTE one, which is what `git commit -- <pathspec>` exports: **succeeds, and
+///     answers about the operator's index.** No error, no clue, wrong list.
+///   * with the pair left behind: answers about the tree it is standing in.
+///
+/// ⚠ The variables are set ON THE CHILD, never on this process — this file's own rule three arms
+/// up, because `sprag-gate`'s cases share one process.
+#[test]
+fn a_child_in_the_mirror_answers_about_the_mirror_only_once_the_index_is_left_behind() {
+    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("mirror-index");
+    let _ = std::fs::remove_dir_all(&root);
+    let main = root.join("main");
+    let mirror = root.join("mirror");
+    std::fs::create_dir_all(&main).expect("the scratch must be creatable");
+
+    let git = |at: &std::path::Path, args: &[&str]| {
+        let done = sprag_gate::ambient::git_in(at)
+            .args(args)
+            .output()
+            .expect("git must be runnable");
+        assert!(
+            done.status.success(),
+            "the scratch must be buildable ({args:?}): {}",
+            String::from_utf8_lossy(&done.stderr),
+        );
+        String::from_utf8_lossy(&done.stdout).trim().to_owned()
+    };
+    git(&main, &["init", "-q", "-b", "main", "."]);
+    git(&main, &["config", "user.email", "probe@invalid"]);
+    git(&main, &["config", "user.name", "probe"]);
+    std::fs::write(main.join("SHARED.txt"), b"shared").expect("a file to commit");
+    git(&main, &["add", "SHARED.txt"]);
+    git(&main, &["commit", "-qm", "base"]);
+    std::fs::write(main.join("IN_MIRROR_ONLY.txt"), b"only there").expect("a file to commit");
+    git(&main, &["add", "IN_MIRROR_ONLY.txt"]);
+    git(&main, &["commit", "-qm", "second"]);
+    let cut_at = git(&main, &["rev-parse", "HEAD"]);
+    // ⚠ The two indexes must DIFFER, or every answer below is the same answer and the arm proves
+    // nothing — item 196's two writers are exactly this state in the real tree.
+    git(&main, &["rm", "-q", "--cached", "IN_MIRROR_ONLY.txt"]);
+    std::fs::write(main.join("STAGED_LATER.txt"), b"after the cut").expect("a file to stage");
+    git(&main, &["add", "STAGED_LATER.txt"]);
+    git(
+        &main,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            mirror.to_str().expect("a utf-8 scratch path"),
+            &cut_at,
+        ],
+    );
+
+    let asked = |index: Option<&str>| {
+        let mut run = sprag_gate::ambient::git_in(&mirror);
+        run.args(["ls-files"]);
+        if let Some(named) = index {
+            run.env("GIT_INDEX_FILE", named);
+        }
+        let done = run.output().expect("git must be runnable");
+        (
+            done.status.success(),
+            String::from_utf8_lossy(&done.stdout).into_owned(),
+        )
+    };
+    let (relative_ok, relative_said) = asked(Some(".git/index"));
+    let absolute = main.join(".git/index");
+    let (absolute_ok, absolute_said) =
+        asked(Some(absolute.to_str().expect("a utf-8 scratch path")));
+    let (left_ok, left_said) = asked(None);
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(
+        !relative_ok,
+        "⛔ THE LOUD CONTROL FAILED: a child in a linked worktree carrying a RELATIVE \
+         `GIT_INDEX_FILE` succeeded, so this machine cannot show the failure that refused every \
+         routed commit in this tree and the arms below measure nothing. It said: {relative_said:?}",
+    );
+    assert!(
+        absolute_ok && absolute_said.contains("STAGED_LATER.txt"),
+        "⛔ THE SILENT CONTROL FAILED: a child carrying an ABSOLUTE `GIT_INDEX_FILE` was supposed \
+         to answer about the OPERATOR's index — that is the whole danger — and it did not, so the \
+         claim in this file's header is not true of this git. ok={absolute_ok}, it said: \
+         {absolute_said:?}",
+    );
+    assert!(
+        !absolute_said.contains("IN_MIRROR_ONLY.txt"),
+        "⛔ the silent control is not discriminating: the operator's index and the mirror's tree \
+         must differ, or *answered about the wrong one* cannot be told from *answered correctly*. \
+         It said: {absolute_said:?}",
+    );
+    assert!(
+        left_ok
+            && left_said.contains("IN_MIRROR_ONLY.txt")
+            && !left_said.contains("STAGED_LATER.txt"),
+        "⛔ ITEM 1082: with the commit's index left behind, a child in the mirror must answer about \
+         the MIRROR — the tree the gates were told to judge. ok={left_ok}, it said: {left_said:?}",
     );
 }

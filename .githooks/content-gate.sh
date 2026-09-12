@@ -243,7 +243,72 @@ index_mirror() {
 # top of the file: `rust_gates_run` asks `git write-tree`, and THAT call must read exactly the index
 # git is about to commit. The same variable is load-bearing three lines up and poison here.
 index_mirror_git() {
-    env -u GIT_INDEX_FILE -u GIT_PREFIX git "$@"
+    ( leave_the_commits_index_behind; git "$@" )
+}
+
+# ⛔⛔⛔⛔⛔ **THE PAIR, SPELLED ONCE, AND CUT FOR EVERYTHING THAT RUNS AFTER THIS LINE** — register
+# item 1082, and the half of item 1017 a per-call wrapper cannot reach.
+#
+# # ⛔⛔⛔⛔⛔ Item 1017 built the constructor and item 965 already said what comes next
+#
+# That item wrapped the hook's OWN git calls, which is right and is not enough: `rust_gates_run`
+# then hands work to a CHILD — `"${BX}"`, or the `bash -c` beside it — and a child inherits what the
+# wrapper cannot reach. Item 965 wrote the general form of this a month earlier, about the Rust
+# layer: *"`git_in` fixes any call site it is applied to, and nothing makes the NEXT call site take
+# it."* It answered that with a ratchet over its own text. **The hook layer got the constructor and
+# never got the ratchet**, so when item 1014 added two `"${BX}"` call sites inside the mirror they
+# took neither — which is item 1082.
+#
+# # ⛔⛔⛔⛔ Measured 2026-09-12, and the failure this repository MET is the lucky half
+#
+# A child standing in the mirror — a linked worktree — carrying what a commit exports:
+#
+#   * **plain commit** (`GIT_INDEX_FILE` is RELATIVE, `.git/index`): `git ls-files` → **rc=128**,
+#     `fatal: .git/index: index file open failed: Not a directory`. Loud. This is what refused
+#     every routed commit in this tree.
+#   * **partial commit** (`git commit -- <pathspec>`, so the variable is ABSOLUTE and names a
+#     `next-index-NNN.lock`): the same call → **rc=0**, listing **the operator's index** rather than
+#     the tree it is standing in. Measured against a worktree deliberately made to differ: the
+#     answer carried a file staged after the mirror was cut and omitted one the mirror holds.
+#     **Silent, plausible, and wrong** — item 965's shape, one layer down, and that item's own cost
+#     was four contaminated commits reaching `main`.
+#   * with this function called first: rc=0 and the mirror's own tree.
+#
+# ⚠⚠ THE PAIR AND NOT THE NAMESPACE, unlike [`sprag_gate::ambient::is_git_environment`] one layer
+# up, and the difference is measured rather than a disagreement: a commit exports **seven** names
+# (re-measured 2026-09-12 — `GIT_AUTHOR_DATE`/`_EMAIL`/`_NAME`, `GIT_EDITOR`, `GIT_EXEC_PATH`,
+# `GIT_INDEX_FILE`, `GIT_PREFIX`), and only the last two NAME WHAT IS BEING COMMITTED. The Rust
+# layer cuts the whole namespace because it builds a sandbox that wants none of them; a hook is
+# still the commit and must keep the identity it is committing under.
+#
+# ⚠⚠⚠ IT CANNOT BE CUT FOR THE WHOLE HOOK — `rust_gates_run` asks `git write-tree`, and THAT call
+# must read exactly the index git is about to commit. The same variable is load-bearing at the top
+# of that function and poison inside its subshells, which is why this is a boundary a caller crosses
+# rather than a line at the top of a file.
+leave_the_commits_index_behind() {
+    unset GIT_INDEX_FILE GIT_PREFIX
+}
+
+# ⛔⛔⛔⛔⛔ **THE ONLY WAY INTO THE MIRROR** — register item 1082, and item 965's constructor
+# argument in this layer's own vocabulary.
+#
+# `cd` and the cut are ONE operation because the second is only needed on account of the first: the
+# mirror is not the repository root, so a path a commit exported relative to that root stops being
+# true the moment this runs. A caller that could `cd` without cutting is a caller that can forget,
+# and the forgetting is silent on exactly the commit shape that matters (see above).
+#
+# ⚠ `no_hook_enters_the_mirror_without_leaving_the_commits_index_behind` is what makes the next
+# caller take it — the ratchet the hook layer did not have.
+#
+# ⚠⚠ It does NOT run the work: callers keep their own subshell, so the `"${BX}"` lines stay in
+# command position word-for-word. `every_command_this_repository_hands_the_wrapper_is_one_it_
+# measured` reads those lines and counts a site only when the wrapper leads a command — at the start
+# of a line or after `&&`, `||`, `;`, `then`, `else`, `do`, `(` or `{` — so an `env -u … "${BX}" …`
+# here would drop both routed lanes out of that population SILENTLY, which is the escape hatch that
+# clause exists to close. ⚠ DRIVEN rather than read off its rule: see that clause's own gate arm.
+enter_the_mirror() {
+    cd "$1" || return 1
+    leave_the_commits_index_behind
 }
 
 # rustfmt --check the given paths as `rev` holds them.
@@ -278,7 +343,7 @@ fmt_gate() {
 
     echo "$label: rustfmt --check on the content being published ..." >&2
     echo "$label: (mirrored under $mirror — the repo path is the tail after that prefix)" >&2
-    if ! (cd "$mirror" && rustfmt --edition 2024 --check "$@"); then
+    if ! (enter_the_mirror "$mirror" && rustfmt --edition 2024 --check "$@"); then
         status=1
     fi
     rm -rf "$mirror"
@@ -321,7 +386,7 @@ workflow_gate() {
 
     echo "$label: actionlint on the workflows being published ..." >&2
     echo "$label: (mirrored under $mirror — the repo path is the tail after that prefix)" >&2
-    if ! (cd "$mirror" && actionlint "$@"); then
+    if ! (enter_the_mirror "$mirror" && actionlint "$@"); then
         status=1
     fi
     rm -rf "$mirror"

@@ -379,7 +379,11 @@ rust_gates_run() {
     # from this file's own assignments. A `(cd … && "${BX}" … )` one-liner would put a `)` on the
     # end of that argv and the clause reading it could no longer say what the wrapper is given.
     (
-        cd "$mirror" || exit 1
+        # ⛔⛔⛔ AND THE COMMIT'S INDEX DOES NOT COME IN HERE — register item 1082. The mirror is a
+        # linked worktree, so `GIT_INDEX_FILE` (relative on a plain commit, and an absolute
+        # `next-index` lock on a partial one) stops being true the moment this line runs, and every
+        # child below inherits it. See `enter_the_mirror`, where the measurement is.
+        enter_the_mirror "$mirror" || exit 1
         # ⚠ INSIDE THE SUBSHELL, so the bound this exports belongs to this lane and does not leak
         # onto the one below it, which has its own reading and a peak an order of magnitude smaller.
         rust_gates_bound_lint_lane
@@ -408,7 +412,7 @@ rust_gates_run() {
     # in the first place. Same subject now; still two commands, because they cost different things.
     echo "rust-gates: the ratchet lane, on the INDEX as well — register item 1014 ..." >&2
     (
-        cd "$mirror" || exit 1
+        enter_the_mirror "$mirror" || exit 1
         rust_gates_bound_ratchet_lane
         if rust_gates_wrapper_present; then
             "${BX}" --label pre-commit-ratchets -- bash -c "$ratchets"
