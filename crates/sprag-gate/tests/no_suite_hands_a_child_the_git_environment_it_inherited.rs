@@ -329,6 +329,95 @@ fn the_only_way_into_the_mirror_exists_and_the_hooks_come_through_it() {
     );
 }
 
+/// ⛔⛔⛔⛔⛔ **AND THE DOOR ACTUALLY SHUTS** — register item 1082, and the arm without which the
+/// two above check a NAME rather than what the name does.
+///
+/// # ⛔⛔⛔⛔⛔ Measured by mutation, on the gate I had just written
+///
+/// `enter_the_mirror` was reduced to a bare `cd` — the whole repair undone, the constructor still
+/// called from all four sites — and `cargo test -p sprag-gate` came back **rc=0**. The ratchet
+/// above was green because every call site still SAYS `enter_the_mirror`, and
+/// `hooks_judge_the_bytes_being_published` was green because the eight cases that notice a cut
+/// reach it through `index_mirror_git`, never through this door. So the fix for item 1082 was held
+/// by a spelling, which is the escape hatch this repository calls rule 6 — met, one round after
+/// registering it against somebody else's gate, in my own.
+///
+/// ⚠ It drives the LIBRARY, not a copy of it: the child sources `.githooks/content-gate.sh` and
+/// calls the real function, so a repair that stops repairing is red here whatever it is spelled.
+///
+/// ⚠⚠ THE CONTROL IS FIRST AND IS THE SAME SHELL. A plain `cd` must let the pair through, or a
+/// bash that dropped the environment by itself would make the arm below pass while measuring
+/// nothing.
+///
+/// ⚠ The variables are set ON THE CHILD, this file's rule throughout.
+#[test]
+fn entering_the_mirror_leaves_the_commits_index_behind() {
+    let root = sprag_gate::sources::workspace_root();
+    let into = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("entering-the-mirror");
+    let _ = std::fs::remove_dir_all(&into);
+    std::fs::create_dir_all(&into).expect("the scratch must be creatable");
+
+    // `$1` is the workspace root, `$2` where to stand, `$3` whether to use the door.
+    let probe = r#"
+        set -euo pipefail
+        . "$1/.githooks/content-gate.sh"
+        if [ "$3" = door ]; then
+            enter_the_mirror "$2"
+        else
+            cd "$2"
+        fi
+        printf 'INDEX=[%s]\n' "${GIT_INDEX_FILE-<gone>}"
+        printf 'PREFIX=[%s]\n' "${GIT_PREFIX-<gone>}"
+        printf 'WHERE=[%s]\n' "$(pwd -P)"
+    "#;
+    let ask = |how: &str| {
+        let done = std::process::Command::new("bash")
+            .args([
+                "-c",
+                probe,
+                "probe",
+                root.to_str().expect("a utf-8 workspace root"),
+                into.to_str().expect("a utf-8 scratch path"),
+                how,
+            ])
+            .env("GIT_INDEX_FILE", ".git/index")
+            .env("GIT_PREFIX", "crates/")
+            .output()
+            .expect("bash must be runnable");
+        assert!(
+            done.status.success(),
+            "the probe must run ({how}): {}{}",
+            String::from_utf8_lossy(&done.stdout),
+            String::from_utf8_lossy(&done.stderr),
+        );
+        String::from_utf8_lossy(&done.stdout).into_owned()
+    };
+
+    let plain = ask("plain");
+    let door = ask("door");
+    let _ = std::fs::remove_dir_all(&into);
+
+    assert!(
+        plain.contains("INDEX=[.git/index]") && plain.contains("PREFIX=[crates/]"),
+        "⛔ THE CONTROL FAILED: a plain `cd` was supposed to carry the commit's index across, so \
+         this shell cannot show the difference and the assertion below is green for free. The \
+         probe said: {plain:?}",
+    );
+    assert!(
+        door.contains("INDEX=[<gone>]") && door.contains("PREFIX=[<gone>]"),
+        "⛔ ITEM 1082: `enter_the_mirror` stood in the target and the commit's index came with it. \
+         The four call sites all NAME this function, so nothing else in this repository would \
+         notice — the ratchet reads the name and `hooks_judge_the_bytes_being_published` reaches \
+         the cut only through `index_mirror_git`. Driven: with the cut removed from this function \
+         the whole of `sprag-gate` was rc=0. The probe said: {door:?}",
+    );
+    assert!(
+        door.contains("WHERE=") && !door.contains("WHERE=[]"),
+        "⛔ and it must still ENTER: a door that cuts the environment and does not move is the \
+         other half of this function's job. The probe said: {door:?}",
+    );
+}
+
 /// ⛔⛔⛔ **AND THE BOUNDARY IS WORTH CROSSING — BOTH FAILURES, DRIVEN** — register item 1082.
 ///
 /// The two arms above are about where a name is typed. This is the measurement they stand on, and
