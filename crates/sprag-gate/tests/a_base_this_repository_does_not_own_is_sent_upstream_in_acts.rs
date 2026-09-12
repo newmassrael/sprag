@@ -80,8 +80,22 @@ const ASKS_RATHER_THAN_WORKS: [&str; 4] = [
 /// that flattened one into its own literal would leave this gate green while that road went silent.
 const COMPOSE_A_WORKING_ONE: [&str; 2] = ["dispute_prompt", "unverified_prompt"];
 
-/// The part the three roads read, spelled once in the document and once here.
-const THE_PART: &str = "where_to_fix";
+/// **THE PARTS THE THREE ROADS READ**, each spelled once in the document and once here.
+///
+/// # ⛔⛔⛔⛔⛔ Why this is a SET and was a single name until register item 1068
+///
+/// One part was one ruling, and the file has two. Item 1068's is the other arm of an axis this
+/// document had exactly one of: `where_to_fix` tells a working turn to *ask a question and stop*
+/// when the base is upstream, and nothing told it when NOT to ask — so the owner's rule against
+/// handing over a decision the criteria already settle reached no run at all.
+///
+/// ⚠⚠ **A SECOND PART RATHER THAN THREE MORE CLAUSES ON THE FIRST**, which is this gate's own
+/// argument applied one level up: `where_to_fix` is named for where a fix goes, and one ruling has
+/// one source. Two rulings in one part is where the name stops saying what the value holds.
+///
+/// ⚠ Everything below walks this list, so a third part is one entry here and one `<assign>` there —
+/// and a part added to the document and not to this list is a ruling no road is held to.
+const THE_PARTS: [&str; 2] = [RULINGS[0].0, RULINGS[1].0];
 
 /// **THE THREE ACTS THE CLAUSE ASKS FOR**, each with the fact that answers whether it happened.
 ///
@@ -92,18 +106,58 @@ const THE_PART: &str = "where_to_fix";
 /// What each needle quotes is the IMPERATIVE — a thing a run either did or did not do — and the
 /// right-hand column is where a run is asked about it, which is the deed arm's subject rather than
 /// this one's.
-const ACTS: [(&str, &str); 3] = [
+const RULINGS: [(&str, &[(&str, &str)]); 2] = [
     (
-        "do not patch it here",
-        "the turn moved no mark standing for this tree — `outer::Moved`",
+        "where_to_fix",
+        &[
+            (
+                "do not patch it here",
+                "the turn moved no mark standing for this tree — `outer::Moved`",
+            ),
+            (
+                "register what you found",
+                "the turn moved the mark standing for the record — `outer::Moved`",
+            ),
+            (
+                "ask a question and stop",
+                "the run ended at a person — `OutcomeState::Blocked`, through `screening`'s \
+                 `screen.none`",
+            ),
+        ],
     ),
+    // ── REGISTER ITEM 1068: the other arm of the axis the part above opens ────────────────────
     (
-        "register what you found",
-        "the turn moved the mark standing for the record — `outer::Moved`",
-    ),
-    (
-        "ask a question and stop",
-        "the run ended at a person — `OutcomeState::Blocked`, through `screening`'s `screen.none`",
+        "when_to_ask",
+        &[
+            // ⛔⛔⛔⛔⛔ THE BAN. `ask a question and stop` above is the one case this document
+            // ever named for stopping, and a run told that and nothing else has been told when to
+            // knock and never when not to. The owner gave the missing half three times
+            // (R311ob/pt/pw) and it lived in an agent's MEMORY — which a loop's agent does not
+            // have — so no run ever carried it.
+            (
+                "Do not hand a person a decision your own criteria already settle",
+                "the run did not end at a person over something its own brief decided",
+            ),
+            // ⚠⚠⚠⚠⚠ THE TELL, AND IT IS AN ACT BECAUSE THE AGENT PERFORMS IT ON ITSELF. *Is this
+            // derivable* is not a question any predicate in this workspace can answer; *am I
+            // splitting these options by what they cost* is one the party writing the options can.
+            // ⚠ Measured as WORDS on purpose: the run this item was filed for offered three
+            // options and NOT ONE of them named a cost, so a lexical detector would have been
+            // green on the very sample it was filed from — register item 453's blind ratchet,
+            // arriving before it was built.
+            (
+                "if you are splitting them by what they cost",
+                "nothing measures this at run time, and `when_to_ask`'s declaration says why",
+            ),
+            // ⛔⛔⛔⛔ THE EXEMPTION, AND IT IS THE CONTROL. Without it the ban degenerates into
+            // *never ask*, which is green over a document that has deleted the door
+            // `ask a question and stop` opens — a worse run than the one this item is about,
+            // arriving as its repair.
+            (
+                "Stop and ask only for a fork that is genuinely theirs",
+                "a run standing on somebody's taste or scope is untouched — the control arm",
+            ),
+        ],
     ),
 ];
 
@@ -174,7 +228,7 @@ fn every_prompt_a_working_turn_arrives_under_says_where_a_fix_goes() {
     assert!(
         twice.is_empty(),
         "⚠⚠⚠ {twice:?} are on more than one of this gate's lists, so this file both requires and \
-         forbids the same prompt to carry `{THE_PART}`",
+         forbids the same prompt to carry {THE_PARTS:?}",
     );
 
     let expr_of = |name: &str| -> String {
@@ -200,26 +254,32 @@ fn every_prompt_a_working_turn_arrives_under_says_where_a_fix_goes() {
     // read silently changes road — and the `unwrap_or_default()` in front of it was the worse
     // half: a part this reader could not see arrived as an EMPTY STRING, and an empty string is a
     // value every *must not contain* assertion is trivially true of.
-    let part = assigned(&uncommented(&text), THE_PART);
-    assert!(
-        !part.is_empty(),
-        "⚠⚠⚠⚠⚠ THE SCAN IS BLIND: `{THE_PART}` is assigned nothing this reader can see in \
-         {DOCUMENT}, so every act asserted below would be asserted of an empty string",
-    );
-    for (act, answered_by) in ACTS {
+    let bare = uncommented(&text);
+    for (the_part, acts) in RULINGS {
+        let part = assigned(&bare, the_part);
         assert!(
-            part.contains(act),
-            "⛔⛔⛔⛔⛔ REGISTER ITEM 1037: `{THE_PART}` no longer asks a working turn to `{act}`. \
-             That act is what {answered_by} is read to check, so deleting the words leaves the arm \
-             measuring a run nobody told. Read: {part}",
+            !part.is_empty(),
+            "⚠⚠⚠⚠⚠ THE SCAN IS BLIND: `{the_part}` is assigned nothing this reader can see in \
+             {DOCUMENT}, so every act asserted below would be asserted of an empty string",
         );
+        for (act, answered_by) in acts {
+            assert!(
+                part.contains(act),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 1037 (and 1068 for `when_to_ask`): `{the_part}` no longer \
+                 asks a working turn to `{act}`. That act is what {answered_by} is read to check, \
+                 so deleting the words leaves the arm measuring a run nobody told. Read: {part}",
+            );
+        }
     }
 
-    // ══ AND EVERY ROAD INTO A WORKING TURN READS THE PART ══════════════════════════════════════
+    // ══ AND EVERY ROAD INTO A WORKING TURN READS EVERY PART ════════════════════════════════════
     let mut silent = Vec::new();
     for name in A_WORKING_TURN_ARRIVES_UNDER {
-        if !expr_of(name).contains(THE_PART) {
-            silent.push(name);
+        let expr = expr_of(name);
+        for the_part in THE_PARTS {
+            if !expr.contains(the_part) {
+                silent.push(format!("{name} (no `{the_part}`)"));
+            }
         }
     }
     assert!(
@@ -239,8 +299,11 @@ fn every_prompt_a_working_turn_arrives_under_says_where_a_fix_goes() {
     // cannot act on them) bought back one round after it was paid.
     let mut retyped = Vec::new();
     for name in ASKS_RATHER_THAN_WORKS {
-        if expr_of(name).contains(THE_PART) {
-            retyped.push(name);
+        let expr = expr_of(name);
+        for the_part in THE_PARTS {
+            if expr.contains(the_part) {
+                retyped.push(format!("{name} (carries `{the_part}`)"));
+            }
         }
     }
     assert!(
@@ -277,7 +340,7 @@ fn every_prompt_a_working_turn_arrives_under_says_where_a_fix_goes() {
 ///   beside itself. A reader that did not strip comments would find all three acts in a file whose
 ///   prompts had stopped carrying any of them — register item 799's vacuous green, arriving through
 ///   a comment. So the stripper is asserted to WORK, on a needle no prompt can contain.
-/// * **A SECOND LITERAL COPY IS THE DEFECT [`THE_PART`] EXISTS TO END.** Item 1037 found the three
+/// * **A SECOND LITERAL COPY IS THE DEFECT [`THE_PARTS`] EXIST TO END.** Item 1037 found the three
 ///   clauses written out inside one prompt, and the repair is one part three roads read. If a later
 ///   round pastes them back into a prompt rather than reading the part, the roads can drift — and
 ///   the assertions above cannot see it, because they ask *does this expression carry the part* and
@@ -302,16 +365,18 @@ fn assert_the_reader_is_not_reading_the_argument(text: &str) {
          prompt still carried it — which is the vacuous green register item 799 measured, arriving \
          through a comment.",
     );
-    for (act, _) in ACTS {
-        let sent = bare.matches(act).count();
-        assert_eq!(
-            sent, 1,
-            "⛔⛔⛔⛔⛔ REGISTER ITEM 1037: `{act}` is sent from {sent} place(s) in {DOCUMENT}, and \
-             `{THE_PART}` exists so that it is sent from ONE. Zero means no working turn is told it \
-             at all; more than one means a road has its own copy, and two copies of one ruling are \
-             where the three roads come to disagree — which is the state this item was paid off \
-             from.",
-        );
+    for (the_part, acts) in RULINGS {
+        for (act, _) in acts {
+            let sent = bare.matches(act).count();
+            assert_eq!(
+                sent, 1,
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 1037: `{act}` is sent from {sent} place(s) in {DOCUMENT}, \
+                 and `{the_part}` exists so that it is sent from ONE. Zero means no working turn is \
+                 told it at all; more than one means a road has its own copy, and two copies of one \
+                 ruling are where the three roads come to disagree — which is the state this item \
+                 was paid off from.",
+            );
+        }
     }
 }
 

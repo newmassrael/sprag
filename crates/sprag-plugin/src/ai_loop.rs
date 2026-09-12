@@ -12388,8 +12388,13 @@ mod tests {
         /// The one edge a run must not take on a screen it wrote itself.
         const THE_EDGE: &str = "Reflecting --ReflectDone--> Closing";
 
-        let (workspace, pane) =
-            crate::testing::standin_agent_reflecting_at(FATAL, 2, NEXT, READ_NEXT);
+        let (workspace, pane) = crate::testing::standin_agent_reflecting_at(
+            FATAL,
+            crate::testing::STANDIN_REPEATING_ROWS,
+            2,
+            NEXT,
+            READ_NEXT,
+        );
         let access = supervised(&workspace);
         let mut loops = AiLoop::new(engine(), pane, &brief_for(40), &standin_spec())
             .expect("a well-briefed loop over a live pane starts");

@@ -19515,12 +19515,17 @@ mod tests {
         ///   the number a run reports is short by both of them. What [`Briefing`] measures is what
         ///   a CALLER handed the door — the thing a person can shorten — and neither of these is
         ///   anybody's to shorten but this template's.
-        const CANNOT_SEE: [&str; 5] = [
+        /// * `when_to_ask` — `where_to_fix`'s class exactly (register item 1068), and it arrived by
+        ///   this gate refusing it: the template's own three clauses about when a run may stop and
+        ///   put a decision to a person, composed in `priming` and identical in every run of every
+        ///   kind. ⚠ Its share of the residue above is the template's too, for that entry's reason.
+        const CANNOT_SEE: [&str; 6] = [
             "milestone_age",
             "standing",
             "carried",
             "done_instruction",
             "where_to_fix",
+            "when_to_ask",
         ];
 
         let unclassified: Vec<&str> = named
@@ -26571,7 +26576,12 @@ mod tests {
         const PURPOSE: &str = "keep the stand-in answering until somebody says stop";
 
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
-        let (workspace, pane) = crate::testing::standin_agent_reflecting(u32::MAX, NEXT, READ_NEXT);
+        // ⚠⚠ THE TALL SCREEN, AND IT IS THIS GATE'S CLAIM RATHER THAN THE FIXTURE'S DEFAULT: the
+        // assertions below read what a session was GREETED with off the VIEWPORT, so a prompt
+        // taller than the pane scrolls its own opening away and the control fails saying *the
+        // milestone is missing* about a run that was told it. See `standin_agent_reflecting_tall`.
+        let (workspace, pane) =
+            crate::testing::standin_agent_reflecting_tall(u32::MAX, NEXT, READ_NEXT);
         // ⚠⚠⚠ A PATH NOTHING WROTE, and that is the staging rather than a shortcut: `context` reads
         // 0, every guard in `reviewing` that prices a replacement declines on the READING, and the
         // run leaves by `unread`. So WHAT restarts this run is independent of every number a later
@@ -29680,7 +29690,9 @@ mod tests {
         );
 
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
-        let (workspace, pane) = crate::testing::standin_agent_reflecting(u32::MAX, NEXT, READ_NEXT);
+        // ⚠⚠ THE TALL SCREEN — this gate reads a GREETING off the viewport, its sibling's reason.
+        let (workspace, pane) =
+            crate::testing::standin_agent_reflecting_tall(u32::MAX, NEXT, READ_NEXT);
         let home = std::env::temp_dir().join(format!("sprag-greets-{}", std::process::id()));
         std::fs::create_dir_all(&home).expect("a directory to file the record in");
         let record = home.join("what-the-closed-session-said.jsonl");

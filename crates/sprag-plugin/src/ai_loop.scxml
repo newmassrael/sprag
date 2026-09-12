@@ -744,6 +744,54 @@
       has to remember to add one.
     -->
     <data id="where_to_fix" expr="''"/>
+    <!--
+      ⛔⛔⛔⛔⛔ **WHEN A RUN MAY STOP AND PUT A DECISION TO A PERSON** — register
+      item 1068, and the OTHER arm of an axis this file had exactly one of.
+
+      `where_to_fix`'s third clause already tells a working turn to *ask a
+      question and stop* when the base is upstream. Nothing anywhere told it when
+      NOT to — and an axis with one arm is the asymmetry this register keeps
+      finding a base under.
+
+      ⚠⚠⚠⚠⚠ **MEASURED, AND THE RULE HAD BEEN GIVEN THREE TIMES.** The owner's
+      instruction (R311ob, R311pt, R311pw): *do not hand over a decision your
+      criteria already settle; the question door is for a fork only they have;
+      **a cost/speed trade-off is not one** — wanting to split the options by
+      cost is the signal you are avoiding a judgement.* It lived in an agent's
+      MEMORY, which is loaded into a session a person is attached to. **A loop's
+      agent reads its brief and the tree's own files and nothing else**, so the
+      rule reached no run at all.
+
+      ⚠⚠ AND THE ONLY PLACE A RUN COULD HAVE READ IT WAS `working_rules`, which is
+      per-document: every kind's author has to re-derive the same policy, and
+      forgetting is silent. This is `where_to_fix`'s case exactly, and the owner's
+      ruling of 2026-09-11 settled that class — *how many rounds a piece of work
+      may take is a fact about THIS MACHINE, not a taste one repository has*.
+      **When a machine may stop for a person is the same kind of fact.**
+
+      ⛔⛔⛔ **AND IT IS PROSE RATHER THAN A RULE THE MACHINE ENFORCES, WHICH WAS
+      MEASURED AND NOT SETTLED FOR CONVENIENCE.** The three doors that could turn
+      a dialog away are `may_answer`, `judged_rules` and `screen_rules`, and a
+      template may DECLARE but never FILL any of them —
+      `a_template_names_nothing_of_this_repository_and_decides_nothing_for_the_next_one`
+      holds that, with the reason on each: a standing yes authorises people this
+      author never met, a judged rule buys a model call and a second agent for a
+      run that asked for neither, and a quoted refusal is this author's language
+      typed into the next author's agent.
+      ⚠⚠⚠ **AND A LEXICAL DETECTOR IS REFUTED BY THE ITEM'S OWN SAMPLE.** The run
+      this was filed for offered three options — provision a checkout and build,
+      take a different piece of work, build from the prose alone — and **not one
+      of them contains a word about cost.** The split was in what they implied.
+      A needle over cost vocabulary would have been GREEN on the very run that
+      cost the item, which is register item 453's blind ratchet arriving before
+      it was built. So the signal is named for the AGENT to apply, and what is
+      measured is that it is named — see the gate on this assignment.
+
+      ⚠ It carries its own line terminator, `where_to_fix`'s rule, and it is a
+      SECOND part rather than three more clauses on that one: that part is named
+      for where a fix goes, and one ruling has one source.
+    -->
+    <data id="when_to_ask" expr="''"/>
     <!-- Sent once, into a freshly opened session. -->
     <data id="start_prompt" expr="''"/>
     <!-- Sent on every turn after the first. -->
@@ -3936,6 +3984,33 @@
                     'Take the most correct approach even when it needs several rounds — never trade the right design for finishing in one.' + '\n' +
                     'If the base is UPSTREAM of this repository, do not patch it here: register what you found, then ask a question and stop.' + '\n'"/>
       <!--
+        ⛔⛔⛔⛔⛔ **AND THE OTHER ARM OF THE SAME AXIS** — register item 1068. See
+        `when_to_ask`'s own declaration for the measurement and for why the three
+        doors that could ENFORCE this are all shut to a template.
+
+        ⚠⚠⚠⚠⚠ **THREE CLAUSES, AND THE THIRD IS WHY THE FIRST IS SAFE TO SHIP.**
+        A prohibition alone degenerates into *never ask*, and a run that never
+        asks is worse than one that asks too often: the door above it exists
+        precisely so a base this tree does not own reaches a person. So the
+        exemption is shipped in the same breath as the ban, and the gate holds
+        BOTH — a build that kept only the ban would satisfy every claim about the
+        ban and quietly delete the door.
+
+        ⚠⚠ **THE MIDDLE ONE IS THE OWNER'S OWN TELL, and it is here because the
+        machine cannot apply it.** *Is this derivable* is not a question any
+        predicate in this workspace can answer; *am I about to split these
+        options by what they cost* is one the party writing the options can. The
+        clause therefore hands the agent a test it can run on itself, which is
+        the same shape as `where_to_fix`'s *the instance it surfaced in*.
+
+        ⚠ ORDER IS LOAD-BEARING, `where_to_fix`'s rule: the ban, then the tell
+        that makes the ban actionable, then the exemption that keeps it honest.
+      -->
+      <assign location="when_to_ask"
+              expr="'Do not hand a person a decision your own criteria already settle — derive it and act.' + '\n' +
+                    'The tell is the options: if you are splitting them by what they cost or how long they take, you are avoiding a judgement that is yours.' + '\n' +
+                    'Stop and ask only for a fork that is genuinely theirs — their taste, their scope, their permission — and then stop rather than guessing.' + '\n'"/>
+      <!--
         ⚠⚠⚠ `standing` IS COMPOSED INTO BOTH WORKING PROMPTS, and it is what makes
         a standing instruction outlive the turn it was given in. It holds its own
         line terminators and is EMPTY until a rule has fired, so a loop that has
@@ -3991,6 +4066,7 @@
                     standing +
                     carried +
                     where_to_fix +
+                    when_to_ask +
                     'Report what you did and what is left.' + '\n' +
                     done_instruction"/>
       <!--
@@ -4070,6 +4146,7 @@
                     standing +
                     'Do the next thing that is verifiable, then report.' + '\n' +
                     where_to_fix +
+                    when_to_ask +
                     done_instruction"/>
       <!--
         ⛔⛔⛔⛔⛔ **AND THE ONE FOR A SESSION THAT IS ALREADY HERE** — register item 800's
@@ -4088,6 +4165,7 @@
                     'What to carry: ' + reference + '\n' +
                     standing +
                     where_to_fix +
+                    when_to_ask +
                     'Report what you did and what is left.' + '\n' +
                     done_instruction"/>
       <!--

@@ -1418,7 +1418,7 @@ fn latched(high: &SeqHighWater, pane: PaneId, rows: &[String]) -> u64 {
 /// arm where an agent DOES decide one is [`standin_agent_reflecting`]'s, and mixing the two would
 /// make every gate here also a gate about the reflection's reader.
 pub(crate) fn standin_agent(prompts_before_done: u32) -> (Arc<Mutex<Workspace>>, PaneId) {
-    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, STANDIN_ROWS))));
     let script = format!(
         "stty -echo; printf 'AGENT-READY\\n'; n=0; s=0; \
          while read line; do \
@@ -1449,7 +1449,7 @@ pub(crate) fn standin_agent(prompts_before_done: u32) -> (Arc<Mutex<Workspace>>,
         workspace
             .lock()
             .unwrap()
-            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, STANDIN_ROWS)
             .expect("spawn pane")
     };
     started(
@@ -1502,6 +1502,39 @@ pub(crate) fn standin_agent_reflecting(
 ) -> (Arc<Mutex<Workspace>>, PaneId) {
     standin_agent_reflecting_at(
         STANDIN_COLUMNS,
+        STANDIN_REPEATING_ROWS,
+        prompts_before_done,
+        next_milestone,
+        next_reference,
+    )
+}
+
+/// **THE SAME PEER ON A SCREEN BIG ENOUGH TO HOLD WHAT IT WAS TYPED** — for the gates that read a
+/// GREETING rather than a freshness.
+///
+/// # ⛔⛔⛔⛔⛔ Why the height is the CALLER's and not this module's, measured 2026-09-12
+///
+/// It was one literal, `16`, at twenty-six sites, and paying register item 1068 found two gates
+/// families pulling it in opposite directions **through the same builder**:
+///
+/// * `a_replacement_session_is_typed_the_milestone_this_run_is_on_now` and
+///   `the_line_a_review_carried_greets_the_session_that_replaces_it` read what a session was
+///   GREETED with through the viewport, so the screen must hold the whole prompt;
+/// * `a_reflection_that_answered_nothing_does_not_adopt_the_last_one` needs the previous answer to
+///   have LEFT the screen, which is what makes a repeat read as stale.
+///
+/// Lengthening the prompt broke the first pair at 16, and raising the shared number broke the
+/// second at 64 — **in three different arms across three suite runs, none of which named a
+/// geometry.** So the height joins the width as something a gate states, and
+/// [`STANDIN_REPEATING_ROWS`] carries what the short one is staging.
+pub(crate) fn standin_agent_reflecting_tall(
+    prompts_before_done: u32,
+    next_milestone: &str,
+    next_reference: &str,
+) -> (Arc<Mutex<Workspace>>, PaneId) {
+    standin_agent_reflecting_at(
+        STANDIN_COLUMNS,
+        STANDIN_ROWS,
         prompts_before_done,
         next_milestone,
         next_reference,
@@ -1528,7 +1561,7 @@ pub(crate) fn standin_agent_reflecting(
 /// gate is about and a run whose access door is simply gone — measured 2026-08-22, when closing the
 /// pane instead produced an empty walk and a bare `failed`.
 pub(crate) fn standin_agent_that_leaves() -> (Arc<Mutex<Workspace>>, PaneId) {
-    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, STANDIN_ROWS))));
     let script = format!(
         "stty -echo; printf 'AGENT-READY\\n'; read line; \
          printf 'ACK 1\\n'; printf '{SEQ} 1\\n'",
@@ -1542,7 +1575,7 @@ pub(crate) fn standin_agent_that_leaves() -> (Arc<Mutex<Workspace>>, PaneId) {
         workspace
             .lock()
             .unwrap()
-            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, STANDIN_ROWS)
             .expect("spawn pane")
     };
     started(
@@ -1562,6 +1595,66 @@ pub(crate) fn standin_agent_that_leaves() -> (Arc<Mutex<Workspace>>, PaneId) {
 /// asked for on purpose. See [`standin_agent_reflecting_at`].
 pub(crate) const STANDIN_COLUMNS: u16 = 80;
 
+/// **HOW TALL A STAND-IN'S SCREEN IS WHERE A GATE READS WHAT A SESSION WAS GREETED WITH.**
+///
+/// # ⛔⛔⛔⛔⛔ The height is a CLAIM, and one number was carrying two opposite ones
+///
+/// It was `16`, spelled out at twenty-six sites, and measuring it 2026-09-12 while paying register
+/// item 1068 found the two families it was serving at once:
+///
+/// * gates that read a GREETING through
+///   [`PaneAccess::pane_collapsed`](crate::PaneAccess::pane_collapsed) — the **viewport**, not the
+///   scrollback — need a screen TALL enough to hold the whole prompt, or the opening scrolls off
+///   and the gate fails saying *the milestone is missing* about a run that was told it perfectly
+///   well;
+/// * and gates about a reader that must not be reading the RENDERING ([`STANDIN_REPORTING_ROWS`])
+///   need one SHORT enough that an account scrolls off, which is their premise.
+///
+/// **Adding one part to the template's standing instructions pushed `start_prompt` past 16 and four
+/// gates went red at once, three of them controls** — so what a reader saw first was *the control
+/// failed*, which sends them to the driver rather than to a fixture. Raising the one shared number
+/// then turned the OTHER family red, which is what says these are two claims and not one.
+///
+/// ⚠ The number is not arithmetic on today's prompt. It is deliberately far enough above it that
+/// the next ruling in the template does not have to come back here.
+///
+/// ⚠⚠ **THE RESIDUE, STATED**: reading a greeting off a viewport is a rendering standing in for
+/// *what this session was typed*, and `PaneOutputLines::pane_lines_since` is the instrument that
+/// would not need a height at all. That is a different structure from the one item 1068 is about
+/// and it is registered rather than done here.
+pub(crate) const STANDIN_ROWS: u16 = 64;
+
+/// **AND HOW TALL THE REPORTING STAND-IN'S IS**, which is the number that must stay SMALL.
+///
+/// [`STANDIN_ROWS`] holds the argument. The gates on this builder assert that the account their run
+/// hands back has **scrolled off the pane** — that is their premise, because a reader that found it
+/// on the screen would prove nothing about the line address it is supposed to be using. A tall
+/// screen makes their premise false, and they say so in as many words when it is.
+pub(crate) const STANDIN_REPORTING_ROWS: u16 = 16;
+
+/// **AND HOW TALL THE ONE WHOSE PEER REPEATS ITSELF IS** — measured, and the number is the finding.
+///
+/// # ⛔⛔⛔⛔⛔ What this height is actually staging
+///
+/// `a_reflection_that_answered_nothing_does_not_adopt_the_last_one`'s third arm is about a peer
+/// that answers the RE-ASK with the checkpoint already refused. It reads as *no answer* because
+/// [`RowTrail::fresh`](crate::RowTrail::fresh) compares the screen to a mark **index by index**, so
+/// a repeat that lands on the same rows carrying the same text is not fresh — the gate's own
+/// comment says so.
+///
+/// ⚠⚠⚠ **THAT MAKES THE OUTCOME A FUNCTION OF WHERE THE ROWS LANDED, AND THIS ROUND MOVED THEM.**
+/// Adding one part to the template's standing instructions lengthened every prompt, the peer echoes
+/// what it is sent, and the repeat stopped landing where the mark was taken: the run adopted it and
+/// closed `capped`, which is that gate's own description of a build with no freshness read.
+///
+/// ⚠⚠ SO THE HEIGHT IS THIS FIXTURE'S STAGING, NAMED HERE RATHER THAN LEFT AS A LITERAL, and the
+/// register carries what it costs: **a repeat of a refused checkpoint is adoptable when the scroll
+/// arithmetic falls the other way**, which is a fact about the DRIVER and not about this fixture.
+/// Deciding *is this a new proposal* by comparing it with the one just refused, instead of by
+/// rendering freshness, is the repair — and it is a different structure from the one this round is
+/// paying, so it is registered.
+pub(crate) const STANDIN_REPEATING_ROWS: u16 = 16;
+
 /// [`standin_agent_reflecting`] on a pane of a chosen width.
 ///
 /// # ⚠⚠⚠ Why a width is a parameter at all
@@ -1575,11 +1668,15 @@ pub(crate) const STANDIN_COLUMNS: u16 = 80;
 /// says so needs to be able to spawn a hostile one.
 pub(crate) fn standin_agent_reflecting_at(
     columns: u16,
+    rows: u16,
     prompts_before_done: u32,
     next_milestone: &str,
     next_reference: &str,
 ) -> (Arc<Mutex<Workspace>>, PaneId) {
-    let workspace = Arc::new(Mutex::new(Workspace::new((columns, 16))));
+    // ⛔⛔ THE HEIGHT IS A PARAMETER FOR THE WIDTH'S REASON, ARRIVED AT THE HARD WAY — see
+    // [`standin_agent_reflecting_tall`]. Two gate families read this peer's pane for opposite
+    // things, and while one number served both, each of them broke the other in turn.
+    let workspace = Arc::new(Mutex::new(Workspace::new((columns, rows))));
     let script = "\
 stty -echo; printf 'AGENT-READY\\n'; n=0; s=0; \
 bump() { s=$((s+1)); printf 'SEQ %s\\n' \"$s\"; }; \
@@ -1615,7 +1712,7 @@ done"
         workspace
             .lock()
             .unwrap()
-            .spawn(command, "sh".to_string(), columns, 16)
+            .spawn(command, "sh".to_string(), columns, rows)
             .expect("spawn pane")
     };
     started(
@@ -1657,7 +1754,7 @@ done"
 pub(crate) fn standin_agent_wedging_on_its_reflection(
     prompts_before_done: u32,
 ) -> (Arc<Mutex<Workspace>>, PaneId) {
-    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, STANDIN_ROWS))));
     let script = "\
 stty -icanon; printf 'AGENT-READY\\n'; n=0; s=0; wedged=0; \
 bump() { s=$((s+1)); printf 'SEQ %s\\n' \"$s\"; }; \
@@ -1681,7 +1778,7 @@ done"
         workspace
             .lock()
             .unwrap()
-            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, STANDIN_ROWS)
             .expect("spawn pane")
     };
     started(
@@ -1717,7 +1814,7 @@ done"
 /// painted nothing rather than a `PeerGone` — the third of the three panes
 /// `crate::access::PaneError::NeverTook` names, and the only one a fixture can be.
 pub(crate) fn standin_agent_painting_nothing() -> (Arc<Mutex<Workspace>>, PaneId) {
-    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, STANDIN_ROWS))));
     let script = "\
 stty -echo -icanon; printf 'AGENT-READY\\n'; \
 while read line; do :; done"
@@ -1730,7 +1827,7 @@ while read line; do :; done"
         workspace
             .lock()
             .unwrap()
-            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, STANDIN_ROWS)
             .expect("spawn pane")
     };
     started(
@@ -1765,7 +1862,7 @@ while read line; do :; done"
 /// ⚠ `stty -icanon` and not `-echo`, [`standin_agent_wedging_on_its_reflection`]'s call: a driver
 /// asked to read its prompt back off the pane needs the pane to show it.
 pub(crate) fn standin_agent_wedging_after(answers: u32) -> (Arc<Mutex<Workspace>>, PaneId) {
-    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, STANDIN_ROWS))));
     let script = "\
 stty -icanon; printf 'AGENT-READY\\n'; n=0; s=0; \
 while read line; do \
@@ -1785,7 +1882,7 @@ done"
         workspace
             .lock()
             .unwrap()
-            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, STANDIN_ROWS)
             .expect("spawn pane")
     };
     started(
@@ -1845,7 +1942,7 @@ pub(crate) fn standin_agent_reflecting_afresh(
     next_reference: &str,
     counter: &std::path::Path,
 ) -> (Arc<Mutex<Workspace>>, PaneId) {
-    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, STANDIN_ROWS))));
     let script = "\
 stty -echo; printf 'AGENT-READY\\n'; n=0; s=0; \
 COUNTED='COUNTER_PATH'; \
@@ -1885,7 +1982,7 @@ done"
         workspace
             .lock()
             .unwrap()
-            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, STANDIN_ROWS)
             .expect("spawn pane")
     };
     started(
@@ -1940,7 +2037,10 @@ pub(crate) fn standin_agent_reflecting_once(
     next_reference: &str,
     counter: &std::path::Path,
 ) -> (Arc<Mutex<Workspace>>, PaneId) {
-    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
+    let workspace = Arc::new(Mutex::new(Workspace::new((
+        STANDIN_COLUMNS,
+        STANDIN_REPEATING_ROWS,
+    ))));
     let script = "\
 stty -echo; printf 'AGENT-READY\\n'; n=0; s=0; \
 COUNTED='COUNTER_PATH'; \
@@ -1985,7 +2085,16 @@ done"
         workspace
             .lock()
             .unwrap()
-            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
+            // ⚠⚠ THE SAME HEIGHT AS THE WORKSPACE ABOVE, and the two are separate calls: the tuple
+            // sizes the WORKSPACE and this sizes the PTY. Measured 2026-09-12 — changing only the
+            // first left the child on the old geometry and the gate failed with its screen
+            // unexplained.
+            .spawn(
+                command,
+                "sh".to_string(),
+                STANDIN_COLUMNS,
+                STANDIN_REPEATING_ROWS,
+            )
             .expect("spawn pane")
     };
     started(
@@ -2026,7 +2135,7 @@ done"
 /// its control run — the same prompt, the same echo, a peer that never says the marker — because a
 /// control on the answer is worth having whatever the driver's rules are.
 pub(crate) fn standin_agent_finishing(prompts_before_done: u32) -> (Arc<Mutex<Workspace>>, PaneId) {
-    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, STANDIN_ROWS))));
     let script = format!(
         "stty -echo; printf 'AGENT-READY\\n'; n=0; s=0; \
          while read line; do \
@@ -2059,7 +2168,7 @@ pub(crate) fn standin_agent_finishing(prompts_before_done: u32) -> (Arc<Mutex<Wo
         workspace
             .lock()
             .unwrap()
-            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, STANDIN_ROWS)
             .expect("spawn pane")
     };
     started(
@@ -2118,7 +2227,7 @@ pub(crate) fn standin_agent_acting(
     writes: &std::path::Path,
     then: Acted,
 ) -> (Arc<Mutex<Workspace>>, PaneId) {
-    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, STANDIN_ROWS))));
     let after = match then {
         Acted::RegisteredAndStood => concat!(
             "printf 'Choose an approach\\n'; ",
@@ -2162,7 +2271,7 @@ pub(crate) fn standin_agent_acting(
         workspace
             .lock()
             .unwrap()
-            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, STANDIN_ROWS)
             .expect("spawn pane")
     };
     started(
@@ -2217,7 +2326,7 @@ pub(crate) const SERVICE_IS_DOWN: &str = "the peer service is out, resuming auto
 pub(crate) fn standin_agent_whose_service_fails(
     recovers_after: Option<Duration>,
 ) -> (Arc<Mutex<Workspace>>, PaneId) {
-    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, STANDIN_ROWS))));
     // ⚠ A whole number of milliseconds through `sleep`'s fractional seconds, because `sh` has no
     // sub-second sleep of its own. The `None` arm parks far past any gate's own ceiling rather
     // than looping, so the peer is one process a closing pane can take with it.
@@ -2258,7 +2367,7 @@ pub(crate) fn standin_agent_whose_service_fails(
         workspace
             .lock()
             .unwrap()
-            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, STANDIN_ROWS)
             .expect("spawn pane")
     };
     started(
@@ -2329,7 +2438,13 @@ pub(crate) fn standin_agent_reporting(
     accounts: Accounts,
     thinks_for: Duration,
 ) -> (Arc<Mutex<Workspace>>, PaneId) {
-    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
+    // ⛔⛔ THE SHORT SCREEN IS THIS BUILDER'S PREMISE — see [`STANDIN_REPORTING_ROWS`]. Every gate
+    // here asserts the account has SCROLLED OFF, because a reader that found it on the screen
+    // would prove nothing about the line address it is supposed to be using.
+    let workspace = Arc::new(Mutex::new(Workspace::new((
+        STANDIN_COLUMNS,
+        STANDIN_REPORTING_ROWS,
+    ))));
     let mut report = vec![
         accounts.echo_slice().to_owned(),
         REPORT_RULE.to_owned(),
@@ -2379,7 +2494,15 @@ done"
         workspace
             .lock()
             .unwrap()
-            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
+            // ⚠⚠ THE SAME HEIGHT AS THE WORKSPACE ABOVE — see the sibling builder's note: the
+            // tuple sizes the WORKSPACE and this sizes the PTY, and `REPORT_LINES` is measured
+            // against THIS number.
+            .spawn(
+                command,
+                "sh".to_string(),
+                STANDIN_COLUMNS,
+                STANDIN_REPORTING_ROWS,
+            )
             .expect("spawn pane")
     };
     started(
@@ -2921,7 +3044,7 @@ pub(crate) fn parsed_dialog(rows: &[&str]) -> Option<sprag_detect::Question> {
 /// outlives the run**. The peer is the same program; only the moment differs, which is exactly what
 /// makes it a parameter rather than a second fixture.
 pub(crate) fn standin_agent_asking(asks: Asks) -> (Arc<Mutex<Workspace>>, PaneId) {
-    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, STANDIN_ROWS))));
     let script = "\
 stty -echo; printf 'AGENT-READY\\n'; n=0; asked=0; s=0; k=''; \
 readbyte() { dd bs=1 count=1 2>/dev/null | od -An -tu1 | tr -d ' \\n'; }; \
@@ -2958,7 +3081,7 @@ done"
         workspace
             .lock()
             .unwrap()
-            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, STANDIN_ROWS)
             .expect("spawn pane")
     };
     started(
@@ -3037,7 +3160,7 @@ pub(crate) fn standin_agent_refusing(
     turns_after_redirect: u32,
     asks_on_its_second_life: Option<&std::path::Path>,
 ) -> (Arc<Mutex<Workspace>>, PaneId) {
-    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, 16))));
+    let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, STANDIN_ROWS))));
     // ⚠ `27` is Escape's byte, and `0` is a byte no key sends — so the un-dismissable peer is the
     // SAME program waiting for something that never arrives, rather than a different fixture whose
     // difference a reader has to take on trust.
@@ -3133,7 +3256,7 @@ done"
         workspace
             .lock()
             .unwrap()
-            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, 16)
+            .spawn(command, "sh".to_string(), STANDIN_COLUMNS, STANDIN_ROWS)
             .expect("spawn pane")
     };
     started(
