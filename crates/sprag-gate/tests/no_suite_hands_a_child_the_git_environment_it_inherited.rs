@@ -239,8 +239,18 @@ fn hook_sources() -> Vec<(String, String)> {
 /// failure is not a red here, it is a refused commit on somebody's machine — or, on a partial
 /// commit, a child quietly answering about the operator's index.
 ///
-/// ⚠ The needle is assembled from two pieces so this arm's own source does not answer its own
-/// question; spelled whole, the scan would find the line you are reading.
+/// ⛔⛔ **THE RULE IS OVER THE DIRECTORY CHANGE, NOT OVER ONE SPELLING OF IT** — and the first
+/// draft of this arm was over the spelling, which is the hole item 1084 is about, met again one
+/// round later in my own gate. `cd "${mirror}"`, `cd $mirror` and `pushd` all reach the same
+/// place, and a rule keyed on the quoting would have called each of them clean.
+///
+/// ⚠ Measured before this was tightened: the hooks contain no `git -C "$mirror"` outside
+/// [`index_mirror_git`] and no second spelling of the change — so the population is complete today
+/// and this widening costs nothing. It is what the NEXT edit will meet.
+///
+/// ⚠⚠ The constructor's own body is not an offender by accident but by construction: it takes its
+/// destination as `$1`, so the one line in this repository that may `cd` there does not name the
+/// mirror at all.
 #[test]
 fn no_hook_enters_the_mirror_without_leaving_the_commits_index_behind() {
     let hooks = hook_sources();
@@ -250,7 +260,9 @@ fn no_hook_enters_the_mirror_without_leaving_the_commits_index_behind() {
          probe pointed at nothing must never read as clean",
         hooks.len(),
     );
-    let bare = concat!("cd \"$mir", "ror\"");
+    // ⚠ Split so this arm's own source does not answer its own question: spelled whole, the scan
+    // would find the line you are reading.
+    let names_it = concat!("mir", "ror");
     let offenders: Vec<String> = hooks
         .iter()
         .flat_map(|(name, text)| {
@@ -258,7 +270,16 @@ fn no_hook_enters_the_mirror_without_leaving_the_commits_index_behind() {
                 .enumerate()
                 .filter(|(_, line)| {
                     let code = line.trim();
-                    !code.starts_with('#') && code.contains(bare)
+                    if code.starts_with('#') || code.contains(THE_ONLY_WAY_IN) {
+                        return false;
+                    }
+                    let enters = ["cd ", "pushd "].iter().any(|verb| {
+                        code.starts_with(verb)
+                            || ["(", "; ", "&& ", "|| ", "then ", "else ", "do ", "{ "]
+                                .iter()
+                                .any(|lead| code.contains(&format!("{lead}{verb}")))
+                    });
+                    enters && code.contains(names_it)
                 })
                 .map(move |(index, _)| format!("{name}:{}", index + 1))
         })
