@@ -7945,18 +7945,182 @@ fn render_question(asking: &Value, indent: &str) -> String {
     said
 }
 
-/// WHICH BUILD DROVE a run, as a clause on its heading — EMPTY when it is the build this client
-/// is, which is the common case and the quiet one.
+/// ⛔⛔⛔⛔⛔ **HOW A RUN'S BUILD STANDS AGAINST THE TREE THE RUN ITSELF NAMES** — register item
+/// 1071, and the answer [`render_build`] renders.
 ///
-/// # ⚠⚠⚠⚠⚠ Why silence is allowed to mean "the same build" HERE and nowhere else
+/// # ⛔⛔⛔⛔⛔ The criterion used to be the ASKING CLIENT, and that is the defect
 ///
-/// Every other reader of this fact is forbidden to fill in an absence: an absent
-/// [`sprag_host::plugins::RUN_BUILD_KEY`] means *nothing recorded which build this was*, and a
-/// reader that took it for its own would date a dead daemon's work to its successor. That rule is
-/// not broken here, because this function does not print the ABSENCE — it prints a COMPARISON it
-/// resolved, against a value it knows for certain (its own [`sprag_host::wire::BUILD`]). An empty
-/// clause therefore asserts *"same as this client"*, which is a positive answer, and the two cases
-/// that cannot be resolved get words of their own.
+/// This comparison was `build == sprag_host::wire::BUILD` — *the same build as the client you are
+/// typing into* — and its own doc declared the empty clause a POSITIVE answer on that basis. A
+/// comparison whose reference is one of the two things being compared cannot see the case where
+/// **both are stale**, and that case is not hypothetical: measured 2026-09-12, this daemon and the
+/// deployed client were one image at `706c4019`, **19 commits behind** a tree that had since
+/// landed the two fixes a milestone check needed. Every one of 347 rows rendered silence, and the
+/// assertion *"same as this client"* was true and useless. The same rows asked by a client built
+/// from that tree read `(driven by build 706c40198b29)`.
+///
+/// ⇒ The reference has to be a THIRD PARTY, and it was already on the line: register item 890 put
+/// the run's own working tree into its heading (`in /home/coin/sprag`). A run says which tree it
+/// drove in; that tree says which commit it holds; and *was this run driven by the code that tree
+/// holds now* is a question neither party to the old comparison could answer.
+///
+/// # ⚠⚠⚠ Why [`Unjudged`](Self::Unjudged) exists rather than falling back to silence
+///
+/// A tree that cannot be asked — no key, a path that is gone, a checkout on another host — is the
+/// escape hatch, and an escape hatch that renders as the quiet case is the whole defect rebuilt.
+/// So it speaks. Silence is now a CLASSIFICATION and not a default: it means *the tree this run
+/// names holds this commit*, which is a claim about somebody other than the reader.
+///
+/// # ⚠⚠ Why the commits are compared by PREFIX and never by a width spelled here
+///
+/// The stamp is `git rev-parse --short=12 HEAD` in `sprag-stamp`'s build script, and a `12` written
+/// here as well would make one policy have two authors — the failure that crate's own doc refuses
+/// (*"two chances for a policy change here to reach one binary as two spellings of one commit"*).
+/// So the reference is asked for the FULL sha and the run's build must be a prefix of it, which is
+/// how git itself reads an abbreviation and is true at any width.
+///
+/// ⚠ A prefix test needs a FLOOR or a one-character stamp would agree with every sha. It needs
+/// nothing else: `sprag-stamp` writes the word `unknown` for an image with no git to ask, and a
+/// word cannot be the prefix of a sha — a clause refusing it was written, driven as a mutation,
+/// measured to change no answer anywhere, and deleted. See [`Self::of`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Drove {
+    /// The run's build is the commit its own tree holds — the common case, and the quiet one.
+    TheTreesOwn,
+    /// A build, and the tree this run names is at something else. **Both are named**, and neither
+    /// is turned into a distance: `X..HEAD` counts commits only when `X` is an ancestor, and a
+    /// number that silently means something else on a rebased or dropped commit is this register's
+    /// oldest disease — a wrong reading that decodes cleanly.
+    Another {
+        /// What drove the run.
+        build: String,
+        /// What its tree holds now.
+        head: String,
+        /// Which tree that is.
+        tree: String,
+    },
+    /// A build was recorded and **no reference could be had** — the run named no tree, or the tree
+    /// it named could not be asked. Never silent: see the type's own doc.
+    Unjudged {
+        /// What drove the run.
+        build: String,
+        /// The tree it named, where it named one.
+        tree: Option<String>,
+    },
+    /// Nothing recorded which build drove this run — a row restored from a log written before
+    /// daemons stamped it. It is not *the same build*; it is nobody knowing.
+    Unrecorded,
+}
+
+/// The shortest abbreviation this will read as a commit. Git's own default floor is 7, and below it
+/// a prefix test stops being evidence.
+const SHORTEST_COMMIT: usize = 7;
+
+impl Drove {
+    /// The comparison, with its reference **injected**.
+    ///
+    /// ⛔⛔⛔⛔⛔ `head_of` is what keeps register item 1071 paid: the reference arrives from
+    /// outside instead of being read off [`sprag_host::wire::BUILD`], so a gate can hand this a
+    /// tree that disagrees with the client and watch the answer follow the TREE. A build that went
+    /// back to asking itself would go red on that arm rather than on a comment.
+    fn of(run: &Value, head_of: impl Fn(&str) -> Option<String>) -> Self {
+        let Some(build) = run[sprag_host::plugins::RUN_BUILD_KEY].as_str() else {
+            return Self::Unrecorded;
+        };
+        let tree = run[sprag_host::plugins::RUN_TREE_KEY].as_str();
+        let Some(head) = tree.and_then(head_of) else {
+            return Self::Unjudged {
+                build: build.to_owned(),
+                tree: tree.map(ToOwned::to_owned),
+            };
+        };
+        // ⚠ A commit or nothing: `unknown` is a word, and an abbreviation shorter than git's own
+        // floor is not evidence. Either way the row is told what drove it and what the tree holds,
+        // which is the honest pair — see `Another`.
+        // ⛔⛔⛔⛔⛔ **THE FLOOR IS THE WHOLE GUARD, AND THE TWO CLAUSES THAT STOOD BESIDE IT WERE
+        // REMOVED BECAUSE NOTHING COULD EVER REACH THEM.** The first draft also refused a build
+        // that was not hexadecimal and one spelled `unknown` — `sprag-stamp`'s word for an image
+        // built with no git to ask. Driven as a mutation, deleting BOTH left every arm green, and
+        // the reason is structural rather than a gap in the gate: the reference is a full sha, so
+        // nothing non-hexadecimal can be a prefix of it and both clauses were answering `false` to
+        // a question already answered. A condition that cannot decide is one nobody can test, and
+        // this file does not ship those.
+        //
+        // ⚠ What IS reachable is a short prefix: `01234` really is the start of a sha, and without
+        // a floor a five-character stamp would read as agreeing with it. Git's own default
+        // abbreviation floor is the number, and below it a prefix stops being evidence.
+        let reads_as_a_commit = build.len() >= SHORTEST_COMMIT;
+        if reads_as_a_commit && head.starts_with(build) {
+            return Self::TheTreesOwn;
+        }
+        Self::Another {
+            build: build.to_owned(),
+            head,
+            tree: tree.unwrap_or_default().to_owned(),
+        }
+    }
+
+    /// The clause as a heading carries it.
+    ///
+    /// ⚠ The abbreviation a reader is shown for the tree's HEAD is cut to the width of the build it
+    /// is being compared with, so two commits are read side by side rather than one full sha
+    /// against twelve characters. Where there is no build to take a width from, the full sha stands.
+    fn clause(&self) -> String {
+        match self {
+            Self::TheTreesOwn => String::new(),
+            Self::Another { build, head, tree } => {
+                let shown: String = head.chars().take(build.chars().count()).collect();
+                format!("  (driven by build {build}, and {tree} is at {shown})")
+            }
+            Self::Unjudged { build, tree } => match tree {
+                Some(tree) => format!("  (driven by build {build}; {tree} could not be asked)"),
+                None => format!("  (driven by build {build}; no tree recorded to compare it with)"),
+            },
+            Self::Unrecorded => "  (build not recorded)".to_owned(),
+        }
+    }
+}
+
+/// **WHICH COMMIT A CHECKOUT HOLDS**, or [`None`] for a path that is not one this process can ask —
+/// gone, not a repository, or no git on this host.
+///
+/// # ⚠⚠ Memoised, because a heading is rendered per ROW and a tree is asked per TREE
+///
+/// Measured 2026-09-12 on this daemon's own store: **347 rows over 5 distinct trees**. A `git`
+/// process per row is 347 forks to learn five facts, and `sprag runs` is a command a person waits
+/// on.
+///
+/// ⚠ The full sha, never an abbreviation — [`Drove`]'s own doc has the argument: the width belongs
+/// to `sprag-stamp`'s build script and a second spelling of it here is one policy with two authors.
+fn head_of_checkout(tree: &str) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    static ASKED: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
+    let asked = ASKED.get_or_init(|| Mutex::new(HashMap::new()));
+    // ⚠ A poisoned lock is not a reason to answer a DIFFERENT question: this renders a fact about
+    // somebody else's tree, so the honest answer when the cache cannot be read is *could not be
+    // asked*, which `Drove::Unjudged` says out loud.
+    let mut asked = asked.lock().ok()?;
+    if let Some(known) = asked.get(tree) {
+        return known.clone();
+    }
+    let head = std::process::Command::new("git")
+        .arg("-C")
+        .arg(tree)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .map(|said| said.trim().to_owned())
+        .filter(|said| !said.is_empty());
+    asked.insert(tree.to_owned(), head.clone());
+    head
+}
+
+/// WHICH BUILD DROVE a run, as a clause on its heading — EMPTY when it is the commit the run's own
+/// tree holds, which is the common case and the quiet one. [`Drove`] holds the whole argument.
 ///
 /// # Why the clause goes on the HEADING and not under it
 ///
@@ -7964,16 +8128,12 @@ fn render_question(asking: &Value, indent: &str) -> String {
 /// parsed — this repository's own outer-loop watcher takes the status by `getline` off the heading
 /// and reads the walk's last line by position. A new line anywhere under the heading moves one of
 /// them. What a build belongs to is the run, which is what the heading names.
+///
+/// ⚠⚠ **AND THE CLAUSE STAYS BEFORE `render_tree` AND `render_which_run`**, on the measured
+/// constraint written at the call site: that watcher's stamp expression is anchored at `$`, so a
+/// clause appended after the stamp yields the empty string and item 887 goes quietly off.
 fn render_build(run: &Value) -> String {
-    match run[sprag_host::plugins::RUN_BUILD_KEY].as_str() {
-        Some(build) if build == sprag_host::wire::BUILD => String::new(),
-        // ⚠ THE ONE A READER MUST ACT ON: this run was driven by other code than the client asking
-        // about it is built from, so its walk is evidence about that build and not about the tree.
-        Some(build) => format!("  (driven by build {build})"),
-        // ⚠ AND THE ONE THAT MUST NOT BE SILENT: a run restored from a log written before daemons
-        // recorded this. It is not "the same build"; it is nobody knowing.
-        None => "  (build not recorded)".to_owned(),
-    }
+    Drove::of(run, head_of_checkout).clause()
 }
 
 /// ⛔⛔⛔⛔⛔ **WHICH RUN THIS IS**, beside the number that cannot say — register item 887.
@@ -12407,50 +12567,242 @@ mod tests {
         );
     }
 
-    /// ⚠⚠⚠⚠ **A RUN WITH NO RECORDED BUILD SAYS SO, WHERE ONE THAT MATCHES SAYS NOTHING** — the
-    /// same rule as the gate above, met at the one place that is allowed to bend it.
+    /// ⛔⛔⛔⛔⛔ **WHICH BUILD DROVE A RUN IS ASKED OF THE RUN'S OWN TREE, NOT OF THE CLIENT
+    /// ASKING** — register item 1071.
     ///
-    /// Every other reader of this fact is forbidden to fill in an absence. [`render_build`] is the
-    /// exception and the exception is narrow: it does not print the absence, it prints a COMPARISON
-    /// against a value it knows for certain. So an empty clause is a positive claim — *this run was
-    /// driven by the build you are running* — and the two cases it cannot resolve must both speak.
+    /// # ⛔⛔⛔⛔⛔ What the gate that stood here could not see
     ///
-    /// ⚠⚠⚠ The mutation this catches: rendering `None` as the empty string "because it is missing
-    /// anyway". Every run in `sprag runs` would then read as driven by the reader's own build,
-    /// including runs a dead daemon drove — the wrong answer that decodes cleanly.
+    /// Its first arm was `render_build(json!({ build: sprag_host::wire::BUILD })) == ""` — *a run
+    /// whose build is this client's renders silence* — which is the defect written as a test. When
+    /// the daemon and the client are ONE STALE IMAGE the clause is empty, the row asserts *"same as
+    /// this client"*, and that assertion is true and useless. Measured 2026-09-12: the deployed
+    /// pair were `706c4019`, **19 commits behind** a tree that had landed the two fixes a milestone
+    /// check needed, and all 347 rows were silent.
+    ///
+    /// The reference is now the tree the run itself names (register item 890's key), which is a
+    /// third party to the comparison, and `head_of` is injected so **this gate can hand it a tree
+    /// that disagrees with the client**.
+    ///
+    /// # ⚠⚠ Every arm is driven through [`render_build`]'s own type and not re-derived
+    ///
+    /// The 705 gate's measured lesson one crate over: a test that rebuilds the steps it is judging
+    /// stays green under a mutation of the product. [`Drove::of`] is the one comparison and the
+    /// clause is [`Drove::clause`]'s, so an arm asserting on a string is asserting on what a
+    /// heading really carries.
     #[test]
-    fn a_run_with_no_recorded_build_says_so_where_one_that_matches_says_nothing() {
+    fn a_runs_build_is_judged_against_its_own_tree_and_never_against_this_client() {
         use serde_json::json;
-        let key = sprag_host::plugins::RUN_BUILD_KEY;
+        let build = sprag_host::plugins::RUN_BUILD_KEY;
+        let tree = sprag_host::plugins::RUN_TREE_KEY;
 
+        /// A commit no run in this fixture was driven by and no client is — full width, as
+        /// `git rev-parse HEAD` answers. Its distance from [`CLIENT`] is ASSERTED below rather than
+        /// assumed, because that distance is the whole discriminator.
+        const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+        /// Its abbreviation, as `sprag-stamp` writes one.
+        const STAMPED: &str = "0123456789ab";
+        /// The commit the daemon measured on 2026-09-12 was actually running.
+        const STALE: &str = "706c40198b29";
+
+        // ⛔⛔⛔⛔⛔ **WHAT BUILT THIS TEST BINARY, HELD AS A FIXTURE VALUE** — and the reason this
+        // gate had to be rewritten before it could say anything. Its first form spelled the tree's
+        // commit as whatever HEAD happened to be that afternoon, and `wire::BUILD` was that same
+        // commit — so the mutation that put the criterion BACK to the asking client left every arm
+        // green. A gate whose fixture accidentally agrees with the thing it is comparing against is
+        // the defect it is meant to catch, wearing the test's own clothes.
+        let client = sprag_host::wire::BUILD;
+        assert!(
+            !HEAD.starts_with(client) && !STAMPED.starts_with(client),
+            "⚠⚠⚠⚠⚠ THE FIXTURE'S OWN PRECONDITION: this gate's reference commit must not be the \
+             one that compiled it, or the arms below pass whichever party they ask. Client is \
+             {client:?}",
+        );
+
+        let at_head = |_: &str| Some(HEAD.to_owned());
+        let unaskable = |_: &str| None;
+
+        // ── ⭐⭐⭐ THE DISCRIMINATOR: the run's build IS this client's, and its tree is not ─────
+        //
+        // ⛔⛔⛔⛔⛔ THIS IS THE CASE THE OLD COMPARISON COULD NOT SEE, and it is the one that
+        // happened. A daemon and the client asking about it are ONE STALE IMAGE, so *is it the
+        // same as me* answers YES and the row goes silent — while the tree has moved on and every
+        // sentence that run produced is evidence about code nobody is reading any more. Asked of
+        // the TREE, the same row must speak.
+        let both_stale = Drove::of(&json!({ build: client, tree: "/home/coin/sprag" }), at_head);
         assert_eq!(
-            render_build(&json!({ key: sprag_host::wire::BUILD })),
+            both_stale,
+            Drove::Another {
+                build: client.to_owned(),
+                head: HEAD.to_owned(),
+                tree: "/home/coin/sprag".to_owned(),
+            },
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1071: THE CRITERION IS THE ASKING CLIENT AGAIN. This run's \
+             build equals this binary's own, and its tree holds something else — the exact shape \
+             measured 2026-09-12, when a daemon and the deployed client were one image 19 commits \
+             behind and all 347 rows rendered silence. A comparison whose reference is a party to \
+             it cannot see *both stale*",
+        );
+
+        // ── ⭐⭐ AND THE MIRROR: a build that is NOT this client's, on a tree that holds it ────
+        //
+        // ⚠⚠⚠ The arm above alone would pass a build that simply answered `Another` for
+        // everything. This one is the other side of the same criterion: the run was driven by code
+        // this client is not, and it is still CURRENT, because its own tree holds it.
+        assert_eq!(
+            Drove::of(&json!({ build: STAMPED, tree: "/elsewhere" }), at_head),
+            Drove::TheTreesOwn,
+            "⛔⛔⛔⛔ A RUN IS NOT STALE FOR DISAGREEING WITH THE READER. Its tree holds exactly \
+             this commit, so it was driven by the code that tree has — which is the question, and \
+             the client is not part of it",
+        );
+
+        // ── ⚠ AND WHAT A DIFFERENCE READS LIKE, on the shape a person actually meets ──────────
+        let stale = Drove::of(&json!({ build: STALE, tree: "/home/coin/sprag" }), at_head);
+        let said = stale.clause();
+        assert!(
+            said.contains(STALE) && said.contains("/home/coin/sprag"),
+            "⚠⚠⚠ AND BOTH SIDES ARE NAMED, or a reader is told there is a difference and not what \
+             it is between: {said:?}",
+        );
+        assert!(
+            said.contains(STAMPED),
+            "⚠⚠ the tree's commit must be shown at the width the build is written in, or a reader \
+             compares twelve characters against forty: {said:?}",
+        );
+
+        // ── ⚠ AND THE QUIET CASE IS A CLASSIFICATION, NOT A DEFAULT ──────────────────────────
+        //
+        // ⚠⚠ The abbreviation PREFIXES its tree's head, which is how git reads one — a width
+        // spelled in `Drove` instead would be `sprag-stamp`'s policy with a second author.
+        assert_eq!(
+            Drove::of(&json!({ build: STAMPED, tree: "/anywhere" }), at_head).clause(),
             "",
-            "the common case is silent, so a hundred rows are not a hundred repetitions of one \
-             fact",
+            "the common case stays silent, so 347 rows are not 347 repetitions of one fact",
         );
 
-        let other = render_build(&json!({ key: "0000deadbeef" }));
-        assert!(
-            other.contains("0000deadbeef"),
-            "⚠⚠ a run driven by other code must name it — its walk is evidence about THAT build: \
-             {other:?}",
+        // ── ⛔ THE ESCAPE HATCH SPEAKS, which is the whole of the item ────────────────────────
+        //
+        // ⚠⚠⚠ A tree that cannot be asked is where *the criterion was the asker* would come back:
+        // fall back to silence and a row on another host reads as current for ever.
+        let unjudged = Drove::of(&json!({ build: STALE, tree: "/gone" }), unaskable);
+        assert_eq!(
+            unjudged,
+            Drove::Unjudged {
+                build: STALE.to_owned(),
+                tree: Some("/gone".to_owned()),
+            },
+            "⛔⛔⛔⛔⛔ A TREE THAT CANNOT BE ASKED IS NOT AGREEMENT. This is the escape hatch, and \
+             an escape hatch that renders as the quiet case is item 1071 rebuilt inside its own fix",
         );
+        for absent in [
+            unjudged.clause(),
+            Drove::of(&json!({ build: STALE }), at_head).clause(),
+        ] {
+            assert!(
+                !absent.is_empty() && absent.contains(STALE),
+                "⚠⚠⚠⚠⚠ SILENCE HERE CLAIMS THE RUN IS CURRENT about a comparison nobody made: \
+                 {absent:?}",
+            );
+        }
 
-        // ⚠ A run restored from a log written before daemons recorded this. The KEY IS ABSENT, which
-        // is how the daemon spells it (omitted, never `null`), so the fixture omits it too.
-        let unrecorded = render_build(&json!({ "id": 3 }));
+        // ── ⚠⚠ AND A PREFIX TOO SHORT TO BE EVIDENCE IS NOT AGREEMENT ────────────────────────
+        //
+        // ⛔⛔⛔⛔⛔ **THIS ARM'S INPUT HAS TO BE A REAL PREFIX OF THE REFERENCE, and its first form
+        // was not.** It fed `unknown` and a non-hexadecimal word — neither of which can start a
+        // sha — so deleting the whole guard left it GREEN, and the arm was asserting that a false
+        // thing stayed false. Driven as a mutation, that is what said so; the product lost two
+        // clauses nothing could reach and this arm gained the one input that decides.
+        let too_short = &HEAD[..SHORTEST_COMMIT - 1];
         assert!(
-            !unrecorded.is_empty(),
-            "⚠⚠⚠⚠⚠ SILENCE HERE WOULD SAY «driven by your build», about a run this build never \
-             drove. Absent means nobody recorded it, and the row must say that out loud",
+            HEAD.starts_with(too_short),
+            "⚠⚠⚠⚠⚠ THE FIXTURE'S OWN PRECONDITION: this must really be the start of the reference, \
+             or the floor below is never asked and the arm passes on a difference it never had",
         );
         assert_ne!(
-            unrecorded,
-            render_build(&json!({ key: sprag_host::wire::BUILD })),
-            "⚠⚠⚠ and it must not render the SAME as agreement, or the distinction is only in the \
-             source",
+            Drove::of(&json!({ build: too_short, tree: "/t" }), at_head),
+            Drove::TheTreesOwn,
+            "⚠⚠⚠⚠ {too_short:?} IS TOO SHORT TO BE EVIDENCE OF A COMMIT, and reading it as one is \
+             the flattering answer that decodes cleanly — every run whose stamp got truncated \
+             would read as current",
         );
+
+        // ── ⛔ THE CONTROL: a row nobody stamped still says so ────────────────────────────────
+        //
+        // ⚠ The KEY IS ABSENT, which is how the daemon spells it (omitted, never `null`).
+        let unrecorded = Drove::of(&json!({ "id": 3 }), at_head);
+        assert_eq!(unrecorded, Drove::Unrecorded);
+        assert!(
+            !unrecorded.clause().is_empty(),
+            "⚠⚠⚠⚠⚠ Absent means nobody recorded it, never *the same build* — the rule every other \
+             reader of this fact is held to",
+        );
+    }
+
+    /// ⚠⚠⚠⚠ **AND THE THING THAT ASKS A REAL CHECKOUT ANSWERS ABOUT THAT CHECKOUT** — register
+    /// item 1071's other half, and the one the injected reference above cannot say.
+    ///
+    /// # ⚠⚠⚠ Why a real repository and not a double
+    ///
+    /// [`Drove::of`]'s gate proves the COMPARISON is against whatever reference it is handed. What
+    /// nothing there can show is that the reference this binary actually hands it is a commit —
+    /// `head_of_checkout` could answer the empty string, an abbreviation, or a line with a newline
+    /// on it, and every arm above would still pass while every heading in `sprag runs` read
+    /// *different*. So this one builds a checkout and asks it.
+    ///
+    /// ⚠⚠ **IT IS THE FULL SHA THAT IS ASSERTED**, because that is the contract `Drove` rests on:
+    /// a prefix test is only true at every width if the reference is unabbreviated.
+    ///
+    /// ⚠ A path that is not a repository must answer [`None`] rather than a guess — that absence is
+    /// what `Drove::Unjudged` is built to speak, and a resolver that invented a value here would
+    /// route every unaskable tree into a silent agreement.
+    #[test]
+    fn a_checkout_is_asked_for_its_own_full_commit_and_a_non_repository_answers_nothing() {
+        // ⛔ `sprag_scratch::scratch_for` AND NOT `std::env::temp_dir()` — register item 794.
+        let root = sprag_scratch::scratch_for("sprag-1071-head-of", "");
+        let repo = root.join("a-checkout-this-gate-owns");
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).expect("a directory to make a checkout in");
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .expect("git must be runnable for this gate to say anything");
+            assert!(out.status.success(), "git {args:?} failed in the fixture");
+            String::from_utf8(out.stdout).expect("git speaks utf-8")
+        };
+        git(&["init", "--quiet"]);
+        git(&["config", "user.email", "gate@example.invalid"]);
+        git(&["config", "user.name", "a gate"]);
+        std::fs::write(repo.join("a-file"), b"something to commit").expect("a file to commit");
+        git(&["add", "a-file"]);
+        git(&["commit", "--quiet", "-m", "the commit this gate asks about"]);
+        let wanted = git(&["rev-parse", "HEAD"]).trim().to_owned();
+
+        let answered = head_of_checkout(&repo.display().to_string());
+        assert_eq!(
+            answered.as_deref(),
+            Some(wanted.as_str()),
+            "⚠⚠⚠⚠ THE REFERENCE THIS BINARY HANDS `Drove` IS NOT THE CHECKOUT'S COMMIT, so every \
+             heading would read *different* while the injected-reference gate beside this one \
+             stayed green",
+        );
+        assert_eq!(
+            wanted.len(),
+            40,
+            "⚠⚠⚠ AND IT MUST BE THE FULL SHA: `Drove` compares a stamp to it BY PREFIX precisely so \
+             that `sprag-stamp`'s abbreviation width stays that crate's own decision, and an \
+             abbreviated reference would make that true only at one width",
+        );
+
+        assert_eq!(
+            head_of_checkout(&root.join("not-a-repository-at-all").display().to_string()),
+            None,
+            "⚠⚠⚠⚠⚠ A PATH THAT IS NOT A CHECKOUT MUST ANSWER NOTHING. A guess here would send \
+             every unaskable tree into `Drove::TheTreesOwn`, which is silence, which is item 1071",
+        );
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     /// ⚠⚠⚠⚠ **A DAEMON WHOSE BINARY WAS REPLACED UNDER IT IS STILL A DAEMON** — the case that broke
