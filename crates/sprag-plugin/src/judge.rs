@@ -692,7 +692,17 @@ impl Unheard {
             // NEITHER reason: the same program, the same default model, on a host under four times
             // the load of every reading the bound was sized on, answered in a SIXTH of the worst
             // once the question named the files to open. A judge asked to find its own way around
-            // a tree pays for the search, and nothing here was telling anybody that.
+            // a tree pays for the search.
+            //
+            // ⛔⛔⛔⛔⛔ **AND IT NAMES A DOCUMENT'S CLAUSE RATHER THAN A THING TO DO TO THE PROMPT
+            // — register item 1072.** The third arm used to read *ask a SMALLER question*, which is
+            // advice no reader of this sentence can act on: the question is composed by the driver,
+            // and nobody meeting this line is holding it. For ten days the ONE measured remedy in
+            // this crate lived only here, in prose addressed to a person, while
+            // `OuterLoop::check_question` went on handing over a bare directory. The product
+            // performs it now — `progress_marks` that land inside the tree are named to the checker
+            // as files to open — so what this line owes a reader is the clause that turns it on,
+            // which is a thing they can actually go and write.
             // ⛔⛔⛔⛔⛔ **THE ENDING IS ASKED FOR ITS OWN WORDS** — register item 1063. This
             // interpolated `{over:?}`, which handed a person a Rust value in the middle of a
             // sentence about what to do next; item 598 then made that strictly worse, because
@@ -705,9 +715,10 @@ impl Unheard {
             // of a fact `Over` already owns — which is how the two come to disagree.
             Self::Unfinished(over) => {
                 format!(
-                    "the checker was started and never answered: {} — ask a SMALLER question \
-                     (name the files to open: measured 6x faster, and it costs nothing), or give \
-                     it longer, or a faster judge",
+                    "the checker was started and never answered: {} — the first remedy is its \
+                     DOCUMENT's: marks that land inside the tree are named to the checker as files \
+                     to open (measured 6x faster), and a kind declaring none leaves it searching. \
+                     Then give it longer, or a faster judge",
                     over.describe(),
                 )
             }

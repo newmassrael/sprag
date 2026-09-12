@@ -825,6 +825,14 @@ pub(crate) const DEFAULT_SERVICE_RETRY_TEXT: &str = "continue";
 /// dominant term**, and what dominates is how much the judge has to search: that question named the
 /// files to open. See `CHECK_READINGS`, where the arm is priced.
 ///
+/// ⭐⭐⭐⭐⭐ **AND THE PRODUCT PERFORMS THAT ARM NOW RATHER THAN RECOMMENDING IT** — register item
+/// 1072. For ten days this paragraph was the whole of it: a 6x remedy, measured, sitting in a doc
+/// beside a literal, while [`check_question`](OuterLoop::check_question) went on handing a judge a
+/// directory and `Unheard::Unfinished` told a PERSON to ask a smaller question they were not
+/// holding. The marks a run's document names are put in the question now — see
+/// [`marks_a_check_can_open`](OuterLoop::marks_a_check_can_open) — so this bound's generosity is
+/// spent on judging rather than on searching, for every kind that declares them.
+///
 /// ⚠ It is a constant and not a `<data>`, on register item 314's correction: the rule that a
 /// duration belongs to the document bites on durations a CALLER can pass, and no caller can pass
 /// this. The day a check becomes a wire argument, its bound goes beside it.
@@ -917,6 +925,14 @@ const CHECK_READINGS: &[(u64, &str)] = &[
     // asserted the short list by holding that the FASTEST reading is the cheap-model one. It is
     // not, and a smaller question is the arm a reader can reach for without changing judges or
     // waiting longer.
+    //
+    // ⭐⭐⭐⭐⭐ **AND IT IS NOT AN ARM A READER REACHES FOR ANY MORE — THE DRIVER TAKES IT** —
+    // register item 1072. This comment sat here for ten days saying a reader could reach for a
+    // smaller question, and no reader of it ever holds the question: `check_question` composes it.
+    // The marks a document names now travel into the question as files to open, so the reading
+    // above prices what the product DOES rather than what somebody might have done by hand. That
+    // is the difference between a measurement and a recommendation, and this table exists to keep
+    // exactly that difference visible.
     //
     // ⚠ AND IT IS THE FIRST READING TAKEN UNDER CONTENTION, which `CHECK_WITHIN`'s doc named as
     // the residue it could not measure. One reading is not a distribution; what it does settle is
@@ -15246,7 +15262,7 @@ impl OuterLoop {
     /// go through, which is item 428's shape exactly (*"a fixture that bypasses the product's own
     /// door passes even when the door is nailed shut"*). The gates take the same two steps the
     /// product takes.
-    /// **THE COPY, THE DIRECTORY, AND THE QUESTION — ONE ANSWER** — registers 710 and 705.
+    /// **THE COPY, THE DIRECTORY, AND THE QUESTION — ONE ANSWER** — registers 710, 705 and 1072.
     ///
     /// # ⛔⛔⛔⛔⛔ Why the three come back together
     ///
@@ -15256,6 +15272,13 @@ impl OuterLoop {
     /// **worse than not isolating at all**, because `check_question` says *the work is in {dir}, and
     /// that is the directory you are running in*: a checker handed a copy and told the work is
     /// elsewhere has been given an instruction to walk out of its copy and into somebody's work.
+    ///
+    /// ⛔⛔⛔⛔ **AND THE FILES TO OPEN ARE THE SAME DECISION, WHICH IS WHY THEY ARE RESOLVED HERE
+    /// AND NOT IN THE SENTENCE** — register item 1072. A list of files is a claim about a tree, so
+    /// naming one file that is not in the copy is the walk-out above arriving by a second road.
+    /// The reduction runs against `work_is_in` — the tree the marks were AUTHORED against and the
+    /// one `progress_reading` places them in — precisely so what is named is true of the copy too.
+    /// See [`marks_a_check_can_open`](Self::marks_a_check_can_open).
     ///
     /// ⚠⚠⚠⚠ **AND IT EXISTS SO A GATE CAN DRIVE THE PRODUCT'S OWN RESOLUTION.** The first form of
     /// item 705's gate rebuilt these three steps in the test and asserted on its own copy — a
@@ -15291,6 +15314,16 @@ impl OuterLoop {
         let copy = work_is_in
             .as_deref()
             .and_then(|dir| panes.checkout().and_then(|surface| surface.cut(dir)));
+        // ⛔⛔⛔⛔⛔ **AND WHICH FILES IN IT THE CHECKER IS TOLD TO OPEN** — register item 1072.
+        // Reduced against `work_is_in` and NOT against `standing_in`: the marks a document authors
+        // are placed against the tree the pane was born in (`progress_reading` resolves them
+        // there), while the sentence may name a COPY of that tree. Reducing them to paths relative
+        // to the original is exactly what makes them true of the copy as well — see
+        // [`marks_a_check_can_open`](Self::marks_a_check_can_open), which holds the argument.
+        let to_open = Self::marks_a_check_can_open(
+            &self.authored_paths(PROGRESS_MARKS_KEY).unwrap_or_default(),
+            work_is_in.as_deref(),
+        );
         // ⚠⚠ THE COPY WINS WHERE THERE IS ONE, and the shared tree is the fallback rather than the
         // default. Written as `or` on the copy — not as a branch on the capability — so there is no
         // arrangement in which the spawn and the sentence disagree.
@@ -15298,11 +15331,87 @@ impl OuterLoop {
             .as_ref()
             .map(|cut| cut.path().to_path_buf())
             .or(work_is_in);
-        let question = self.check_question(produced, standing_in.as_deref());
+        let question = self.check_question(produced, standing_in.as_deref(), &to_open);
         (copy, standing_in, question)
     }
 
-    fn check_question(&self, produced: &Produced, standing_in: Option<&std::path::Path>) -> String {
+    /// ⛔⛔⛔⛔⛔ **WHICH OF A RUN'S MARKS MAY BE NAMED TO A CHECKER STANDING IN A COPY OF ITS
+    /// TREE** — register item 1072, as paths relative to whichever tree the checker is in.
+    ///
+    /// # ⭐⭐⭐⭐⭐ Why the question names files at all: the remedy was MEASURED and then not shipped
+    ///
+    /// `CHECK_READINGS` holds the reading that prices it. 2026-09-02, on a host under **four times**
+    /// the load every other sample was taken at, the same program and the same default model
+    /// answered in **33.3 s** against a worst case of **185.2 s** — *because the QUESTION named the
+    /// files to open instead of asking a judge to find its own way around a tree*. That table's own
+    /// comment calls it *"the arm a reader can reach for without changing judges or waiting
+    /// longer"*, and until this existed the arm was a sentence addressed to a PERSON reading a
+    /// failure ([`crate::judge::Unheard::Unfinished`]) — a measured remedy living as advice, which
+    /// is the one shape this workspace has decided is not a fix.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why a mark that does not land INSIDE the tree is dropped rather than named
+    ///
+    /// [`a_check_to_put`](Self::a_check_to_put)'s own doc states the failure this is one step away
+    /// from: *a checker handed a copy and told the work is elsewhere has been given an instruction
+    /// to walk out of its copy and into somebody's work*. The checker MUTATES what it judges
+    /// (measured 2026-08-26, in its own words in run 0's walk), so an absolute mark outside the
+    /// tree — and this repository's own kind names one, a register under `~/.claude` — would be
+    /// item 705's cost rebuilt by the sentence after item 705 fixed the spawn.
+    ///
+    /// ⚠⚠ **AND IT IS NOT A LOSS, BECAUSE THAT IS WHAT `reference` IS FOR.** A path outside the
+    /// tree is *what this run says to consult*, which travels in its own clause of the same prompt
+    /// and is a person's prose rather than a directory the checker is standing in. Two sentences,
+    /// two worlds: this one may only name what is under the checker's own feet.
+    ///
+    /// ⚠⚠⚠ **A RELATIVE MARK CAN CLIMB OUT TOO**, which is why the test is on the COMPONENTS and
+    /// not on `is_relative`. `../elsewhere/file` places exactly where an absolute path outside the
+    /// tree does, and a filter that asked only *was it written relative* would pass it.
+    ///
+    /// ⚠ A mark naming the tree ITSELF reduces to no components at all — a directory, not a file to
+    /// open — so at least one real segment is required. Without that clause the empty string would
+    /// be rendered into the list as a name nobody can open.
+    ///
+    /// ⚠⚠ **NOTHING IS `stat`ed HERE, deliberately.** These are what a document says its work is
+    /// SUPPOSED to move, and the only tree this could stat is the original — a claim about a
+    /// different tree than the one the sentence is about, which is this crate's oldest class (two
+    /// readers of one thing, free to disagree). Whether a named file is there is what the checker
+    /// finds out by opening it, and the sentence says *supposed to* for that reason.
+    fn marks_a_check_can_open(
+        marks: &[String],
+        work_is_in: Option<&std::path::Path>,
+    ) -> Vec<String> {
+        marks
+            .iter()
+            .filter_map(|mark| {
+                let path = std::path::Path::new(mark);
+                // ⚠ The same placement `progress_reading` does — relative against the tree, and an
+                // absolute mark taken at its word — read back the other way, so the two cannot come
+                // to disagree about which file a mark meant.
+                let under = if path.is_relative() {
+                    path
+                } else {
+                    path.strip_prefix(work_is_in?).ok()?
+                };
+                let inside = under.components().all(|part| {
+                    matches!(
+                        part,
+                        std::path::Component::Normal(_) | std::path::Component::CurDir
+                    )
+                });
+                let names_a_file = under
+                    .components()
+                    .any(|part| matches!(part, std::path::Component::Normal(_)));
+                (inside && names_a_file).then(|| under.display().to_string())
+            })
+            .collect()
+    }
+
+    fn check_question(
+        &self,
+        produced: &Produced,
+        standing_in: Option<&std::path::Path>,
+        to_open: &[String],
+    ) -> String {
         let milestone = self.text_of(MILESTONE).unwrap_or_default();
         // ⛔⛔⛔⛔⛔ **WHERE THE WORK IS, AND THAT IT MAY BE OPENED — register item 710.** Until this
         // sentence existed the checker was handed prose and nothing else, so *judge the work, not
@@ -15313,11 +15422,37 @@ impl OuterLoop {
         // ⚠ Written only when the directory is KNOWN. A sentence saying *the work is in the
         // directory you are in* is a claim about this process's own spawn, and a surface that cannot
         // say where a pane was born (see `PaneAccess::origin`) must not have one put in its mouth.
+        // ⭐⭐⭐⭐⭐ **AND WHICH FILES — register item 1072, the half that was measured and then
+        // left as advice.** A judge given only a directory searches the tree, and that search is
+        // the dominant term in every reading anybody has taken: naming the files answered in
+        // 33.3 s under four times the load that produced a 185.2 s worst case (`CHECK_READINGS`).
+        //
+        // ⛔⛔ **IT IS THE DOCUMENT'S OWN LIST AND NOT THE AGENT'S, which is what keeps this
+        // prompt's rule intact.** `reference` one clause down travels on exactly that argument —
+        // *a person wrote it into the brief* — and these are the same: the paths are authored in
+        // the run's KIND (`progress_marks`), and which tree they are placed against is this
+        // driver's own reading. Nothing the claimant said reaches the sentence.
+        //
+        // ⚠⚠ **EMPTY MEANS THIS CLAUSE IS NOT WRITTEN AT ALL**, and the sentence is then the one
+        // item 710 left. A document that names no marks (the template ships `[]`), and one whose
+        // marks all land outside the checker's tree, must not be handed *start with these:* with
+        // nothing after it — an empty list rendered as a list is a run reporting that it looked and
+        // found nothing to look at, which is the reading item 943 spent a whole gate separating.
+        let start_with = if to_open.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " Its own document — not the agent — says its work lands in these, relative to \
+                 that directory: {}. Open those first; they are where to look, not a list of what \
+                 to accept.",
+                to_open.join(", "),
+            )
+        };
         let where_it_is = standing_in.map_or_else(String::new, |dir| {
             format!(
                 "The work is in {}, and that is the directory you are running in — OPEN THE FILES \
-                 THERE and judge what is on disk. What you are shown below is an account of the \
-                 work, not the work.\n\n",
+                 THERE and judge what is on disk.{start_with} What you are shown below is an \
+                 account of the work, not the work.\n\n",
                 dir.display(),
             )
         });
@@ -24553,7 +24688,10 @@ mod tests {
         // ⚠ NO DIRECTORY HERE, because what this gate is about is the four sentences the prompt owes
         // whatever it was shown. The directory and the reference have their own gate
         // (`a_checker_is_put_where_the_work_is_and_told_what_to_consult`).
-        let question = loops.check_question(&artifact, None);
+        // ⚠ AND NO FILES TO OPEN, on the same reason: register item 1072 gave this sentence a
+        // second half, and it has a gate of its own
+        // (`a_checks_question_names_the_files_to_open_and_only_ones_under_its_own_feet`).
+        let question = loops.check_question(&artifact, None, &[]);
 
         // ── THE PROMPT NO LONGER FORBIDS THE THING THE PRODUCT KEEPS ──
         assert!(
@@ -24935,6 +25073,9 @@ mod tests {
                 said_seq: 1,
             }),
             Some(repo.as_path()),
+            // ⚠ Register item 1072's half of this sentence is not this gate's subject, and it has
+            // its own: an empty list is what a document naming no marks gives.
+            &[],
         );
         assert!(
             question.contains(&repo.display().to_string()),
@@ -25161,6 +25302,230 @@ mod tests {
         let _ = std::fs::remove_dir_all(&repo);
     }
 
+    /// ⭐⭐⭐⭐⭐ **THE QUESTION NAMES THE FILES TO OPEN — AND NEVER ONE OUTSIDE THE TREE IT SENT THE
+    /// CHECKER TO** — register item 1072.
+    ///
+    /// # ⭐ The remedy this holds was measured on 2026-09-02 and then shipped as advice
+    ///
+    /// `CHECK_READINGS` prices it: the same program and the same default model, under **four
+    /// times** the load every other sample was taken at, answered in **33.3 s** against a **185.2 s**
+    /// worst case — *because the QUESTION named the files to open*. What the product did with that
+    /// reading was nothing. `check_question` went on handing over a DIRECTORY, and the measured
+    /// arm survived only in the sentence a PERSON meets after a check has already gone silent
+    /// ([`crate::judge::Unheard::Unfinished`]). This gate is what makes the product perform it.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the second arm is the sharp one: the list can walk a checker out of its copy
+    ///
+    /// Item 705 gave the check a copy to be wrong in, and
+    /// [`a_check_to_put`](OuterLoop::a_check_to_put)'s doc names the one way to undo that from
+    /// here: *a checker handed a copy and told the work is elsewhere has been given an instruction
+    /// to walk out of its copy and into somebody's work*. A naïve list does exactly that — **this
+    /// repository's own kind names an absolute mark under `~/.claude`**, and a checker that
+    /// MUTATES what it judges (measured 2026-08-26) would have been pointed straight at it. So the
+    /// arms below are not *does it name files* alone; they are *does it name only files that are
+    /// under the checker's own feet*, driven with a real copy resolved by the product.
+    ///
+    /// ⚠⚠ **AND THE CONTROL IS THE SENTENCE ITEM 710 LEFT, character for character.** The template
+    /// ships `progress_marks` empty, so most runs have nothing to name — and a run with nothing to
+    /// name must get the old sentence rather than *start with these:* trailing off into nothing.
+    /// An empty list rendered as a list is a run reporting that it looked and found nothing to look
+    /// at, which is the reading item 943 spent a whole gate separating from *nobody looked*.
+    #[test]
+    fn a_checks_question_names_the_files_to_open_and_only_ones_under_its_own_feet() {
+        let repo = a_directory_this_gate_owns("1072-names-the-files");
+        let copy = repo.join("a-copy-nobody-else-is-in");
+        // ⚠ The account is EMPTY for most arms, on the 705 gate's reason beside it: what they read
+        // is the sentence about WHERE and WHICH, and an account with content is noise in it. The
+        // LAST arm is the exception and says why — it is the one that needs an agent talking.
+        let silent = Produced::Stated(String::new());
+
+        // ⚠⚠⚠⚠⚠ **THROUGH THE PRODUCT'S OWN RESOLUTION**, which is the 705 gate's measured lesson
+        // one item over: its first draft rebuilt these steps and asserted on its own copy, so a
+        // mutation that made the product name the wrong tree left it green. `a_check_to_put` is the
+        // one function, and this closure calls it rather than repeating any part of it.
+        let asked = |panes: &dyn PaneAccess,
+                     pane: PaneId,
+                     marks: &[&str],
+                     produced: &Produced|
+         -> String {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let loops = bounded_at(lua, pane, Duration::from_secs(20))
+                .expect("the document's four authored strings");
+            loops
+                .script
+                .set_variable(
+                    &loops.session,
+                    PROGRESS_MARKS_KEY,
+                    ScriptValue::Array(
+                        marks
+                            .iter()
+                            .map(|mark| ScriptValue::String((*mark).to_owned()))
+                            .collect(),
+                    ),
+                )
+                .expect("a document's own marks are writable");
+            // ⚠⚠⚠ THE PLANT'S OWN CONTROL, before a single sentence is read: `authored_paths` is
+            // what the product calls, so if the marks did not survive the datamodel every arm
+            // below would be an assertion about a run that declared none — which is precisely the
+            // control arm, and the two would be one test wearing two names.
+            assert_eq!(
+                loops.authored_paths(PROGRESS_MARKS_KEY).as_deref(),
+                Some(
+                    marks
+                        .iter()
+                        .map(|mark| (*mark).to_owned())
+                        .collect::<Vec<_>>()
+                        .as_slice()
+                ),
+                "⚠⚠⚠⚠⚠ THE PLANT DID NOT SURVIVE THE DATAMODEL, so nothing below is about a run \
+                 that names marks at all",
+            );
+            let (_copy, _where, question) = loops.a_check_to_put(panes, produced);
+            question
+        };
+
+        let (workspace, pane) = pane_born_in(&repo);
+        let isolating = Isolating {
+            inner: WorkspacePaneAccess::new(Arc::clone(&workspace)),
+            copy: copy.clone(),
+        };
+
+        // ── ⭐ THE CLAIM: the files a document names are IN the question ───────────────────────
+        let named = asked(
+            &isolating,
+            pane,
+            &["crates/sprag-plugin/src/outer.rs", "README.md"],
+            &silent,
+        );
+        assert!(
+            named.contains("crates/sprag-plugin/src/outer.rs") && named.contains("README.md"),
+            "⭐⭐⭐⭐⭐ REGISTER ITEM 1072: the one remedy anybody has TIMED for a silent checker is \
+             naming the files to open — 33.3 s against a 185.2 s worst case, under four times the \
+             load. A question that still hands over only a directory leaves that measurement as \
+             advice in a failure message: {named}",
+        );
+
+        // ── ⛔⛔ THE SHARP ARM: a mark outside the tree must NOT be named ──────────────────────
+        //
+        // ⚠ Both shapes, because they place identically and only one of them looks dangerous: an
+        // absolute path somewhere else, and a RELATIVE one that climbs out with `..`. A filter that
+        // asked `is_relative` would pass the second.
+        let outside = asked(
+            &isolating,
+            pane,
+            &[
+                "/home/coin/.claude/projects/-home-coin-sprag/memory/debt-open.md",
+                "../somebody-elses-tree/notes.md",
+                "kept/inside.rs",
+            ],
+            &silent,
+        );
+        assert!(
+            !outside.contains("debt-open.md") && !outside.contains("somebody-elses-tree"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 705, UNDONE BY THE SENTENCE AFTER IT WAS FIXED: the checker \
+             was handed a copy and then told to open a file that is not in it. It MUTATES what it \
+             judges, so this list is what decides whose tree gets written in — and this \
+             repository's own kind names exactly such a mark: {outside}",
+        );
+        assert!(
+            outside.contains("kept/inside.rs"),
+            "⚠⚠⚠ AND THE REDUCTION MUST NOT BE A REFUSAL: one unusable mark cannot cost the \
+             usable ones, or a kind that names a register beside its sources gets the old \
+             directory-only sentence and the measured arm is lost to the whole list: {outside}",
+        );
+
+        // ── ⚠⚠ AND WHAT IS NAMED MUST BE TRUE WHERE THE CHECKER STANDS, WHICH IS THE COPY ──────
+        let under_tree = asked(
+            &isolating,
+            pane,
+            &[&repo.join("in/the/tree.rs").display().to_string()],
+            &silent,
+        );
+        assert!(
+            under_tree.contains("in/the/tree.rs")
+                && !under_tree.contains(&repo.join("in/the/tree.rs").display().to_string()),
+            "⚠⚠⚠⚠ A mark authored ABSOLUTE inside the tree must be named RELATIVE to it. The \
+             checker is standing in a copy, so its original spelling addresses the agent's own \
+             tree — the one path this sentence may never carry: {under_tree}",
+        );
+
+        // ── ⚠ AND A MARK THAT IS THE TREE ITSELF NAMES NO FILE, so it must not enter the list ──
+        //
+        // ⚠⚠ It reduces to NO components at all, which is the one input that would render as an
+        // empty name between two commas — a thing no checker can open, in a clause telling it
+        // these are the files to open.
+        //
+        // ⚠ Written BETWEEN two usable marks, so what a survivor renders as is an empty name
+        // between two commas — the needle below — rather than something the join hides at an end.
+        let whole_tree = asked(
+            &isolating,
+            pane,
+            &[
+                "first/real.rs",
+                &repo.display().to_string(),
+                "second/real.rs",
+            ],
+            &silent,
+        );
+        assert!(
+            whole_tree.contains("first/real.rs")
+                && whole_tree.contains("second/real.rs")
+                && !whole_tree.contains(", , "),
+            "⚠⚠⚠ A DIRECTORY IS NOT A FILE TO OPEN. A mark naming the tree reduces to no path at \
+             all, and a list that keeps it carries an empty name — in the one clause whose whole \
+             job is to say which files can be opened: {whole_tree}",
+        );
+
+        // ── ⛔⛔⛔ AND THE LIST IS THE DOCUMENT'S, NEVER THE CLAIMANT'S ─────────────────────────
+        //
+        // ⛔⛔⛔⛔⛔ **REGISTER ITEM 428 IS WHAT THIS ARM DEFENDS, AND A FILE LIST IS THE NEWEST WAY
+        // TO BREACH IT.** *A different agent, in a new session, shown only the artifact* — the
+        // whole point of an independent check — dies the moment the agent being judged gets to
+        // choose what the judge opens. An agent that named three convenient files in its account
+        // and had them harvested into this clause would be steering the verdict while appearing to
+        // report; that is not a slow check, it is a check that agrees for the wrong reason.
+        //
+        // ⚠⚠ **THE ASSERTION IS ON THE CLAUSE AND NOT ON THE QUESTION, and it has to be**: the
+        // account IS shown — it is the artifact — so the agent's words are in the prompt by
+        // construction. What must not happen is their appearing in the sentence that says which
+        // files are the work. The clause is cut out of the product's own rendering below.
+        let claiming =
+            Produced::Stated("I rewrote the/agent/chose/this.rs and it is done.".to_owned());
+        let leaking = asked(&isolating, pane, &["only/the/document/said.rs"], &claiming);
+        assert!(
+            leaking.contains("the/agent/chose/this.rs"),
+            "⚠⚠⚠⚠⚠ THE PREMISE OF THE ARM BELOW: the account must still be SHOWN, or what follows \
+             proves only that the agent's words are missing from the whole prompt — which is a \
+             different defect and one item 441 already owns: {leaking}",
+        );
+        let clause = leaking
+            .split_once("relative to that directory: ")
+            .and_then(|(_, rest)| rest.split_once(". Open those first"))
+            .map(|(list, _)| list.to_owned())
+            .expect("the clause the first arm proved is written must be findable to be read");
+        assert!(
+            clause.contains("only/the/document/said.rs")
+                && !clause.contains("the/agent/chose/this.rs"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 428: the claimant chose what its own judge would open. The \
+             paths in this clause may come from the run's DOCUMENT, which a person wrote, and from \
+             nowhere else — an account is evidence to be judged, never an instruction about how to \
+             judge it. The clause read: {clause}",
+        );
+
+        // ── ⛔ THE CONTROL: a run that names nothing gets item 710's sentence, unchanged ───────
+        let bare = asked(&isolating, pane, &[], &silent);
+        assert!(
+            bare.contains("OPEN THE FILES THERE and judge what is on disk. What you are shown"),
+            "⛔⛔⛔⛔⛔ THE CONTROL FAILED: the template ships `progress_marks` empty, so a run that \
+             declared none must get the sentence item 710 left — not a clause introducing a list \
+             with nothing in it. *Looked and found nothing* reading as *nobody looked* is what \
+             item 943 spent a gate separating: {bare}",
+        );
+
+        isolating.lifecycle().expect("lifecycle").close(pane);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
     /// ⛔⛔⛔⛔⛔ **THE CHECKER THE PRODUCT SPAWNS REALLY STANDS IN THE COPY** — register item 705's
     /// last link, and the one nothing but a running check can say.
     ///
@@ -25365,6 +25730,7 @@ mod tests {
                 said_seq: 1,
             }),
             None,
+            &[],
         );
         assert!(
             question.contains("I read the file and rewrote the stale section."),
@@ -25381,6 +25747,7 @@ mod tests {
                 said_seq: 0,
             }),
             None,
+            &[],
         );
         assert!(
             !painted.contains("I read the file and rewrote the stale section."),
