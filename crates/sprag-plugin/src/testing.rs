@@ -1734,6 +1734,75 @@ done"
     (workspace, pane)
 }
 
+/// ⛔⛔⛔⛔⛔ **THE PROLOGUE OF A STAND-IN WHOSE PANE WILL BE READ BACK** — register items 1078 and
+/// 1079, and the choice that used to be made by leaving a `stty` flag OUT.
+///
+/// # ⛔⛔⛔⛔⛔ The line discipline's echo is the one painting channel that DISCARDS
+///
+/// A pane's text is put there by one of two parties, and this workspace already has the word for
+/// which: [`sprag_terminal::PaneEcho`], whose own doc says a read-back taken over
+/// `ByTheTerminal` has learned that *the TERMINAL is alive* and nothing whatever about the peer.
+/// Two peers in this module were on that road anyway — echo is what a script gets by not asking
+/// for anything — and both were red on macOS for eight commits.
+///
+/// **And the reason is not that the evidence is weaker. It is that the channel LOSES BYTES.** Echo
+/// is painted from the line discipline's input path, which cannot block, so a byte it has no room
+/// to queue is DROPPED and never arrives; a copy made by a PROGRAM blocks on a full output queue
+/// instead, and therefore loses nothing. Measured 2026-09-12 on this Linux host, 131_071 bytes
+/// written with the pane's reader held off 200 ms:
+///
+/// * the line discipline's echo painted 19_450, 19_450, 19_452, 19_637 and 19_472 of them;
+/// * [`STANDIN_PAINTS_AS_IT_ARRIVES`] painted 131_071 in every run.
+///
+/// ⛔⛔ **AND WHAT AN OVERFLOWING QUEUE DROPS IS EXACTLY WHAT THE READ-BACK LOOKS FOR.** The needle
+/// is the prompt's TAIL (`crate::outer::confirmable`, register item 421 — the head is the part a
+/// folding composer hides), and a queue that overflows keeps the head. So this failure is not a
+/// slow pane that a longer wait would reach: the bytes were never queued, and no wait produces
+/// them.
+///
+/// **Measured on the 3-core macOS runner**, run 34698898526 at `6dc618e3`:
+/// `NeverTook { attempts: 3, written: 3057, moved: true }`, with 1004 bytes of each 1019-byte
+/// prompt painted and every copy cut at `MILESTONE RE` — **while the peer had plainly read the
+/// whole line and answered it**, its `ACK 1` sitting between two of the copies. The refusal's
+/// sentence, *the pane never showed it*, was false about that pane in both of its halves.
+///
+/// ⚠⚠ **THIS ARGUMENT WAS ALREADY IN THIS FILE, FOR THE OTHER DIRECTION.** The wedging peers carry
+/// `-icanon` because *a canonical line discipline holds at most `MAX_CANON` bytes of an unread
+/// line, so the gate would be measuring the kernel's buffer* — the identical sentence about the
+/// INPUT queue, written down and acted on, while the OUTPUT queue went unremarked for both.
+///
+/// ⚠ `-icanon` therefore stays, for that reason unchanged.
+pub(crate) const STANDIN_PAINTS_ITSELF: &str = "stty -echo -icanon";
+
+/// ⛔⛔⛔⛔⛔ **THE PAINTER ITSELF: A COPY MADE AS THE BYTES ARRIVE, BY A PROGRAM** — the second half
+/// of [`STANDIN_PAINTS_ITSELF`], and the only one of the three roads that can serve a run reading
+/// its prompt back.
+///
+/// # ⛔⛔⛔⛔⛔ Why the obvious repair — the peer printing each line it read — cannot work here
+///
+/// **The authored prompts do not end in a newline** (`ai_loop.scxml` closes `start_prompt` and its
+/// two siblings on `done_instruction`), and a submit is what finally supplies one. So a peer built
+/// on `read line` has not READ the prompt's last line at the moment the delivery is waiting to see
+/// it, and the needle lives in exactly that line. This module's other stand-ins are line painters
+/// and that is why every one of their runs sets `shows_the_prompt: false` — `AiLoop`'s own fixture
+/// spells the reason out: *a `/bin/sh` peer paints only once it has a whole line*.
+///
+/// ⚠⚠ Driven rather than reasoned: with the line painter in place this peer's brief came back
+/// `Unsubmitted` with `made: 0`, the run refused before its first transition, and the deliveries
+/// that did confirm only did so because a SECOND injection's opening bytes completed the first
+/// one's dangling line. A fixture that works by retry artefact is not a fixture.
+///
+/// ⚠⚠⚠ **`tee` IS THE COMPOSER'S SHAPE, NOT A TRICK.** It copies its input onward as it arrives,
+/// which is what an agent's composer does with a paste and what the line discipline was standing in
+/// for; POSIX requires that its output not be buffered, and it is a program, so a full output queue
+/// BLOCKS it rather than costing bytes. Measured 2026-09-12 on this host: a final line carrying no
+/// newline is on the pane while the peer has answered nothing (the composer state both fixtures
+/// below are about), and 131_071 of 131_071 bytes arrive with the reader held off 200 ms.
+///
+/// ⚠ It goes in front of the read loop, so the pane carries the text whether or not the peer ever
+/// answers it — which a painter inside the loop could only approximate, and only for whole lines.
+pub(crate) const STANDIN_PAINTS_AS_IT_ARRIVES: &str = "tee /dev/tty |";
+
 /// ⛔⛔⛔⛔⛔ **A STAND-IN AGENT WHOSE COMPOSER TAKES THE REFLECTION AND NEVER ASKS IT** —
 /// register item 856(3), and the run shape this repository's own loop died in.
 ///
@@ -1745,18 +1814,12 @@ done"
 /// 856's counter was denominated in folds, which is exactly how a run of this shape could not be
 /// counted by the instrument built to describe it.
 ///
-/// ⚠⚠⚠ **ECHO IS LEFT ON, WHICH IS THE OPPOSITE OF EVERY OTHER PEER IN THIS FILE AND IS THE WHOLE
-/// FIXTURE.** [`standin_agent`]'s doc turns it off so that a wait ends on the peer's work rather
-/// than the kernel's — right for a peer whose prompt box is not the subject. Here the prompt box IS
-/// the subject: a run with `shows_the_prompt: true` refuses any delivery it cannot first READ BACK
-/// off the pane, so a peer that paints nothing produces *the prompt never got there* — the other
-/// refusal, with the opposite remedy. The line discipline's echo is what stands in for a composer
-/// painting what it was handed.
-///
-/// ⚠⚠ `-icanon` for the same reason it is not a detail: a canonical line discipline holds at most
-/// `MAX_CANON` bytes of an unread line (4096 on Linux) and the authored prompts approach it, so a
-/// peer that read in canonical mode would drop the tail of a long one and the gate would be
-/// measuring the kernel's buffer.
+/// ⛔⛔⛔ **THE PROMPT BOX IS THE SUBJECT HERE, SO A PROGRAM PAINTS IT** —
+/// [`STANDIN_PAINTS_ITSELF`] and [`STANDIN_PAINTS_AS_IT_ARRIVES`], where the whole argument and its
+/// measurement live. A run with `shows_the_prompt: true` refuses any delivery it cannot first READ
+/// BACK off the pane, so what paints this pane is what the gate is really resting on — and until
+/// register items 1078 and 1079 it was resting on the line discipline, which discards what it
+/// cannot queue.
 ///
 /// ⚠ AND IT WEDGES ONCE AND FOR GOOD. A composer holding a prompt is not a peer that answers the
 /// next one — `Delivered::Unsubmitted` is refused and never retried
@@ -1767,9 +1830,9 @@ pub(crate) fn standin_agent_wedging_on_its_reflection(
 ) -> (Arc<Mutex<Workspace>>, PaneId) {
     let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, STANDIN_ROWS))));
     let script = "\
-stty -icanon; printf 'AGENT-READY\\n'; n=0; s=0; wedged=0; \
+PROLOGUE; printf 'AGENT-READY\\n'; n=0; s=0; wedged=0; \
 bump() { s=$((s+1)); printf 'SEQ %s\\n' \"$s\"; }; \
-while read line; do \
+PAINT while read line; do \
   case \"$line\" in *'MILESTONE_LABEL'*) wedged=1;; esac; \
   [ $wedged -eq 0 ] || continue; \
   case \"$line\" in *exactly:*|*Summarise*|*'STOP_QUESTION'*) ;; *) continue;; esac; \
@@ -1778,6 +1841,8 @@ while read line; do \
   else printf 'ACK %s\\n' \"$n\"; fi; \
   bump; \
 done"
+        .replace("PROLOGUE", STANDIN_PAINTS_ITSELF)
+        .replace("PAINT", STANDIN_PAINTS_AS_IT_ARRIVES)
         .replace("STOP_QUESTION", STOP_QUESTION)
         .replace("MILESTONE_LABEL", REFLECTION_MILESTONE_LABEL)
         .replace("TURNS_BEFORE_DONE", &prompts_before_done.to_string());
@@ -1866,22 +1931,26 @@ while read line; do :; done"
 /// instrument reads as one row of 1.86 %.
 ///
 /// ⚠⚠ It keeps READING after it wedges rather than dying, which is what makes the refusal an
-/// `Unsubmitted` and not a `PeerGone`: the terminal still echoes the prompt, so the text is painted
-/// on the pane and the submit simply never becomes a question. A peer that exited would stage the
-/// opposite remedy — see `crate::plugin::Deliveries::unsubmitted`.
+/// `Unsubmitted` and not a `PeerGone`: the prompt is painted on the pane and the submit simply
+/// never becomes a question. A peer that exited would stage the opposite remedy — see
+/// `crate::plugin::Deliveries::unsubmitted`.
 ///
-/// ⚠ `stty -icanon` and not `-echo`, [`standin_agent_wedging_on_its_reflection`]'s call: a driver
-/// asked to read its prompt back off the pane needs the pane to show it.
+/// ⛔⛔⛔ A PROGRAM paints its pane, [`standin_agent_wedging_on_its_reflection`]'s call, and for the
+/// reason measured at [`STANDIN_PAINTS_ITSELF`]: a driver asked to read its prompt back off the
+/// pane needs the pane to show ALL of it, and the line discipline's echo is the one painter here
+/// that drops what it cannot queue. Register items 1078 and 1079 are this peer and that one.
 pub(crate) fn standin_agent_wedging_after(answers: u32) -> (Arc<Mutex<Workspace>>, PaneId) {
     let workspace = Arc::new(Mutex::new(Workspace::new((STANDIN_COLUMNS, STANDIN_ROWS))));
     let script = "\
-stty -icanon; printf 'AGENT-READY\\n'; n=0; s=0; \
-while read line; do \
+PROLOGUE; printf 'AGENT-READY\\n'; n=0; s=0; \
+PAINT while read line; do \
   case \"$line\" in *exactly:*|*Summarise*|*'STOP_QUESTION'*) ;; *) continue;; esac; \
   n=$((n+1)); \
   [ $n -le ANSWERS ] || continue; \
   printf 'ACK %s\\n' \"$n\"; s=$((s+1)); printf 'SEQ_MARKER %s\\n' \"$s\"; \
 done"
+        .replace("PROLOGUE", STANDIN_PAINTS_ITSELF)
+        .replace("PAINT", STANDIN_PAINTS_AS_IT_ARRIVES)
         .replace("STOP_QUESTION", STOP_QUESTION)
         .replace("SEQ_MARKER", SEQ_MARKER)
         .replace("ANSWERS", &answers.to_string());
@@ -4199,6 +4268,190 @@ mod tests {
     use super::{Asks, COUNTER_FN, STANDIN_COLUMNS, peer_seq, refused_naming};
     use crate::access::{JobLeader, PaneDoing, PaneError};
     use crate::readiness::ReadyWhen;
+
+    /// ⛔⛔⛔⛔⛔ **NO STAND-IN AGENT IN THIS MODULE LEAVES ITS PANE TO THE LINE DISCIPLINE** —
+    /// register items 1078 and 1079, and the rule that had no reader for as long as two of these
+    /// peers broke it.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why a read-back is worth nothing over a terminal that echoes
+    ///
+    /// An outer-loop run reads its prompt back off the pane before it presses anything
+    /// (`AiLoopSpec::shows_the_prompt`), so what PAINTS that pane is what every such gate is really
+    /// resting on. [`sprag_terminal::PaneEcho`] is this workspace's word for which of the two
+    /// parties it was, and its own doc is unambiguous: over `ByTheTerminal` a read-back has learned
+    /// that *the TERMINAL is alive*, painted *before the program has read one byte and whether or
+    /// not it ever will*.
+    ///
+    /// ⛔⛔ **AND THAT CHANNEL DISCARDS.** The measurement, the macOS log it came from and the
+    /// reason the prompt's TAIL is precisely what goes missing are all at
+    /// [`super::STANDIN_PAINTS_ITSELF`]. The short of it: echo is painted where it cannot block, so
+    /// what it has no room to queue is dropped and no wait ever produces it — which is why items
+    /// 1078 and 1079 were red on macOS for eight commits while this host stayed green.
+    ///
+    /// # ⚠⚠⚠ It asks the KERNEL, not the script
+    ///
+    /// The predicate is `pane_echo` on the live pane — the pane's own `termios` through its own
+    /// device — rather than a search of these scripts for a `stty` flag. A peer can reach this
+    /// state by any route it likes, and a gate that read the source would be asserting the spelling
+    /// of one road to it.
+    ///
+    /// # ⛔⛔⛔ The population is COUNTED, because a hand-written list of fixtures leaks
+    ///
+    /// A rule that only runs over the peers somebody remembered to add is the exemption list rule 6
+    /// is about. The list below is therefore held against the number of stand-in agents this module
+    /// DECLARES, read out of its own source — so a seventeenth fixture is a red here on the day it
+    /// is written rather than an unchecked peer nobody counted.
+    ///
+    /// ⚠ The needle is assembled from two pieces so that this arm's own source does not answer its
+    /// own question: spelled whole, the count would include the line you are reading.
+    ///
+    /// ⚠⚠ **AND THE RULE IS *NOT THE TERMINAL*, WHICH IS WHY IT COVERS THE PEER THAT PAINTS
+    /// NOTHING.** [`super::standin_agent_painting_nothing`] stages register item 910 by showing
+    /// its prompt nowhere at all, and an echoing terminal would defeat it just as surely as it
+    /// defeats the two peers this item is about — from the other side. So the predicate here is
+    /// about the PAINTER and never about how much it painted.
+    #[test]
+    fn no_standin_agent_leaves_its_pane_to_the_line_discipline() {
+        use crate::access::{PaneAccess, WorkspacePaneAccess};
+        use sprag_terminal::{PaneEcho, PaneId, Workspace};
+        use std::sync::{Arc, Mutex};
+
+        // A counter file the `afresh`/`once` peers keep their turn in, and a mark the acting peer
+        // rewrites. Neither is read here — for this rule the peers only have to START.
+        let counter = sprag_scratch::scratch_for("sprag-painters", "counter");
+        let writes = sprag_scratch::scratch_for("sprag-painters", "writes");
+        let _ = std::fs::remove_file(&counter);
+        std::fs::write(&writes, b"as it was").expect("a mark the acting peer can rewrite");
+
+        /// One stand-in, built on demand: the pane is spawned when its turn comes and closed
+        /// again, so this arm holds one live peer at a time rather than sixteen.
+        type Peer = (Arc<Mutex<Workspace>>, PaneId);
+        /// A fixture under its own name, so a failure names the function to go and read.
+        type Named = (&'static str, Box<dyn Fn() -> Peer>);
+
+        let peers: Vec<Named> = vec![
+            ("standin_agent", Box::new(|| super::standin_agent(1))),
+            (
+                "standin_agent_reflecting",
+                Box::new(|| super::standin_agent_reflecting(1, "next", "reference")),
+            ),
+            (
+                "standin_agent_reflecting_tall",
+                Box::new(|| super::standin_agent_reflecting_tall(1, "next", "reference")),
+            ),
+            (
+                "standin_agent_that_leaves",
+                Box::new(super::standin_agent_that_leaves),
+            ),
+            (
+                "standin_agent_reflecting_at",
+                Box::new(|| {
+                    super::standin_agent_reflecting_at(
+                        STANDIN_COLUMNS,
+                        super::STANDIN_REPEATING_ROWS,
+                        1,
+                        "next",
+                        "reference",
+                    )
+                }),
+            ),
+            (
+                "standin_agent_wedging_on_its_reflection",
+                Box::new(|| super::standin_agent_wedging_on_its_reflection(u32::MAX)),
+            ),
+            (
+                "standin_agent_painting_nothing",
+                Box::new(super::standin_agent_painting_nothing),
+            ),
+            (
+                "standin_agent_wedging_after",
+                Box::new(|| super::standin_agent_wedging_after(1)),
+            ),
+            (
+                "standin_agent_reflecting_afresh",
+                Box::new({
+                    let counted = counter.clone();
+                    move || super::standin_agent_reflecting_afresh(1, "next", "reference", &counted)
+                }),
+            ),
+            (
+                "standin_agent_reflecting_once",
+                Box::new({
+                    let counted = counter.clone();
+                    move || super::standin_agent_reflecting_once(1, "next", "reference", &counted)
+                }),
+            ),
+            (
+                "standin_agent_finishing",
+                Box::new(|| super::standin_agent_finishing(1)),
+            ),
+            (
+                "standin_agent_acting",
+                Box::new({
+                    let acted = writes.clone();
+                    move || super::standin_agent_acting(&acted, super::Acted::RegisteredAndStood)
+                }),
+            ),
+            (
+                "standin_agent_whose_service_fails",
+                Box::new(|| super::standin_agent_whose_service_fails(None)),
+            ),
+            (
+                "standin_agent_reporting",
+                Box::new(|| {
+                    super::standin_agent_reporting(
+                        super::Accounts::ForARunThatGotThere,
+                        std::time::Duration::from_millis(0),
+                    )
+                }),
+            ),
+            (
+                "standin_agent_asking",
+                Box::new(|| super::standin_agent_asking(Asks::OnItsFirstPrompt)),
+            ),
+            (
+                "standin_agent_refusing",
+                Box::new(|| super::standin_agent_refusing(true, 1, None)),
+            ),
+        ];
+
+        // ══ ① THE POPULATION IS THE MODULE'S OWN DECLARATIONS, NOT THIS LIST ═══════════════════
+        let declared = include_str!("testing.rs")
+            .matches(concat!("pub(crate) ", "fn standin_agent"))
+            .count();
+        assert_eq!(
+            peers.len(),
+            declared,
+            "⛔⛔⛔⛔⛔ REGISTER ITEMS 1078 AND 1079: this module declares {declared} stand-in \
+             agent(s) and the rule below is driven over {}. The difference is a peer whose painter \
+             nobody asked about, which is exactly the shape both those items were — a fixture on \
+             the line discipline's road, green on this host, red on the host with the smaller \
+             queue. Add it to the list beside its neighbours.",
+            peers.len(),
+        );
+
+        // ══ ② AND EVERY ONE OF THEM IS PAINTED BY ITS PEER ═════════════════════════════════════
+        for (named, build) in peers {
+            let (workspace, pane) = build();
+            let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+            let painter = access
+                .terminal_modes()
+                .and_then(|modes| modes.pane_echo(pane));
+            let closed = access
+                .lifecycle()
+                .map(|lifecycle| lifecycle.close(pane))
+                .is_some();
+            assert_eq!(
+                painter,
+                Some(PaneEcho::ByTheProgram),
+                "⛔⛔⛔⛔⛔ REGISTER ITEMS 1078 AND 1079: `{named}` leaves its pane painted by the \
+                 line discipline, so every gate that reads a prompt back off it is resting on a \
+                 channel that DISCARDS what it cannot queue — and what it discards is the tail, \
+                 which is the needle. See `STANDIN_PAINTS_ITSELF` for the measurement. (Pane \
+                 closed: {closed}.)",
+            );
+        }
+    }
 
     /// ⛔⛔⛔⛔⛔ **ONE PANE'S DIALOG IS NOT ANOTHER PANE'S VERDICT** — register item 1033, and the
     /// arm that did not exist is half of what that item is.
