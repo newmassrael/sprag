@@ -621,19 +621,44 @@ impl ReportedFailures {
     /// ⛔⛔⛔ **WHAT AN ARGV SELECTS**, as the harness would filter on it — register item 973.
     ///
     /// A `@red:` argv is `cargo test`'s, so the selection is the one bare word that is neither a
-    /// flag nor a flag's value nor past the `--`. `-p sprag-gate --lib launcher::tests -- --exact`
-    /// selects `launcher::tests`.
+    /// flag nor a flag's value. `-p sprag-gate --lib launcher::tests -- --exact` selects
+    /// `launcher::tests`, and so does `-p sprag-gate --lib -- launcher::tests --exact`.
+    ///
+    /// # ⛔⛔⛔⛔⛔ **BOTH SIDES OF THE `--`, and reading only one side was register item 1077**
+    ///
+    /// This used to stop at the separator, on a sentence that was half true: *everything past it is
+    /// the HARNESS's arguments, never a selection*. The harness's arguments are `--exact`,
+    /// `--nocapture` — **and the FILTER**, which is where it has to go when `--exact` is used at
+    /// all. So a claim written the way this repository's own round ritual demands
+    /// (*`--exact` must spell the module path, or `0 passed; N filtered out` reads as green*) was
+    /// unreadable here, while `cargo` — handed the same argv whole by `RunTheSuite` — ran it
+    /// perfectly. **Two readers of one line, disagreeing about where a test name lives.**
+    ///
+    /// Measured 2026-09-12: item 1061's claim is exactly that spelling, so `--elsewhere` refused to
+    /// judge it, and `headless (macos)` went red on eight consecutive commits while the instrument
+    /// reported `reds 1 claimed, 0 standing`. A standing red is one of the two declared overrides
+    /// in the derived order, so the order was being taken with that failure invisible to it.
+    ///
+    /// ⚠⚠ **THE WORKAROUND WAS ALREADY WRITTEN DOWN — IN PROSE**, which is why it did not hold:
+    /// register item 1002's block says *«`--test <name>` alone will not do … so the argv puts the
+    /// test name as a positional argument as well»*. A measured remedy living as a paragraph is
+    /// this workspace's rule 10, and the round that wrote item 1061 had not read that paragraph.
     ///
     /// ⚠⚠ [`None`] where the argv names NO filter (`-p sprag-host --lib` selects a whole target).
     /// That is not *nothing failed*: it is a question this reader cannot put to a list of names,
     /// and it is answered as *could not ask* rather than guessed at.
+    ///
+    /// ⚠ **THE FIRST BARE WORD WINS WHICHEVER SIDE IT IS ON**, because that is what the harness
+    /// does: `libtest` takes one filter and treats a second as an error, so a reader that preferred
+    /// the later one would disagree with the thing it is modelling.
     fn selected_by(argv: &str) -> Option<String> {
         let mut takes_a_value = false;
         for token in argv.split_whitespace() {
             if token == "--" {
-                // ⚠ Everything past it is the HARNESS's arguments (`--exact`, `--nocapture`), never
-                // a selection. A reader that kept going would take `--exact` for a test name.
-                return None;
+                // ⚠ The separator itself selects nothing and is simply stepped over. What follows
+                // is the HARNESS's own argv, which has the same shape as cargo's — flags, and at
+                // most one bare filter — so the same walk reads it.
+                continue;
             }
             if takes_a_value {
                 takes_a_value = false;
@@ -642,8 +667,20 @@ impl ReportedFailures {
             if token.starts_with('-') {
                 // ⚠ The flags that eat the next word. A list rather than a guess: an unknown flag
                 // that took a value would otherwise make its value look like a selection.
-                takes_a_value =
-                    matches!(token, "-p" | "--package" | "--test" | "--bin" | "--example");
+                //
+                // ⚠⚠ The harness's own value-taking flags are here too — `--skip` takes a pattern
+                // and `--test-threads` a number, and either would otherwise be read as the filter.
+                takes_a_value = matches!(
+                    token,
+                    "-p" | "--package"
+                        | "--test"
+                        | "--bin"
+                        | "--example"
+                        | "--skip"
+                        | "--test-threads"
+                        | "--format"
+                        | "--logfile"
+                );
                 continue;
             }
             return Some(token.to_owned());
@@ -1596,14 +1633,42 @@ headless (macos)\tTest\t2026-09-09T02:18:52Z test result: FAILED. 610 passed; 3 
         assert_eq!(
             ReportedFailures::selected_by("-p sprag-gate --lib launcher::tests -- --exact"),
             Some("launcher::tests".to_owned()),
-            "⚠ THE PREMISE: the selection is the one bare word before the `--`",
+            "⚠ THE PREMISE: a bare word before the `--` is the selection",
         );
-        // ⚠⚠ PAST THE `--` IS THE HARNESS'S, and a reader that kept walking would take `--exact`
-        // — or worse, a bare `--nocapture`'s neighbour — for a test name.
+        // ── ⛔⛔⛔⛔⛔ AND THE SAME NAME PAST THE `--` — register item 1077 ────────────────────
+        //
+        // ⚠⚠⚠⚠⚠ **THE SPELLING THIS REPOSITORY'S OWN RITUAL DEMANDS.** `--exact` only bites on a
+        // filter the HARNESS holds, so a claim written the way the round ritual requires — *spell
+        // the module path, or `0 passed; N filtered out` reads as green* — puts its name here.
+        // This reader used to stop at the separator and answer `None`, so such a claim ran fine
+        // under `cargo` and could never be JUDGED: measured 2026-09-12 on item 1061, whose macOS
+        // red stood through eight consecutive commits while the instrument printed `0 standing`.
+        assert_eq!(
+            ReportedFailures::selected_by(
+                "-p sprag-tui --test pty_round_trip -- the_deadline_says_whether --exact"
+            ),
+            Some("the_deadline_says_whether".to_owned()),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1077: a claim whose filter is past the `--` is the one \
+             spelling `--exact` can be used with, and this reader could not put it to a list of \
+             names — so the only road that closes an off-platform claim refused the only spelling \
+             the ritual allows, and two readers of one line disagreed about where a test name lives",
+        );
+        // ⚠⚠ AND THE HARNESS'S OWN VALUE-TAKING FLAGS ARE STILL NOT NAMES: `--skip` takes a
+        // pattern, and a reader that walked past the `--` without knowing that would report the
+        // pattern as the selection — which is the failure this widening could have introduced.
+        assert_eq!(
+            ReportedFailures::selected_by("-p sprag-host --lib -- --skip slow_one --exact"),
+            None,
+            "⚠⚠⚠ `--skip`'s VALUE IS NOT A SELECTION. Reading past the separator means reading the \
+             harness's grammar too, and a flag's value taken for a filter is exactly the wrong \
+             answer that decodes cleanly",
+        );
+        // ⚠⚠ PAST THE `--` THERE MAY STILL BE NO NAME, which is the arm that keeps the widening
+        // from making every whole-target claim answerable.
         assert_eq!(
             ReportedFailures::selected_by("-p sprag-host --lib -- --exact"),
             None,
-            "⛔ a whole-target selection names no test, and past the `--` there are no names",
+            "⛔ a whole-target selection names no test, and `--exact` alone is not one",
         );
         assert_eq!(
             ReportedFailures::selected_by("-p sprag-host --lib"),
