@@ -912,7 +912,28 @@ const CHECK_WITHIN: Duration = Duration::from_secs(600);
 /// belongs to the document bites on durations a CALLER can pass, and no caller can pass this.
 const ADMITS_WITHIN: Duration = Duration::from_secs(120);
 
-/// **EVERY CHECKER LATENCY ANYBODY HAS ACTUALLY TIMED**, in milliseconds, with where it came from.
+/// **EVERY CHECKER LATENCY ANYBODY HAS ACTUALLY TIMED — AND EVERY CHECK THAT RAN OUT FIRST** — with
+/// what judged it, what it was asked, and where the reading came from.
+///
+/// # ⛔⛔⛔⛔⛔ The table used to hold only the checks that ANSWERED — register item 1073
+///
+/// A row was `(milliseconds, where)`, which has no way to say *it had not answered when the bound
+/// ran out*. So [`check_headroom`] took its margin over survivors, and the checks that most concern
+/// a bound — the ones that outran it — were the ones no row could hold. **Measured 2026-09-13 over
+/// the loop's own store: seven runs whose milestone check ended `NotYet` at this same 600-second
+/// bound, not one of them in this table, while it asserted 323% of room.** Each of the seven was
+/// the debt kind's `claude -p --output-format json` — the only `milestone_check` this tree
+/// authors, and the same text in both builds they ran on — asked about a DIRECTORY, because both
+/// builds predate register item 1072.
+///
+/// ⚠⚠ **SO A ROW SAYS HOW IT ENDED, WHO JUDGED AND WHAT IT WAS ASKED, AS TYPES.** The two arms the
+/// gate prices were found by `contains("haiku")` and `contains("focused question")` — prose standing
+/// in for a field. And the question's shape is not decoration: item 1072 changed what the product
+/// ASKS, so a margin taken over both shapes at once describes neither.
+///
+/// ⚠ The seven are a FLOOR and not a census: `Checks::why_silent` kept only each run's LAST
+/// silence, so an earlier timeout in the same run left no mark. A run on a build carrying
+/// `Checks::latency` counts them whole.
 ///
 /// # ⚠⚠⚠⚠⚠ Why the numbers moved out of [`CHECK_WITHIN`]'s prose
 ///
@@ -935,27 +956,56 @@ const ADMITS_WITHIN: Duration = Duration::from_secs(120);
 /// workspace refuses to call evidence. The literal stays a decision somebody made; this says out
 /// loud when the readings have caught up with it.
 #[cfg(test)]
-const CHECK_READINGS: &[(u64, &str)] = &[
+const CHECK_READINGS: &[Reading] = &[
     // ── 2026-08-25, register item 674: a real `claude -p` shown a real turn's account, five runs
     //    on an IDLE host (load average 0.84 across 32 cores). These are what sized the bound.
-    (48_500, "2026-08-25 claude -p, idle 32-core host"),
-    (65_300, "2026-08-25 claude -p, idle 32-core host"),
-    (67_700, "2026-08-25 claude -p, idle 32-core host"),
-    (100_200, "2026-08-25 claude -p, idle 32-core host"),
-    (118_200, "2026-08-25 claude -p, idle 32-core host"),
+    Reading::answered(
+        48_500,
+        JudgeModel::Default,
+        QuestionShape::Directory,
+        "2026-08-25 claude -p, idle 32-core host",
+    ),
+    Reading::answered(
+        65_300,
+        JudgeModel::Default,
+        QuestionShape::Directory,
+        "2026-08-25 claude -p, idle 32-core host",
+    ),
+    Reading::answered(
+        67_700,
+        JudgeModel::Default,
+        QuestionShape::Directory,
+        "2026-08-25 claude -p, idle 32-core host",
+    ),
+    Reading::answered(
+        100_200,
+        JudgeModel::Default,
+        QuestionShape::Directory,
+        "2026-08-25 claude -p, idle 32-core host",
+    ),
+    Reading::answered(
+        118_200,
+        JudgeModel::Default,
+        QuestionShape::Directory,
+        "2026-08-25 claude -p, idle 32-core host",
+    ),
     // ⛔⛔⛔⛔⛔ 2026-08-31 — TAKEN BECAUSE A REAL CHECK CAME BACK `Unfinished(NotYet)` ON A
     // MILESTONE CLAIM, and it is 1.57x the worst reading the bound was sized on — on a host that
     // was ALSO idle (load 0.82). So the distribution above was understated before contention is
     // even in the picture, which is the residue that doc stated and could not measure.
-    (
+    Reading::answered(
         185_200,
+        JudgeModel::Default,
+        QuestionShape::Directory,
         "2026-08-31 claude -p default model, idle host (load 0.82)",
     ),
     // ⭐ AND THE OTHER ARM OF THE REMEDY, same host, same question, same minute: naming a cheap
     // model answered the identical question correctly in a fraction of the time. It is here so
     // *a faster judge* is a measured option rather than a suggestion.
-    (
+    Reading::answered(
         14_000,
+        JudgeModel::Cheap,
+        QuestionShape::Directory,
         "2026-08-31 claude -p --model haiku, idle host (load 0.82)",
     ),
     // ⭐⭐⭐⭐⭐ 2026-09-02, register item 839's round — AND IT IS THE THIRD REMEDY, WHICH NOTHING
@@ -981,14 +1031,170 @@ const CHECK_READINGS: &[(u64, &str)] = &[
     // ⚠ AND IT IS THE FIRST READING TAKEN UNDER CONTENTION, which `CHECK_WITHIN`'s doc named as
     // the residue it could not measure. One reading is not a distribution; what it does settle is
     // that load is not the dominant term, because this one is FASTER than every idle reading above.
-    (
+    Reading::answered(
         33_330,
+        JudgeModel::Default,
+        QuestionShape::FilesNamed,
         "2026-09-02 claude -p default model, focused question, loaded host (load 7.91)",
+    ),
+    // ⛔⛔⛔⛔⛔ 2026-09-13, register item 1073 — AND THE CHECKS THAT RAN OUT, WHICH NO ROW COULD HOLD.
+    // Read out of the loop's own store (`sprag-loop.runs.json`): the runs whose `why_silent` is the
+    // sentence `Unheard::Unfinished` writes for a wait that ended `NotYet`. Both builds carry
+    // `CHECK_WITHIN = 600 s` and the debt kind's `milestone_check = 'claude -p --output-format
+    // json'` (`git show <build>:…`), and both predate item 1072, so every one was asked about a
+    // directory. One row per run, and a floor per run — see this table's doc.
+    Reading::outran(
+        600_000,
+        JudgeModel::Default,
+        QuestionShape::Directory,
+        "loop run 287, image 1c8f2cfb, ended 2026-09-10T02:06Z",
+    ),
+    Reading::outran(
+        600_000,
+        JudgeModel::Default,
+        QuestionShape::Directory,
+        "loop run 300, image 1c8f2cfb, ended 2026-09-10T20:42Z",
+    ),
+    Reading::outran(
+        600_000,
+        JudgeModel::Default,
+        QuestionShape::Directory,
+        "loop run 303, image 1c8f2cfb, ended 2026-09-10T23:04Z",
+    ),
+    Reading::outran(
+        600_000,
+        JudgeModel::Default,
+        QuestionShape::Directory,
+        "loop run 334, image 706c4019, ended 2026-09-12T05:52Z",
+    ),
+    Reading::outran(
+        600_000,
+        JudgeModel::Default,
+        QuestionShape::Directory,
+        "loop run 343, image 706c4019, ended 2026-09-12T06:29Z",
+    ),
+    Reading::outran(
+        600_000,
+        JudgeModel::Default,
+        QuestionShape::Directory,
+        "loop run 344, image 706c4019, still running when read 2026-09-13",
+    ),
+    Reading::outran(
+        600_000,
+        JudgeModel::Default,
+        QuestionShape::Directory,
+        "loop run 348, image 706c4019, ended 2026-09-12T16:56Z",
     ),
 ];
 
-/// **HOW MUCH ROOM THE BOUND HAS OVER THE SLOWEST THING ANYBODY HAS TIMED**, as a percentage, or
-/// [`None`] where there is nothing to compare against.
+/// **ONE TIMED MILESTONE CHECK** — register item 1073's row: how it ended, what judged it, what it
+/// was asked, and where the number came from.
+///
+/// ⚠ Test-only for [`CHECK_READINGS`]' reason, which is written out there.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+struct Reading {
+    /// How the check ended.
+    took: Took,
+    /// What judged it — the judge is part of the reading.
+    judge: JudgeModel,
+    /// What it was asked — register item 1072 changed that, so it is part of the reading too.
+    shape: QuestionShape,
+    /// Where the reading came from, for the person a red names it to.
+    whence: &'static str,
+}
+
+#[cfg(test)]
+impl Reading {
+    /// A check that answered, `ms` after it was spawned.
+    const fn answered(
+        ms: u64,
+        judge: JudgeModel,
+        shape: QuestionShape,
+        whence: &'static str,
+    ) -> Self {
+        Self {
+            took: Took::Answered(ms),
+            judge,
+            shape,
+            whence,
+        }
+    }
+
+    /// A check that had not answered when a bound of `bound_ms` ran out.
+    const fn outran(
+        bound_ms: u64,
+        judge: JudgeModel,
+        shape: QuestionShape,
+        whence: &'static str,
+    ) -> Self {
+        Self {
+            took: Took::Outran(bound_ms),
+            judge,
+            shape,
+            whence,
+        }
+    }
+
+    /// The milliseconds the row carries — the whole duration where it answered, and only a FLOOR
+    /// where it ran out. [`check_headroom`] is the one reader that knows which.
+    const fn millis(&self) -> u64 {
+        match self.took {
+            Took::Answered(ms) | Took::Outran(ms) => ms,
+        }
+    }
+}
+
+/// **HOW ONE TIMED CHECK ENDED** — register item 1073.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Took {
+    /// It answered, this many milliseconds after it was spawned.
+    Answered(u64),
+    /// It had not answered when a bound of this many milliseconds ran out: it took AT LEAST that
+    /// long, and how much longer nobody knows.
+    Outran(u64),
+}
+
+/// **WHICH MODEL JUDGED** — a latency with no judge beside it is not a measurement of anything.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JudgeModel {
+    /// The checker program's default model.
+    Default,
+    /// A cheap model named for speed (`--model haiku`).
+    Cheap,
+}
+
+/// **WHAT THE JUDGE WAS ASKED** — register item 1072 changed it, which is why it is a field.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QuestionShape {
+    /// Pointed at a directory and left to find its own way around — every check before item 1072,
+    /// and still what a kind that names no file to open gets.
+    Directory,
+    /// Handed the files to open — item 1072's arm, measured six times faster.
+    FilesNamed,
+}
+
+/// **HOW MUCH ROOM A BOUND HAS OVER A SET OF READINGS** — register item 1073's four answers.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Headroom {
+    /// Nothing was timed, or nothing took any time. Never a margin: a bound with nothing behind it
+    /// must not report as one with infinite room.
+    Unmeasured,
+    /// Every reading answered, and the bound clears the slowest by this percentage.
+    Clears(u64),
+    /// Some reading ran out a SHORTER bound — it took at least that long, and possibly longer than
+    /// this one — so the room is at most this percentage and nothing can say it is not less.
+    AtMost(u64),
+    /// This many readings ran out a bound at least as long as this one. A bound that has already
+    /// failed a population has no margin over it to state; it has a count.
+    Outrun(usize),
+}
+
+/// **HOW MUCH ROOM THE BOUND HAS OVER THE READINGS** — [`Headroom`]'s four answers.
 ///
 /// A function rather than an assertion inside the gate, for [`CHECK_WITHIN`]'s own reason and for
 /// register item 775's: on the machines this is developed on the answer is never close to the
@@ -999,23 +1205,39 @@ const CHECK_READINGS: &[(u64, &str)] = &[
 /// old worst is 507%, and over the new one 323%. Integer ratios would render both as `5` and `3`
 /// and lose that the margin fell by a third.
 ///
-/// ⚠⚠ **`None` for an empty table is not a zero.** No readings is *nobody has timed this*, and a
-/// bound with nothing behind it must not report as one with infinite room — this workspace's rule
-/// that an unclassified case is never a pass.
+/// ⛔⛔⛔⛔⛔ **A READING THAT RAN OUT IS NEVER DIVIDED BY AS THOUGH IT WERE A DURATION** — register
+/// item 1073. At or past this bound it is the bound FAILING, and it is counted; short of it, it is a
+/// floor on the slowest case, which can only turn a margin into an upper limit. Dividing by it as an
+/// answer is the survivor arithmetic with the survivor relabelled.
 ///
 /// ⚠ Test-only for [`CHECK_READINGS`]' reason, which is written out there.
 #[cfg(test)]
-fn check_headroom(readings: &[(u64, &str)], bound: Duration) -> Option<u64> {
-    let worst = readings.iter().map(|(took, _)| *took).max()?;
-    if worst == 0 {
-        return None;
+fn check_headroom(readings: &[Reading], bound: Duration) -> Headroom {
+    let bound_ms = u64::try_from(bound.as_millis()).unwrap_or(u64::MAX);
+    let outrun = readings
+        .iter()
+        .filter(|reading| matches!(reading.took, Took::Outran(ran) if ran >= bound_ms))
+        .count();
+    if outrun > 0 {
+        return Headroom::Outrun(outrun);
     }
-    Some(
-        u64::try_from(bound.as_millis())
-            .unwrap_or(u64::MAX)
-            .saturating_mul(100)
-            / worst,
-    )
+    let Some(longest) = readings
+        .iter()
+        .map(Reading::millis)
+        .max()
+        .filter(|ms| *ms > 0)
+    else {
+        return Headroom::Unmeasured;
+    };
+    let percent = bound_ms.saturating_mul(100) / longest;
+    if readings
+        .iter()
+        .any(|reading| matches!(reading.took, Took::Outran(_)))
+    {
+        Headroom::AtMost(percent)
+    } else {
+        Headroom::Clears(percent)
+    }
 }
 
 /// The datamodel variable holding the word the agent says when there is **nothing left at all** —
@@ -30241,40 +30463,82 @@ mod tests {
     /// each saw a green suite. An exact figure makes any movement — a slower reading recorded, or
     /// the bound edited — a RED that has to be answered in words. It is the same shape
     /// `the_staging_control_reads_the_pairs_that_have_been_measured` uses for its arithmetic.
+    ///
+    /// # ⛔⛔⛔⛔⛔ And the margin it asserted was taken over survivors — register item 1073
+    ///
+    /// `Some(323)` was true of the rows and false of the world: seven real checks had run out this
+    /// bound and the table had no way to hold one. The figure is KEPT, as the control — the
+    /// answered readings alone must still say 323 — so that the claim beside it is about counting
+    /// the checks that ran out, and cannot be satisfied by a table that quietly changed under it.
     #[test]
     fn the_milestone_checks_bound_is_read_against_the_latencies_that_were_timed() {
-        // ⚠ THE PREMISE, BEFORE THE FIGURE: a table nobody has filled would make every assertion
-        // below vacuously satisfiable, so it is stated rather than assumed.
+        let of = |keep: fn(&Reading) -> bool| -> Vec<Reading> {
+            CHECK_READINGS.iter().copied().filter(keep).collect()
+        };
+        let answered = of(|reading| matches!(reading.took, Took::Answered(_)));
+        let ran_out = of(|reading| matches!(reading.took, Took::Outran(_)));
+
+        // ⚠ THE PREMISE, BEFORE THE FIGURES: a table that lost rows would make every assertion
+        // below a comparison with less than was measured, so it is stated rather than assumed.
         assert!(
-            CHECK_READINGS.len() >= 6,
-            "⚠ the readings table has been emptied, so what follows is a bound compared with \
-             nothing: {CHECK_READINGS:?}",
+            answered.len() >= 8 && ran_out.len() >= 7,
+            "⚠ the readings table has lost rows, so what follows compares the bound with less than \
+             was measured: {CHECK_READINGS:?}",
         );
 
-        // ── THE SHIPPED PAIR ──────────────────────────────────────────────────────────────────
+        // ── ⚠⚠⚠ THE CONTROL: THE ANSWERED READINGS ALONE SAY WHAT THIS GATE ALWAYS SAID ────────
         //
-        // ⛔ 323%, and it was 507% when the bound was chosen. A third of the margin is already
-        // gone, to a reading taken on an IDLE host — so the next author to add a slow reading, or
-        // to trim this bound, meets this line instead of a comment.
+        // ⛔ 323%, and it was 507% when the bound was chosen. A third of the margin went to a
+        // reading taken on an IDLE host — so the next author to add a slow answer, or to trim this
+        // bound, meets this line instead of a comment.
         assert_eq!(
-            check_headroom(CHECK_READINGS, CHECK_WITHIN),
-            Some(323),
-            "⛔⛔⛔⛔⛔ REGISTER ITEM 674: the milestone check's bound no longer clears the slowest \
-             latency anybody has timed by the margin it was chosen with. A check that outruns this \
-             is `Unheard::Unfinished`, and item 428's rule means the milestone then rests on the \
+            check_headroom(&answered, CHECK_WITHIN),
+            Headroom::Clears(323),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 674: the ANSWERED readings no longer clear the milestone check's \
+             bound by the margin it was chosen with. A check that outruns this is \
+             `Unheard::Unfinished`, and item 428's rule means the milestone then rests on the \
              working agent's own word — the exact outcome this bound exists to prevent",
         );
 
-        // ── AND THE READING THAT MOVED IT IS IN THE TABLE, NOT ONLY IN THE PROSE ───────────────
-        let worst = CHECK_READINGS
+        // ── ⛔⛔⛔⛔⛔ THE CLAIM: COUNTED WITH THE CHECKS THAT RAN OUT, THERE IS NO MARGIN ─────────
+        assert_eq!(
+            check_headroom(CHECK_READINGS, CHECK_WITHIN),
+            Headroom::Outrun(7),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1073: the milestone check's bound has been outrun by real \
+             checks, and this table has to say so rather than report the room it has over the \
+             ones that happened to answer. A margin over survivors is the reassurance that kept \
+             seven timeouts out of every number this gate printed",
+        );
+
+        // ── ⛔⛔⛔ AND THE TWO SHAPES OF QUESTION ARE TWO POPULATIONS ─────────────────────────────
+        let directory = of(|reading| reading.shape == QuestionShape::Directory);
+        let files_named = of(|reading| reading.shape == QuestionShape::FilesNamed);
+        assert_eq!(
+            (
+                check_headroom(&directory, CHECK_WITHIN),
+                check_headroom(&files_named, CHECK_WITHIN),
+            ),
+            (Headroom::Outrun(7), Headroom::Clears(1800)),
+            "⛔⛔⛔ REGISTER ITEMS 1072 AND 1073: every check that ran out was asked about a \
+             DIRECTORY, and the one reading of the shape the product asks since item 1072 — the \
+             files to open — answered in a sixth of the worst. A margin over both shapes at once \
+             describes neither, and a kind that names no file still asks the first",
+        );
+
+        // ── AND THE ANSWER THAT MOVED THE MARGIN IS IN THE TABLE, NOT ONLY IN THE PROSE ────────
+        let worst = answered
             .iter()
-            .max_by_key(|(took, _)| *took)
+            .copied()
+            .max_by_key(Reading::millis)
             .expect("a non-empty table has a worst reading");
         assert_eq!(
-            worst.0, 185_200,
-            "⚠⚠⚠ THE CONTROL'S OWN PREMISE: the 2026-08-31 reading is what makes this gate say \
-             anything the five older ones did not, so a table that has lost it is one where the \
-             figure above is the old margin under a new name: {worst:?}",
+            worst.millis(),
+            185_200,
+            "⚠⚠⚠ THE CONTROL'S OWN PREMISE: the 2026-08-31 reading is what makes the control say \
+             anything the five older ones did not, so a table that has lost it is one where 323 is \
+             the old margin under a new name — worst is now {} ({})",
+            worst.millis(),
+            worst.whence,
         );
 
         // ── AND A FASTER JUDGE IS A MEASURED OPTION, NOT A SUGGESTION ─────────────────────────
@@ -30286,14 +30550,18 @@ mod tests {
         // ⛔⛔⛔⛔⛔ **THIS ASKED FOR THE TABLE'S MINIMUM AND THAT WAS A PREMISE, NOT THE CLAIM** —
         // 2026-09-02. The claim is *the cheap arm is priced*; taking the minimum silently ALSO
         // claimed that nothing else can be faster than a cheap judge, and a reading taken the day
-        // this changed refutes exactly that. So the cheap arm is found BY NAME now: a gate whose
+        // this changed refutes exactly that. So the cheap arm was found BY NAME from then: a gate whose
         // subject is one row must address that row, or a truer table turns it red.
-        let cheap = CHECK_READINGS
+        //
+        // ⚠⚠ AND NOW FOUND BY TYPE — register item 1073. `contains("haiku")` was prose standing in
+        // for a field; the row says which judge it was.
+        let cheap = answered
             .iter()
-            .find(|(_, whose)| whose.contains("haiku"))
+            .copied()
+            .find(|reading| reading.judge == JudgeModel::Cheap)
             .expect("the cheap-judge arm must be in the table for its remedy to have a number");
         assert!(
-            cheap.0 * 13 <= worst.0,
+            cheap.millis() * 13 <= worst.millis(),
             "⛔⛔⛔ REGISTER ITEM 674: the two arms of *give it longer, or a faster judge* are not \
              both priced here. A remedy with no number beside it is one nobody chooses: \
              {cheap:?} against {worst:?}",
@@ -30311,14 +30579,17 @@ mod tests {
         // ⚠ Held as a RATIO against the worst rather than as a literal, for `check_headroom`'s own
         // reason: what matters is the margin, and a pinned millisecond would be this host's number
         // rather than the finding.
-        let focused = CHECK_READINGS
+        //
+        // ⚠⚠ AND FOUND BY TYPE — register item 1073, `cheap`'s correction above.
+        let focused = answered
             .iter()
-            .find(|(_, whose)| whose.contains("focused question"))
+            .copied()
+            .find(|reading| reading.shape == QuestionShape::FilesNamed)
             .expect(
                 "the smaller-question arm must be in the table for its remedy to have a number",
             );
         assert!(
-            focused.0 * 5 <= worst.0,
+            focused.millis() * 5 <= worst.millis(),
             "⛔⛔⛔ the third remedy has stopped being worth reaching for. *Ask a smaller question* \
              is the only arm of `Unheard::Unfinished` that costs nothing and changes no judge, and \
              it is only a remedy while it is measurably faster: {focused:?} against {worst:?}",
@@ -30331,13 +30602,39 @@ mod tests {
         // reading a `0` or a huge number would both invite.
         assert_eq!(
             check_headroom(&[], CHECK_WITHIN),
-            None,
+            Headroom::Unmeasured,
             "⛔ a bound with no readings behind it must say so rather than report a margin",
         );
+        let row = |took| Reading {
+            took,
+            judge: JudgeModel::Default,
+            shape: QuestionShape::Directory,
+            whence: "a literal driving one arm",
+        };
         assert_eq!(
-            check_headroom(&[(0, "a reading of no duration at all")], CHECK_WITHIN),
-            None,
+            check_headroom(&[row(Took::Answered(0))], CHECK_WITHIN),
+            Headroom::Unmeasured,
             "⛔ and a zero-length reading fixes no rate to divide by — named, not divided by",
+        );
+
+        // ── ⛔⛔⛔ AND A CHECK THAT RAN OUT IS NEVER DIVIDED BY AS AN ANSWER — register item 1073 ──
+        assert_eq!(
+            check_headroom(
+                &[row(Took::Answered(100_000)), row(Took::Outran(300_000))],
+                CHECK_WITHIN,
+            ),
+            Headroom::AtMost(200),
+            "⛔⛔⛔ a check that ran out a SHORTER bound took at least that long and possibly longer \
+             than this one: the room over it is an upper limit, and reporting it as a margin \
+             would file the timeout as an answer that happened to be slow",
+        );
+        assert_eq!(
+            check_headroom(
+                &[row(Took::Answered(100_000)), row(Took::Outran(900_000))],
+                CHECK_WITHIN,
+            ),
+            Headroom::Outrun(1),
+            "⛔⛔⛔ and one that ran out a LONGER bound outran this one too — counted, never divided by",
         );
     }
 
