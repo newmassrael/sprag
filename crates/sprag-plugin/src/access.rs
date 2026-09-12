@@ -984,6 +984,47 @@ pub trait PaneAccess {
     /// signal a one-shot adapter (a tool that replies then exits) converges on.
     fn pane_eof(&self, id: PaneId) -> Option<bool>;
 
+    /// ⛔⛔⛔⛔⛔ **HOW THIS PANE'S CHILD ENDED** — its reaped status, or [`None`] where no such
+    /// pane exists, the child is still running or not yet reaped, or this host cannot say. Register
+    /// item 659.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The defect: this loop could ask whether a program STOPPED and never whether it
+    /// WORKED
+    ///
+    /// [`pane_eof`](Self::pane_eof) above is *is this finished?*, and until this method existed it
+    /// was the only question on this surface — so every driver decision about somebody else's
+    /// program was made from **what it printed**. [`crate::judge::Unheard`]'s own machinery is
+    /// built on that: `promised_shape` exists to catch *the checker was stopped before it could
+    /// judge* by holding the reply to a JSON envelope, because the status was unreachable from
+    /// here. **The host has known all along** — `PaneInfo::child_exit` is on the wire, three
+    /// surfaces render it, and its own doc says in as many words that `dead` answers *is this
+    /// finished?* while this answers *and did it work?*.
+    ///
+    /// What that costs is measured and recent: 2026-09-12, a milestone check came back with
+    /// nothing and the reason a person was handed named **four** possibilities — the argv, a failed
+    /// start, a timeout, a pane that could not account for its output. A status separates the first
+    /// two from the rest in one reading, and the session spent a process audit and four binary
+    /// searches instead.
+    ///
+    /// # ⚠⚠⚠⚠⚠ [`None`] MAY NEVER BE READ AS SUCCESS
+    ///
+    /// That is this method's whole contract and it is the opposite of the usual one. The default is
+    /// `None` so that thirty-two test doubles and any host that cannot say keep working unchanged —
+    /// and a caller that treated the absence as *it exited cleanly* would put a failed program's
+    /// apology where its answer belongs, which for a checker's reply means quoting an error message
+    /// to a live agent as though it were a verdict.
+    ///
+    /// ⚠⚠ **AND A KNOWN STATUS IS A LATER FACT THAN EOF, NOT A REFINEMENT OF IT.** The kernel
+    /// closes a dying task's descriptors before it becomes reapable, so there is always a window
+    /// where `pane_eof` holds and this is still `None` — see [`sprag_terminal::PaneExit`], whose
+    /// own doc states the one invariant that does hold: a known exit implies EOF, never the
+    /// reverse. A caller that wants the status must wait for THIS, which is
+    /// [`DoneWhen::Reaped`](crate::completion::DoneWhen::Reaped).
+    fn pane_child_exit(&self, id: PaneId) -> Option<sprag_terminal::PaneExit> {
+        let _ = id;
+        None
+    }
+
     /// **WHETHER ANYTHING HAS BEEN PAINTED ONTO THIS PANE YET** — the readiness question, as its own
     /// address. `None` if no pane has that id. Register item 555.
     ///
@@ -2525,6 +2566,21 @@ impl PaneAccess for WorkspacePaneAccess {
         }
         let elsewhere = self.panes_elsewhere.as_ref()?(id)?;
         lock(&elsewhere).pane(id).map(|pane| pane.pty().is_eof())
+    }
+
+    /// ⛔ Register item 659. **IT FOLLOWS A PANE THAT MOVED WINDOWS**, exactly as
+    /// [`pane_eof`](Self::pane_eof) above does and for that method's stated reason: the two
+    /// readings are about one child, and a surface where one of them followed and the other did not
+    /// would report a moved pane's program as *still running* while its output was plainly over.
+    fn pane_child_exit(&self, id: PaneId) -> Option<sprag_terminal::PaneExit> {
+        let own = lock(&self.workspace)
+            .pane(id)
+            .map(|pane| pane.pty().exit_status());
+        if let Some(own) = own {
+            return own;
+        }
+        let elsewhere = self.panes_elsewhere.as_ref()?(id)?;
+        lock(&elsewhere).pane(id)?.pty().exit_status()
     }
 
     fn pane_full_text(&self, id: PaneId) -> Option<String> {

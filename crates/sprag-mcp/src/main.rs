@@ -2190,7 +2190,11 @@ fn argument_help(name: &str) -> &'static str {
              `exits` waits for the pane's PROGRAM TO EXIT, which is what a \
              one-shot command like `claude -p` does when it has answered. `settles` waits for the \
              AGENT IN THE PANE to go back to waiting for you, having first been seen to start: \
-             that is the one for a long-lived interactive agent, which never exits. ⚠ Getting this \
+             that is the one for a long-lived interactive agent, which never exits. `reaped` waits \
+             for the program's EXIT STATUS to be known, which is a LATER fact than its output \
+             ending — the kernel closes a dying task's files before it can be collected — so it is \
+             the one to pick when what you do with the output depends on whether the program \
+             WORKED. ⚠ Getting this \
              wrong is not an error, it is a WAIT: an interactive agent under `exits` is waited on \
              until the turn's bound runs out every single turn, and what comes \
              back is whatever was on the pane at that moment rather than the answer. ⚠ `settles` \

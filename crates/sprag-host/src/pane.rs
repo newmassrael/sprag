@@ -66,17 +66,17 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 
 use crate::wire::{
-    ACTION_GRAMMAR_SLOT, ALT_FIELD, ActionGrammar, CELLS_FIELD, CLIPBOARD_ANSWER_ACTION,
-    CLIPBOARD_WRITE_SLOT, CTRL_FIELD, CURSOR_KEYS_SLOT, FIND_FIELD, FOCUS_ACTION, FRAMES_SLOT,
-    FULL_LINES_SLOT, FULL_TEXT_SLOT, IMAGE_DATA_FIELD, INJECT_ACTION, INJECT_STROKES_KEY,
-    INJECTED_BYTES_KEY, KEY_ACTION, KEY_FIELD, KEY_STATE_FIELD, LAST_COMMAND_SLOT, LINES_KEY,
-    LINES_LOST_KEY, LINES_NEXT_KEY, LINES_PARTIAL_KEY, LINES_RESTARTED_KEY, LINES_SINCE_FIELD,
-    LINKS_SLOT, MOUSE_ACTION, MOUSE_BUTTON_FIELD, MOUSE_COL_FIELD, MOUSE_KIND_FIELD,
-    MOUSE_ROW_FIELD, PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_FOREGROUND_SLOT,
-    PANE_GRAMMAR, PANE_HANDS_SLOT, PANE_PAINTED_SLOT, PANE_RAW_OUTPUT_SLOT, PANE_REVISION_SLOT,
-    PANE_SCHEMA, PANE_START_DIR_SLOT, PASTE_ACTION, PEER_GONE_REFUSAL, PROMPT_MARKS_SLOT,
-    RECENT_INPUT_FIELD, REGEX_FIELD, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD,
-    SUPER_FIELD, TEXT_ACTION,
+    ACTION_GRAMMAR_SLOT, ALT_FIELD, ActionGrammar, CELLS_FIELD, CHILD_EXIT_CODE_FIELD,
+    CHILD_EXIT_SIGNAL_FIELD, CLIPBOARD_ANSWER_ACTION, CLIPBOARD_WRITE_SLOT, CTRL_FIELD,
+    CURSOR_KEYS_SLOT, FIND_FIELD, FOCUS_ACTION, FRAMES_SLOT, FULL_LINES_SLOT, FULL_TEXT_SLOT,
+    IMAGE_DATA_FIELD, INJECT_ACTION, INJECT_STROKES_KEY, INJECTED_BYTES_KEY, KEY_ACTION, KEY_FIELD,
+    KEY_STATE_FIELD, LAST_COMMAND_SLOT, LINES_KEY, LINES_LOST_KEY, LINES_NEXT_KEY,
+    LINES_PARTIAL_KEY, LINES_RESTARTED_KEY, LINES_SINCE_FIELD, LINKS_SLOT, MOUSE_ACTION,
+    MOUSE_BUTTON_FIELD, MOUSE_COL_FIELD, MOUSE_KIND_FIELD, MOUSE_ROW_FIELD, PANE_CHILD_EXIT_SLOT,
+    PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_FOREGROUND_SLOT, PANE_GRAMMAR,
+    PANE_HANDS_SLOT, PANE_PAINTED_SLOT, PANE_RAW_OUTPUT_SLOT, PANE_REVISION_SLOT, PANE_SCHEMA,
+    PANE_START_DIR_SLOT, PASTE_ACTION, PEER_GONE_REFUSAL, PROMPT_MARKS_SLOT, RECENT_INPUT_FIELD,
+    REGEX_FIELD, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SHIFT_FIELD, SUPER_FIELD, TEXT_ACTION,
 };
 
 /// Search `screen`'s retained output for the LITERAL `needle` — the one place the
@@ -790,6 +790,42 @@ impl SpragPaneExternal {
             // this one is what `ai_loop.scxml`'s `peer_gone` — and the 43-hour wedge behind it —
             // stands on. See `PANE_EOF_SLOT`.
             PANE_EOF_SLOT => Some(IntrospectValue::Bool(self.pty.is_eof())),
+            // ⛔⛔⛔⛔⛔ AND HOW IT ENDED — register item 659, the slot above's LATER fact. `is_eof`
+            // says no more output is coming; this says whether the program worked, which is what
+            // decides what a driver may do with what it printed.
+            //
+            // ⛔⛔⛔⛔⛔ **NOT YET REAPED CROSSES AS `null`, AND THE ADDRESS ALWAYS ANSWERS.** An
+            // absent answer here would be the refusal a daemon too old to know the name gives —
+            // `a_declared_read_answers_and_a_declared_verb_does_not` caught exactly that on this
+            // slot's first draft — and it would put *this build cannot say* and *not yet known*
+            // into one reading. `PANE_START_DIR_SLOT` took the same shape for the same reason.
+            //
+            // ⚠⚠⚠ WHAT `null` MEANS IS *NOTHING IS KNOWN YET*, never a clean exit: the kernel
+            // closes a dying task's descriptors before it is reapable, so the slot above can be
+            // `true` while this has nothing to say. Filling it in would tell a driver a failed
+            // program succeeded.
+            //
+            // ⚠⚠ It is the same `exit_status()` the in-process reader takes, on `PANE_EOF_SLOT`'s
+            // rule directly above: a second way of deciding *how did the child end* is a second
+            // answer to drift from.
+            //
+            // ⚠ The SIGNAL key is omitted for a process that returned normally rather than sent as
+            // null — `RUN_BUILD_KEY`'s omit-rather-than-null rule, and here it keeps *killed by
+            // nothing* from being spelled twice.
+            PANE_CHILD_EXIT_SLOT => Some(self.pty.exit_status().map_or(
+                IntrospectValue::Null,
+                |exit| {
+                    let mut answer = serde_json::Map::new();
+                    answer.insert(
+                        CHILD_EXIT_CODE_FIELD.to_owned(),
+                        Value::from(i64::from(exit.code)),
+                    );
+                    if let Some(signal) = exit.signal {
+                        answer.insert(CHILD_EXIT_SIGNAL_FIELD.to_owned(), Value::from(signal));
+                    }
+                    IntrospectValue::Json(Value::Object(answer))
+                },
+            )),
             // ⚠⚠⚠⚠⚠ WHETHER ANYTHING HAS BEEN PAINTED ONTO THIS PANE — register item 555, and the
             // one slot here that exists because the rows beside it answer this WRONGLY rather than
             // not at all. `SCREEN_ROWS_SLOT` serves text and a generation of zero on purpose (a

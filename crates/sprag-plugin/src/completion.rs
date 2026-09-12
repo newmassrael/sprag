@@ -338,6 +338,14 @@ impl Over {
 pub enum Unmet {
     /// [`DoneWhen::Exits`]: the pane's child is still running.
     PeerAlive,
+    /// [`DoneWhen::Reaped`]: the child's status is not known yet — it is still running, or it is
+    /// gone and has not been reaped. Register item 659.
+    ///
+    /// ⚠ Distinct from [`PeerAlive`](Self::PeerAlive) on purpose, because the remedies differ: that
+    /// one means *the program is still working*, and this one is also satisfied by *the program
+    /// finished a moment ago and nobody has collected it yet*. A wait that ends here having seen
+    /// EOF is not a slow program, it is a reaper that did not run.
+    Unreaped,
     /// [`DoneWhen::Settles`]: the contract was never armed, so there is nothing to compare a rest
     /// against — see [`Completion::begin`], which arms it only where a supervisor answered about
     /// the pane AND that answer named an agent.
@@ -399,6 +407,10 @@ impl Unmet {
             Self::PeerAlive => {
                 "the peer's program is still running, and this turn ends when it exits".to_owned()
             }
+            Self::Unreaped => "the program's status is not known yet — it is still running, or it \
+                               has gone and nobody has collected it — and this wait ends when the \
+                               status is known rather than when the output stopped"
+                .to_owned(),
             Self::Unarmed => "this turn's contract was never armed — nothing supervised the pane \
                               when the prompt went in, or the pane named no agent — so no rest can \
                               be compared against what the turn was addressed to, and this turn \
@@ -517,6 +529,33 @@ pub enum DoneWhen {
     /// ⚠ It is the WRONG rule for a long-lived peer, which never exits — see the module doc. Use
     /// [`Settles`](Self::Settles) for those.
     Exits,
+    /// ⛔⛔⛔⛔⛔ Over once the pane's child has been **REAPED** — its status is known, not merely
+    /// its output ended. Register item 659.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why this is not [`Exits`](Self::Exits) with a longer wait
+    ///
+    /// They are different facts and the gap between them is structural, not a race to be tuned
+    /// away: the kernel closes a dying task's descriptors before it becomes reapable, so **EOF
+    /// always holds first** and there is a window where the child is unquestionably gone and how it
+    /// went is unknown. [`sprag_terminal::PaneExit`]'s own doc states the one invariant — a known
+    /// exit implies EOF, never the reverse.
+    ///
+    /// For most of this loop's waiting the difference does not matter: `Exits` answers *is the
+    /// capture complete*, and it is. It matters for the one question a driver asks about a program
+    /// it RAN — *may I use what this printed?* — because that is answered by the status and by
+    /// nothing on the screen. Until this existed the driver inferred it from prose
+    /// ([`crate::judge`]'s `promised_shape`), which is an inference about a fact the kernel had
+    /// already recorded.
+    ///
+    /// ⚠⚠ **IT IS THE STRICTER RULE, SO IT IS OPT-IN.** `Exits` is left exactly as it was rather
+    /// than taught to wait longer: every existing wait in this crate is about capture being
+    /// complete, and quietly making them all wait for a reap would change what a bound means on a
+    /// rule none of them needed.
+    ///
+    /// ⚠ A pane nothing knows about counts as over, on `Exits`' stated reason — a rule that
+    /// answered *not yet* for a pane that is not there would spin to its bound on a question that
+    /// can never be answered.
+    Reaped,
     /// Over once the AGENT THIS TURN WAS ADDRESSED TO is at rest again, **having been seen to move
     /// first**.
     ///
@@ -588,7 +627,7 @@ impl DoneWhen {
     /// Published to every mouth from here rather than retyped as literals, so a third kind reaches
     /// the wire in the compile that adds it — [`ReadyWhen::WIRE_WORDS`](crate::readiness::ReadyWhen::WIRE_WORDS)'
     /// rule, which this vocabulary is the twin of.
-    pub const WIRE_WORDS: &'static [&'static str] = &["exits", "settles"];
+    pub const WIRE_WORDS: &'static [&'static str] = &["exits", "settles", "reaped"];
 
     /// The word this kind is spelled as on the wire.
     #[must_use]
@@ -596,6 +635,11 @@ impl DoneWhen {
         match self {
             Self::Exits => "exits",
             Self::Settles => "settles",
+            // ⚠ Register item 659. It is on the wire rather than kept private because a caller
+            // running a one-shot tool may legitimately want the STATUS and not only the ending —
+            // and a word this enum can spell while the vocabulary cannot is exactly the
+            // advertise-then-refuse disagreement `WIRE_WORDS` exists to prevent.
+            Self::Reaped => "reaped",
         }
     }
 
@@ -616,7 +660,7 @@ impl DoneWhen {
     }
 
     /// Every kind, so the published vocabulary and the parser are read off ONE list.
-    const ALL: [Self; 2] = [Self::Exits, Self::Settles];
+    const ALL: [Self; 3] = [Self::Exits, Self::Settles, Self::Reaped];
 }
 
 /// **HOW A LOOPING RUN'S PEER FINISHES A TURN, AND HOW LONG IT MAY TAKE** — the two together,
@@ -1126,12 +1170,20 @@ impl Completion {
         // the `DoneWhen::Exits` arm a second read on every other round, because `satisfied` and the
         // gone-peer check each asked. Read once, both arms are one call and both see one moment.
         let eof = panes.pane_eof(pane);
+        // ⛔⛔⛔ AND HOW IT ENDED, ASKED ONLY BY THE ONE RULE THAT IS ABOUT IT — register item 659.
+        // `Settles` waits on a long-lived peer that never exits and `Exits` is about capture being
+        // complete; neither reads this, and over the wire it is an extra round trip per look
+        // (`sprag_host::wire::PANE_CHILD_EXIT_SLOT`). So the line above's *one reading* rule holds
+        // per contract: each rule asks for exactly what its own terms are functions of.
+        let reaped = matches!(self.when, DoneWhen::Reaped)
+            .then(|| panes.pane_child_exit(pane))
+            .flatten();
         // ⚠⚠⚠⚠⚠ **COMPOSED ONCE AND THEN LENT TO THE ENDING**, rather than asked twice. The ending
         // needs one bit of this — *is anything outstanding* — and [`Wanting`]'s own doc says why
         // that bit is not computed beside the list: two predicates over one reading are two things
         // that can come to disagree, and the disagreement they would express is *this turn is not
         // over and nothing here can say why*, which is the state register item 598 sat in.
-        let wanting = self.wanting_of(seen.as_ref(), eof);
+        let wanting = self.wanting_of(seen.as_ref(), eof, reaped.is_some());
         Stands {
             over: self.ended_of(pane, seen.as_ref(), &wanting, eof),
             settles: Self::settles_of(seen.as_ref()),
@@ -1253,7 +1305,12 @@ impl Completion {
     /// than a rewrite: every `push` below stands where a `&&` stood, and a contract satisfied before
     /// is satisfied now. The only new fact is that a contract which is NOT satisfied now says so in
     /// words.
-    fn wanting_of(&self, seen: Option<&AgentObservation>, eof: Option<bool>) -> Wanting {
+    fn wanting_of(
+        &self,
+        seen: Option<&AgentObservation>,
+        eof: Option<bool>,
+        reaped: bool,
+    ) -> Wanting {
         let mut wanting = Vec::new();
         match &self.when {
             // ⚠ An UNKNOWN pane counts as over. A rule that answered "not yet" for a pane that is
@@ -1263,6 +1320,18 @@ impl Completion {
             DoneWhen::Exits => {
                 if !eof.unwrap_or(true) {
                     wanting.push(Unmet::PeerAlive);
+                }
+            }
+            // ⛔⛔⛔⛔⛔ Register item 659. THE STATUS ITSELF IS THE TERM, never EOF plus a guess:
+            // a caller asking this rule is asking *may I use what this program printed*, and that
+            // is answered by a reaped status and by nothing on the screen.
+            //
+            // ⚠ A pane nothing knows about counts as over, on the arm above's stated reason — the
+            // `pane_child_exit` read answered `None` for a pane that is not there, which is
+            // indistinguishable here from *not yet reaped*, and the bound is what ends both.
+            DoneWhen::Reaped => {
+                if !reaped {
+                    wanting.push(Unmet::Unreaped);
                 }
             }
             DoneWhen::Settles => {
@@ -2997,6 +3066,97 @@ mod tests {
              as a claim in a comment",
         );
         running.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A CONTRACT THAT WANTS THE STATUS IS NOT SATISFIED BY THE OUTPUT ENDING** —
+    /// register item 659, and the rule [`DoneWhen::Reaped`] exists to be.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why this gate is HERE and not at the caller that uses it
+    ///
+    /// `judge::said_by_another` asks for the status after its capture is complete, and on this
+    /// machine a `/bin/sh` that has printed and gone is reaped before the next read — so the
+    /// wait is invisible from there. **Measured 2026-09-12 by deleting it: the end-to-end gate
+    /// stayed green.** A mechanism whose only caller cannot observe it is a mechanism nothing
+    /// holds, so the rule is driven at its own level, where *what it waits for* is the assertion
+    /// rather than a side effect.
+    ///
+    /// # ⚠⚠⚠ The two arms are two claims, and the second is the one with teeth
+    ///
+    /// A finished child satisfies it — without that arm every claim here holds of a rule that is
+    /// never satisfied. And a peer that never exits must leave it WANTING for a reason of its own
+    /// (`Unreaped`), never borrowing [`Unmet::PeerAlive`]: the two carry different remedies, and a
+    /// wait that ended having seen EOF is a reaper that did not run rather than a slow program.
+    #[test]
+    fn a_contract_that_wants_a_status_is_not_answered_by_the_output_ending() {
+        let (ended, pane) = sh_access("exit 3", 20, 4);
+        assert_eq!(
+            Completion::new(DoneWhen::Reaped).wait(
+                &ended,
+                pane,
+                Duration::from_secs(10),
+                None,
+                &RunContext::uncancellable(),
+            ),
+            Over::Yes,
+            "⚠⚠⚠⚠⚠ THE PREMISE: a child that has been reaped satisfies this rule, or every claim \
+             below is about a contract nothing can ever meet",
+        );
+        // ⚠ AND THE STATUS IS REALLY THERE ONCE IT SAYS SO, which is the whole point of waiting
+        // for this rather than for EOF — the wait and the read are one promise.
+        let said = ended.pane_child_exit(pane);
+        assert!(
+            matches!(&said, Some(exit) if exit.code == 3),
+            "⚠⚠⚠⚠ THE RULE SAID THE STATUS WAS KNOWN AND IT WAS NOT. Waiting for `Reaped` and \
+             then reading nothing is the window this variant exists to close, wearing the fix's \
+             own clothes. Got {said:?}",
+        );
+        ended.lifecycle().expect("lifecycle").close(pane);
+
+        // ── ⛔⛔ AND A PEER THAT NEVER EXITS IS WANTING FOR ITS OWN REASON ────────────────────
+        let (running, pane) = sh_access("exec cat", 20, 4);
+        let over = Completion::new(DoneWhen::Reaped).wait(
+            &running,
+            pane,
+            Duration::from_millis(200),
+            None,
+            &RunContext::uncancellable(),
+        );
+        assert!(
+            matches!(&over, Over::NotYet(wanting) if wanting.terms().contains(&Unmet::Unreaped)),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 659: this rule must name the term it is waiting on, and the \
+             term must be ITS OWN. `PeerAlive` means *the program is still working*; `Unreaped` is \
+             also satisfied by *it finished and nobody collected it*, which is a different errand \
+             and the one a reader of a timed-out status wait needs. Got {over:?}",
+        );
+        running.lifecycle().expect("lifecycle").close(pane);
+
+        // ── ⛔⛔⛔⛔⛔ AND THE WINDOW ITSELF, WHICH NO REAL SHELL CAN STAGE ───────────────────
+        //
+        // ⚠⚠⚠⚠⚠ **THE ONE CASE THIS VARIANT EXISTS FOR IS A RACE, so it is driven and not
+        // spawned.** EOF holds before the child is reapable, and on this machine a `/bin/sh` that
+        // has printed and gone is collected before the next read — so both arms above answer
+        // identically whether this rule reads the STATUS or reads EOF. Measured 2026-09-12 by
+        // mutating it to `eof`: every arm above stayed **green**. What separates the two is
+        // exactly the window, and only the predicate can be put in it.
+        let waiting = Completion::new(DoneWhen::Reaped).wanting_of(None, Some(true), false);
+        assert!(
+            waiting.terms().contains(&Unmet::Unreaped),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 659: the output has ended and the status is not known, and \
+             this rule called itself satisfied. That is the kernel's own window — a dying task's \
+             descriptors close before it is reapable — and a rule that reads EOF here is \
+             `DoneWhen::Exits` wearing another name, handing its caller a `None` status to read as \
+             success. Wanted {waiting:?}",
+        );
+        // ⚠ AND THE MIRROR, so the arm above cannot be met by a rule that is never satisfied: EOF
+        // unknown, status known, and the contract is over — a known exit implies EOF, and this
+        // rule's term is the status.
+        assert!(
+            Completion::new(DoneWhen::Reaped)
+                .wanting_of(None, None, true)
+                .met(),
+            "⚠⚠⚠ A KNOWN STATUS IS THE WHOLE TERM. A rule that also demanded EOF would be two \
+             readings of one fact, and `PaneExit`'s own invariant says the second is implied",
+        );
     }
 
     /// ⚠⚠⚠⚠ **WHAT A DEAD CHILD'S PANE PRESENTS TO THE CONTRACT THE AI LOOP RUNS ON** — register

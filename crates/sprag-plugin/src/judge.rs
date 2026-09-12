@@ -376,6 +376,33 @@ pub enum Unheard {
     /// argv, and an EMPTY string is a judge that printed nothing at all. One remedy each, and the
     /// empty spelling is kept for the last of them alone.
     NotAVerdict(String),
+    /// ⛔⛔⛔⛔⛔ **THE PROGRAM ITSELF FAILED**, carrying how it ended and the first LINE it printed
+    /// — register item 659, and the first arm on this list decided by a FACT rather than by prose.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Every other arm here reads what a program SAID about its own failure
+    ///
+    /// [`Unwell`](Self::Unwell) holds a reply to a promised shape, [`NotAVerdict`](Self::NotAVerdict)
+    /// reads the line it printed instead. Both exist because the status was unreachable from the
+    /// driver — `PaneAccess` could ask whether a child had gone and never how. It can now
+    /// (`pane_child_exit`), and a non-zero exit or a signal is the program reporting its own
+    /// failure in the one vocabulary that cannot be confused with its answer.
+    ///
+    /// ⚠⚠⚠ **IT IS TAKEN ONLY WHERE THERE WAS NO VERDICT, WHICH IS WHAT MAKES IT SAFE TO ADD.** A
+    /// checker that answered `YES` and exited non-zero keeps its verdict: this arm replaces an
+    /// error with a better-named error and never a verdict with an error. A status that disagreed
+    /// with a readable answer is a fact worth having and NOT one this round has measured, so it is
+    /// left alone rather than guessed at.
+    ///
+    /// ⚠⚠ The words are [`sprag_terminal::exit_phrase`]'s, never spelled here: `exited 2` and
+    /// `killed: Terminated` are a vocabulary three surfaces already share, and a fourth spelling is
+    /// how a signalled death comes to be called `exited 1` somewhere.
+    Failed {
+        /// How it ended, in that shared vocabulary.
+        ended: String,
+        /// The first line it printed, on [`NotAVerdict`](Self::NotAVerdict)'s rule — empty where it
+        /// printed nothing at all, which for a failed program is the commonest case.
+        said: String,
+    },
     /// ⛔⛔⛔⛔⛔ **IT WAS ASKED FOR A STRUCTURED ANSWER AND DID NOT PRODUCE ONE**, carrying the
     /// first LINE it printed instead — register item 752.
     ///
@@ -639,7 +666,16 @@ impl Unheard {
             | Self::Unfinished(_)
             | Self::Unaccountable => Silence::Unanswered,
             Self::NotAVerdict(_) => Silence::Unreadable,
-            Self::Unwell(_) => Silence::Unwell,
+            // ⛔⛔⛔ Register item 659. `Failed` joins `Unwell`'s CLASS on that word's own stated
+            // distinction — *the asking WORKED and the program on the other end could not answer* —
+            // which is exactly what a non-zero exit with no verdict is. The two keep different
+            // WORDS because the arm carries what a reader acts on (`exited 2`, `killed: Terminated`)
+            // and the class carries what the document routes on.
+            //
+            // ⚠ A fourth `Silence` word would be a wire change and a new `unwell_rule` vocabulary
+            // for the template; this fact has not yet earned one, and saying so here is the
+            // difference between a decision and an omission.
+            Self::Unwell(_) | Self::Failed { .. } => Silence::Unwell,
         }
     }
 
@@ -741,6 +777,24 @@ impl Unheard {
                      its prompt's: wait for whatever stopped it and ask again"
                 )
             }
+            // ⛔⛔⛔⛔⛔ Register item 659, and the one sentence on this list that is a FACT rather
+            // than a reading of prose. Every other arm here infers what went wrong from what the
+            // program printed; this one repeats what the program itself reported through the
+            // kernel, so the reader is not being asked to interpret anything.
+            //
+            // ⚠ The ending's own words (`sprag_terminal::exit_phrase`), never re-spelled — the arm
+            // carries them for that reason.
+            Self::Failed { ended, said } => {
+                let printed = if said.is_empty() {
+                    "and printed nothing".to_owned()
+                } else {
+                    format!("and its first line was {said:?}")
+                };
+                format!(
+                    "the checker's own program failed — it {ended} {printed}, so nothing it left \
+                     behind is a verdict: look at the program and its arguments, not at the prompt"
+                )
+            }
         }
     }
 }
@@ -819,8 +873,57 @@ pub fn asked_of_another(
     question: &str,
     within: Duration,
 ) -> Result<Judgement, Unheard> {
-    let (reply, took) = said_by_another(panes, run, argv, cwd, question, within)?;
-    verdict_in(&promised_shape(argv, &reply)?, question, took)
+    let (reply, took, exit) = said_by_another(panes, run, argv, cwd, question, within)?;
+    // ⛔⛔⛔⛔⛔ **THE STATUS RENAMES A FAILURE AND NEVER OVERTURNS AN ANSWER** — register item 659.
+    //
+    // Everything below runs exactly as it did, and only an `Err` is reconsidered: a checker that
+    // produced a readable verdict keeps it whatever its exit code was. What changes is the arm a
+    // reader meets when there was NO verdict and the program had said, in the kernel's own
+    // vocabulary, that it failed — `NotAVerdict`'s remedy is *fix its prompt*, which is the wrong
+    // errand for a program that never ran properly.
+    //
+    // ⚠⚠ `None` IS NOT SUCCESS: a status nothing could read leaves every arm exactly where it was.
+    match verdict_in(&promised_shape(argv, &reply)?, question, took) {
+        Ok(judged) => Ok(judged),
+        Err(unheard) => Err(named_by_status(unheard, exit.as_ref(), &reply)),
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **WHICH SILENCE THIS IS, ONCE THE PROGRAM'S OWN STATUS IS KNOWN** — register item 659.
+///
+/// # ⚠⚠⚠⚠⚠ It is a free function so the three cases can be DRIVEN, which they cannot be end to end
+///
+/// The contract has three inputs and only two of them are reachable through a real shell: a reaped
+/// child always answers, so `exit` is `Some` in every fixture this crate can build, and the arm
+/// that matters most — **`None` is not success and not failure either, it is nothing known** —
+/// could not be reached at all. Measured 2026-09-12 by mutating the surface to invent a clean exit
+/// for an unreaped child: every end-to-end arm stayed **green**. A rule whose dangerous case no
+/// test can enter is a rule nobody is holding.
+///
+/// ⚠⚠ **AND IT TAKES THE SILENCE RATHER THAN DECIDING ONE**, which is what keeps this from becoming
+/// a second classifier: every arm of [`Unheard`] is decided upstream exactly as it was, and this
+/// renames ONE of them when a fact says the program failed. It can only ever return what it was
+/// given or [`Unheard::Failed`].
+fn named_by_status(
+    unheard: Unheard,
+    exit: Option<&sprag_terminal::PaneExit>,
+    reply: &str,
+) -> Unheard {
+    match exit {
+        // ⚠ A signal or a non-zero code, and the signal is consulted because a signalled death
+        // carries the platform's stand-in `1` — `exit_phrase`'s own measured rule.
+        Some(exit) if exit.code != 0 || exit.signal.is_some() => Unheard::Failed {
+            ended: sprag_terminal::exit_phrase(Some(exit)),
+            said: reply.lines().next().unwrap_or_default().trim().to_owned(),
+        },
+        // ⛔⛔⛔⛔⛔ **A CLEAN EXIT AND AN UNKNOWN ONE TAKE THE SAME ARM, AND THAT IS THE DECISION.**
+        // A clean exit says the program worked, so whatever is wrong is its prompt's or its
+        // answer's — the class upstream already chose. An UNKNOWN status says nothing whatever, and
+        // the one thing it may never do is add a claim: a reader who saw `Failed` here would be
+        // sent to a program that may be perfectly well, and one who saw a verdict would be told a
+        // failed program had answered.
+        _ => unheard,
+    }
 }
 
 /// **WHAT A CHECKER ACTUALLY SAID, ONCE THE SHAPE IT PROMISED HAS BEEN HELD TO** — register item
@@ -909,7 +1012,7 @@ pub(crate) fn said_by_another(
     cwd: Option<&std::path::Path>,
     question: &str,
     within: Duration,
-) -> Result<(String, Duration), Unheard> {
+) -> Result<(String, Duration, Option<sprag_terminal::PaneExit>), Unheard> {
     if argv.is_empty() {
         return Err(Unheard::Unasked);
     }
@@ -949,6 +1052,26 @@ pub(crate) fn said_by_another(
     // [`Over::Silent`](crate::completion::Over::Silent)'s own count of this site.
     let over = Completion::new(DoneWhen::Exits).wait(panes, pane, within, None, run);
     let reply = spoke(panes, pane);
+    // ⛔⛔⛔⛔⛔ **AND HOW IT ENDED, ASKED AFTER THE CAPTURE IS COMPLETE** — register item 659.
+    //
+    // # ⚠⚠⚠⚠⚠ Why a SECOND wait rather than making the one above wait for a status
+    //
+    // They are different questions. The wait above is *is the capture complete*, which EOF answers
+    // and every caller here depends on; this is *may I use what it printed*, which only a reaped
+    // status answers. And the kernel opens a window between them — a dying task's descriptors close
+    // before it becomes reapable ([`sprag_terminal::PaneExit`]) — so asking the first rule to wait
+    // for the second would silently lengthen every check in this crate on a fact none of them
+    // needed, and a host whose reaper never ran would turn every working check into a timeout.
+    //
+    // ⚠⚠ **THE SAFE DIRECTION IS LOSING THE STATUS, NEVER LOSING THE ANSWER.** This bound expiring
+    // leaves the status unknown, and unknown is never read as success — so the worst it costs is
+    // the precise word for a failure, which is what a reader had before item 659 anyway.
+    let exit = (over == Over::Yes)
+        .then(|| {
+            Completion::new(DoneWhen::Reaped).wait(panes, pane, REAP_WITHIN, None, run);
+            panes.pane_child_exit(pane)
+        })
+        .flatten();
     life.close(pane);
 
     if over != Over::Yes {
@@ -972,8 +1095,23 @@ pub(crate) fn said_by_another(
     let Some(reply) = reply else {
         return Err(Unheard::Unaccountable);
     };
-    Ok((reply, began.elapsed()))
+    Ok((reply, began.elapsed(), exit))
 }
+
+/// ⛔⛔⛔⛔⛔ **HOW LONG A FINISHED CHECKER IS GIVEN TO BE REAPED** — register item 659.
+///
+/// # ⚠⚠⚠ It is not a latency budget, and that is why it is not derived from one
+///
+/// Every other bound in this crate prices how long somebody's WORK may take. This one caps a window
+/// the kernel opens and the reader thread closes: the child is already gone and every byte it wrote
+/// is already applied, and what is outstanding is one `waitpid` on a thread that is doing nothing
+/// else. A number measured off check latencies would be answering a different question.
+///
+/// ⚠⚠ **SO IT IS SIZED TO BE UNREACHABLE RATHER THAN TIGHT**, on the direction stated at its one
+/// caller: expiring costs the STATUS and never the answer. A tight bound would trade a fact that is
+/// always available in practice for nothing at all, and a generous one cannot delay a check that
+/// has already finished — the pane is closed on the next line either way.
+const REAP_WITHIN: Duration = Duration::from_secs(2);
 
 /// **WHAT A REPLY MEANS TO A JUDGE** — the half [`said_by_another`] deliberately does not decide.
 ///
@@ -2005,6 +2143,174 @@ mod tests {
              notice's prose, which is the widening `service_needles` refuses — and this machine's \
              transcripts hold a line whose head is that notice and whose tail is an agent writing \
              about it. Got {unpromised:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A CHECKER WHOSE OWN PROGRAM FAILED IS TOLD APART FROM ONE THAT MISPHRASED** —
+    /// register item 659, and the first class on this list decided by a FACT rather than by prose.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What the driver could not ask, and what it cost
+    ///
+    /// `PaneAccess` could ask whether a pane's child had GONE and never how it went, so every
+    /// judgement about somebody else's program was made from what it printed — which is why
+    /// `promised_shape` exists at all. The host had the status the whole time
+    /// (`PaneInfo::child_exit`, on the wire since register item 418). Measured 2026-09-12: a
+    /// milestone check came back with nothing and the reason handed to a person named **four**
+    /// possibilities, the first two of which a status separates in one reading.
+    ///
+    /// # ⚠⚠⚠ Why the arms are a REAL failing program and a REAL succeeding one
+    ///
+    /// The claim is about a fact the kernel records, and a double that returned a `PaneExit` would
+    /// be asserting that this test can construct one. `/bin/sh -c 'exit 3'` is the whole fixture,
+    /// driven through `asked_of_another` — the same door `debt_loop.scxml`'s classifier takes.
+    ///
+    /// ⚠⚠ **AND THE CONTROL IS THE ONE THAT MATTERS MOST**: a checker that answers a verdict and
+    /// exits non-zero must KEEP its verdict. This arm replaces an error with a better-named error
+    /// and must never replace an answer with one — a build that overturned verdicts on an exit code
+    /// would file every milestone some noisy wrapper checked as unverified.
+    #[test]
+    fn a_checker_whose_program_failed_says_so_rather_than_being_read_as_misphrased() {
+        let host = crate::access::WorkspacePaneAccess::new(Arc::new(Mutex::new(
+            sprag_terminal::Workspace::new((80, 24)),
+        )));
+        let ask = |script: &str| {
+            asked_of_another(
+                &host,
+                &RunContext::uncancellable(),
+                &[
+                    "/bin/sh".to_owned(),
+                    "-c".to_owned(),
+                    // ⚠ THE SCRIPT IS THE WHOLE ARGUMENT AND NOTHING IS APPENDED TO IT: a trailing
+                    // `; :` would make the shell exit 0 whatever the script did, and every arm
+                    // below would then be about a program that succeeded.
+                    script.to_owned(),
+                ],
+                None,
+                "did it hold? answer YES or NO",
+                Duration::from_secs(20),
+            )
+        };
+
+        // ── ⭐ THE CLAIM: a program that failed and said nothing is named as having FAILED ─────
+        let failed = ask("exit 3");
+        assert!(
+            matches!(&failed, Err(Unheard::Failed { .. })),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 659: this program exited 3 and produced no verdict, and the \
+             driver read it as a misphrasing — `NotAVerdict`'s remedy is *fix its prompt*, which \
+             is the wrong errand for a program that never ran properly. The status is a fact the \
+             host has published since item 418 and the driver could not ask for. Got {failed:?}",
+        );
+        let Err(said) = &failed else {
+            unreachable!("the assertion above holds")
+        };
+        let sentence = said.describe().quoted();
+        assert!(
+            sentence.contains("exited 3"),
+            "⚠⚠⚠ AND THE READER IS TOLD HOW IT FAILED, in `exit_phrase`'s shared words — a class \
+             without the code sends somebody to the same four possibilities: {sentence:?}",
+        );
+
+        // ── ⛔⛔ THE CONTROL: A VERDICT SURVIVES A NON-ZERO EXIT ───────────────────────────────
+        //
+        // ⚠⚠⚠⚠⚠ WITHOUT THIS ARM THE CLAIM ABOVE IS SATISFIED BY A BUILD THAT TURNS EVERY
+        // NON-ZERO EXIT INTO A FAILURE, which would take a milestone a noisy wrapper checked —
+        // answered correctly, exited 1 — and file it as unverified. That is strictly worse than
+        // the defect being paid off, and it is one line of code away.
+        let answered = ask("printf '%s\\n' 'YES it holds'; exit 1");
+        assert!(
+            matches!(&answered, Ok(judged) if judged.holds),
+            "⛔⛔⛔⛔⛔ A READABLE VERDICT WAS OVERTURNED BY AN EXIT CODE. The status renames a \
+             FAILURE and never overturns an ANSWER: whether a status that disagrees with a \
+             readable verdict means anything is a fact nobody has measured, so it is left alone \
+             rather than guessed at. Got {answered:?}",
+        );
+
+        // ── ⛔ AND THE OTHER CONTROL: A CLEAN EXIT WITH NO VERDICT IS STILL A MISPHRASING ──────
+        //
+        // ⚠⚠ This is what says the new arm is decided by the STATUS and not by *there was no
+        // verdict*: same absence of a verdict, exit 0, and the old class must stand.
+        let clean = ask("printf '%s\\n' 'I am thinking about it'");
+        assert!(
+            matches!(&clean, Err(Unheard::NotAVerdict(_))),
+            "⚠⚠⚠⚠ A PROGRAM THAT SUCCEEDED AND SAID SOMETHING UNREADABLE IS ITS PROMPT'S PROBLEM, \
+             which is the remedy `NotAVerdict` carries. Answering `Failed` here would make the new \
+             class *there was no verdict* wearing a new name: {clean:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AN UNKNOWN STATUS ADDS NOTHING, AND A CLEAN ONE ADDS NOTHING EITHER** — register
+    /// item 659's sharpest arm, and the one no end-to-end fixture in this crate can reach.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this arm exists: the mutation that should have failed, did not
+    ///
+    /// The gate beside this one drives a REAL failing program, which is right and is not enough: a
+    /// reaped child always has a status, so `exit` is `Some` in every fixture, and the case the
+    /// whole contract turns on is unreachable. Measured 2026-09-12 by mutating
+    /// `WorkspacePaneAccess::pane_child_exit` to invent a clean exit where the child was not yet
+    /// reaped — **every end-to-end arm stayed green**. What that mutation breaks is a claim about
+    /// the window the kernel opens between EOF and reap, and only a driven decision can hold it.
+    ///
+    /// ⚠⚠ The two `_` cases are asserted SEPARATELY rather than as one, because they are the same
+    /// answer for opposite reasons: a clean exit means *the program worked, so the fault is where
+    /// the class already said*, and an unknown one means *nothing here knows anything*. A build
+    /// that collapsed them would pass this arm and still be wrong the day either reason changes.
+    #[test]
+    fn a_status_nothing_read_neither_blames_the_program_nor_clears_it() {
+        let unreadable = || Unheard::NotAVerdict("I am thinking about it".to_owned());
+        let failed = sprag_terminal::PaneExit {
+            code: 3,
+            signal: None,
+        };
+        let clean = sprag_terminal::PaneExit {
+            code: 0,
+            signal: None,
+        };
+        let killed = sprag_terminal::PaneExit {
+            code: 1,
+            signal: Some("Terminated".to_owned()),
+        };
+
+        // ── ⭐ THE PREMISE: a status that says FAILED does rename the silence ─────────────────
+        assert!(
+            matches!(
+                named_by_status(unreadable(), Some(&failed), "boom"),
+                Unheard::Failed { .. }
+            ),
+            "⚠⚠⚠ THE PREMISE OF THE THREE ARMS BELOW: without this they all hold of a function \
+             that renames nothing",
+        );
+
+        // ── ⛔⛔⛔ AND AN UNKNOWN STATUS LEAVES THE CLASS EXACTLY WHERE IT WAS ────────────────
+        assert_eq!(
+            named_by_status(unreadable(), None, "I am thinking about it"),
+            unreadable(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 659: a status NOTHING COULD READ was turned into a claim. \
+             `None` is the window between a child's EOF and its reap, a host that cannot say, and \
+             a pane that is not there — none of which is evidence about the program. A reader sent \
+             to a program that may be perfectly well has been sent there by this line",
+        );
+
+        // ── ⛔⛔ AND A CLEAN EXIT LEAVES IT TOO, for the opposite reason ──────────────────────
+        assert_eq!(
+            named_by_status(unreadable(), Some(&clean), "I am thinking about it"),
+            unreadable(),
+            "⛔⛔⛔⛔ A PROGRAM THAT SUCCEEDED IS NOT A PROGRAM THAT FAILED. Its exit says the \
+             fault is where the class upstream already put it — the prompt, or the answer — and \
+             renaming it here would make `Failed` mean *there was no verdict*, which is a class \
+             that already has a name",
+        );
+
+        // ── ⚠ AND A SIGNALLED DEATH IS A FAILURE THOUGH ITS CODE IS THE PLATFORM'S STAND-IN ──
+        //
+        // ⚠⚠ `code: 1` here is not something the process chose — `exit_phrase`'s own measured
+        // rule — so a reader that consulted the code alone would call this `exited 1` and a build
+        // that tested `code != 0` alone would pass while spelling the wrong cause.
+        let said = named_by_status(unreadable(), Some(&killed), "");
+        assert!(
+            matches!(&said, Unheard::Failed { ended, .. } if ended.contains("Terminated")),
+            "⚠⚠⚠⚠ A KILLED PROGRAM MUST BE NAMED BY ITS SIGNAL. *your build failed* and *the OOM \
+             killer took it* are different errands and no exit code can express the second — which \
+             is why `PaneExit` carries the signal at all. Got {said:?}",
         );
     }
 

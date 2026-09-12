@@ -375,6 +375,46 @@ pub const FULL_LINES_SLOT: &str = "full_lines";
 /// answers it has always read.
 pub const PANE_EOF_SLOT: &str = "eof";
 
+/// The pane-input external query slot: **HOW THIS PANE'S CHILD ENDED** — register item 659, and
+/// [`PANE_EOF_SLOT`]'s later fact rather than a refinement of it.
+///
+/// # ⛔⛔⛔⛔⛔ Why a driver needs the STATUS and not only the ending
+///
+/// The slot above answers *is this finished?*, and for a long-lived peer that is the whole
+/// question. For a one-shot program a driver RAN — a milestone checker, a classifier, an
+/// instrument a kind named — the question that decides what its output MEANS is *did it work?*, and
+/// nothing on this wire answered it. So every such decision was taken from the program's PROSE:
+/// `sprag_plugin::judge`'s `promised_shape` holds a reply to a JSON envelope precisely to catch
+/// *this program failed before it could judge*, which is an inference from text about a fact the
+/// kernel already recorded.
+///
+/// The daemon has published it to display clients since register item 418 (`PaneInfo::child_exit`,
+/// rendered by `exit_phrase`). What was missing is the SINGLE-PANE address a driver asks, which is
+/// this.
+///
+/// ⚠⚠⚠ **ABSENT IS *NOT YET KNOWN*, NEVER *IT EXITED CLEANLY***. `sprag_terminal::PaneExit`'s own
+/// doc states the window: the kernel closes a dying task's descriptors before it is reapable, so
+/// EOF holds for a time while this is still unanswered. A reader that filled the absence in would
+/// quote a failed program's error message as its answer.
+///
+/// ⚠⚠ The two fields cross as themselves — the code and the signal — rather than as the rendered
+/// phrase, because `exit_phrase` is a VOCABULARY three surfaces share and a fourth spelling of it
+/// on the wire is how a signalled death comes to be called `exited 1` somewhere.
+///
+/// ⚠ ADDITIVE: a new address earns no [`WIRE_PROTOCOL`] bump — [`PANE_EOF_SLOT`]'s own rule
+/// directly above.
+pub const PANE_CHILD_EXIT_SLOT: &str = "child_exit";
+
+/// The field of [`PANE_CHILD_EXIT_SLOT`]'s answer carrying the process's exit code.
+pub const CHILD_EXIT_CODE_FIELD: &str = "code";
+
+/// The field of [`PANE_CHILD_EXIT_SLOT`]'s answer naming the signal that killed the child, absent
+/// for a process that returned normally.
+///
+/// ⚠ It is consulted BEFORE the code, on `sprag_terminal::exit_phrase`'s measured rule: a signalled
+/// death carries the platform's stand-in `1` rather than anything the process chose.
+pub const CHILD_EXIT_SIGNAL_FIELD: &str = "signal";
+
 /// The pane-input external query slot: **WHETHER ANYTHING HAS BEEN PAINTED ONTO THIS PANE YET** —
 /// register item 555, and the one read on this surface that exists because withholding a number
 /// left a QUESTION answered wrongly rather than unanswered.
@@ -1151,6 +1191,11 @@ pub const PANE_SCHEMA: &[SchemaField] = &[
     // ⚠⚠⚠ Register item 544 — see `PANE_EOF_SLOT`. The four above say what the pane HOLDS; this says
     // whether anything more is coming, which reading the text cannot answer.
     SchemaField::new(PANE_EOF_SLOT, "bool"),
+    // ⛔⛔⛔⛔⛔ Register item 659 — see `PANE_CHILD_EXIT_SLOT`. The slot above says whether anything
+    // more is coming; this says HOW it ended, which is what decides whether what a program printed
+    // is its answer or its apology. `object` with a `code` and an optional `signal`, and `null` for
+    // a child still running or not yet reaped — never an invented clean exit.
+    SchemaField::new(PANE_CHILD_EXIT_SLOT, "object"),
     // ⚠⚠⚠⚠⚠ Register item 555 — see `PANE_PAINTED_SLOT`. The slot above says whether anything MORE
     // is coming; this says whether anything has come AT ALL, which the rows cannot answer here
     // because the number that decides it is deliberately not on this wire. Without it a driver
@@ -10478,7 +10523,13 @@ mod tests {
                 // it*, and this word arrived with a REQUIRED argument. A client that never heard
                 // of it sends nothing, an older daemon swallows the key from a client that has,
                 // and the run it starts is judged by a document the caller did not choose.
-                "sprag_workspace/sprag_plugins/run:done_when=exits,settles \
+                // ⛔ AND `reaped` — register item 659, a turn contract that is over when the
+                // child's STATUS is known rather than when its output ended. It WIDENS the space
+                // and leaves `WIRE_PROTOCOL` standing under R342's own condition, which the word
+                // above is the exception to: this one takes no companion argument at all, so a
+                // client that never heard of it sends nothing and an older daemon has nothing to
+                // swallow. A caller that does send it and meets an old daemon is refused by name.
+                "sprag_workspace/sprag_plugins/run:done_when=exits,settles,reaped \
                  format_a=text,claude_json format_b=text,claude_json loop_kind=debt,unclaimed \
                  plugin=agent plugin=ai_loop \
                  plugin=answer plugin=dialogue plugin=orchestrator plugin=pipe",
@@ -11435,6 +11486,9 @@ mod tests {
             "cancel",
             "cells.",
             "cells.<offset>",
+            // ⛔ Register item 659: HOW a pane's child ended. An ADDED name, so an older client's
+            // requests all keep working and `WIRE_PROTOCOL` stands — see this pin's own rule.
+            "child_exit",
             "clients",
             "clipboard_answer",
             "clipboard_write",

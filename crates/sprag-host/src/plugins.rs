@@ -20786,12 +20786,15 @@ mod tests {
     fn every_published_word_is_a_word_the_plugin_host_accepts() {
         assert_eq!(
             grammar_gate(sprag_conformance::every_published_word_is_accepted).count_or_panic(),
-            34,
+            37,
             "one call per published word: the ONE plugin word that selects each of the SIX forms, \
              the two reply formats on each of a dialogue's two endpoints, the readiness barrier's \
              FOUR `match` words on each of the four plugins that inject — the last two being \
              `runs` and `settles`, which ask the pane's terminal and its supervisor rather than \
-             its screen — and `done_when`'s TWO words on EACH of the three forms that now take it. \
+             its screen — and `done_when`'s THREE words on EACH of the three forms that now take \
+             it, the newest being register item 659's `reaped`, which is over when the child's \
+             STATUS is known rather than when its output ended — and which this gate is what makes \
+             servable rather than merely advertised. \
              🎯🎯🎯🎯🎯 THE NEWEST TWO ARE `loop_kind`'s `debt` AND `unclaimed` (item 848), and \
              this gate is the one that makes the SECOND of them more than a name in a list: a kind \
              word is only worth publishing if a caller can start a run under it, and `unclaimed` \

@@ -129,10 +129,11 @@ use sprag_vt::LinesSince;
 
 use crate::external::lock;
 use crate::wire::{
-    AGENT_SUPERVISION_SLOT, ALT_FIELD, CLOSE_ACTION, CTRL_FIELD, DAEMON_INSTANCE_SLOT,
-    FULL_LINES_SLOT, FULL_TEXT_SLOT, INJECT_ACTION, INJECT_STROKES_KEY, INJECTED_BYTES_KEY,
-    KEY_FIELD, LINES_KEY, LINES_LOST_KEY, LINES_NEXT_KEY, LINES_PARTIAL_KEY, LINES_RESTARTED_KEY,
-    PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_FOREGROUND_SLOT, PANE_HANDS_SLOT,
+    AGENT_SUPERVISION_SLOT, ALT_FIELD, CHILD_EXIT_CODE_FIELD, CHILD_EXIT_SIGNAL_FIELD,
+    CLOSE_ACTION, CTRL_FIELD, DAEMON_INSTANCE_SLOT, FULL_LINES_SLOT, FULL_TEXT_SLOT, INJECT_ACTION,
+    INJECT_STROKES_KEY, INJECTED_BYTES_KEY, KEY_FIELD, LINES_KEY, LINES_LOST_KEY, LINES_NEXT_KEY,
+    LINES_PARTIAL_KEY, LINES_RESTARTED_KEY, PANE_CHILD_EXIT_SLOT, PANE_ECHO_SLOT,
+    PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_FOREGROUND_SLOT, PANE_HANDS_SLOT,
     PANE_PAINTED_SLOT, PANE_RAW_OUTPUT_SLOT, PANE_START_DIR_SLOT, PANE_SUMMARY_ID_KEY, PANES_SLOT,
     PEER_GONE_REFUSAL, RESPAWN_ACTION, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SESSION_SLOT,
     SHIFT_FIELD, SPAWN_ACTION, SPAWN_CMD_KEY, SPAWN_COLS_KEY, SPAWN_CWD_KEY, SPAWN_NAME_KEY,
@@ -997,6 +998,29 @@ impl PaneAccess for RemotePaneAccess {
 
     fn pane_eof(&self, id: PaneId) -> Option<bool> {
         self.read_pane(id, PANE_EOF_SLOT)?.as_bool()
+    }
+
+    /// ⛔⛔⛔⛔⛔ **HOW THE PANE'S CHILD ENDED** — register item 659, and the slot above's later
+    /// fact. Overridden rather than inherited because the trait's default is `None`, which here
+    /// would mean *this host cannot say* about a daemon that says it perfectly well — and the one
+    /// thing a caller may never do with this absence is read it as a clean exit.
+    ///
+    /// ⚠⚠ **A REPLY THIS CANNOT READ IS `None`, WHICH IS THE SAME ANSWER AS *not yet reaped*, and
+    /// that is correct rather than lossy**: both are *nothing here can tell you whether it worked*,
+    /// and the caller's rule is identical for the two. What must never happen is a `Some` invented
+    /// from a shape this did not understand.
+    fn pane_child_exit(&self, id: PaneId) -> Option<sprag_terminal::PaneExit> {
+        let answer = self.read_pane(id, PANE_CHILD_EXIT_SLOT)?;
+        let fields = answer.as_object()?;
+        Some(sprag_terminal::PaneExit {
+            code: u32::try_from(fields.get(CHILD_EXIT_CODE_FIELD)?.as_i64()?).ok()?,
+            // ⚠ ABSENT IS *returned normally*, which is how the daemon spells it — omitted rather
+            // than null, so a missing key here is a decision and not a gap.
+            signal: fields
+                .get(CHILD_EXIT_SIGNAL_FIELD)
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned),
+        })
     }
 
     /// Whether anything has been painted onto the pane yet — register item 555.

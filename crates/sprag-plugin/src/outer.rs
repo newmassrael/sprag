@@ -281,7 +281,10 @@ const fn submit_lands_when(turn: DoneWhen) -> SubmittedWhen {
         DoneWhen::Settles => SubmittedWhen::Stirs {
             within: crate::deliver::DEFAULT_SUBMIT_GRACE,
         },
-        DoneWhen::Exits => SubmittedWhen::Unchecked,
+        // ⚠ Register item 659 puts `Reaped` here beside `Exits` and not beside `Settles`: both are
+        // one-shot programs that answer and leave, so there is no peer to watch stir at the SUBMIT
+        // end — the two differ only in what they wait for at the OTHER end.
+        DoneWhen::Exits | DoneWhen::Reaped => SubmittedWhen::Unchecked,
     }
 }
 
@@ -4341,7 +4344,9 @@ impl crate::review::Asked for AskingAnother<'_> {
             asks.within,
         )
         .ok()
-        .map(|(said, _took)| said)
+        // ⚠ Register item 659 added the child's status as a third element; this reader wants the
+        // WORDS and nothing else, so it drops it here rather than carrying a fact it does not use.
+        .map(|(said, _took, _exit)| said)
     }
 }
 

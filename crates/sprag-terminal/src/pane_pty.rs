@@ -1548,6 +1548,21 @@ impl PanePtyHandle {
         self.pid
     }
 
+    /// ⛔⛔⛔⛔⛔ **HOW THE CHILD ENDED**, or [`None`] while it runs or before the reader thread has
+    /// reaped it — [`PanePty::exit_status`] asked through the handle. Register item 659.
+    ///
+    /// ⚠⚠ It is on the HANDLE for [`pid`](Self::pid)'s stated reason exactly: *did this program
+    /// work* became a REMOTE read (`sprag_host::wire::PANE_CHILD_EXIT_SLOT`), and the host serves
+    /// its addresses from here. [`is_eof`](Self::is_eof) and `pid` took the same route before it.
+    ///
+    /// ⚠⚠⚠ **IT IS THE LATER FACT, AND THE GATE ON `pid` IS ITS MIRROR.** A known status is exactly
+    /// what makes that pid stale — `pid` says so in as many words — so the two are never both
+    /// meaningful, and a caller asks whichever of them is still true.
+    #[must_use]
+    pub fn exit_status(&self) -> Option<PaneExit> {
+        lock(&self.exit).clone()
+    }
+
     /// Read the current screen AND the live colour [`Palette`] together under one emulator lock —
     /// the projection needs both. See [`PanePty::with_screen_palette`].
     pub fn with_screen_palette<R>(&self, f: impl FnOnce(&Screen, &Palette) -> R) -> R {
