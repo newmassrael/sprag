@@ -849,9 +849,19 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                 // agent this harness drives.
                 let verdict = checked
                     .map(|verdict| {
+                        // ⛔⛔⛔⛔⛔ **THE CLAUSE IS THE VALUE'S AND NOT THIS HARNESS'S** — register
+                        // item 1067, and this line is where the item was found. It spelled
+                        // `it said:` over a slot with two authors: `Checked::Silent` and
+                        // `Checked::NotAsked`'s instrument-failure arm both put a sentence THIS
+                        // LOOP composed in it, and the second is worse than the first — no checker
+                        // was ever started. The comment above claims the clause is *"quoted and
+                        // attributed, exactly as the plugin's own walk does it"*, and until item
+                        // 1067 the plugin's own walk had the same defect, so the sentence was true
+                        // and both were wrong. `Attributed` now carries the mouth; this crate
+                        // cannot reach the bare words at all.
                         let why = explained
-                            .as_deref()
-                            .map(|words| format!(" — it said: {words:?}"))
+                            .as_ref()
+                            .map(|said| format!(" — {}", said.quoted()))
                             .unwrap_or_default();
                         let saw = shown
                             .map(|reader| format!(" — it was shown {}", reader.named()))
@@ -886,9 +896,12 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
                         let price = chain
                             .map(|held| format!(" — {}", held.describe()))
                             .unwrap_or_default();
+                        // ⛔⛔⛔ ATTRIBUTED BY THE VALUE — register item 1067, the verdict clause's
+                        // note above and the identical defect: `Admits::Silent` puts this driver's
+                        // own sentence here.
                         let why = unadmitted
-                            .as_deref()
-                            .map(|words| format!(" — it said: {words:?}"))
+                            .as_ref()
+                            .map(|said| format!(" — {}", said.quoted()))
                             .unwrap_or_default();
                         format!(" — {}{price}{why}", verdict.describe())
                     })
@@ -4805,7 +4818,10 @@ fn the_judge_separates_a_design_dialog_from_a_routine_one() {
             // that answered prose is the very disease this round paid off, one layer out: the
             // numbers below would be identical and the remedy for them completely different.
             if let Err(unheard) = &judged {
-                println!("    no verdict: {}", unheard.describe());
+                // ⚠ ATTRIBUTED — register item 1067. This crate cannot reach the bare words, which
+                // is the item's whole enforcement, and the clause is right here anyway: the
+                // sentence that follows is the LOOP's about a judge that answered nothing.
+                println!("    no verdict — {}", unheard.describe().quoted());
             }
             let judged = judged.ok();
             if let Some(judged) = &judged {

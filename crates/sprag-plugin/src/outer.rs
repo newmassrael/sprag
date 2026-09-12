@@ -4504,7 +4504,13 @@ pub enum Pumped {
         /// this whole payload keeps being about. What it repays is measured — a run refused NINE
         /// times published one fixed sentence and no reason at all, so nobody could tell nine
         /// disagreements from one repeated.
-        explained: Option<String>,
+        ///
+        /// ⛔⛔⛔ **AND IT CARRIES ITS AUTHOR** — register item 1067, and it is [`Attributed`] rather
+        /// than a `String` because this slot has TWO of them: `Checked::Passed`/`Failed` put the
+        /// checker's reply here and `Checked::Silent` puts a sentence THIS DRIVER composed. Every
+        /// reader of this field outside the crate used to re-derive that from `checked` above, and
+        /// the two that existed both got it wrong.
+        explained: Option<Attributed>,
         /// ⚠⚠⚠⚠⚠ **WHICH READER THAT CHECK WAS SHOWN**, and [`None`] where nothing was checked —
         /// register item 448, and the third fact of one judgement.
         ///
@@ -4555,7 +4561,12 @@ pub enum Pumped {
         /// fields up: the verdict says WHAT a program decided about a proposal and this says WHY,
         /// and a line that dropped either to make room for the other is the failure this payload
         /// keeps being about.
-        unadmitted: Option<String>,
+        ///
+        /// ⛔⛔⛔ **AND IT CARRIES ITS AUTHOR** — register item 1067, `explained`'s note two fields
+        /// up and for the identical reason: `Admits::Yes`/`No` put the classifier's own reply here
+        /// and `Admits::Silent` puts a sentence THIS DRIVER composed. Two slots, one shape, and
+        /// [`Attributed`] is what stops a renderer having to know which.
+        unadmitted: Option<Attributed>,
     },
     /// **THE MACHINE IS IN A STATE THIS DRIVER CANNOT SERVE YET.**
     ///
@@ -5143,6 +5154,130 @@ impl Session {
             Some(spend) => Accounted::Read(spend),
             None => Accounted::Unreadable(record),
         }
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **A REASON THAT ARRIVED BESIDE A VERDICT, AND WHOSE WORDS IT IS** — register item 1067.
+///
+/// # ⚠⚠⚠⚠⚠ The slot had two authors and its TYPE said so nowhere, measured
+///
+/// [`Checked`] below has three arms that carry a reason and they do not share a mouth:
+/// `Passed` and `Failed` carry the checker's own reply, and `Silent` carries
+/// [`crate::judge::Unheard::describe`] — *a sentence this driver composed about a checker that
+/// never answered*. [`Admits`] is the same shape one question over. Until this type existed both
+/// slots left their producer as `Option<String>`, so the one fact only the producer knew — **whose
+/// words these are** — was dropped at the door and every renderer had to re-derive it from the
+/// verdict standing beside it.
+///
+/// **Four renderers had to, and three did not.** Item 1065 paid the fourth — the loop document's
+/// `unverified` prompt — by splitting the wording there, and the other three went on publishing
+/// *it said:* over sentences no *it* had said: the plugin's own journal line for `explained` and
+/// for `unadmitted`, and the live-agent harness's for both. A person reading either is sent to
+/// measure the checker over words the LOOP wrote, and item 1065 measured what that costs at a
+/// process audit and four unique-string searches.
+///
+/// ⚠⚠⚠ **SO THE REPAIR IS THE ONE THIS WORKSPACE ALREADY MADE FOR HOW A TURN ENDED** (`e3b19bc4`,
+/// *how a turn ended is said by the type, not by callers*): the mouth is named ONCE, in the arm
+/// that knows it, and a renderer can no longer choose one. A fifth renderer gets the attribution
+/// right by having no way to get it wrong.
+///
+/// # ⛔⛔⛔⛔ Why the words are PRIVATE, and why that is the whole enforcement
+///
+/// A `pub` field, or a `pub` enum arm holding the `String`, would let any crate take the words out
+/// and put them back in whatever mouth it liked — which is exactly what `sprag-host`'s harness was
+/// doing. The fields are private and `Attributed::words` is `pub(crate)`, so **outside this crate
+/// the only thing that can be done with a reason is [`quoted`](Self::quoted)**, and the compiler is
+/// the gate rather than a reviewer's memory. Inside the crate a few callers need the bare words —
+/// the `judge` payload, where the DOCUMENT does its own attribution off the state it is in (item
+/// 1065) rather than off this value, and the `why_silent` tally, whose every sentence is this
+/// loop's.
+///
+/// ⚠ `words` is NAMED rather than linked, which is the rustdoc gate and not a style: this item is
+/// public and that one is not, so the link resolves only under `--document-private-items` and
+/// `-D rustdoc::private-intra-doc-links` refuses it. [`Chain::in_reply`]'s doc records the same
+/// lesson from the round that learned it.
+///
+/// ⚠ **The document's clause is NOT this one and they are not held equal.** `ai_loop.scxml` is a
+/// template other repositories copy, so its wording is its own; [`Checked::describe`]'s note about
+/// *"one value, two homes"* (items 855 and 864) is about a value with one owner, and this is two
+/// values that share three words by coincidence of English.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Attributed {
+    /// The reason itself, verbatim, whoever wrote it.
+    words: String,
+    /// Which mouth it came out of — the only fact the producer had and the slot used to drop.
+    mouth: Mouth,
+}
+
+/// [`Attributed`]'s two mouths — named for the word item 1065 settled this class in: *"the clause
+/// the reason arrives in has to say WHOSE reason it is … this is what stops them being put in the
+/// wrong mouth"*.
+///
+/// ⚠ Private, and deliberately not a field of a public arm: see [`Attributed`]'s note on why the
+/// enforcement is the visibility rather than a rule somebody remembers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mouth {
+    /// The program that was asked really answered, and these are its words.
+    Answered,
+    /// Nothing answered, and this is the sentence THIS DRIVER composed about that silence.
+    Composed,
+}
+
+impl Attributed {
+    /// **THE CLAUSE THE CHECKER'S OWN WORDS ARRIVE IN.** Spelled once, here, for the reason
+    /// [`quoted`](Self::quoted) holds.
+    const ANSWERED: &'static str = "it said:";
+    /// **AND THE CLAUSE THIS DRIVER'S OWN SENTENCE ARRIVES IN** — the one the renderers did not
+    /// have. It names the loop rather than an *it*, because in this arm there is no *it* that said
+    /// anything: that is what the arm MEANS.
+    ///
+    /// ⚠ It does NOT also say *the program said nothing*: the verdict standing beside it on every
+    /// renderer already does (`Checked::Silent`, `Admits::Silent`, and `Checked::NotAsked`'s
+    /// instrument-failure sentence), and a clause that repeated it would put one fact in a line
+    /// twice — `Checked::describe`'s own rule, three types up.
+    const COMPOSED: &'static str = "this driver reports:";
+
+    /// A reason a program that was ASKED actually gave.
+    pub(crate) fn answered(words: String) -> Self {
+        Self {
+            words,
+            mouth: Mouth::Answered,
+        }
+    }
+
+    /// A reason THIS DRIVER composed about a program that produced none — see
+    /// [`crate::judge::Unheard::describe`], which is the only writer of one.
+    pub(crate) fn composed(words: String) -> Self {
+        Self {
+            words,
+            mouth: Mouth::Composed,
+        }
+    }
+
+    /// The reason itself, with the mouth stripped off.
+    ///
+    /// ⚠⚠ `pub(crate)` ON PURPOSE, and it is the load-bearing half of this type: a caller outside
+    /// this crate that could reach the bare words could put them in the wrong mouth, which is the
+    /// defect item 1067 is. The one caller inside is the payload that hands a reason to the
+    /// DOCUMENT, which attributes it from the state it is in and not from these words.
+    pub(crate) fn words(&self) -> &str {
+        &self.words
+    }
+
+    /// **THE REASON WITH ITS AUTHOR ON IT** — the sentence a walk, an ending or a harness carries,
+    /// in [`Checked::describe`]'s shape so a caller writes `format!("{note} — {}", said.quoted())`
+    /// exactly as it does for the verdict beside it.
+    ///
+    /// ⚠ The words are debug-formatted, which is what puts them in quotes and escapes a reply that
+    /// contains a newline — every renderer this replaced already did that, and a report a person
+    /// scans must not be re-flowed by somebody else's prose.
+    #[must_use]
+    pub fn quoted(&self) -> String {
+        let clause = match self.mouth {
+            Mouth::Answered => Self::ANSWERED,
+            Mouth::Composed => Self::COMPOSED,
+        };
+        format!("{clause} {:?}", self.words)
     }
 }
 
@@ -7274,7 +7409,10 @@ pub struct OuterLoop {
     ///
     /// ⚠⚠ Written fresh beside [`verdict`](Self::verdict) on the same condition and never latched:
     /// a reason belongs to ONE claim, and a stale one would explain a refusal that never happened.
-    explained: Option<String>,
+    ///
+    /// ⛔ **[`Attributed`] AND NOT A `String`** — register item 1067: the arm that produced it is
+    /// the only party that knows whose words they are, and it is the one that fills this.
+    explained: Option<Attributed>,
     /// ⚠⚠⚠⚠⚠ **AND WHICH READER THAT CHECK WAS SHOWN** — register item 448, and [`None`] where
     /// nothing was checked.
     ///
@@ -7315,7 +7453,10 @@ pub struct OuterLoop {
     /// ⚠ Beside [`admits`](Self::admits) rather than folded into it, on [`explained`](Self::explained)'s
     /// own rule: `Admits` is what the DOCUMENT routes on, and a guard must never be able to read a
     /// program's prose.
-    unadmitted: Option<String>,
+    ///
+    /// ⛔ **[`Attributed`] AND NOT A `String`**, register item 1067 — [`explained`](Self::explained)'s
+    /// note.
+    unadmitted: Option<Attributed>,
     /// ⚠⚠⚠ **A RECORD THIS RUN'S AGENT NAMED AND NOTHING COULD READ** — register item 431(a). See
     /// [`Accounted::Unreadable`], and [`Pumped::Moved`]'s `unreadable`, which is how the CHANGE in
     /// this level reaches a reader.
@@ -11246,7 +11387,13 @@ impl OuterLoop {
                         // word here would compose *"It said:"* followed by nothing, typed at a live
                         // agent. [`crate::judge::asked_of_another`] filters empty lines to `None`,
                         // and this arm is what keeps that promise on the wire.
-                        "explained": match self.explained.as_deref() {
+                        // ⛔⛔⛔ THE BARE WORDS, AND THIS IS THE ONE CALLER THAT MAY HAVE THEM —
+                        // register item 1067. The DOCUMENT does its own attribution, off the STATE
+                        // it disposes the silence in (`unverified` against `disputing`, item 1065)
+                        // rather than off this value, so handing it the mouth as well would be two
+                        // authorities on one fact. Every OTHER reader takes `Attributed::quoted`,
+                        // which is why `words` is `pub(crate)`.
+                        "explained": match self.explained.as_ref().map(Attributed::words) {
                             Some(line) => serde_json::Value::from(line),
                             None => serde_json::Value::Bool(false),
                         },
@@ -13111,7 +13258,13 @@ impl OuterLoop {
                 // ⚠ A non-empty word or `false`, never `''` — `disputing`'s own measured reason:
                 // this datamodel is Lua, where the empty string is TRUE, so a classifier that
                 // explained itself with nothing would take the quoting branch and quote nothing.
-                "unadmitted": match why.filter(|words| !words.trim().is_empty()) {
+                // ⛔ THE BARE WORDS, on `explained`'s terms exactly — register item 1067, and see
+                // that key for why this is the only caller `Attributed::words` has.
+                "unadmitted": match why
+                    .as_ref()
+                    .map(Attributed::words)
+                    .filter(|words| !words.trim().is_empty())
+                {
                     Some(words) => serde_json::Value::from(words),
                     None => serde_json::Value::Bool(false),
                 },
@@ -13147,7 +13300,7 @@ impl OuterLoop {
         run: &RunContext,
         proposal: &str,
         holding: &str,
-    ) -> Option<(Admits, Chain, Option<String>)> {
+    ) -> Option<(Admits, Chain, Option<Attributed>)> {
         let declared = self.text_of(SUCCESSOR_CHECK)?;
         let mut argv: Vec<String> = declared.split_whitespace().map(ToOwned::to_owned).collect();
         if argv.is_empty() {
@@ -13184,16 +13337,25 @@ impl OuterLoop {
             // ⚠ THE CHAIN WORD IS READ ONLY WHERE THE PROPOSAL WAS ADMITTED. A refusal's sentence
             // is about why it was refused, and looking for a movement word in it would be reading
             // whatever prose happened to start it.
+            // ⛔ REGISTER ITEM 1067: the mouth is named in the arm that knows it, `checked`'s rule
+            // one question over. Both `Ok` arms are the classifier's own reply.
             Ok(judged) if judged.holds => Some((
                 Admits::Yes,
                 Chain::in_reply(judged.explained.as_deref()),
-                judged.explained,
+                judged.explained.map(Attributed::answered),
             )),
-            Ok(judged) => Some((Admits::No, Chain::Unsaid, judged.explained)),
+            Ok(judged) => Some((
+                Admits::No,
+                Chain::Unsaid,
+                judged.explained.map(Attributed::answered),
+            )),
             // ⚠⚠⚠ SILENCE IS NOT AN ADMISSION, which is the direction this whole file takes about
             // a process that did not answer — and here it is the direction that keeps a broken
             // instrument from becoming the reason a run wanders. What it costs is stated where the
             // cost lands: [`Admits::Silent`]'s own sentence tells a reader to fix the classifier.
+            // ⛔⛔⛔ AND THIS SENTENCE IS THIS DRIVER'S, not the classifier's — register item 1067.
+            // `Unheard::describe()` is composed ABOUT a program that produced nothing, so there is
+            // no *it* to attribute it to, and `Attributed::composed` is how that leaves this arm.
             Err(unheard) => Some((Admits::Silent, Chain::Unsaid, Some(unheard.describe()))),
         }
     }
@@ -14836,7 +14998,12 @@ impl OuterLoop {
         panes: &dyn PaneAccess,
         run: &RunContext,
         said: Heard,
-    ) -> (Checked, Option<String>, Option<Evidence>, Option<Silence>) {
+    ) -> (
+        Checked,
+        Option<Attributed>,
+        Option<Evidence>,
+        Option<Silence>,
+    ) {
         if !said.said() {
             return (Checked::NotAsked, None, None, None);
         }
@@ -14861,14 +15028,18 @@ impl OuterLoop {
             self.checks.unasked = self.checks.unasked.saturating_add(1);
             // ⚠ The walk already carries a reason on this arm and this path left it empty. Filling
             // it is what makes the failure diagnosable where a person reads it.
+            // ⛔⛔⛔⛔⛔ **AND IT IS COMPOSED, WHICH ON THIS ARM IS THE STARKEST CASE IN THE CLASS** —
+            // register item 1067. The other two mouths at least had a program to attribute to; here
+            // NO CHECKER WAS EVER STARTED, and the walk was publishing this sentence as *it said:*.
+            // A reader was told a checker had spoken about a run in which none was asked.
             return (
                 Checked::NotAsked,
-                Some(
+                Some(Attributed::composed(
                     "the milestone check could not be READ from this run's datamodel, so no \
                      checker was put to the claim — this is the loop's own instrument failing, \
                      not an author who declared none"
                         .to_owned(),
-                ),
+                )),
                 None,
                 // ⚠ NOT A SILENCE — register item 741. This arm is the loop's own INSTRUMENT
                 // failing, and `Checked::NotAsked` is what it publishes; a silence is a checker
@@ -14918,7 +15089,14 @@ impl OuterLoop {
             // an AGREEMENT is worth needs them for the same reason register item 428 needs the
             // verdict at all — and publishing them on one arm would tell the two apart by the
             // absence of a sentence, which is the reading this crate has burned wire numbers over.
-            Ok(judged) if judged.holds => (Checked::Passed, judged.explained, Some(shown), None),
+            // ⛔ REGISTER ITEM 1067: the mouth is named HERE, in the arm that knows it. This one is
+            // the checker's own reply, and `Attributed::answered` is the only way to say so.
+            Ok(judged) if judged.holds => (
+                Checked::Passed,
+                judged.explained.map(Attributed::answered),
+                Some(shown),
+                None,
+            ),
             // ⚠⚠⚠⚠⚠ **AND THE REFUSAL IS TALLIED IN ITS OWN ARM** — register item 499, on the rule
             // the silent arm below states for itself: the tally moves with the word, in the same
             // arm, so *how many were refused* and *what the walk said about them* cannot disagree.
@@ -14939,7 +15117,13 @@ impl OuterLoop {
                 let before = self.authored_number(REFUSALS).unwrap_or(0);
                 let deep = u32::try_from(before).unwrap_or(u32::MAX).saturating_add(1);
                 self.checks.refused_in_a_row = self.checks.refused_in_a_row.max(deep);
-                (Checked::Failed, judged.explained, Some(shown), None)
+                // ⛔ REGISTER ITEM 1067: the checker's own words, on the arm above's terms.
+                (
+                    Checked::Failed,
+                    judged.explained.map(Attributed::answered),
+                    Some(shown),
+                    None,
+                )
             }
             // ⚠⚠⚠ A CHECK THAT SAID NOTHING IS NOT A CHECK THAT AGREED. See [`Checked::Silent`],
             // and this crate's standing direction: silence is never a yes.
@@ -14974,7 +15158,10 @@ impl OuterLoop {
                 // ⚠ THE LAST ONE WINS, deliberately: a run's answer is read to decide what to do
                 // next, and the remedy still standing is the most recent failure's. See
                 // `Checks::why_silent`.
-                self.checks.why_silent = Some(why.clone());
+                // ⚠ THE BARE WORDS, and this tally is the third caller entitled to them
+                // (register item 1067): `why_silent` is read back off a run's own row, where the
+                // mouth is never in question — every sentence in it is this loop's.
+                self.checks.why_silent = Some(why.words().to_owned());
                 // ⛔⛔⛔⛔⛔ **AND WHICH OF THE TWO SILENCES IT IS, TAKEN FROM THE ARM RATHER THAN
                 // FROM THE PROSE** — register item 741. `Unheard` has divided *no verdict was ever
                 // produced* from *it answered and that was not a verdict* since register item 593;
@@ -14984,6 +15171,11 @@ impl OuterLoop {
                 // ⚠ It is derived here, in the arm that holds the value, and never re-derived from
                 // `why` — a second reader over somebody's prose is the drift this file names
                 // everywhere it composes rather than repeats.
+                // ⛔⛔⛔⛔⛔ AND THE MOUTH, TAKEN FROM THE ARM FOR THE SAME REASON THE WORD IS —
+                // register item 1067. `why` is `Unheard::describe()`, which is a sentence THIS
+                // DRIVER composed ABOUT a checker that produced nothing: there is no *it* that said
+                // it, and that is what the arm MEANS. Every renderer used to re-derive this from
+                // `Checked` standing beside it, and three of the four never did.
                 (
                     Checked::Silent,
                     Some(why),
@@ -21930,7 +22122,7 @@ mod tests {
         // ── THE PREMISE: THE DATAMODEL ANSWERS, AND WHAT IT ANSWERS IS *NO CHECKER* ───────────
         let (verdict, why, _, _) = loops.checked(&access, &run, Heard::Said(Evidence::Statement));
         assert_eq!(
-            (verdict, why.as_deref()),
+            (verdict, why.as_ref().map(Attributed::words)),
             (Checked::NotAsked, None),
             "the premise: this datamodel CAN be read, and it says the author declared no checker — \
              which is a decision and must stay silent",
@@ -21964,7 +22156,7 @@ mod tests {
              REPORTED, and routing on a new word is a separate decision with its own measurement",
         );
         assert!(
-            why.is_some_and(|said| said.contains("could not be READ")),
+            why.is_some_and(|said| said.words().contains("could not be READ")),
             "⚠⚠⚠⚠ and the walk must carry the reason, which this arm left empty before: a count \
              with no sentence tells a person a number and not what to repair",
         );
@@ -24774,7 +24966,7 @@ mod tests {
              this system was being verified from",
         );
         assert!(
-            explained.is_some_and(|said| said.contains(TOKEN)),
+            explained.is_some_and(|said| said.words().contains(TOKEN)),
             "⚠⚠⚠⚠ ARM (b): AND THE FILE WAS REALLY READ. A verdict alone could come from a checker \
              that merely started; this word exists in one file in one directory, and the milestone's \
              own path is what produced it",
@@ -30396,7 +30588,7 @@ mod tests {
             // measure WHY could not: the checker's own words were read and dropped one line below
             // the verdict they explain.
             assert_eq!(
-                ask(&mut loops, EXPLAINS).1.as_deref(),
+                ask(&mut loops, EXPLAINS).1.as_ref().map(Attributed::words),
                 Some("the artifact is empty"),
                 "⚠⚠⚠⚠ the checker's own words must reach the driver, or nine refusals are \
                  indistinguishable from one repeated",
@@ -30476,9 +30668,11 @@ mod tests {
             assert_eq!(
                 counted.why_silent.as_deref(),
                 Some(
+                    // ⚠ THE WORDS — register item 1067. `why_silent` is a run's own tally row,
+                    // where every sentence is this loop's and no mouth is in question.
                     crate::judge::Unheard::NotAVerdict("perhaps".to_owned())
                         .describe()
-                        .as_str()
+                        .words()
                 ),
                 "⚠⚠⚠⚠ AND IT CARRIES WHY — register item 593's answer arriving at 601's level. A \
                  tally saying *one was silent* sends a person to look somewhere; the reason says \
@@ -36256,6 +36450,60 @@ mod tests {
         assert!(
             workspace.lock().unwrap().close(pane).is_some(),
             "the pane this gate opened was there to close",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A REASON CANNOT BE RENDERED WITHOUT ITS MOUTH, AND THE TWO MOUTHS NEVER RENDER
+    /// ALIKE** — register item 1067, and the half no renderer's gate can reach.
+    ///
+    /// # ⚠⚠⚠⚠ Why the type is gated separately from the lines that print it
+    ///
+    /// `ai_loop.rs`'s `a_reason_this_driver_composed_is_not_quoted_as_the_checkers_on_the_walk`
+    /// asks whether the WALK attributes correctly, which is a claim about two renderers. This asks
+    /// whether the VALUE can be misattributed at all — and it is the claim that reaches the
+    /// renderer no suite runs: `sprag-host`'s live-agent harness, where the item was found, is a
+    /// measurement a person drives against a real `claude`. Nothing in a test run can exercise its
+    /// line, so what protects it is that [`Attributed::words`] is `pub(crate)` and the fields are
+    /// private: outside this crate the only thing that can be done with a reason is
+    /// [`Attributed::quoted`], and the compiler is what says so.
+    ///
+    /// ⚠⚠ **THE EXHAUSTIVE ARM IS THE POINT.** A third mouth added to `Mouth` and not given a
+    /// clause would take neither branch of this claim, so the match in [`Attributed::quoted`] is
+    /// walked over both constructors here — the same shape `Silence::ALL` gives the document one
+    /// crate over, applied to a value with no public arms to iterate.
+    #[test]
+    fn a_reason_renders_differently_depending_on_which_mouth_it_came_out_of() {
+        /// One reason, so the only thing that can make the two lines differ is the mouth.
+        const WORDS: &str = "the checker was started and never answered";
+
+        let composed = Attributed::composed(WORDS.to_owned()).quoted();
+        let answered = Attributed::answered(WORDS.to_owned()).quoted();
+
+        assert_ne!(
+            composed, answered,
+            "⛔⛔⛔⛔⛔ ITEM 1067: THE SAME WORDS RENDER THE SAME WAY OUT OF BOTH MOUTHS, so this \
+             type carries an author nothing can read. That is the defect it was built to end, \
+             wearing the repair's own name — and every renderer downstream is back to deriving \
+             the mouth from a verdict standing beside it, which is what three of four got wrong",
+        );
+        for (which, said) in [("composed", &composed), ("answered", &answered)] {
+            assert!(
+                said.contains(WORDS),
+                "⚠⚠⚠ THE REASON ITSELF MUST SURVIVE the {which} clause — a mouth bought by \
+                 dropping the words is register item 593's division handed back. Got: {said}",
+            );
+        }
+        assert!(
+            answered.contains(Attributed::ANSWERED),
+            "⚠⚠ THE CONTROL: a program that really answered keeps the clause that says so. Without \
+             this the claim above is satisfied by renaming BOTH mouths, which leaves the two \
+             authors exactly as indistinguishable as they were. Got: {answered}",
+        );
+        assert!(
+            !composed.contains(Attributed::ANSWERED),
+            "⛔⛔⛔⛔ AND THE SENTENCE THIS DRIVER COMPOSED MUST NOT WEAR IT. `Attributed::composed` \
+             is written only where a program produced nothing — `Unheard::describe`, and \
+             `Checked::NotAsked`'s arm where no checker was even started. Got: {composed}",
         );
     }
 

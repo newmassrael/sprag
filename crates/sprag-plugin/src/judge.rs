@@ -645,8 +645,37 @@ impl Unheard {
 
     /// **WHAT A READER OF THE RUN SHOULD DO ABOUT IT** — prose, and deliberately not the arm's own
     /// name, exactly as `crate::outer::Checked::describe` is.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why it hands back an [`Attributed`](crate::outer::Attributed) where its sibling
+    /// hands back a `String` — register item 1067
+    ///
+    /// `Checked::describe` is the product speaking about a verdict, and there is one mouth for it
+    /// to be in. **This sentence is different in exactly one way that matters**: it travels
+    /// onward as a run's REASON, into the same slot a checker's own reply travels in — and a slot
+    /// with two authors whose type cannot tell them apart is what item 1067 is. Four renderers had
+    /// to re-derive the mouth from the verdict standing beside the words, and three of them
+    /// published *it said:* over sentences no *it* had said.
+    ///
+    /// ⚠⚠ **THE RETURN TYPE IS THE ENFORCEMENT AND THAT IS THE POINT.** This function is the ONLY
+    /// writer of a composed reason in the product, so a `String` here is the one place a caller
+    /// could pair the loop's own words with the wrong mouth — and one did, when this round mutated
+    /// `admitted`'s silent arm to `Attributed::answered(unheard.describe())` and **both gates
+    /// stayed green**. With the mouth attached where the sentence is composed, that mutation is a
+    /// type error instead of a silent lie.
+    ///
+    /// ⚠ A caller that wants the bare prose asks `crate::outer::Attributed::words` — `pub(crate)`,
+    /// so no crate outside can. ⚠⚠ NAMED RATHER THAN LINKED, and that is the rustdoc gate rather
+    /// than a style: this item is PUBLIC and that one is not, so an intra-doc link resolves under
+    /// `--document-private-items` and is refused by `-D rustdoc::private-intra-doc-links`.
+    /// `crate::outer::Chain::in_reply`'s doc records the same lesson, learned the same way.
     #[must_use]
-    pub fn describe(&self) -> String {
+    pub fn describe(&self) -> crate::outer::Attributed {
+        crate::outer::Attributed::composed(self.prose())
+    }
+
+    /// [`describe`](Self::describe)'s words, before the mouth is put on them. Private, because the
+    /// mouth is not optional: see that method for the item this shape pays.
+    fn prose(&self) -> String {
         match self {
             Self::Unasked => "no checker was named, so nothing was asked".to_owned(),
             Self::NoPane => {
@@ -1648,7 +1677,13 @@ mod tests {
     #[test]
     fn the_sentence_about_an_unanswered_check_carries_words_and_not_a_rust_value() {
         let over = crate::completion::Over::NotYet(crate::completion::Wanting::unlooked());
-        let said = Unheard::Unfinished(over.clone()).describe();
+        // ⚠ THE WORDS, past the mouth this now arrives wearing — register item 1067. What this gate
+        // is about is the PROSE, and reading it through the attribution would let a change to the
+        // clause answer a claim about the sentence.
+        let said = Unheard::Unfinished(over.clone())
+            .describe()
+            .words()
+            .to_owned();
 
         assert!(
             !said.contains(&format!("{over:?}")),

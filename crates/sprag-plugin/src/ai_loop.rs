@@ -227,7 +227,13 @@ struct Learned<'a> {
     /// ⚠ Borrowed, like [`found`](Self::found) and [`unreadable`](Self::unreadable) beside it: this
     /// struct is `Copy` so a caller cannot half-fill it, and an owned string here would take that
     /// away for a value the renderer only reads.
-    explained: Option<&'a str>,
+    ///
+    /// ⛔⛔⛔ **AND IT IS AN [`Attributed`](crate::outer::Attributed) AND NOT A `&str`** — register
+    /// item 1067. This slot has two authors (the checker's reply, and a sentence this driver
+    /// composed about a checker that never answered), and the renderer below used to quote both as
+    /// *it said:*. A bare string is exactly what let it: the mouth travels with the words now, and
+    /// the renderer asks rather than assumes.
+    explained: Option<&'a crate::outer::Attributed>,
     /// WHICH READER that check was shown — register item 448, and the fact that makes its verdict
     /// appealable.
     shown: Option<crate::outer::Evidence>,
@@ -238,8 +244,9 @@ struct Learned<'a> {
     chain: Option<crate::outer::Chain>,
     /// What that classifier said BESIDE its verdict — register item 839.
     ///
-    /// ⚠ Borrowed, like [`explained`](Self::explained) beside it and for that field's reason.
-    unadmitted: Option<&'a str>,
+    /// ⚠ Borrowed, like [`explained`](Self::explained) beside it and for that field's reason —
+    /// including register item 1067's: this slot has the same two authors and had the same defect.
+    unadmitted: Option<&'a crate::outer::Attributed>,
     /// What proved this pass's delivery arrived, when that is not what the run was already told —
     /// register item 434.
     witnessed: Option<crate::deliver::Witnessed>,
@@ -718,8 +725,17 @@ impl AiLoop {
             // report a person will act on, so a reader has to be able to see where one stops and
             // the other starts. ⚠ INSIDE the verdict's arm, because a reason with no verdict beside
             // it would be a sentence about a judgement this line never says was made.
-            if let Some(words) = explained {
-                note = format!("{note} — it said: {words:?}");
+            //
+            // ⛔⛔⛔⛔⛔ **AND THE CLAUSE IS THE VALUE'S, NOT THIS LINE'S** — register item 1067, and
+            // this line is one of the three the item is made of. It used to spell `it said:` here,
+            // over a slot with TWO authors: `Checked::Silent` puts `Unheard::describe()` in it —
+            // a sentence THIS LOOP composed about a checker that said nothing — and a reader
+            // handed *it said: "the checker was started and never answered…"* is sent to measure
+            // the checker over words the loop wrote. Item 1065 paid the same defect one surface
+            // over (the agent's prompt) and this line was not told. Now the mouth travels with the
+            // words and this renderer cannot pick one.
+            if let Some(said) = explained {
+                note = format!("{note} — {}", said.quoted());
             }
             // ⚠⚠⚠⚠⚠ AND WHAT IT WAS LOOKING AT — register item 448, and the line that makes the two
             // above worth reading. A live run was refused EIGHT times with an identical sentence,
@@ -760,8 +776,11 @@ impl AiLoop {
             // everything else on this line is the product speaking. ⚠ INSIDE the verdict's arm,
             // because a reason with no verdict beside it would describe a classification this line
             // never says was made.
-            if let Some(words) = unadmitted {
-                note = format!("{note} — it said: {words:?}");
+            //
+            // ⛔⛔⛔ AND ATTRIBUTED BY THE VALUE — register item 1067, `explained`'s note above and
+            // the identical defect: `Admits::Silent` puts this driver's own sentence here.
+            if let Some(said) = unadmitted {
+                note = format!("{note} — {}", said.quoted());
             }
         }
         // ⚠⚠⚠⚠ **WHAT PROVED THE PROMPT THIS EDGE DELIVERED ACTUALLY ARRIVED** — register item 434,
@@ -1937,11 +1956,11 @@ impl Plugin for AiLoop {
                         made,
                         repeated,
                         service_said: service_said.as_deref(),
-                        explained: explained.as_deref(),
+                        explained: explained.as_ref(),
                         shown,
                         admits,
                         chain,
-                        unadmitted: unadmitted.as_deref(),
+                        unadmitted: unadmitted.as_ref(),
                         witnessed,
                         // ⚠⚠ TAKEN OFF THE LOOP rather than carried on `Pumped::Moved`, which is
                         // `walked`'s own decision beside it: the slot is emptied at the top of
@@ -11813,7 +11832,17 @@ mod tests {
             // 🎯 AND WHAT THE CLASSIFIER IS QUOTED AS SAYING, on the arm that has one — see the
             // table. It is the only place a run's own words show that the driver appended the
             // checkpoint in hand to the classifier's argv (register item 840).
-            let said = quoted.map_or_else(String::new, |words| format!(" — it said: {words:?}"));
+            // ⛔⛔⛔ THE CLAUSE IS ASKED OF THE TYPE AND NOT SPELLED HERE — register item 1067.
+            // This mirror carried its own copy of `it said:` while the shipping line carried
+            // another, which is the "one value, two homes" shape that let item 1065's repair land
+            // on one surface and not the rest. `Attributed` owns the wording; a change to it turns
+            // this red instead of leaving it agreeing with a line that no longer exists.
+            let said = quoted.map_or_else(String::new, |words: &str| {
+                format!(
+                    " — {}",
+                    crate::outer::Attributed::answered(words.to_owned()).quoted()
+                )
+            });
             assert_eq!(
                 line,
                 &format!("{the_edge} — {}{verdict}{admission}{said}", ending.noted()),
@@ -17342,6 +17371,122 @@ mod tests {
             "⚠⚠ AND THE CONTROL MUST BE A LIVE PROMPT rather than an empty string, or the \
              assertion above holds for a prompt that says nothing at all. Got:\n{disputed}",
         );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AND THE WALK A PERSON READS SAYS WHOSE WORDS ITS REASON IS** — register item 1067,
+    /// and the two gates above's defect standing in the surface they did not cover.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the population is FOUR lines and not one, measured
+    ///
+    /// Item 1065 divided one slot's two authors in the loop DOCUMENT, and the ledger recorded the
+    /// residue as one harness line. Re-measured while paying it, the clause ` — it said: {…:?}` was
+    /// spelled at **five** sites over **two** slots — `explained` and `unadmitted` — of which
+    /// three were shipping: this journal's two lines, and a mirror in a gate that had quietly
+    /// become a second copy of the wording. And both slots have the same two mouths:
+    /// `Checked::Passed`/`Failed` and `Admits::Yes`/`No` carry a program's own reply, while
+    /// `Checked::Silent`, `Checked::NotAsked`'s instrument-failure arm and `Admits::Silent` carry a
+    /// sentence THIS DRIVER composed about a program that answered nothing.
+    ///
+    /// **`Checked::NotAsked`'s arm is the starkest and nobody had named it**: no checker is started
+    /// at all there, and the walk was publishing the loop's own *"the milestone check could not be
+    /// READ from this run's datamodel"* as `it said:` — a program quoted that was never run.
+    ///
+    /// # ⚠⚠⚠ So the claim is over the CLASS: two slots × two mouths, and the control is the half
+    ///
+    /// A repair that renamed the clause everywhere would pass *the driver is not quoted as the
+    /// checker* while leaving the two authors exactly as indistinguishable as they were — item
+    /// 1065's own control, one layer down. So each slot is asked BOTH questions on the same line
+    /// shape, and the answered half must keep `it said:`.
+    ///
+    /// ⚠ The rendering is asked of [`crate::outer::Attributed`] rather than spelled here, which is
+    /// what makes this a claim about the product's wording instead of a copy of it — the mistake
+    /// the mirror in `the_ending_a_run_reaches_is_named_on_its_own_walk` had made.
+    #[test]
+    fn a_reason_this_driver_composed_is_not_quoted_as_the_checkers_on_the_walk() {
+        use crate::outer::{Admits, Attributed, Checked};
+
+        /// `Unheard::describe`'s shape — the sentence the loop writes when nothing answered.
+        const DRIVERS_OWN: &str = "the checker was started and never answered";
+        /// And a reply a program that really ran gave.
+        const PROGRAMS_OWN: &str = "the artifact names no file";
+        /// The clause that may only ever stand in front of a program's own words.
+        const THE_CHECKERS_MOUTH: &str = "it said:";
+
+        /// The walk line for one slot holding one reason.
+        fn line(learned: Learned<'_>) -> String {
+            AiLoop::walked(
+                AiLoopState::Judging,
+                AiLoopEvent::Judge,
+                AiLoopState::Reflecting,
+                learned,
+            )
+        }
+
+        let composed = Attributed::composed(DRIVERS_OWN.to_owned());
+        let answered = Attributed::answered(PROGRAMS_OWN.to_owned());
+
+        // Both slots, both mouths — the population, not an instance.
+        let population = [
+            (
+                "explained",
+                line(Learned {
+                    checked: Some(Checked::Silent),
+                    explained: Some(&composed),
+                    ..Learned::default()
+                }),
+                line(Learned {
+                    checked: Some(Checked::Failed),
+                    explained: Some(&answered),
+                    ..Learned::default()
+                }),
+            ),
+            (
+                "unadmitted",
+                line(Learned {
+                    admits: Some(Admits::Silent),
+                    unadmitted: Some(&composed),
+                    ..Learned::default()
+                }),
+                line(Learned {
+                    admits: Some(Admits::No),
+                    unadmitted: Some(&answered),
+                    ..Learned::default()
+                }),
+            ),
+        ];
+
+        for (slot, drivers, programs) in population {
+            assert!(
+                drivers.contains(DRIVERS_OWN),
+                "⚠⚠⚠⚠⚠ THE REASON ITSELF MUST SURVIVE on `{slot}`: register item 593 bought the \
+                 division between six ways of hearing nothing, and a repair that stopped \
+                 mis-quoting the reason by DROPPING it would hand that back. Got:\n{drivers}",
+            );
+            assert!(
+                !drivers.contains(THE_CHECKERS_MOUTH),
+                "⛔⛔⛔⛔⛔ ITEM 1067: `{slot}` publishes this LOOP's own sentence as a program's. \
+                 The arm that produced it is the arm where nothing answered — there is no *it* \
+                 that said anything, and that is what the arm MEANS. A person reading this walk is \
+                 sent to measure the checker over words the loop wrote, which item 1065 measured \
+                 at a process audit and four unique-string searches. Got:\n{drivers}",
+            );
+            assert!(
+                drivers.contains("this driver"),
+                "⚠⚠⚠ AND IT MUST NAME THE RIGHT MOUTH RATHER THAN NO MOUTH on `{slot}`: a reason \
+                 with no author at all is read in the product's own voice, which is the whole of \
+                 `dispute_quoting`'s argument one surface over. Got:\n{drivers}",
+            );
+
+            // ── THE CONTROL: the mouth that really did say it keeps the word ─────────────────
+            assert!(
+                programs.contains(THE_CHECKERS_MOUTH) && programs.contains(PROGRAMS_OWN),
+                "⛔⛔⛔⛔ THE CONTROL FAILED ON `{slot}`, and its failure is the interesting one: a \
+                 repair that renamed the clause EVERYWHERE would pass every assertion above while \
+                 leaving the two authors exactly as indistinguishable as they were. This arm is a \
+                 reply a program really gave, and it is the one place `it said:` is true. \
+                 Got:\n{programs}",
+            );
+        }
     }
 
     /// ⛔⛔⛔⛔⛔ **THE DOOR AN OUTAGE CAME IN AT DECIDES WHETHER ANYTHING MAY BE TYPED ON THE WAY
