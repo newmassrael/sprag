@@ -502,6 +502,43 @@ const MILESTONE_CHECK: &str = "milestone_check";
 /// this and was satisfied*.
 const SUCCESSOR_CHECK: &str = "successor_check";
 
+/// ⛔⛔⛔⛔⛔ **WHO SAYS WHAT THIS KIND SHOULD TAKE NEXT**, as an argv — register item 659, and
+/// [`SUCCESSOR_CHECK`]'s other half.
+///
+/// # ⛔⛔⛔⛔⛔ The defect: a run is SCORED by an order it is never shown
+///
+/// [`SUCCESSOR_CHECK`]'s program runs on **every reflection turn** ([`OuterLoop::admitted`]) and
+/// asks one narrow question — *may this proposal be taken?* The same program can also answer *what
+/// is first?*, and nothing asked it. So an agent proposes with no sight of the ranking and is then
+/// marked against it: measured 2026-09-12, two proposals in a row came back *"counted and not
+/// taken … STEP"*, and **the refusal was the first thing that named the set**. Information a round
+/// trip late, and only when the answer is no.
+///
+/// The three other ways in were measured and closed (the register carries the table): a reflection
+/// may not use a tool — `Asks::Direction` holds that as one of its four sentences — `working_rules`
+/// belongs to `start_prompt` alone, and `reflect_prompt` is composed once per session in `priming`,
+/// so a value baked there freezes. What was left is the road every other fact travels: the driver
+/// runs the program and the document quotes what it said.
+///
+/// # ⚠⚠ It DECIDES NOTHING, which is what separates it from its two siblings
+///
+/// `milestone_check` and `successor_check` produce verdicts the document routes on. This one's
+/// answer is quoted and nothing branches on it — [`crate::judge::Judgement::explained`]'s rule
+/// exactly: *the ban is on deciding with it, not on carrying it*. A `<cond>` reading this would
+/// make the document a second author of a ranking the register already owns.
+///
+/// ⚠ **EMPTY MEANS THIS KIND NAMES NO ORDER**, and a run of it gets the reflection prompt it got
+/// before this existed. That is the template's shipped state and the control arm of its gate.
+const ORDER_CHECK: &str = "order_check";
+
+/// **WHAT THE ORDER SAID**, as the `judge` and `reflect.applied` payloads carry it — a non-empty
+/// line or `false`, never `''`. Register item 659.
+///
+/// ⚠⚠ The `false` rule is load-bearing rather than conventional, and it is `explained`'s measured
+/// one: this datamodel is Lua, where the empty string is TRUE, so an empty word here would have
+/// `reflecting` compose a heading and quote nothing under it — typed at a live agent.
+const ORDERED: &str = "ordered";
+
 /// **HOW THE CHECKER IS TOLD TO ANSWER, AND IT IS THE LAST THING IT READS.**
 ///
 /// # ⛔⛔⛔⛔⛔ Why this is a constant standing at the END of the question
@@ -1326,6 +1363,17 @@ pub struct Brief {
     /// author and there is no wire key for it — a caller who could name this could delete the whole
     /// bound by naming nothing, which is [`reaim_max`](Self::reaim_max)'s own argument one field up.
     pub successor_check: Option<String>,
+
+    /// ⛔⛔⛔ **WHO SAYS WHAT THIS KIND SHOULD TAKE NEXT**, as an argv — or [`None`] to leave the
+    /// template's empty slot standing, which means a reflection is shown no order. Register item
+    /// 659. ⚠ The slot's reasoning is on the `ORDER_CHECK` constant, NAMED rather than linked for
+    /// [`successor_check`](Self::successor_check)'s stated reason: it is private.
+    ///
+    /// ⚠⚠ It is that field's other half and travels on its terms exactly — the KIND's to author, no
+    /// wire key — with the one difference that is the whole of item 659: **its answer decides
+    /// nothing.** It is quoted to the agent and no `cond` reads it, which keeps the ranking the
+    /// register's rather than making the document a second author of it.
+    pub order_check: Option<String>,
     /// 🎯🎯🎯🎯🎯 **HOW MANY TIMES A RUN WHOSE CHECKPOINT IS DONE MAY ASK ITS AGENT AGAIN** — or
     /// [`None`] to leave the template's own number standing. Register item 840, and see
     /// the private `REASK_MAX` constant, where the owner's decision and the livelock it bounds are
@@ -2262,7 +2310,16 @@ impl Owed {
             Self::Turn => "turn_prompt",
             Self::End => "end_prompt",
             Self::Stop => "stop_prompt",
-            Self::Reflect => "reflect_prompt",
+            // ⛔⛔⛔ Register item 659: what a reflection is TYPED, which is no longer
+            // `reflect_prompt` itself. That string is composed once per session by `priming`; this
+            // one is it plus whatever this run's register said to take next, taken fresh at every
+            // `reflecting` entry because an order goes stale the moment an item is paid or opened.
+            //
+            // ⚠⚠ THE VARIABLE THE DOOR CHECKS IS THE ONE THE DOCUMENT SENDS, which is this table's
+            // whole purpose — a door holding `reflect_prompt` would be refusing a machine over a
+            // string nothing types any more, and `Authored`'s preview would show a question the
+            // agent is not asked. `priming` seeds this one so a preview is never empty.
+            Self::Reflect => "reflect_asking",
             Self::Dispute => DISPUTE_PROMPT,
             Self::Unverified => UNVERIFIED_PROMPT,
             Self::Changed => "changed_prompt",
@@ -4340,7 +4397,7 @@ impl crate::review::Asked for AskingAnother<'_> {
             self.run,
             &asks.argv,
             None,
-            question,
+            Some(question),
             asks.within,
         )
         .ok()
@@ -7491,6 +7548,20 @@ pub struct OuterLoop {
     /// ⛔ **[`Attributed`] AND NOT A `String`** — register item 1067: the arm that produced it is
     /// the only party that knows whose words they are, and it is the one that fills this.
     explained: Option<Attributed>,
+
+    /// **WHAT THIS REGISTER SAYS TO TAKE NEXT**, as the one line the kind's `order_check` printed —
+    /// [`None`] where this kind names no such program, or where it did not succeed. Register item
+    /// 659.
+    ///
+    /// ⚠⚠ **A `String` AND NOT AN [`Attributed`]**, which is the difference from the field directly
+    /// above and is the decision rather than an omission: `explained` has two possible authors (the
+    /// checker, or this driver composing a silence) and item 1067 is what that cost. This has ONE —
+    /// the program a person named in the document — and there is no arm anywhere that composes a
+    /// stand-in for it, because *say nothing* is what this run does when it has nothing.
+    ///
+    /// ⚠ Written fresh on the turn that produced it and never latched: an order taken three turns
+    /// ago is a snapshot, and the register moves under it every time an item is paid or opened.
+    ordered: Option<String>,
     /// ⚠⚠⚠⚠⚠ **AND WHICH READER THAT CHECK WAS SHOWN** — register item 448, and [`None`] where
     /// nothing was checked.
     ///
@@ -8087,6 +8158,9 @@ impl OuterLoop {
             saw: None,
             verdict: None,
             explained: None,
+            // ⚠ Nothing has been judged, so no turn has asked the register what to take — and a
+            // run that started holding an order would be quoting one taken before it existed.
+            ordered: None,
             shown: None,
             // ⚠ Nothing has reflected, so no successor has been proposed for anything to classify.
             admits: None,
@@ -8873,6 +8947,12 @@ impl OuterLoop {
             // the missing link cost the first time, and this one is written the same round its
             // guard is so the chain has no gap to measure.
             SUCCESSOR_CHECK: brief.successor_check.clone().unwrap_or_default(),
+            // ⛔⛔⛔⛔⛔ AND WHO SAYS WHAT TO TAKE NEXT — register item 659, on the line above's
+            // terms exactly and answering its other half. That program says whether a PROPOSAL may
+            // be taken; this one says what is FIRST, and the run it is quoted to is the run being
+            // marked against it. The template ships `''` (this kind names no order), and a kind
+            // that names one must arrive holding it or the reflection is shown nothing.
+            ORDER_CHECK: brief.order_check.clone().unwrap_or_default(),
             // ⚠⚠⚠⚠ AND WHAT TO DO WHEN THE PEER'S SERVICE FAILS — all three unconditional, on the
             // terms the two lines above set. The template ships an empty needle (declines) and
             // WORKING defaults for the other two, so a kind that names none must have its own
@@ -11480,6 +11560,17 @@ impl OuterLoop {
                 // and the only party that can compose an authored sentence out of them is the
                 // document. So the ban is on deciding with it, not on carrying it.
                 self.explained = heard.said().then_some(explained).flatten();
+                // ⛔⛔⛔⛔⛔ **AND WHAT THIS REGISTER SAYS TO TAKE NEXT** — register item 659, asked
+                // HERE because this is where the driver already runs a program the document named,
+                // and because the payload is built on the next line.
+                //
+                // ⚠⚠⚠ **UNCONDITIONALLY, unlike the three facts above**, and the asymmetry is the
+                // decision: those are about a CLAIM the agent made and have no meaning where it
+                // made none, while this is about the REGISTER and is equally true whatever the
+                // turn did. `reflecting` is entered from six `judge` edges, only one of which is
+                // about a claim, so asking only on that one would leave the ordinary cadence
+                // reflection — the common case — with nothing to quote.
+                self.ordered = self.ordering(panes, run);
                 // ⚠⚠⚠⚠⚠ AND WHICH READER THE CHECK WAS SHOWN — register item 448. Beside the other
                 // two and on the same condition, for their reason: it belongs to THIS judgement and
                 // is gone the instant the payload is built. It does NOT reach the datamodel either,
@@ -11516,6 +11607,28 @@ impl OuterLoop {
                         // authorities on one fact. Every OTHER reader takes `Attributed::quoted`,
                         // which is why `words` is `pub(crate)`.
                         "explained": match self.explained.as_ref().map(Attributed::words) {
+                            Some(line) => serde_json::Value::from(line),
+                            None => serde_json::Value::Bool(false),
+                        },
+                        // ⛔⛔⛔⛔⛔ **AND WHAT THIS REGISTER SAYS TO TAKE NEXT** — register item
+                        // 659, and `explained`'s TWIN one key up rather than a new mechanism.
+                        //
+                        // That key's own sentence is the whole argument: *it is one line of
+                        // somebody else's prose, carried so that an authored sentence can quote
+                        // it*, and *the ban is on deciding with it, not on carrying it*. A
+                        // reflection is SCORED by this order (`admitted` runs the same program on
+                        // every reflection turn) and was never shown it, so the one thing missing
+                        // was a road for the sentence.
+                        //
+                        // ⚠⚠ A NON-EMPTY LINE OR `false`, NEVER `''` — `explained`'s measured
+                        // rule, Lua's empty string being TRUE. `order_said` composes a heading
+                        // around this, so an empty word would type a heading over nothing.
+                        //
+                        // ⚠ IT RIDES THE `judge` EVENT because six of `reflecting`'s seven edges
+                        // are `judge`; the seventh (`reflect.applied`) carries it too, so the
+                        // re-ask turn — the one that most needs the order — is not the one turn
+                        // without it.
+                        ORDERED: match self.ordered.as_deref() {
                             Some(line) => serde_json::Value::from(line),
                             None => serde_json::Value::Bool(false),
                         },
@@ -13390,8 +13503,51 @@ impl OuterLoop {
                     Some(words) => serde_json::Value::from(words),
                     None => serde_json::Value::Bool(false),
                 },
+                // ⛔⛔⛔⛔⛔ **AND WHAT TO TAKE NEXT, ON THIS EDGE TOO** — register item 659.
+                //
+                // ⚠⚠⚠ `reflecting` has seven ways in and this is the ONE that is not `judge`: a
+                // reflection whose proposal was turned away re-enters here to ask again. Leaving it
+                // off would make the re-ask the single turn with no order in front of it — and the
+                // re-ask is the turn that has just been told, by the same program, that what it
+                // chose was not what to take. Asked fresh rather than echoed from the `judge` edge,
+                // because the register is a file two writers share and this turn is a later moment.
+                ORDERED: match self.ordering(panes, run).as_deref() {
+                    Some(line) => serde_json::Value::from(line),
+                    None => serde_json::Value::Bool(false),
+                },
             }),
         ))
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHAT THIS KIND'S REGISTER SAYS TO TAKE NEXT**, as the one line its `order_check`
+    /// printed — [`None`] where the document names no such program, or where it did not succeed.
+    /// Register item 659.
+    ///
+    /// # ⚠⚠ It is [`Self::admitted`]'s sibling and deliberately NOT its caller
+    ///
+    /// Both run a program a KIND authored, on the same turn, against the same register. They are
+    /// two functions because they ask two questions — *may this proposal be taken* and *what is
+    /// first* — and item 1074 is the whole argument for not letting one clause answer two readers.
+    /// The cost of asking twice is measured and stated at [`ORDER_CHECK`]: 0.32–0.41 s against a
+    /// turn's own 1800 s, which is 0.023%.
+    ///
+    /// ⚠⚠⚠ **A FAILURE IS SILENCE AND NEVER A SENTENCE.** Every way this can go wrong — no program
+    /// named, a program that would not start, one that did not finish, one that failed — answers
+    /// `None`, and the document then composes nothing. The alternative is a heading over an
+    /// apology, typed at a live agent as though it were this repository's own ranking.
+    fn ordering(&self, panes: &dyn PaneAccess, run: &RunContext) -> Option<String> {
+        let declared = self.text_of(ORDER_CHECK)?;
+        let argv: Vec<String> = declared.split_whitespace().map(ToOwned::to_owned).collect();
+        if argv.is_empty() {
+            return None;
+        }
+        // ⚠ IN THE TREE THE RUN WORKS IN, on `admitted`'s reading exactly: a program that reads a
+        // register by an absolute path does not need it, and one that reads its own repository
+        // does — and which of those a kind named is the kind's business, not this driver's.
+        let standing_in = panes
+            .origin()
+            .and_then(|origin| origin.pane_start_dir(self.driving.pane));
+        crate::judge::line_from_another(panes, run, &argv, standing_in.as_deref(), ADMITS_WITHIN)
     }
 
     /// 🎯🎯🎯🎯🎯 **ASK A PROGRAM WHETHER THE CHECKPOINT THIS REFLECTION NAMED IS ONE TO TAKE** —
@@ -20762,6 +20918,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: None,
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(200)),
@@ -20886,6 +21043,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: None,
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 // ⚠⚠ GENEROUS, SO `turns` IS NOT WHAT ENDS THIS RUN. A bound proved by a run that
@@ -21976,6 +22134,7 @@ mod tests {
             check_opens: None,
             milestone_check: None,
             successor_check: None,
+            order_check: None,
             reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
@@ -22115,6 +22274,7 @@ mod tests {
                     check_opens: None,
                     milestone_check: None,
                     successor_check: None,
+                    order_check: None,
                     reask_max: None,
                     service: None,
                     // ⚠ Large, so nothing else can end this run first: the subject is which
@@ -22257,6 +22417,7 @@ mod tests {
             check_opens: None,
             milestone_check: None,
             successor_check: None,
+            order_check: None,
             reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
@@ -22416,6 +22577,7 @@ mod tests {
                 // ⚠ NO CHECKER AUTHORED — the world that must stay silent, and the control.
                 milestone_check: None,
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(3)),
@@ -22503,6 +22665,7 @@ mod tests {
             check_opens: None,
             milestone_check: None,
             successor_check: None,
+            order_check: None,
             reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
@@ -22604,6 +22767,7 @@ mod tests {
             check_opens: None,
             milestone_check: None,
             successor_check: None,
+            order_check: None,
             reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
@@ -22703,6 +22867,7 @@ mod tests {
             check_opens: None,
             milestone_check: None,
             successor_check: None,
+            order_check: None,
             reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
@@ -22804,6 +22969,7 @@ mod tests {
             check_opens: None,
             milestone_check: None,
             successor_check: None,
+            order_check: None,
             reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
@@ -22896,6 +23062,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: None,
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(3)),
@@ -23063,6 +23230,7 @@ mod tests {
             check_opens: None,
             milestone_check: None,
             successor_check: None,
+            order_check: None,
             reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(3)),
@@ -23263,6 +23431,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: None,
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(3)),
@@ -23479,6 +23648,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: None,
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -23623,6 +23793,7 @@ mod tests {
             check_opens: None,
             milestone_check: None,
             successor_check: None,
+            order_check: None,
             reask_max: None,
             service: None,
             max_turns: None,
@@ -24788,6 +24959,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: Some("/bin/echo YES".to_string()),
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(3)),
@@ -25214,6 +25386,7 @@ mod tests {
             check_opens: None,
             milestone_check: Some(check.to_string()),
             successor_check: None,
+            order_check: None,
             reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(40)),
@@ -25711,6 +25884,107 @@ mod tests {
         let _ = std::fs::remove_dir_all(&repo);
     }
 
+    /// ⛔⛔⛔⛔⛔ **A REFLECTION IS HANDED WHAT ITS OWN REGISTER SAYS TO TAKE NEXT, AND ONLY WHERE
+    /// THE PROGRAM THAT SAID IT SUCCEEDED** — register item 659.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The defect: a run is SCORED by an order nothing shows it
+    ///
+    /// [`Self::admitted`] runs a kind's classifier on **every reflection turn**, so what an agent
+    /// proposes is marked against a derived ranking — and nothing ever put that ranking in front of
+    /// the agent. Measured 2026-09-12: two proposals in a row refused *"counted and not taken …
+    /// STEP"*, and the REFUSAL was the first thing that named the set. Choosing blindfolded, then
+    /// being ranked.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why every arm runs a REAL program, and why the failing one is the sharp one
+    ///
+    /// The whole contract is *quote only what a program that WORKED printed*, and that is a fact
+    /// about a child's exit status ([`crate::access::PaneAccess::pane_child_exit`], register item
+    /// 659's earlier half). A double returning a line would assert nothing about it. `/bin/sh` is
+    /// the fixture, once printing and succeeding and once printing and failing, and the second must
+    /// answer NOTHING — because what it printed would otherwise be typed at a live agent under a
+    /// heading calling it this repository's own ranking.
+    #[test]
+    fn a_reflection_is_told_what_to_take_next_only_by_a_program_that_worked() {
+        let repo = a_directory_this_gate_owns("659-what-to-take-next");
+        let (workspace, pane) = pane_born_in(&repo);
+        let panes = WorkspacePaneAccess::new(Arc::clone(&workspace));
+
+        // ⚠⚠⚠ A PROGRAM ON DISK AND NOT A SHELL ONE-LINER, because the argv a document authors is
+        // split on WHITESPACE — `successor_check`'s own stated limit: an argument containing a
+        // space cannot be spelled in one of these clauses. A fixture passing `sh -c '…'` would be
+        // testing a command line no kind can actually write, and it is how this gate's first draft
+        // answered `None` to everything.
+        //
+        // ⛔⛔⛔⛔⛔ **TRACKED DOUBLES AND NOT PROGRAMS THIS TEST WRITES** — register item 467, whose
+        // gate caught the second draft: a file any process holds open for writing cannot be
+        // executed, and this workspace's harness forks from threads. They live under
+        // `crates/sprag-plugin/tests/doubles/order-check/` and `Doubles::program` refuses a
+        // checkout that lost their execute bit rather than letting the product be blamed.
+        let doubles =
+            sprag_gate::doubles::Doubles::of(env!("CARGO_MANIFEST_DIR")).set("order-check");
+        let program = |name: &str| -> String { doubles.program(name).display().to_string() };
+
+        let ordering = |argv: &str| -> Option<String> {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let loops = bounded_at(lua, pane, Duration::from_secs(20))
+                .expect("the document's four authored strings");
+            loops
+                .script
+                .set_variable(
+                    &loops.session,
+                    ORDER_CHECK,
+                    ScriptValue::String(argv.to_owned()),
+                )
+                .expect("a document's own clause is writable");
+            loops.ordering(&panes, &RunContext::uncancellable())
+        };
+
+        // ── ⭐ THE CLAIM: what the program printed is what the run holds ──────────────────────
+        //
+        // ⚠ The sentence is the shape `north-star --next` really prints, so the arm is about a
+        // line this loop would actually quote rather than about a word chosen to be findable.
+        let said = ordering(&program("says-what-is-next"));
+        assert_eq!(
+            said.as_deref(),
+            Some("next_659_is_what_to_take"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 659: this kind named a program that says what to take next, it \
+             ran, it succeeded, and the run holds nothing. The reflection is scored by this order \
+             on every turn and this is the only road that shows it one",
+        );
+
+        // ── ⛔⛔⛔ THE SHARP ARM: A PROGRAM THAT FAILED IS QUOTED BY NOBODY ───────────────────
+        //
+        // ⚠⚠⚠⚠⚠ It PRINTS a plausible line and then fails. A build that took the last line
+        // without asking the status would hand that text to a live agent under a heading calling
+        // it this repository's own ranking — a wrong reading that decodes perfectly, which is this
+        // register's oldest disease, arriving in the one place where nothing downstream can catch
+        // it because the agent simply believes it.
+        let failed = ordering(&program("prints-then-fails"));
+        assert_eq!(
+            failed, None,
+            "⛔⛔⛔⛔⛔ A FAILED PROGRAM'S OUTPUT WAS TAKEN AS AN ANSWER. The contract is the exit \
+             STATUS and never the text: `line_from_another` may quote only a child that was reaped \
+             and reported success, and everything else — a non-zero code, a signal, a status \
+             nothing could read — is *this run has nothing to say*",
+        );
+
+        // ── ⛔ THE CONTROL: a kind that names no program gets nothing, silently ───────────────
+        //
+        // ⚠⚠ This is the arm that keeps the item from being a behaviour change nobody asked for:
+        // the template ships `order_check` empty, so every kind but this repository's own must
+        // reach its reflection exactly as it did before item 659 — and `None` here is what the
+        // document renders as no clause at all.
+        assert_eq!(
+            ordering(""),
+            None,
+            "⛔⛔⛔⛔ A KIND THAT NAMED NO ORDER MUST BE SHOWN NONE. An empty clause reaching for a \
+             program is a run spawning a pane per turn for a document that asked for nothing",
+        );
+
+        panes.lifecycle().expect("lifecycle").close(pane);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
     /// ⛔⛔⛔⛔⛔ **THE FILES A CHECKER IS TOLD TO OPEN COME OUT OF THE CHECKER'S OWN CLAUSE** —
     /// register item 1074, and the clause item 1072 had to borrow because there was none.
     ///
@@ -25999,6 +26273,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: Some(format!("/bin/sh {}", script.display())),
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -26880,6 +27155,7 @@ mod tests {
                     check_opens: None,
                     milestone_check: None,
                     successor_check: None,
+                    order_check: None,
                     reask_max: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
@@ -27173,6 +27449,7 @@ mod tests {
                     check_opens: None,
                     milestone_check: None,
                     successor_check: None,
+                    order_check: None,
                     reask_max: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
@@ -27364,6 +27641,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: None,
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -27856,6 +28134,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: None,
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -28052,6 +28331,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: None,
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -28277,6 +28557,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: None,
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -28522,6 +28803,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: None,
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -28725,6 +29007,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: None,
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -28911,6 +29194,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: None,
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -29229,6 +29513,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: None,
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -29335,6 +29620,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: None,
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(4)),
@@ -29576,6 +29862,7 @@ mod tests {
                     check_opens: None,
                     milestone_check: None,
                     successor_check: None,
+                    order_check: None,
                     reask_max: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
@@ -29668,6 +29955,7 @@ mod tests {
                     check_opens: None,
                     milestone_check: None,
                     successor_check: None,
+                    order_check: None,
                     reask_max: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
@@ -30224,6 +30512,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: None,
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -30492,6 +30781,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: None,
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -30765,6 +31055,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: None,
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -31062,6 +31353,7 @@ mod tests {
                     check_opens: None,
                     milestone_check: Some(DENIES.to_string()),
                     successor_check: None,
+                    order_check: None,
                     reask_max: None,
                     service: None,
                     // ⚠⚠ BOTH OTHER ESCAPES ARE OUT OF REACH, which is what makes the arm below
@@ -31282,6 +31574,7 @@ mod tests {
                     // CHECKED THAT CLAIM` with every part of the mechanism built (item 428).
                     milestone_check: check.map(ToOwned::to_owned),
                     successor_check: None,
+                    order_check: None,
                     reask_max: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
@@ -31599,6 +31892,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: check.map(ToOwned::to_owned),
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -32438,6 +32732,7 @@ mod tests {
                     check_opens: None,
                     milestone_check: None,
                     successor_check: None,
+                    order_check: None,
                     reask_max: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
@@ -32638,6 +32933,7 @@ mod tests {
             check_opens: None,
             milestone_check: None,
             successor_check: None,
+            order_check: None,
             reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(40)),
@@ -32966,6 +33262,7 @@ mod tests {
             check_opens: None,
             milestone_check: None,
             successor_check: None,
+            order_check: None,
             reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(40)),
@@ -33152,6 +33449,7 @@ mod tests {
             check_opens: None,
             milestone_check: None,
             successor_check: None,
+            order_check: None,
             reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(40)),
@@ -33350,6 +33648,7 @@ mod tests {
             check_opens: None,
             milestone_check: None,
             successor_check: None,
+            order_check: None,
             reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(40)),
@@ -33594,6 +33893,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: Some(DENIES.to_string()),
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -33811,6 +34111,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: Some(CANNOT_ANSWER.to_string()),
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -34099,6 +34400,7 @@ mod tests {
             check_opens: None,
             milestone_check: None,
             successor_check: None,
+            order_check: None,
             reask_max: None,
             service: Some(outage.clone()),
             max_turns: Some(Counted::Of(3)),
@@ -34716,6 +35018,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: None,
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: Some(outage.clone()),
                 max_turns: Some(Counted::Of(3)),
@@ -34849,6 +35152,7 @@ mod tests {
             check_opens: None,
             milestone_check: None,
             successor_check: None,
+            order_check: None,
             reask_max: None,
             service: Some(outage.clone()),
             max_turns: Some(Counted::Of(3)),
@@ -35473,6 +35777,7 @@ mod tests {
                         check_opens: None,
                         milestone_check: None,
                         successor_check: None,
+                        order_check: None,
                         reask_max: None,
                         service: Some(ServiceOutage {
                             needles: vec!["the service is down".to_string()],
@@ -36042,6 +36347,7 @@ mod tests {
                     check_opens: None,
                     milestone_check: None,
                     successor_check: None,
+                    order_check: None,
                     reask_max: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
@@ -36228,6 +36534,7 @@ mod tests {
                 check_opens: None,
                 milestone_check: None,
                 successor_check: None,
+                order_check: None,
                 reask_max: None,
                 service: None,
                 max_turns: Some(Counted::Of(40)),
@@ -36438,6 +36745,7 @@ mod tests {
                     check_opens: None,
                     milestone_check: None,
                     successor_check: None,
+                    order_check: None,
                     reask_max: None,
                     service: None,
                     max_turns: Some(Counted::Of(40)),
@@ -36724,6 +37032,7 @@ mod tests {
                     check_opens: None,
                     milestone_check: None,
                     successor_check: None,
+                    order_check: None,
                     reask_max: None,
                     service: Some(outage.clone()),
                     max_turns: Some(Counted::Of(40)),
@@ -37318,6 +37627,7 @@ mod tests {
             check_opens: None,
             milestone_check: None,
             successor_check: None,
+            order_check: None,
             reask_max: None,
             service: None,
             max_turns: Some(Counted::Of(40)),

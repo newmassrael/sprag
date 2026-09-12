@@ -67,6 +67,11 @@ const CARRIED: &[&str] = &[
     "milestone",
     "milestone_check",
     "north_star",
+    // ⛔⛔⛔ REGISTER ITEM 659: who says what this run should take next. It is `successor_check`'s
+    // other half — that program answers whether a PROPOSAL may be taken and this one what is
+    // FIRST — and it is a separate word on register item 1074's argument, made the week before:
+    // one declaration feeding two readers ends up wrong for one of them.
+    "order_check",
     "progress_marks",
     "ready_timeout_ms",
     "reaim_max",

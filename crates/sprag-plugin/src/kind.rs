@@ -1322,6 +1322,38 @@ impl LoopKind {
         }
     }
 
+    /// ⛔⛔⛔⛔⛔ **WHO SAYS WHAT A RUN OF THIS KIND SHOULD TAKE NEXT**, as an argv — or [`None`]
+    /// where this kind names none, which is the template's shipped state and means *a reflection of
+    /// this kind is shown no order*. Register item 659.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why it is a second program and not a second question to the first
+    ///
+    /// [`successor_check`](Self::successor_check) is run on every reflection turn and asks *may
+    /// this proposal be taken?* The same instrument can answer *what is first?*, and nothing asked
+    /// it — so an agent proposes blind and is then marked against a ranking it never saw. Measured
+    /// 2026-09-12: two proposals in a row refused *"counted and not taken … STEP"*, the refusal
+    /// being the first thing that named the set.
+    ///
+    /// Giving that second question to the same clause is what register item 1074 had just finished
+    /// paying off one slot over: one declaration feeding two readers disagrees with one of them
+    /// for ever. So it is its own clause, and a kind may name one program, the other, both or
+    /// neither.
+    ///
+    /// ⚠⚠ **ITS ANSWER DECIDES NOTHING**, which is the difference from both its siblings: no `cond`
+    /// in the document reads it, and a gate holds that. It is quoted to the agent —
+    /// `Judgement::explained`'s rule, *the ban is on deciding with it, not on carrying it* — so
+    /// the ranking stays the register's rather than becoming the document's.
+    ///
+    /// ⚠ Whitespace is what the driver splits on, exactly as above; unlike the two checks, nothing
+    /// is appended, because a program that REPORTS has its whole command line authored here.
+    #[must_use]
+    pub fn order_check(&self) -> Option<String> {
+        match self.script.get_variable(&self.session, "order_check") {
+            Ok(ScriptValue::String(argv)) if !argv.trim().is_empty() => Some(argv),
+            _ => None,
+        }
+    }
+
     /// **WHAT THIS REPOSITORY'S PEER PRINTS WHEN ITS SERVICE FAILS, AND WHAT TO DO ABOUT IT** — or
     /// [`None`] when this document declines, which is the template's shipped state.
     ///
@@ -2891,9 +2923,14 @@ mod tests {
         // kind is told to open. It is beside `progress_marks` and is NOT a second spelling of it —
         // the item measured three axes on which the stall ceiling's list and the checker's
         // disagree, and until it existed this kind's judge was handed `.git/logs/HEAD` alone.
+        // ⛔ 30 SINCE REGISTER ITEM 659, which added `order_check`: who says what a run of this kind
+        // should take NEXT. It is `successor_check`'s other half — that program answers whether a
+        // PROPOSAL may be taken and this one what is FIRST — and it is a clause of its own on item
+        // 1074's argument from the week before: one declaration feeding two readers ends up wrong
+        // for one of them.
         assert_eq!(
             mine.len(),
-            29,
+            30,
             "⚠⚠ the needle stopped seeing this repository's own kind, so the assertion above is \
              green about a document nobody read: {mine:?}",
         );

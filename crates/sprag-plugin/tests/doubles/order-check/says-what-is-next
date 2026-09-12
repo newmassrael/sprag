@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# A stand-in for the program a KIND names in `order_check` — register item 659.
+#
+# The real one is `north-star --next <ledger>`, which prints ONE SENTENCE on
+# stdout, puts every failure on stderr, and exits 0 when it could answer. This
+# double is that contract and nothing else: the driver must quote what it prints
+# because the STATUS says it worked, never because of what the text looks like.
+#
+# ⚠ Tracked rather than written by the test — register item 467: a file a process
+# holds open for writing cannot be executed, and this workspace's harness forks
+# from threads.
+printf '%s\n' 'next_659_is_what_to_take'

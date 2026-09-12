@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# A program that prints a PLAUSIBLE order and then fails — register item 659's
+# sharp arm.
+#
+# What it stages is the one way a driver can be wrong here that a verdict check
+# cannot be: the line looks exactly like an answer, and taking it would type a
+# failed program's output at a live agent under a heading calling it this
+# repository's own ranking. The contract is the exit STATUS and never the text,
+# which is why this prints something entirely reasonable first.
+printf '%s\n' 'next_1_take_this'
+exit 2

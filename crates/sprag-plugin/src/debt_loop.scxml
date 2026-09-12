@@ -659,6 +659,41 @@
                 '/home/coin/.claude/projects/-home-coin-sprag/memory/debt-open.md'"/>
 
     <!--
+      ⛔⛔⛔⛔⛔ AND WHAT THIS REGISTER SAYS TO TAKE NEXT — register item 659, the
+      clause above's other half, and the SAME PROGRAM asked its other question.
+
+      ⚠⚠⚠⚠⚠ THE DEFECT IT PAYS: this loop has been scored by this instrument on
+      every reflection turn and never shown what it said. The classifier above
+      answers *may this proposal be taken*; this mode answers *what is first*,
+      derived from the same reading — and until item 659 the only way that
+      answer reached a round was inside a REFUSAL, which is a round trip late
+      and only when the answer is no.
+
+      ⚠⚠⚠ THE SAME TARGET DIRECTORY as the clause above, and for its reason:
+      register item 196, this tree has two writers, and a `cargo run` that built
+      into the shared `target/` would relink under the round that is working in
+      it. Two invocations one turn apart share the compile; the second is a
+      process start and a file read.
+
+      ⚠⚠ MEASURED before it was wired, with this exact argv: 0.32 s and 0.41 s
+      warm, against a turn's own bound of 1 800 000 ms — 0.023%. The number that
+      made this look expensive was `ADMITS_WITHIN` (120 s), which is the WAIT a
+      classifier nobody here has seen is allowed, not what this program costs.
+
+      ⚠ THE MODE NAMED BELOW PRINTS THE SENTENCE ALONE and puts every failure on
+      stderr, so the driver takes the last line and quotes it only where the
+      program reported success. The plain report would put twenty lines of
+      population counts into a live prompt; its own doc (`fn next` in
+      `north-star.rs`) carries why the mouth exists.
+    -->
+    <data id="order_check"
+          expr="'env CARGO_TARGET_DIR=/home/coin/.cache/sprag-admits ' +
+                'cargo run -q --locked ' +
+                '--manifest-path /home/coin/sprag/Cargo.toml ' +
+                '-p sprag-gate --bin north-star -- --next ' +
+                '/home/coin/.claude/projects/-home-coin-sprag/memory/debt-open.md'"/>
+
+    <!--
       ⚠⚠⚠⚠⚠ THE WORDS THIS REPOSITORY'S PEER PRINTS WHEN ITS SERVICE FAILS, and
       the template ships this empty for exactly the reason this file can fill it:
       the sentence is `claude`'s, and this document is the one that knows its

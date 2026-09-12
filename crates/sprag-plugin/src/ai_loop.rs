@@ -2655,6 +2655,7 @@ mod tests {
             check_opens: None,
             milestone_check: None,
             successor_check: None,
+            order_check: None,
             // ⚠ DECLINED, so the template's own number stands. The base brief must not author a
             // patience of its own: a gate that wants a different one says so beside its `Brief`.
             reask_max: None,
@@ -14098,7 +14099,7 @@ mod tests {
     /// the DOCUMENT reads, so a fixture short of one walks a state the product never walks — which
     /// is the exact hazard this round met from the other side, when a payload missing
     /// `reflect_after_refusals` assigned nil and ended a run `failed`.
-    const ORDINARY: &str = r#"{"done": false, "checked": false, "explained": false, "unheard": false, "silence": false, "stop_short": false}"#;
+    const ORDINARY: &str = r#"{"done": false, "checked": false, "explained": false, "ordered": false, "unheard": false, "silence": false, "stop_short": false}"#;
 
     /// **THE SAME PAYLOAD WITH THE AGENT SAYING THE WORD** — [`ORDINARY`]'s six keys with `done`
     /// true, which is the only difference between a turn that banks and one that closes the run.
@@ -14106,11 +14107,11 @@ mod tests {
     /// ⚠ Spelled out beside its sibling rather than built from it: what a fixture sends the machine
     /// is the thing under test, and a payload assembled by string surgery is one a reader cannot
     /// check against `OuterLoop::pump`'s own by eye.
-    const DONE: &str = r#"{"done": true, "checked": false, "explained": false, "unheard": false, "silence": false, "stop_short": false}"#;
+    const DONE: &str = r#"{"done": true, "checked": false, "explained": false, "ordered": false, "unheard": false, "silence": false, "stop_short": false}"#;
 
     /// **THE SAME PAYLOAD SAYING ONE OF THE RUN'S OWN CEILINGS FELL DUE** — `judging`'s FIRST arm,
     /// which asks the agent for an account rather than for more work.
-    const STOP_SHORT: &str = r#"{"done": false, "checked": false, "explained": false, "unheard": false, "silence": false, "stop_short": true}"#;
+    const STOP_SHORT: &str = r#"{"done": false, "checked": false, "explained": false, "ordered": false, "unheard": false, "silence": false, "stop_short": true}"#;
 
     /// Raise a DATA-CARRYING event the way the driver does, then step.
     ///
@@ -14816,12 +14817,12 @@ mod tests {
         /// `no_payload_key_is_spelled_by_a_name_this_workspace_disagrees_about` refuses a payload
         /// name four other declarations in this workspace already answer to, because a claim about
         /// what the driver sends would then rest on whichever was read last.
-        const CHECK_SAID_NO: &str = r#"{"done": true, "checked": "failed", "explained": false, "unheard": false, "silence": false, "stop_short": false}"#;
+        const CHECK_SAID_NO: &str = r#"{"done": true, "checked": "failed", "explained": false, "ordered": false, "unheard": false, "silence": false, "stop_short": false}"#;
         /// **AND ONE IT COULD NOT ANSWER AT ALL** — the same shape with `silent`, and the road to
         /// `unverified`. ⛔ `silence` carries the CLASS because that state's `onentry` branches on
         /// it; a payload short of it takes the readable arm on a word this document has not met,
         /// which is the wrong half of register item 741 and not what this route is for.
-        const CHECK_SAID_NOTHING: &str = r#"{"done": true, "checked": "silent", "explained": false, "unheard": false, "silence": "unanswered", "stop_short": false}"#;
+        const CHECK_SAID_NOTHING: &str = r#"{"done": true, "checked": "silent", "explained": false, "ordered": false, "unheard": false, "silence": "unanswered", "stop_short": false}"#;
         /// **WHAT THE DRIVER PUTS ON `reflect.applied`** (`OuterLoop::reflect`) — the three slots a
         /// reflection may rewrite, and the road from `reflecting` to `reviewing`. ⚠ All three are
         /// sent because that transition assigns UNCONDITIONALLY: a fixture short of one puts nil

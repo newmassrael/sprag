@@ -873,7 +873,7 @@ pub fn asked_of_another(
     question: &str,
     within: Duration,
 ) -> Result<Judgement, Unheard> {
-    let (reply, took, exit) = said_by_another(panes, run, argv, cwd, question, within)?;
+    let (reply, took, exit) = said_by_another(panes, run, argv, cwd, Some(question), within)?;
     // ⛔⛔⛔⛔⛔ **THE STATUS RENAMES A FAILURE AND NEVER OVERTURNS AN ANSWER** — register item 659.
     //
     // Everything below runs exactly as it did, and only an `Err` is reconsidered: a checker that
@@ -1010,7 +1010,7 @@ pub(crate) fn said_by_another(
     run: &RunContext,
     argv: &[String],
     cwd: Option<&std::path::Path>,
-    question: &str,
+    question: Option<&str>,
     within: Duration,
 ) -> Result<(String, Duration, Option<sprag_terminal::PaneExit>), Unheard> {
     if argv.is_empty() {
@@ -1020,7 +1020,11 @@ pub(crate) fn said_by_another(
         return Err(Unheard::NoPane);
     };
     let mut argv = argv.to_vec();
-    argv.push(question.to_owned());
+    // ⚠⚠ **A QUESTION IS OPTIONAL SINCE REGISTER ITEM 659**, and `None` is not an empty one: a
+    // judge is asked something and its argv ends with that; a program a document named to REPORT
+    // (`order_check`) has its whole command line authored, and an empty string appended to it is an
+    // argument it never asked for — which `north-star --next` refuses by name, correctly.
+    argv.extend(question.map(ToOwned::to_owned));
 
     let began = Instant::now();
     // ⛔⛔⛔⛔⛔ **IN THE DIRECTORY THE CALLER NAMED, AND THAT IS REGISTER ITEM 710.** This used to
@@ -1096,6 +1100,53 @@ pub(crate) fn said_by_another(
         return Err(Unheard::Unaccountable);
     };
     Ok((reply, began.elapsed(), exit))
+}
+
+/// ⛔⛔⛔⛔⛔ **ONE LINE FROM A PROGRAM A DOCUMENT NAMED TO REPORT** — [`None`] wherever that line
+/// would be anything but the program's own successful answer. Register item 659.
+///
+/// # ⛔⛔⛔⛔⛔ Why this is not [`asked_of_another`] with the verdict thrown away
+///
+/// A judge is asked a question and answers YES or NO, and everything that machinery does — the
+/// promised shape, the echo cut, the marked verdict word — exists to find that word in prose. This
+/// runs a program whose whole output IS the answer, so there is nothing to find and nothing to
+/// interpret. What there is instead is a way to be wrong that a verdict cannot be: **a failed
+/// program's error message is a line too**, and quoting it would put an apology into a live agent's
+/// prompt as though it were this repository's own ranking.
+///
+/// # ⚠⚠⚠⚠⚠ So the contract is the STATUS, and nothing here reads what was printed to decide
+///
+/// Only a child that was reaped and reported success may be quoted. A status that could not be
+/// read is not success ([`crate::access::PaneAccess::pane_child_exit`]), a non-zero code is not, a
+/// signal is not — and in every one of those cases this answers `None`, which its caller renders
+/// as *this run has nothing to quote* rather than as an empty quotation.
+///
+/// ⚠⚠ **THE LAST NON-EMPTY LINE, and that is a rule about the PANE rather than about the program.**
+/// A pane carries the child's stderr beside its stdout, so a build line or a warning can precede
+/// the answer; what cannot follow it is anything the program did after printing it, because it then
+/// exited. Taking the last line is therefore generic — it names no instrument's format, which is
+/// the whole reason this driver may carry a sentence the register composed.
+///
+/// ⚠ Every failure is one word: there is no reader for a *why* here. The caller has one decision —
+/// quote or say nothing — so a taxonomy would be a vocabulary nobody consumes.
+pub(crate) fn line_from_another(
+    panes: &dyn PaneAccess,
+    run: &RunContext,
+    argv: &[String],
+    cwd: Option<&std::path::Path>,
+    within: Duration,
+) -> Option<String> {
+    let (reply, _took, exit) = said_by_another(panes, run, argv, cwd, None, within).ok()?;
+    let exit = exit?;
+    if exit.code != 0 || exit.signal.is_some() {
+        return None;
+    }
+    reply
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 /// ⛔⛔⛔⛔⛔ **HOW LONG A FINISHED CHECKER IS GIVEN TO BE REAPED** — register item 659.

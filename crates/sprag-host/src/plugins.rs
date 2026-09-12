@@ -5819,6 +5819,10 @@ fn ai_loop_brief(
         // business, and a caller who could name the classifier could delete the whole
         // bound by naming nothing.
         successor_check: kind.successor_check(),
+        // ⛔⛔⛔⛔⛔ AND WHO SAYS WHAT TO TAKE NEXT — register item 659, the line above's other half
+        // and on its terms exactly: kind-only, no wire key, because a caller who could name what a
+        // reflection is SHOWN could point it at a ranking nobody agreed to.
+        order_check: kind.order_check(),
         // 🎯🎯🎯 AND HOW MANY WRONG GUESSES A RUN OF THIS KIND SITS THROUGH before
         // it banks the work and stops — register item 840, on the line above's
         // terms. NO WIRE KEY: how patient a repository is with its own agent is

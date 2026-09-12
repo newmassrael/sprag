@@ -343,6 +343,81 @@
     <data id="successor_check" expr="''"/>
 
     <!--
+      ⛔⛔⛔⛔⛔ WHO SAYS WHAT THIS RUN SHOULD TAKE NEXT — register item 659, and
+      the slot above's OTHER HALF.
+
+      ⚠⚠⚠⚠⚠ THE DEFECT IT ANSWERS: A RUN IS SCORED BY AN ORDER IT IS NEVER SHOWN.
+      The classifier above runs on EVERY reflection turn and asks one narrow
+      question — *may this proposal be taken?* The same instrument can answer
+      *what is first?*, and nothing ever asked it. So an agent proposes with no
+      sight of the ranking and is then marked against it. Measured 2026-09-12:
+      two proposals in a row came back *counted and not taken … STEP*, and the
+      REFUSAL was the first thing that named the set — information a round trip
+      late, and only when the answer is no. That is choosing blindfolded and
+      then being ranked.
+
+      ⚠⚠⚠⚠ WHY IT IS ITS OWN CLAUSE AND NOT A SECOND QUESTION TO THE ONE ABOVE.
+      Register item 1074 had just finished paying off exactly that shape one
+      slot over: one declaration feeding two readers ends up wrong for one of
+      them, permanently, because the two want different things. A kind may name
+      one of these programs, the other, both, or neither.
+
+      ⚠⚠⚠ ITS ANSWER DECIDES NOTHING, and that is the whole discipline here. No
+      `cond` in this document reads it and a gate holds that; the line is QUOTED
+      to the agent and nothing else. The rule is `explained`'s, on the check's
+      own reply: *the ban is on deciding with it, not on carrying it*. A guard
+      that matched on this would make this document a second author of a ranking
+      that belongs to the register the program reads.
+
+      ⚠⚠ WHAT CROSSES IS ONE LINE OR `false`, NEVER AN EMPTY STRING — the
+      driver's rule, and it matters here rather than there: this datamodel is
+      Lua, where the empty string is TRUE, so an order that reported nothing
+      would have the entry below compose a heading and quote nothing under it.
+
+      ⚠ THE TEMPLATE NAMES NONE, which means *a reflection of this kind is shown
+      no order* — not that there is no order. A repository that keeps no such
+      register has nothing to point this at, and its runs get the reflection
+      prompt they always had.
+    -->
+    <data id="order_check" expr="''"/>
+
+    <!--
+      WHAT THE ORDER SAID, composed into the reflection below — register item
+      659. Empty is *nothing to quote*, and the entry writes no heading for it.
+    -->
+    <data id="order_said" expr="''"/>
+
+    <!--
+      WHAT A REFLECTION IS ACTUALLY TYPED — `reflect_prompt` with whatever this
+      turn's order added to it. Register item 659, and it is a `<data>` rather
+      than an expression inside the send for register item 750's reason: a
+      prompt composed anywhere but a `<data>` is one `Authored::read` cannot
+      reach, so no caller could preview it and no door could check it was
+      there. `reask_prompt` below is the same shape for the same reason.
+
+      ⚠ It does NOT replace `reflect_prompt`, which `priming` composes once for
+      the session and this document must not rewrite — see the send.
+    -->
+    <data id="reflect_asking" expr="''"/>
+
+    <!--
+      ⚠⚠⚠ WHAT THE QUOTED ORDER IS INTRODUCED AS — register item 659, and a
+      `<data>` rather than a literal inside the entry for `dispute_quoting`'s
+      reason: the words a run says are this DOCUMENT's, so a repository that
+      copies this template can change them without touching a transition.
+
+      ⚠⚠ IT SAYS WHERE THE LINE CAME FROM AND WHAT IT IS NOT. A ranking put in
+      front of an agent with no provenance reads as an instruction; this one is
+      a reading of a file, taken a moment ago, and the agent is the party that
+      decides what to propose. Saying so is what keeps register item 428's line
+      intact — nothing here certifies anything, it informs.
+    -->
+    <data id="order_heading"
+          expr="'What this run\'s own register answers when asked what to take next, ' +
+                'read just now — it is a reading and not an instruction, and what you ' +
+                'propose is still yours to argue for:'"/>
+
+    <!--
       ⚠⚠⚠⚠⚠ WHAT ON THE SCREEN MEANS *THE PEER'S SERVICE FAILED*, WHICH IS NOT
       THE SAME AS THE PEER ASKING SOMETHING.
 
@@ -3822,6 +3897,14 @@
         the failure the line above records paying for.
       -->
       <assign location="successor_check" expr="_event.data.successor_check"/>
+      <!--
+        ⛔⛔⛔⛔⛔ AND WHO SAYS WHAT TO TAKE NEXT — register item 659, the line
+        above's other half and on its terms exactly. UNCONDITIONAL like its
+        neighbours: the driver echoes this document's own value back when a
+        kind named none, and a nil assigned here would leave a reflection shown
+        nothing while the kind that authored the program believed otherwise.
+      -->
+      <assign location="order_check" expr="_event.data.order_check"/>
       <assign location="closing_rules" expr="_event.data.closing_rules"/>
       <!--
         ⚠⚠⚠⚠ AND THE RULES THE WORK ITSELF IS DONE UNDER — register item 738,
@@ -4317,6 +4400,23 @@
                     ' and then the next checkpoint in one line. Open the second with the label ' + reference_marker +
                     ' and then, in one line, what the next session must KNOW that you had to work out — not what it should read.' + '\n' +
                     'If the north star itself is fully reached and nothing is left to do, ignore both labels and make the last line of your reply exactly: ' + north_star_marker"/>
+      <!--
+        AND WHAT A REFLECTION WILL ACTUALLY BE TYPED, seeded to the question
+        just composed — register item 659.
+
+        ⚠⚠⚠ SEEDED HERE SO A PREVIEW IS NEVER EMPTY. `reflecting` overwrites it
+        with the same question plus whatever this register says to take next,
+        and that value cannot exist before a reflection has happened; without
+        this line a caller previewing the loop between its briefing and its
+        first reflection would be shown nothing where the ONE prompt whose
+        answer changes what the run is about should be.
+
+        ⚠ It is a SEED and not a composition: the order is appended at
+        `reflecting` and never here, because a value baked into a prompt this
+        state builds once per session freezes — which is the measurement that
+        ruled out putting it in the expression above.
+      -->
+      <assign location="reflect_asking" expr="reflect_prompt"/>
       <!--
         ⚠⚠⚠⚠⚠ THIS STATE ASKS THE HOST TO PUT ITS SENTENCE rather than
         announcing a name the machine drops. Register item 470, stage 2, and
@@ -5998,6 +6098,56 @@
     <onentry>
       <assign location="turns_since_reflect" expr="0"/>
       <!--
+        ⛔⛔⛔⛔⛔ WHAT THIS REGISTER SAYS TO TAKE NEXT — register item 659, taken
+        HERE and never baked into `reflect_prompt`.
+
+        ⚠⚠⚠⚠⚠ THE REASON IS MEASURED. `reflect_prompt` is composed ONCE, in
+        `priming`'s onentry, for the whole session — this file says so in as
+        many words at the send below (*what goes out is `reflect_prompt` as
+        `priming` composed it for this session*). A value baked there FREEZES:
+        measured 2026-09-12, this session's two reflections carried the same
+        numbers because the prompt they came from was built before either of
+        them. An order is the one thing in this prompt that MOVES — every item
+        paid or opened changes it — so it is taken at entry, like `reask_said`
+        two clauses down, and for the same reason.
+
+        ⚠⚠⚠⚠ ASKED ON EVERY WAY IN, WHICH IS WHY BOTH EDGES CARRY IT. Six of the
+        seven transitions here are `judge` and the seventh is `reflect.applied`
+        — the re-ask, which is the turn that has just been told its choice was
+        not what to take, and so the turn that most needs to see the order. The
+        driver puts the key on both.
+
+        ⚠⚠⚠ AND IT DECIDES NOTHING. No `cond` anywhere reads `order_said`; it is
+        composed into a sentence and that is all. `explained`'s rule exactly —
+        *the ban is on deciding with it, not on carrying it* — and here it is
+        sharper, because what this carries is a RANKING: a guard reading it
+        would move the choice of what to work on out of the register and into
+        this document, which is the defect item 659 is about, inverted.
+
+        ⚠⚠ A NON-EMPTY LINE OR `false`, NEVER `''`: this datamodel is Lua, where
+        the empty string is TRUE, so a run with nothing to quote would compose a
+        heading over nothing and type it at a live agent.
+
+        ⚠ EMPTIED ON THE OTHER BRANCH rather than left standing, on `reask_said`'s
+        rule: an order read three turns ago is a snapshot, and a prompt that
+        quoted it would be telling the agent something the register no longer
+        says.
+      -->
+      <if cond="_event.data.ordered">
+        <assign location="order_said"
+                expr="order_heading + '\n' + _event.data.ordered"/>
+      <else/>
+        <assign location="order_said" expr="''"/>
+      </if>
+      <!--
+        ⚠⚠ AND WHAT A REFLECTION IS ACTUALLY TYPED, composed into a `<data>` —
+        register item 750: a prompt built inside a `<param>` is one no caller
+        can preview and no door can check. `reflect_prompt` itself is left
+        untouched, because `priming` composed it for this session and a
+        reflection that rewrote it would be a second author of the question.
+      -->
+      <assign location="reflect_asking" expr="reflect_prompt + order_said"/>
+      <!--
         ⚠⚠⚠ AND THE REFUSAL STREAK, cleared here for the reason directly below
         and one of its own: the ceiling buys a REFLECTION and not an ending, so
         a run that has just had one starts counting again. Cleared on ENTRY, so
@@ -6093,7 +6243,8 @@
           already carried the first one, and the prompt would grow every turn.
         -->
         <assign location="reask_prompt"
-                expr="reask_opening + ' ' + reask_said + ' ' + reask_asking + '\n' + reflect_prompt"/>
+                expr="reask_opening + ' ' + reask_said + ' ' + reask_asking + '\n' +
+                      reflect_asking"/>
         <assign location="reask_said" expr="''"/>
         <!--
           ⚠ THE COMPOSED SENTENCE, and nothing downstream minds that it is not
@@ -6115,8 +6266,22 @@
           recovered from them.
         -->
         <assign location="reask_capped" expr="0"/>
+        <!--
+          ⛔⛔⛔⛔⛔ AND THE ORDER GOES OUT WITH IT — register item 659.
+
+          ⚠⚠⚠ COMPOSED HERE AND NOT INTO `reflect_prompt`, on `reask_prompt`'s
+          argument directly above: that prompt is built once per session and a
+          value written into it freezes, while an order changes every time an
+          item is paid or opened. `order_said` is empty where there is nothing
+          to quote, so a kind naming no program sends exactly what it always
+          sent — the control this item's gate drives.
+
+          ⚠⚠ AFTER the prompt rather than before it: the prompt carries the
+          north star, what this session has cost and how to answer, and a
+          reading placed on top of that would read as the question.
+        -->
         <send type="x-sprag-host" event="prompt.say">
-          <param name="text" expr="reflect_prompt"/>
+          <param name="text" expr="reflect_asking"/>
           <param name="sentence" expr="'reflection'"/>
         </send>
       </if>
