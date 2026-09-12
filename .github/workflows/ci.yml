@@ -80,6 +80,12 @@ jobs:
       XDG_STATE_HOME: ${{ github.workspace }}/../ambient/state
     steps:
       - uses: actions/checkout@v4
+        # ⛔ ONE COMMIT OF HISTORY BEHIND THE TIP — register item 1088. `sprag-gate`'s
+        # `no_commit_moves_a_doc_onto_another_item` judges HEAD against its first parent, and the
+        # default depth-1 checkout grafts HEAD so that it has none. The test refuses that rather
+        # than judging the tip against nothing.
+        with:
+          fetch-depth: 2
 
       # Needed by `yeslogic-fontconfig-sys`, which the wire crates pull in through `pinion-rpc`
       # (see the note at the top of this file). NOT needed on macOS, where `fontique` uses
@@ -338,6 +344,9 @@ jobs:
       XDG_STATE_HOME: ${{ github.workspace }}/../ambient/state
     steps:
       - uses: actions/checkout@v4
+        # ⛔ See the Linux job — register item 1088: this job runs `sprag-gate` too.
+        with:
+          fetch-depth: 2
 
       - name: Toolchain
         run: |

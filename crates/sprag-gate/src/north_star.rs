@@ -1390,11 +1390,6 @@ impl fmt::Display for Link {
     }
 }
 
-/// One numbered item of section A, after its blocks have been grouped.
-///
-/// ⚠ A number can own several blocks: this ledger closes an item by laying a new block ON TOP of
-/// the original rather than editing it. So the blocks are grouped by number and the TOPMOST mark
-/// wins, which is the same rule a reader uses — the newest block is the current one.
 /// One item in the derived work order, and the TERM that placed it there — register item 1052.
 ///
 /// ⚠⚠ The `why` travels with the number rather than being recomputed by whoever prints it. An order
@@ -1404,6 +1399,11 @@ impl fmt::Display for Link {
 /// ⚠ Declared BELOW [`Item`]'s doc comment and above its derive would have silently taken that
 /// derive — the compiler caught it as five conflicting impls on this type, which is the one shape
 /// where inserting a struct between a doc comment and its attributes is not a formatting matter.
+///
+/// ⛔⛔⛔ **AND IT WAS DECLARED BELOW `Item`'s DOC ANYWAY** — register item 1088. The derive was
+/// moved and the doc was not, so from `706c4019` until that item this struct carried `Item`'s doc
+/// glued on top of its own and `Item` had none, with every gate green. Declared above the whole
+/// block now, which is what `no_commit_moves_a_doc_onto_another_item` holds a commit to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Placed {
     /// The register item.
@@ -1416,6 +1416,11 @@ pub struct Placed {
     pub why: String,
 }
 
+/// One numbered item of section A, after its blocks have been grouped.
+///
+/// ⚠ A number can own several blocks: this ledger closes an item by laying a new block ON TOP of
+/// the original rather than editing it. So the blocks are grouped by number and the TOPMOST mark
+/// wins, which is the same rule a reader uses — the newest block is the current one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Item {
     /// The number the ledger files it under.

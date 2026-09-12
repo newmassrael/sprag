@@ -859,6 +859,66 @@ fn the_rust_gates_follow_the_index_rather_than_the_commit_already_made() {
     sandbox.done();
 }
 
+/// ⛔⛔⛔⛔⛔ **THE MIRROR'S COMMIT STANDS ON THE COMMIT IT LANDS ON** — register item 1088.
+///
+/// A test in the ratchet lane that judges a CHANGE — `no_commit_moves_a_doc_onto_another_item`,
+/// which asks what a commit did to the doc blocks it touched — reads `HEAD` against its first
+/// parent, and in the mirror `HEAD` is the scaffolding commit `index_mirror` writes. It was written
+/// with NO parent: measured on `45b2ffbe`, the lane stood on `877d2e57` with `parents=` empty and the
+/// same tree. So the lane held the bytes of the commit being made and no way to say what they
+/// changed, and a gate asking would have been judging a root.
+///
+/// ⚠⚠ BOTH HALVES. The mirror's `HEAD^` is the sandbox's `HEAD`, and the mirror's own `HEAD` still
+/// carries the INDEX's tree — giving the commit a parent must not move what the gates compile, which
+/// is `the_rust_gates_follow_the_index_rather_than_the_commit_already_made`'s subject one case up.
+#[test]
+fn the_mirrors_commit_stands_on_the_commit_it_lands_on() {
+    let sandbox = Sandbox::new("commit-rust-gates-parent");
+    sandbox.write("subject.rs", ON_DISK_BODY);
+    sandbox.git(&["add", "subject.rs"]);
+    let landed_on = sandbox.commit("build(fixture): the commit the next one lands on");
+    sandbox.write("subject.rs", STAGED_BODY);
+    sandbox.git(&["add", "subject.rs"]);
+    let staged_tree = sandbox.git(&["write-tree"]);
+
+    let run = sandbox.run("pre-commit", None, None);
+    assert!(
+        run.status.success(),
+        "the staged body is formatted and every doubled tool agrees: {}",
+        said(&run),
+    );
+    let mirror = sandbox.dir.join("target").join("index-gates");
+    let in_mirror = |args: &[&str]| -> String {
+        let asked = sprag_gate::ambient::git_in(&mirror)
+            .args(args)
+            .env("HOME", &sandbox.dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .expect("git on PATH — the mirror is a worktree of the sandbox");
+        assert!(
+            asked.status.success(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1088: git {args:?} could not be answered in the mirror at {} — \
+             a scaffolding commit with no parent has no `HEAD^`, so a gate in the lane cannot say what \
+             the commit being made changed: {}",
+            mirror.display(),
+            String::from_utf8_lossy(&asked.stderr),
+        );
+        String::from_utf8_lossy(&asked.stdout).trim().to_owned()
+    };
+    assert_eq!(
+        in_mirror(&["rev-parse", "HEAD^"]),
+        landed_on,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 1088: the mirror's commit must stand on the commit this one lands on, \
+         or `HEAD^..HEAD` there is not the change being committed",
+    );
+    assert_eq!(
+        in_mirror(&["rev-parse", "HEAD^{tree}"]),
+        staged_tree,
+        "⚠⚠ and the mirror's own tree is still the INDEX's — a parent must not move what is compiled",
+    );
+    sandbox.done();
+}
+
 /// ⛔⛔⛔⛔⛔ **A MIRROR THAT IS KEPT IS A MIRROR THAT CAN GO WRONG** — register item 1011's second
 /// half, and the arm without which the fix would have shipped a new silent way to compile the wrong
 /// bytes.

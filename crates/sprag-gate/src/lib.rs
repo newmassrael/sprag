@@ -213,6 +213,15 @@ pub mod ambient;
 /// register item 1055.
 pub mod rust_source;
 
+/// Which item a `///` block documents, and whether a change moved one onto another — register item
+/// 1088.
+///
+/// Beside [`rust_source`], whose comment scan it reads rather than a line prefix: a fixture's raw
+/// string holds `///` lines that are data. Its subject is a CHANGE because no reading of one tree
+/// separates a doc that describes its item from one a newly declared neighbour took, which is what
+/// happened twice on this repository with every gate green.
+pub mod doc_attachment;
+
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};

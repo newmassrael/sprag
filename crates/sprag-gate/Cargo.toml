@@ -53,3 +53,10 @@ path = "src/bin/north-star.rs"
 [[bin]]
 name = "scratch-litter"
 path = "src/bin/scratch-litter.rs"
+
+# Register item 1088: which commits moved a `///` block onto an item it was not written for. The
+# gate in this crate's tests judges the commit under test; a range — a push, or the whole history the
+# predicate was measured on before it became a gate — is judged here.
+[[bin]]
+name = "doc-attachment"
+path = "src/bin/doc-attachment.rs"

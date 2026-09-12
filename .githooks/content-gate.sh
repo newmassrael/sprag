@@ -183,9 +183,28 @@ content_mirror() {
 # the timestamp is invisible to git here exactly as it is to `git status` anywhere else. This
 # checkout is written by nothing but this function, so the case that has to be caught is an
 # interrupted one — and that moves the stat.
+#
+# ## ⛔⛔⛔⛔⛔ AND IT IS WRITTEN ON `HEAD` — register item 1088
+#
+# It had no parent, and nothing noticed because nothing asked. A test that judges a CHANGE — which
+# doc block a commit moved onto another item, `no_commit_moves_a_doc_onto_another_item` — needs the
+# commit being made AND what it lands on, and in a parentless checkout `HEAD^` does not exist: the
+# lane had the bytes of the commit and no way to say what they changed. Measured 2026-09-13 on
+# `45b2ffbe`: the lane stood on `877d2e57`, `parents=` empty, the same tree.
+#
+# ⚠ Only when `HEAD` resolves. A repository with no commit yet has nothing to stand on, and that
+# test refuses a parentless `HEAD` in words rather than judging it as a root.
+# ⚠ Branches, not an array: `"${parent[@]}"` of an empty array is an unbound variable to the bash
+# 3.2 macOS ships, under the `set -u` the hooks run with.
 index_mirror() {
-    local mirror="$1" tree="$2" commit
-    if ! commit="$(index_mirror_git -c user.name='sprag index gates' \
+    local mirror="$1" tree="$2" commit head
+    if head="$(index_mirror_git rev-parse --verify --quiet HEAD)"; then
+        if ! commit="$(index_mirror_git -c user.name='sprag index gates' \
+            -c user.email='index-gates@invalid' \
+            commit-tree "$tree" -p "$head" -m 'the bytes a commit of this index would carry')"; then
+            return 1
+        fi
+    elif ! commit="$(index_mirror_git -c user.name='sprag index gates' \
         -c user.email='index-gates@invalid' \
         commit-tree "$tree" -m 'the bytes a commit of this index would carry')"; then
         return 1
