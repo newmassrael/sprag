@@ -3057,6 +3057,33 @@ impl Reading {
     /// Every admitted item the work order leaves out, or names twice — the NON-VACUITY floor.
     ///
     /// ⛔⛔⛔⛔⛔ **An assertion whose subject can empty out is restated, not deleted** — register
+    /// ⛔⛔⛔⛔⛔ **WHAT TO TAKE NEXT, AS THE ONE SENTENCE EVERY MOUTH SAYS IT WITH** — register
+    /// item 1052's line, given a single author by register item 659.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this is a function and was a `println!` argument
+    ///
+    /// The report composed it inline, which was correct while the report was the only reader. Item
+    /// 659 measured a second one: a reflection turn is scored by this order (`admitted` runs the
+    /// kind's classifier on every reflection) and **is never shown it**, so an agent chooses blind
+    /// and is then marked against a ranking it could not see. Feeding that reader means a mouth
+    /// that prints the sentence ALONE — twenty lines of report cannot go into a prompt — and a
+    /// second `format!` spelling it would be [`Reading::work_order`]'s own warning about a second
+    /// author, one layer up: two sentences claiming to be the same derivation, free to drift.
+    ///
+    /// ⚠⚠ **THE `none` ARM IS AN ANSWER AND NOT AN ABSTENTION** (working rule 6). A ledger that
+    /// admits nothing has said so; a reader handed an empty string would be told the instrument was
+    /// silent, which is a different fact and the one this workspace refuses to let a blank carry.
+    ///
+    /// ⚠ It takes the ORDER rather than the reading, so a caller cannot accidentally ask a second
+    /// time under a different cap and print a sentence about an order nobody else saw.
+    #[must_use]
+    pub fn next_to_take(order: &[Placed]) -> String {
+        match order.first() {
+            Some(first) => format!("next {}: {}", first.number, first.why),
+            None => "next none: this ledger admits nothing a round may take".to_owned(),
+        }
+    }
+
     /// item 1052, taking the shape `order_covers` has in the repository that closed the same debt
     /// first. *The order is non-empty* would go vacuously green the day a bug made
     /// [`Reading::work_order`] return nothing. What is asserted instead is that it is a BIJECTION
@@ -9091,11 +9118,39 @@ mod tests {
         //
         // ⚠⚠ THE PRINT AND NOT THE CALL, for the reason spelled two clauses down: `contains
         // ("work_order")` passes against a binary that computes the order and drops it.
+        //
+        // ⚠⚠⚠ **THE NEEDLE MOVED WITH THE SENTENCE — register item 659.** It used to hold the
+        // `format!` itself, which was right while the report was the only mouth. A reflection turn
+        // is the second reader, and it cannot be handed twenty lines — so the sentence became
+        // [`Reading::next_to_take`] and this pin follows it, because what must not be lost is *the
+        // report hands a reader the derivation*, not which characters spell it.
+        //
+        // ⛔⛔⛔⛔⛔ **AND IT IS COUNTED, NOT MERELY FOUND — a mutation forced this.** Item 659 gave
+        // the sentence a SECOND mouth, and both spell the print the same way, so `contains` began
+        // matching `--next` as well: deleting the REPORT's line left this green. Measured
+        // 2026-09-12, the third gate in one day whose arm could not reach the line it was guarding.
+        // TWO is the claim — the report hands a person the derivation, and `--next` hands it to the
+        // turn that is scored by it — and either one going missing is a reader losing it.
+        assert_eq!(
+            BIN.matches("println!(\"{}\", north_star::Reading::next_to_take(&order))")
+                .count(),
+            2,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1052 AND 659: the derived order must reach BOTH readers — the \
+             REPORT a person reads, and the one-sentence mouth a reflection turn is quoted from. \
+             Fewer than two means one of them computes it and drops it, which is the state working \
+             rule 11 forbids in its own last clause (*그 판단이 어디에도 안 남는다*); more than two \
+             means a third caller nobody has argued for",
+        );
+        // ⛔⛔⛔⛔⛔ AND THE SECOND MOUTH IS REACHABLE — register item 659. The sentence having ONE
+        // author is only worth anything if the reader item 659 is about can actually ask for it:
+        // `--admits` is run on every reflection turn and `--order` widens the REPORT, so without
+        // this mode the order stays unquotable and an agent goes on being scored by a ranking it
+        // was never shown.
         assert!(
-            BIN.contains("println!(\"next {}: {}\", first.number, first.why)"),
-            "⛔⛔⛔⛔⛔ REGISTER ITEM 1052: the report no longer prints what to take next, so the \
-             derivation exists and nobody is handed it — which is the state working rule 11 \
-             forbids in its own last clause (*그 판단이 어디에도 안 남는다*)",
+            BIN.contains("if path == *\"--next\"") && BIN.contains("fn next("),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 659: the one-sentence mouth is gone, so nothing but a person \
+             reading a report can reach the derived order — and the turn that is MARKED against it \
+             is the one that cannot",
         );
         // ⚠ AND THAT THE ORDER IS ASKED FOR RATHER THAN COPIED. A round that writes the order into
         // the ledger has made a snapshot, and the ledger moves under it every time an item is paid

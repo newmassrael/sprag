@@ -116,6 +116,9 @@ fn main() -> std::process::ExitCode {
     if path == *"--elsewhere" {
         return elsewhere(args);
     }
+    if path == *"--next" {
+        return next(args);
+    }
     // ⛔⛔⛔⛔⛔ **`--order` IS HOW THE ORDER IS ASKED FOR, AND THE ONLY HOW** — register item 1052.
     // The head of it prints on every run because that is the line a round acts on; the rest is
     // behind a flag because a round needs one item and a reader auditing the rule needs all of
@@ -325,13 +328,13 @@ fn main() -> std::process::ExitCode {
     // declared overrides — and above `north star:` because it is the line acted on. The terms are
     // [`north_star::Reading::work_order`]'s and are not re-spelled here: a second author of the
     // order would be the drift item 213 is named for.
+    //
+    // ⚠⚠ THE SENTENCE IS `Reading::next_to_take`'s AND NOT SPELLED HERE — register item 659, which
+    // gave it a second mouth (`--next`, for a reflection turn that is scored by this order and was
+    // never shown it). Two `format!`s claiming to be one derivation is the drift item 213 is named
+    // for, and the `none` arm is an ANSWER rather than an abstention (rule 6).
     let order = reading.work_order(cap.depth(), &standing);
-    match order.first() {
-        Some(first) => println!("next {}: {}", first.number, first.why),
-        // ⛔ AN ANSWER, NOT AN ABSTENTION — rule 6. Nothing admitted means the ledger has nothing a
-        // round may take, which is a fact about the ledger and not a missing line.
-        None => println!("next none: this ledger admits nothing a round may take"),
-    }
+    println!("{}", north_star::Reading::next_to_take(&order));
     println!(
         "  {} item(s) in the order. ⛔ Do not write this order down; ask for it (--order).",
         order.len(),
@@ -1161,6 +1164,85 @@ fn elsewhere(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process
 /// document rather than holding a number of its own. That sentence stood here while the code two
 /// screens down said `.unwrap_or(1)`; register item 833(1) and [`cap`]'s own doc carry what the
 /// disagreement cost.
+/// ⛔⛔⛔⛔⛔ **WHAT TO TAKE NEXT, ALONE ON STDOUT** — register item 659, and the mouth that makes
+/// the derivation reachable by a reader who cannot be handed a report.
+///
+/// # ⛔⛔⛔⛔⛔ The defect: a run is SCORED by this order and never shown it
+///
+/// `OuterLoop::admitted` runs this binary's `--admits` mode on **every reflection turn**, so what an
+/// agent proposes is marked against the derived order — and nothing puts that order in front of the
+/// agent. Measured 2026-09-12: two proposals in a row were refused *"counted and not taken … STEP"*,
+/// and the refusal was the first thing that named the set. **The information arrives a round trip
+/// late and only when the answer is no**, which is choosing blindfolded and then being ranked.
+///
+/// The reason no caller could carry it is structural rather than an oversight: the sentence was one
+/// line of a twenty-line report, so a reader wanting it would have had to parse this binary's
+/// output — putting the ledger's format in a driver, which is the second-author failure this whole
+/// crate exists to refuse. So the instrument grew a mouth shaped for that reader instead.
+///
+/// # ⚠⚠⚠ Why it is the same shape as [`admits`] and not a flag on the report
+///
+/// `--order` widens the REPORT, for a person auditing the rule. This answers ONE sentence with
+/// nothing around it, which is what can be quoted into a prompt — and, exactly like `--admits`,
+/// every failure goes to `stderr` so a caller that reads stdout as the answer never reads an
+/// apology as one.
+///
+/// ⚠⚠ **THE CAP AND THE STANDING REDS ARE ASKED FOR HERE TOO**, because they are terms of the
+/// order: a sentence composed without them would name a different first item than the report does
+/// on the same ledger, and two mouths disagreeing is worse than one mouth nobody could reach.
+fn next(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::ExitCode {
+    let Some(path) = args.next() else {
+        eprintln!("north-star: --next needs the ledger's path and nothing else");
+        return std::process::ExitCode::FAILURE;
+    };
+    if args.next().is_some() {
+        eprintln!("north-star: --next takes one ledger and no other argument");
+        return std::process::ExitCode::FAILURE;
+    }
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) => {
+            eprintln!(
+                "north-star: cannot read {}: {error}",
+                path.to_string_lossy()
+            );
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let reading = north_star::read(&text);
+    // ⚠⚠ A LEDGER NOTHING WAS READ OUT OF HAS NOT SAID *nothing to take* — `admits`' own refusal,
+    // and here it matters more: this sentence is quoted to a working agent, so an empty reading
+    // rendering as *this ledger admits nothing* would put a false fact in a live prompt.
+    if reading.items.is_empty() {
+        eprintln!(
+            "north-star: {} has no section A items — a ledger nothing was read out of cannot say \
+             what to take next",
+            path.to_string_lossy(),
+        );
+        return std::process::ExitCode::FAILURE;
+    }
+    let cap = match cap() {
+        Ok(cap) => cap,
+        Err(why) => {
+            eprintln!("north-star: {why}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    // ⚠ `RunTheSuite` for `admits`' stated reason: a standing red is one of the two declared
+    // overrides, so an order composed without asking is an order under a different rule. A failure
+    // to ask is a refusal to answer, never a quiet sentence about a smaller set.
+    let standing = match reading.standing_reds(&RunTheSuite, std::env::consts::OS) {
+        Ok(found) => found.standing,
+        Err(why) => {
+            eprintln!("north-star: {why}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let order = reading.work_order(cap.depth(), &standing);
+    println!("{}", north_star::Reading::next_to_take(&order));
+    std::process::ExitCode::SUCCESS
+}
+
 fn admits(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::ExitCode {
     // ⚠ NOT `println!` on the failure paths: this reply is read as a VERDICT, and a first word that
     // is not YES or NO is *the checker said nothing this run could read* — the honest answer for an
