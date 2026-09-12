@@ -16924,7 +16924,7 @@ fn stands_alone(row: &str, marker: &str) -> bool {
 mod tests {
     use super::*;
     use crate::access::WorkspacePaneAccess;
-    use crate::testing::{standin_agent, started, supervised};
+    use crate::testing::{PEER_READY, standin_agent, started, supervised};
     use sce_rust_runtime::helpers::io_processors::IoProcessorDescriptor;
     use sce_rust_runtime::scripting::i_script_engine::{NativeMethod, StateQueryCallback};
     use sce_rust_runtime::{PayloadReading, ScriptResult, SetCurrentEventArgs};
@@ -17659,7 +17659,7 @@ mod tests {
     #[test]
     fn a_loop_refuses_a_prompt_its_peer_took_and_never_submitted() {
         /// A peer that paints what it is given, character by character, and acts on none of it.
-        const PAINTS_EVERYTHING: &str = "stty raw -echo; printf 'GO'; exec cat";
+        use crate::testing::PEER_PAINTS_EVERY_BYTE as PAINTS_EVERYTHING;
 
         let start = |supervised: bool| {
             let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
@@ -17739,7 +17739,7 @@ mod tests {
             let up = Instant::now();
             while !access
                 .pane_collapsed(pane)
-                .is_some_and(|screen| screen.contains("GO"))
+                .is_some_and(|screen| screen.contains(PEER_READY))
             {
                 assert!(
                     up.elapsed() < Duration::from_secs(10),
@@ -17808,7 +17808,7 @@ mod tests {
     #[test]
     fn a_loop_holds_its_prompt_while_its_peer_runs_a_child_and_types_when_it_does_not() {
         /// A peer that paints what it is given, character by character, and acts on none of it.
-        const PAINTS_EVERYTHING: &str = "stty raw -echo; printf 'GO'; exec cat";
+        use crate::testing::PEER_PAINTS_EVERY_BYTE as PAINTS_EVERYTHING;
         /// What the agent says it is running — a real tool name, since the field carries the
         /// agent's own word.
         const TOOL: &str = "Bash";
@@ -17903,7 +17903,7 @@ mod tests {
             let up = Instant::now();
             while !access
                 .pane_collapsed(pane)
-                .is_some_and(|screen| screen.contains("GO"))
+                .is_some_and(|screen| screen.contains(PEER_READY))
             {
                 assert!(
                     up.elapsed() < Duration::from_secs(10),
@@ -17939,7 +17939,7 @@ mod tests {
         }
         assert_eq!(
             screen.trim(),
-            "GO",
+            PEER_READY,
             "⚠⚠⚠⚠⚠ AND NOT ONE BYTE OF THE PROMPT REACHED THE PANE. The whole cost of this defect \
              is text left sitting in a composer, so a refusal that typed first would have bought \
              nothing at all",
@@ -17958,7 +17958,7 @@ mod tests {
              discriminate — it has stopped delivering. Got {typed:?}",
         );
         assert!(
-            screen.trim().len() > "GO".len(),
+            screen.trim().len() > PEER_READY.len(),
             "and the prompt is ON that pane, which is the half that says the door LET IT THROUGH \
              rather than failing somewhere quieter. The screen holds only {screen:?}",
         );
@@ -17999,10 +17999,10 @@ mod tests {
     fn a_prompt_left_in_a_composer_is_counted_and_one_that_never_landed_is_not() {
         /// A peer that paints what it is typed and acts on none of it — a composer holding a
         /// question. Its delivery is CONFIRMED and its submit never stirs anything.
-        const PAINTS_EVERYTHING: &str = "stty raw -echo; printf 'GO'; exec cat";
+        use crate::testing::PEER_PAINTS_EVERY_BYTE as PAINTS_EVERYTHING;
         /// The same peer with its mouth shut: it takes every byte and paints none, so the delivery
         /// is never confirmed and the prompt is nowhere a person could be sent to look.
-        const PAINTS_NOTHING: &str = "stty raw -echo; printf 'GO'; exec cat > /dev/null";
+        use crate::testing::PEER_PAINTS_NOTHING as PAINTS_NOTHING;
 
         let refused_by = |peer: &str| {
             let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
@@ -18037,7 +18037,7 @@ mod tests {
             let up = Instant::now();
             while !access
                 .pane_collapsed(pane)
-                .is_some_and(|screen| screen.contains("GO"))
+                .is_some_and(|screen| screen.contains(PEER_READY))
             {
                 assert!(
                     up.elapsed() < Duration::from_secs(10),
@@ -18417,7 +18417,7 @@ mod tests {
             let up = Instant::now();
             while !access
                 .pane_collapsed(pane)
-                .is_some_and(|screen| screen.contains("GO"))
+                .is_some_and(|screen| screen.contains(PEER_READY))
             {
                 assert!(
                     up.elapsed() < Duration::from_secs(10),
@@ -18583,8 +18583,10 @@ mod tests {
              exec cat > /dev/null";
         /// ⚠ THE CONTROL'S PEER: the same shape, and it PAINTS what it is given back. `cat` with
         /// the terminal in raw mode is the fixture this repository settled on for *a program that
-        /// echoes* (register item 568: a shell's own echo is a platform coin-toss).
-        const PAINTS: &str = "stty raw -echo; printf 'GO'; exec cat";
+        /// echoes* (register item 568: a shell's own echo is a platform coin-toss) — and it is
+        /// [`crate::testing::PEER_PAINTS_EVERY_BYTE`], where that decision now lives, because it
+        /// had five copies and this comment was the only one carrying the reason.
+        use crate::testing::PEER_PAINTS_EVERY_BYTE as PAINTS;
 
         // Drive ONE pass of a loop over a peer running `peer`, and answer what its deliveries came
         // to, with the screen so each arm's own premise can be checked.
@@ -18680,7 +18682,7 @@ mod tests {
             let up = Instant::now();
             while !access
                 .pane_collapsed(pane)
-                .is_some_and(|screen| screen.contains("GO"))
+                .is_some_and(|screen| screen.contains(PEER_READY))
             {
                 assert!(
                     up.elapsed() < Duration::from_secs(10),
@@ -18880,7 +18882,7 @@ mod tests {
             let up = Instant::now();
             while !access
                 .pane_collapsed(pane)
-                .is_some_and(|screen| screen.contains("GO"))
+                .is_some_and(|screen| screen.contains(PEER_READY))
             {
                 assert!(
                     up.elapsed() < Duration::from_secs(10),
@@ -29774,7 +29776,7 @@ mod tests {
             /// only thing missing is the submit. ⚠ `shows_the_prompt` must be true for this run or
             /// `say` never reaches `deliver` at all (register item 228), which is how the first
             /// draft of this staging sailed through `PromptSent` with its question counter at zero.
-            const ECHOES: &str = "stty raw -echo; printf 'GO'; exec cat";
+            use crate::testing::PEER_PAINTS_EVERY_BYTE as ECHOES;
 
             let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
             let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
@@ -29795,7 +29797,7 @@ mod tests {
             let up = Instant::now();
             while !reader
                 .pane_collapsed(pane)
-                .is_some_and(|screen| screen.contains("GO"))
+                .is_some_and(|screen| screen.contains(PEER_READY))
             {
                 assert!(
                     up.elapsed() < Duration::from_secs(10),

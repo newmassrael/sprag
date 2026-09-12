@@ -1783,9 +1783,16 @@ pub(crate) const STANDIN_PAINTS_ITSELF: &str = "stty -echo -icanon";
 /// **The authored prompts do not end in a newline** (`ai_loop.scxml` closes `start_prompt` and its
 /// two siblings on `done_instruction`), and a submit is what finally supplies one. So a peer built
 /// on `read line` has not READ the prompt's last line at the moment the delivery is waiting to see
-/// it, and the needle lives in exactly that line. This module's other stand-ins are line painters
-/// and that is why every one of their runs sets `shows_the_prompt: false` — `AiLoop`'s own fixture
-/// spells the reason out: *a `/bin/sh` peer paints only once it has a whole line*.
+/// it, and the needle lives in exactly that line. Every other stand-in in this module is a line
+/// painter, and `AiLoop`'s own fixture spells out what that costs: *a `/bin/sh` peer paints only
+/// once it has a whole line*, so it sets `shows_the_prompt: false`.
+///
+/// ⚠⚠ **AND THE OTHER READ-BACK RUNS DO NOT USE A STAND-IN FROM THIS MODULE AT ALL — MEASURED,
+/// because the first draft of this paragraph guessed and was wrong.** `shows_the_prompt: true`
+/// appears at ten sites in `outer.rs`; three are the two fixtures below, and the other seven build
+/// their peer inline out of [`PEER_PAINTS_EVERY_BYTE`] and its two siblings. Those are
+/// character-at-a-time painters and have been right all along — which is the second half of why
+/// this constant exists rather than a `read line` painter.
 ///
 /// ⚠⚠ Driven rather than reasoned: with the line painter in place this peer's brief came back
 /// `Unsubmitted` with `made: 0`, the run refused before its first transition, and the deliveries
@@ -1802,6 +1809,58 @@ pub(crate) const STANDIN_PAINTS_ITSELF: &str = "stty -echo -icanon";
 /// ⚠ It goes in front of the read loop, so the pane carries the text whether or not the peer ever
 /// answers it — which a painter inside the loop could only approximate, and only for whole lines.
 pub(crate) const STANDIN_PAINTS_AS_IT_ARRIVES: &str = "tee /dev/tty |";
+
+/// ⛔⛔⛔⛔⛔ **THE PEER THIS REPOSITORY SETTLED ON FOR *A PROGRAM THAT ECHOES*** — register item
+/// 568, and it had FIVE copies under THREE names in `outer.rs` before it had an author.
+///
+/// # ⛔⛔⛔⛔⛔ Item 568 decided this in 2026-08-21 and the decision reached one comment
+///
+/// *"«A SHELL ECHOES» IS FALSE, AND FOUR CI RUNS WERE RED BEFORE ANYBODY LOOKED."* **`/bin/sh` is
+/// `dash` on Linux and `bash` on macOS**, so a `sh` pane answers
+/// [`ByTheTerminal`](sprag_terminal::PaneEcho::ByTheTerminal) on one platform and `ByTheProgram` on
+/// the other **and both answers are correct**. That item's remedy was this peer — `cat`, *which
+/// reconfigures nothing, so the pty's own default discipline is what the address must report and
+/// the pair is platform-independent BY CONSTRUCTION* — and its own closing line is
+/// *"THE METHOD FAILURE IS THE ITEM, not the three fixes."*
+///
+/// ⇒ ⛔⛔ **Nothing carried it here.** The decision lived in a comment on one of the five copies,
+/// and the two wedging stand-ins below took the coin-toss road anyway. The coin came up tails on
+/// macOS for eight commits (register items 1078 and 1079), and the measurement of exactly HOW it
+/// lands wrong is at [`STANDIN_PAINTS_ITSELF`].
+///
+/// ⚠⚠ Item 568's own *Done when* offers two roads and this constant plus
+/// `no_standin_agent_leaves_its_pane_to_the_line_discipline` take the second:
+/// *"a gate names the discipline it is asserting about rather than the binary."*
+///
+/// ⚠ `raw` and `-echo` both, as the copies had it: `raw` is what makes the peer see every byte, and
+/// the explicit `-echo` is what makes the pane's answer independent of which `sh` this is.
+pub(crate) const PEER_PAINTS_EVERY_BYTE: &str = "stty raw -echo; printf 'GO'; exec cat";
+
+/// [`PEER_PAINTS_EVERY_BYTE`] with its output thrown away: it TAKES every byte and paints none of
+/// them, which is the pane `crate::access::PaneError::NeverTook` is really about.
+///
+/// ⚠ Its sibling one road over is [`standin_agent_painting_nothing`], which stages the same fact
+/// for a whole loop rather than for one delivery.
+pub(crate) const PEER_PAINTS_NOTHING: &str = "stty raw -echo; printf 'GO'; exec cat > /dev/null";
+
+/// ⚠⚠ **THE FOLDING PEER IS NOT HERE, AND THAT IS A DECISION SOMEBODY ELSE MADE AND WROTE DOWN.**
+/// `outer.rs` carries three copies of an `stty raw -echo; … [Pasted text #2 +5 lines] …` composer,
+/// and the third says why: *"Copied rather than shared because the two gates ask different
+/// questions of it … and a constant reshaped for a second caller is how a control quietly stops
+/// being one."* That argument is about a CONTROL being reshaped; the painter above had no such
+/// argument on any of its five copies, which is the whole difference. ⛔ Do not "finish the job"
+/// by hoisting the folding peer without refuting that sentence first.
+///
+/// What the two peers above print once they will take input — [`AGENT_READY`]'s rule exactly, and
+/// for the sharper version of its reason: this marker was spelled **nine** times across the tests
+/// that wait for it, while the `printf` that produces it lived inside a script literal none of
+/// those nine could see.
+///
+/// ⚠ The tie is ASSERTED rather than composed: a `const` cannot substitute, so
+/// `no_standin_agent_leaves_its_pane_to_the_line_discipline` holds each fragment against this
+/// marker — and it also waits on it, so a fragment that stopped printing it fails there rather
+/// than in whichever gate happened to be next.
+pub(crate) const PEER_READY: &str = "GO";
 
 /// ⛔⛔⛔⛔⛔ **A STAND-IN AGENT WHOSE COMPOSER TAKES THE REFLECTION AND NEVER ASKS IT** —
 /// register item 856(3), and the run shape this repository's own loop died in.
@@ -4449,6 +4508,78 @@ mod tests {
                  channel that DISCARDS what it cannot queue — and what it discards is the tail, \
                  which is the needle. See `STANDIN_PAINTS_ITSELF` for the measurement. (Pane \
                  closed: {closed}.)",
+            );
+        }
+
+        // ══ ③ AND SO IS EVERY PEER FRAGMENT, WHICH IS WHERE THE OTHER READ-BACK RUNS GET THEIRS ═
+        //
+        // ⛔⛔⛔ `outer.rs` builds its `shows_the_prompt: true` peers out of these rather than out
+        // of a fixture above, so a rule that stopped at the functions would leave the population
+        // that actually carries this workspace's read-back gates unchecked — rule 6's window, one
+        // module over. They are counted the same way and for the same reason.
+        let fragments = [
+            ("PEER_PAINTS_EVERY_BYTE", super::PEER_PAINTS_EVERY_BYTE),
+            ("PEER_PAINTS_NOTHING", super::PEER_PAINTS_NOTHING),
+        ];
+        let spelled = include_str!("testing.rs")
+            .matches(concat!("pub(crate) ", "const PEER_PAINTS"))
+            .count();
+        assert_eq!(
+            fragments.len(),
+            spelled,
+            "⛔⛔⛔⛔⛔ REGISTER ITEMS 1078 AND 1079: this module declares {spelled} peer \
+             fragment(s) and {} are driven here. A fragment nobody drives is a peer script whose \
+             painter nobody asked about — the same window as the count above, one shape over.",
+            fragments.len(),
+        );
+        for (named, script) in fragments {
+            // ⚠ The marker and the `printf` that produces it cannot be composed in a `const`, so
+            // the tie is asserted — and then USED, below, to wait for the peer.
+            assert!(
+                script.contains(super::PEER_READY),
+                "⛔⛔⛔⛔ `{named}` no longer prints `{}`, and nine waits in `outer.rs` are keyed \
+                 on it. See `PEER_READY`.",
+                super::PEER_READY,
+            );
+            let workspace = Arc::new(Mutex::new(Workspace::new((
+                STANDIN_COLUMNS,
+                super::STANDIN_ROWS,
+            ))));
+            let pane = {
+                let mut command = sprag_terminal::CommandBuilder::new("/bin/sh");
+                command.arg("-c");
+                command.arg(script);
+                command.env("TERM", "dumb");
+                workspace
+                    .lock()
+                    .expect("the workspace mutex")
+                    .spawn(
+                        command,
+                        "sh".to_string(),
+                        STANDIN_COLUMNS,
+                        super::STANDIN_ROWS,
+                    )
+                    .expect("spawn a pane")
+            };
+            let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+            // ⚠ `PEER_PAINTS_NOTHING` paints its READY marker and then nothing, so this wait is
+            // about the peer having reconfigured its terminal — which is precisely what is asked
+            // one line later, and would be a race without it.
+            super::started(&access, pane, super::PEER_READY);
+            let painter = access
+                .terminal_modes()
+                .and_then(|modes| modes.pane_echo(pane));
+            let closed = access
+                .lifecycle()
+                .map(|lifecycle| lifecycle.close(pane))
+                .is_some();
+            assert_eq!(
+                painter,
+                Some(PaneEcho::ByTheProgram),
+                "⛔⛔⛔⛔⛔ REGISTER ITEMS 1078 AND 1079: `{named}` leaves its pane painted by the \
+                 line discipline. Register item 568 settled this shape precisely so the answer \
+                 would not depend on which `sh` the platform hands it — see \
+                 `PEER_PAINTS_EVERY_BYTE`. (Pane closed: {closed}.)",
             );
         }
     }
