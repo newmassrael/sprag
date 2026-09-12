@@ -48,6 +48,12 @@ const CARRIED: &[&str] = &[
     "await_person_ms",
     "closing_rules",
     "context_ceiling",
+    // ⛔⛔⛔ REGISTER ITEM 1066, AND THE ONE WORD HERE THAT IS NOBODY'S DECISION. Every other key
+    // in this list is a caller's or a kind's; this one is a fact about the binary that composes
+    // the payload (`sprag_stamp::BUILD`), so `authored`'s gate one file over is deliberately NOT
+    // what vouches for it — no kind may reach it, and the driver-side gate that reads it back off
+    // the datamodel is what says the road is real.
+    "driver_build",
     "handback_still_ms",
     "hold_within_ms",
     "max_turns",

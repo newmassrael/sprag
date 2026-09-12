@@ -14,6 +14,11 @@ publish = false
 # when TMPDIR is set-and-empty — the endpoint would then be created in whatever directory
 # the process was launched from, where no client looks for it (register item 794).
 sprag-scratch = { workspace = true }
+# WHICH CODE THIS IMAGE WAS BUILT FROM — register item 1066. `BUILD` was computed by this crate's
+# own `build.rs` until 2026-09-12, and re-exported below rather than recomputed: the fact is the
+# image's and not the wire's, and leaving it here left the substrate — which links no wire — unable
+# to say which build composed a sentence a person acts on. No dependencies of its own.
+sprag-stamp = { workspace = true }
 # The winit-free transport seam (RpcIngress) + the reusable Unix-socket
 # adapter (UnixSocketTransport / TransportControl). Both depend only on the
 # seam, so this policy crate stays GPU-free and both frontends reuse it.

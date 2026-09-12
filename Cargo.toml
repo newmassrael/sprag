@@ -19,6 +19,11 @@ members = [
     # when TMPDIR is set-and-empty, and every crate here would then write into its
     # own working directory instead (register item 794).
     "crates/sprag-scratch",
+    # Beside sprag-scratch on the floor and with no dependencies for its reason: which code THIS
+    # IMAGE was built from. It sat in sprag-rpc until register item 1066, where only crates that
+    # link the wire could ask — and the crate that most needed to say which build composed its
+    # sentences (sprag-plugin, the driver) is the one that links no wire by charter.
+    "crates/sprag-stamp",
     "crates/sprag-vt",
     "crates/sprag-grid",
     # What a pane is DOING, read from its screen and title (H3 slice 1). Pure like
@@ -249,6 +254,7 @@ sce-rust-lua = { git = "https://github.com/newmassrael/scxml-core-engine.git", r
 # one place asks the operating system where a temporary file may go, and one place
 # refuses an answer that is not absolute (register item 794).
 sprag-scratch = { path = "crates/sprag-scratch", version = "0.0.1" }
+sprag-stamp = { path = "crates/sprag-stamp", version = "0.0.1" }
 sprag-vt = { path = "crates/sprag-vt", version = "0.0.1" }
 sprag-grid = { path = "crates/sprag-grid", version = "0.0.1" }
 sprag-detect = { path = "crates/sprag-detect", version = "0.0.1" }

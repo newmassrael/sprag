@@ -1,8 +1,8 @@
-//! Stamps THIS IMAGE's own identity into the crate, so a running daemon can say which build it is.
+//! Stamps THIS IMAGE's own identity into the crate, so a running binary can say which build it is.
 //!
 //! # ⚠⚠⚠⚠⚠ Why a build script exists here at all (register item 438)
 //!
-//! `WIRE_PROTOCOL` is the only identity this wire has ever carried, and it is exactly the number
+//! `WIRE_PROTOCOL` is the only identity sprag's wire has ever carried, and it is exactly the number
 //! that cannot answer *"which code produced this walk"*: it moves when a SHAPE moves, so a fix that
 //! changes behaviour without changing a key, an argument, an answer word or a value earns no bump —
 //! and daemon and client agree across it. Measured 2026-08-18: a run's whole walk was produced by a
@@ -12,6 +12,29 @@
 //! So the value has to come off the RUNNING IMAGE rather than off the tree, because the tree is what
 //! is already ahead. A constant compiled INTO the image is that: whatever built this binary is what
 //! this binary says, and no later `cargo build` can change its mind.
+//!
+//! # ⛔⛔⛔⛔⛔ Why it is a crate of its own — register item 1066
+//!
+//! This script and its constant lived in `sprag-rpc` until 2026-09-12, one file from
+//! `WIRE_PROTOCOL`, which is where the argument above was made and is a reasonable place to make
+//! it. What that placement decided, without saying so, is **WHO MAY ASK**: the value was reachable
+//! only by crates that link the wire.
+//!
+//! `sprag-plugin` — the DRIVER, which composes sentences a person reads and acts on — deliberately
+//! links no wire at all (pinion-free, serde-free substrate), so it could not name its own build.
+//! Measured 2026-09-12 (R317): a driver-composed sentence arrived from a seven-day-old daemon, was
+//! read as today's, and separating the two cost a process audit and four string searches. The
+//! driver's own `SPRAG_STATECHARTS_FINGERPRINT` could not have told them apart either — the two
+//! commits the daemon predated (`e3b19bc4`, `abdfefa9`) touched no `.scxml`, so that word was
+//! **identical across the skew**. It answers *which documents*, and the question was *which code*.
+//!
+//! ⚠⚠ **AND THE OBVIOUS REPAIR IS THE WRONG ONE.** A second `build.rs` computing the same commit in
+//! `sprag-plugin` would make ONE FACT have TWO AUTHORS: two copies of [`watched`]'s worktree
+//! resolution, two chances for a policy change here (the `--short=12` width, the dirty flag refused
+//! below) to reach one binary as two spellings of one commit. So the crate moved DOWN instead —
+//! no dependencies, linked by anyone who has to say which build they are — and
+//! [`STAMP`]'s sentence *every binary that links this crate is stamped with the same one* became
+//! true of the substrate too, rather than true only of the crates that happen to speak the wire.
 //!
 //! # ⚠⚠⚠ Why the COMMIT and nothing else — the dirty flag is refused on purpose
 //!

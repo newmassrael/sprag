@@ -1106,6 +1106,62 @@
     -->
     <data id="unverified_quoting" expr="'The driver of this run reports:'"/>
     <!--
+      ⛔⛔⛔⛔⛔ WHICH BUILD OF THAT DRIVER — register item 1066, and the half the
+      word above could not carry.
+
+      `unverified_quoting` says WHOSE the reason is. A reader who has learned
+      that still has to learn WHICH CODE, because the answer decides whether the
+      sentence is evidence about today's tree or about an image that predates the
+      fix under test.
+
+      ⚠⚠⚠⚠⚠ MEASURED, AND IT IS THE SAME SESSION THE WORD ABOVE COST. 2026-09-12:
+      the sentence a reader was handed had been composed by a seven-day-old
+      daemon, and separating that from today's tree took a process audit and four
+      unique-string searches. Knowing the mouth sent the reader to the right
+      code; nothing told them which BUILD of it, so the search was still theirs
+      to run.
+
+      ⛔⛔ THIS IS NOT `SPRAG_STATECHARTS_FINGERPRINT`, WHICH THE DRIVER HAS HAD
+      ALL ALONG. That word answers *which documents this binary was compiled
+      from*, and the two commits the stale image predated (`e3b19bc4`,
+      `abdfefa9`) touched no `.scxml` — so it was IDENTICAL across the very skew
+      that cost the session. The question is which CODE, and only the commit
+      answers it.
+
+      ⚠⚠ EMPTY IN THE TEMPLATE, AND NEITHER A KIND NOR A CALLER DECIDES IT — the
+      driver assigns it on `brief` from a constant compiled into its own image
+      (`sprag_stamp::BUILD`), which is a commit or the word `unknown` and never
+      the empty string. A run whose sentence says `build` and then nothing is a
+      run whose driver did not send it, and that is a red rather than a default.
+
+      ⛔⛔⛔ AND THE SENTENCE ABOVE IS PHRASED THAT WAY ON PURPOSE. The first draft
+      DENIED the invitation in the template's own claim wording, and
+      `sprag_gate::authored::claims` read the denial as the claim: its rule is one
+      sentence holding `author` and that phrase, and a text scan sees no negation
+      — a bound that module states about itself. Teaching it to read *not* would
+      make a real invitation phrased near a *not* go UNSEEN, which is the silent
+      direction item 494 exists to prevent, so the wording moved instead of the
+      needle. ⚠ Do not reintroduce the phrase here, even to reject it.
+    -->
+    <data id="driver_build" expr="''"/>
+    <!--
+      THE CLAUSE THAT ATTACHES THE BUILD ABOVE TO THE REASON IT BELONGS TO —
+      composed after the reason rather than spliced into `unverified_quoting`,
+      for two reasons the wording could not hold at once.
+
+      The quoting word is one clause and it is `dispute_quoting`'s counterpart:
+      keeping the two the same SHAPE is what makes the pair readable as two
+      answers to *whose words are these*. And the build is a fact about the
+      SPEAKER rather than part of the attribution, so it reads as its own
+      sentence.
+
+      ⛔⛔⛔ IT IS DELIBERATELY ABSENT FROM `disputing`. That state's reason is the
+      checker's own words, and stamping THIS driver's build on them would say the
+      loop compiled the checker's sentence — the wrong-mouth failure item 1065
+      paid, wearing a build number.
+    -->
+    <data id="unverified_composed_by" expr="'That reason was composed by driver build'"/>
+    <!--
       WHAT THIS KIND'S RUNS OWE WHEN THE CHECKER NEVER PRODUCED A VERDICT.
       Empty in the template; the kind's value arrives at `start`.
     -->
@@ -3672,6 +3728,24 @@
       <assign location="unreadable_rule" expr="_event.data.unreadable_rule"/>
       <assign location="unwell_rule" expr="_event.data.unwell_rule"/>
       <!--
+        ⛔⛔⛔⛔⛔ AND WHICH BUILD OF THE DRIVER IS SAYING ALL OF THIS — register
+        item 1066, and the ONE value on this edge that is nobody's decision.
+
+        Every other assignment here carries a CHOICE: a caller's, or a kind's
+        echoed back for a caller who made none. This carries a FACT about the
+        binary that raised the event — `sprag_stamp::BUILD`, a constant compiled
+        into the driver's own image — so there is no author to defend it from and
+        no default worth preserving.
+
+        ⚠⚠ UNCONDITIONAL, and the reason is the opposite of its neighbours'. They
+        are unconditional so an omitted key cannot assign nil over an author's
+        decision; this one is unconditional because an omitted key IS the defect
+        — a run whose driver did not say which build it is has exactly the
+        silence item 1066 exists to end, and the gate reads this variable back
+        against the constant to say so.
+      -->
+      <assign location="driver_build" expr="_event.data.driver_build"/>
+      <!--
         ⚠⚠⚠ AND THE THREE THE PEER'S BAD DAY NEEDS, on the same unconditional
         terms: the driver always sends all three, echoing this document's own
         values back for a kind that names none, so a kind that declines cannot
@@ -5674,9 +5748,26 @@
         which is what lets this branch on it in a datamodel where the empty
         string is TRUE.
       -->
+      <!--
+        ⛔⛔⛔⛔⛔ AND WHICH BUILD OF THIS DRIVER COMPOSED IT — register item 1066,
+        inside this branch and not outside it.
+
+        The build is said about a SENTENCE, and this branch is where there is one:
+        when the checker produced no reason at all, `unverified_said` holds only
+        the kind's standing remedy, which this driver did not compose and must not
+        sign. A clause hoisted out of the `if` would stamp the driver's build on
+        the kind's words — the wrong-mouth failure item 1065 paid, one slot over.
+
+        ⚠⚠ NOT GUARDED ON `driver_build` BEING NON-EMPTY. The value is a commit or
+        the word `unknown`, so the empty string means the driver never sent it,
+        and a guard would turn that into a sentence that simply says less —
+        indistinguishable from the silence this item is closing. Composed
+        unconditionally, the gap is visible and the driver-side gate names it.
+      -->
       <if cond="_event.data.explained">
         <assign location="unverified_said"
-                expr="unverified_said + ' ' + unverified_quoting + ' ' + _event.data.explained"/>
+                expr="unverified_said + ' ' + unverified_quoting + ' ' + _event.data.explained
+                      + ' ' + unverified_composed_by + ' ' + driver_build + '.'"/>
       </if>
       <!--
         ⚠⚠⚠ THE ORDINARY TURN PROMPT IS COMPOSED IN RATHER THAN REPLACED,

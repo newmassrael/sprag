@@ -1,3 +1,21 @@
+// ⛔⛔⛔⛔⛔ THE BRIEF PAYLOAD IS ONE `json!` LITERAL AND THAT IS A GATE'S PREMISE — register item
+// 1066, which is the round the default limit of 128 refused.
+//
+// `serde_json::json!` recurses once per member, so `OuterLoop::brief`'s object — 29 keys, every
+// decision a run is started with — is what spends this. ⚠ The obvious repair is the one
+// `sprag-mcp` took for the same error (`main.rs`, the tool roster: *"three more entries put `json!`
+// past its expansion recursion limit … so the roster splits by SUBJECT instead"*), and its reason
+// does not reach here: that roster HAD a subject to split on (three derived schemas among written
+// ones), and this payload's single site is load-bearing.
+//
+// ⚠⚠⚠ `sprag_gate::briefing` finds the edge by the literal `let payload = serde_json::json!({` and
+// reads the keys of that ONE object, both ways, because — its words — *"the brief is the one
+// payload this driver hands the document WHOLE at a single site"*. A payload assembled from two
+// literals leaves the second one's keys unread by that gate in BOTH directions, which is register
+// item 1023's blindness reintroduced to buy a compile. Between a limit that will announce itself
+// again with a compile error and a gate that would stop announcing anything, the loud one wins.
+#![recursion_limit = "256"]
+
 //! sprag-plugin — the plugin extension API, the SCE-statechart Driver, and the
 //! bundled control plugins.
 //!

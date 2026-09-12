@@ -1,0 +1,15 @@
+[package]
+name = "sprag-stamp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Which code this IMAGE was built from, as one word compiled into it. A fact about the running binary rather than about any one crate's job, so it lives below every crate that has to say it — the wire crate that used to own it could not be linked by the substrate, and a driver's sentence therefore could not name the build that composed it (register item 1066)."
+publish = false
+
+[dependencies]
+# None, on purpose — `sprag-scratch`'s charter exactly, and for its reason: every crate that has to
+# say which build it is depends on this one, so anything pulled in here would be pulled in
+# everywhere. Its whole subject is one `git` call made at build time and the constant that call
+# becomes.

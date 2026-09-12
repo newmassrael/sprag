@@ -18,6 +18,18 @@ sprag-input = { workspace = true }
 # one more boundary. Pure — no lock, no wire, no clock — so depending on it costs the substrate
 # nothing it did not already have.
 sprag-detect = { workspace = true }
+# ⛔⛔⛔⛔⛔ WHICH CODE THIS DRIVER WAS BUILT FROM — register item 1066, and the one crate this
+# substrate may link to learn it. The driver composes sentences a person reads and acts on
+# (`unverified`'s reason is this loop's own words about a checker that said nothing), and until this
+# edge existed those sentences could not name the build that wrote them: measured 2026-09-12, a
+# seven-day-old daemon's sentence was read as today's and separating the two cost a process audit
+# and four string searches.
+#
+# ⚠⚠ IT IS NOT `sprag-rpc`, WHICH IS WHERE THE STAMP USED TO LIVE. That crate carries pinion and
+# serde, and this one is pinion-free and serde-free by charter — so the stamp moved DOWN to a crate
+# with no dependencies at all rather than this crate reaching UP through a wire it does not speak.
+# ⚠ And not a second `build.rs` here either: one fact, one author (see that crate's `build.rs`).
+sprag-stamp = { workspace = true }
 # The generated state machine's runtime (Engine + StatePolicy).
 sce-rust-runtime = { workspace = true }
 # Parse a foreign AI tool's structured stdout (a `claude -p --output-format

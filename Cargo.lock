@@ -3796,6 +3796,7 @@ dependencies = [
  "sprag-gate",
  "sprag-input",
  "sprag-scratch",
+ "sprag-stamp",
  "sprag-terminal",
  "sprag-vt",
 ]
@@ -3809,12 +3810,17 @@ dependencies = [
  "serde_json",
  "signal-hook",
  "sprag-scratch",
+ "sprag-stamp",
  "sprag-vt",
  "tracing",
 ]
 
 [[package]]
 name = "sprag-scratch"
+version = "0.0.1"
+
+[[package]]
+name = "sprag-stamp"
 version = "0.0.1"
 
 [[package]]

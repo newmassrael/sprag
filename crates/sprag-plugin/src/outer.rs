@@ -666,6 +666,30 @@ const UNREADABLE_RULE: &str = "unreadable_rule";
 /// The third, register item 752 — see [`crate::judge::Silence::Unwell`].
 const UNWELL_RULE: &str = "unwell_rule";
 
+/// ⛔⛔⛔⛔⛔ **WHICH BUILD OF THIS DRIVER IS COMPOSING THE RUN'S SENTENCES** — register item 1066,
+/// spelled once here for [`WORKING_RULES`]'s reason and carried on the brief edge like every value
+/// the document holds.
+///
+/// # ⚠⚠⚠⚠⚠ It is the ONE brief key no caller and no kind may author
+///
+/// Every other key on that edge is somebody's decision — a caller's [`Brief`] field, or a kind's
+/// `<data>` echoed back for a caller who named none. This one is a FACT ABOUT THIS BINARY, read
+/// straight off [`sprag_stamp::BUILD`] where the payload is composed, so there is nothing for a
+/// [`Brief`] field to hold and nothing for a kind to disagree with. A caller able to author it
+/// could tell a run to sign its sentences with somebody else's build, which is precisely the
+/// misreading the value exists to end.
+///
+/// ⚠⚠ **AND IT RIDES THIS EDGE RATHER THAN A `set_variable`**, which is register items 492 and 494
+/// answered before they are asked: the two constants deleted from this module were numbers whose
+/// only writer was a gate reaching into the datamodel, and *a constant that exists only for a test
+/// is sometimes the shape of a missing channel*. The channel already existed; this uses it.
+///
+/// ⚠ It is NOT [`crate::STATECHARTS_FINGERPRINT`], which the driver has had all along. That word
+/// answers *which documents*, and the failure it is asked about here is *which code*: the two
+/// commits R317's stale daemon predated (`e3b19bc4`, `abdfefa9`) touched no `.scxml` at all, so the
+/// fingerprint was IDENTICAL across the skew that cost the session.
+const DRIVER_BUILD: &str = "driver_build";
+
 /// ⛔⛔⛔⛔⛔ **WHAT A REPOSITORY DOES ABOUT ITS CHECKER'S SILENCE, IN TWO CLAUSES** — register item
 /// 741, and [`Brief::unverified_rules`]'s value.
 ///
@@ -8588,6 +8612,19 @@ impl OuterLoop {
                 .as_ref()
                 .map(|rules| rules.unwell.clone())
                 .unwrap_or_default(),
+            // ⛔⛔⛔⛔⛔ AND WHICH BUILD OF THIS DRIVER IS SAYING ALL OF IT — register item 1066.
+            //
+            // ⚠⚠⚠ THE ONLY KEY HERE THAT READS NOTHING OFF `brief`, and that is the decision rather
+            // than an oversight: the three lines above echo a KIND's words and the ones above them
+            // a CALLER's, while this is a fact about the binary composing the payload. It is taken
+            // where the payload is built because that is the one place that is provably inside the
+            // image whose identity it claims — a value handed in from anywhere else would be
+            // somebody's report about this driver rather than this driver's own.
+            //
+            // ⚠⚠ UNCONDITIONAL like its neighbours, and with no empty case to guard: the constant
+            // is a commit or the word `unknown`, never the empty string, so there is no *declined*
+            // reading for the document to fall back to and no `<data>` default to preserve.
+            DRIVER_BUILD: sprag_stamp::BUILD,
             // ⚠⚠⚠ AND WHO CERTIFIES A MILESTONE — unconditional on the same terms: the template
             // ships `''` (nobody checks), and a run whose kind names a checker must arrive holding
             // it. Register item 428's second half: until this line the slot could be authored by
@@ -36137,6 +36174,88 @@ mod tests {
             Scoring::Unrecorded,
             "⚠⚠⚠ AND AN UNKNOWN WORD IS *NOTHING CLASSIFIED IT* AND NEVER *IT WAS SCORED*: a newer \
              daemon publishing a fourth arm must not have its rows read as though a check existed",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE BUILD A RUN'S SENTENCES ARE SIGNED WITH IS THIS DRIVER'S OWN** — register
+    /// item 1066, and the half of the road no reading of the document can vouch for.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What was silent, measured
+    ///
+    /// The driver composes sentences a person reads and ACTS ON — `unverified`'s reason is this
+    /// loop's own words about a checker that said nothing. Item 1065 made those sentences say whose
+    /// they are. They still could not say WHICH BUILD, and 2026-09-12 (R317) is what that costs: a
+    /// sentence composed by a seven-day-old daemon was read as today's tree, and separating the two
+    /// took a process audit and four unique-string searches. **The next move after that misreading
+    /// is to undo a fix that is already in.**
+    ///
+    /// # ⚠⚠⚠⚠ Why the value is asserted against the CONSTANT and not against a fixture's word
+    ///
+    /// The document's half — *the clause carries whatever it was handed* — is
+    /// `the_uncertified_prompt_names_the_build_that_composed_its_reason` one file over, and a
+    /// fixture is the right author for the value there. Here the claim is the opposite one: that
+    /// what the driver hands over is **its own image's identity** rather than anybody's argument.
+    /// Nothing a caller writes can make this pass, because [`Brief`] has no field for it — which is
+    /// the design, not a gap: a caller who could name the build could tell a run to sign its
+    /// sentences with somebody else's.
+    ///
+    /// # ⛔⛔⛔ THE CONTROL IS THE NEAR-MISS WORD THE DRIVER ALREADY HAD
+    ///
+    /// [`crate::STATECHARTS_FINGERPRINT`] is also stamped into this image at build time and also
+    /// changes when the tree does, so a repair that plumbed IT would look exactly like this one.
+    /// It could not have answered R317: the two commits that stale daemon predated (`e3b19bc4`,
+    /// `abdfefa9`) touched no `.scxml`, so that word was **identical across the skew**. It answers
+    /// *which documents*; the question is *which code*. Asserting the two apart is what stops the
+    /// cheaper word being substituted later by somebody reading only the shape of this gate.
+    #[test]
+    fn the_build_a_run_is_briefed_with_is_the_one_this_driver_was_compiled_from() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (workspace, pane) = quiet_pane();
+        let mut loops = bounded_at(Arc::clone(&lua), pane, Duration::from_secs(1))
+            .expect("the document's datamodel must carry its four authored strings");
+        assert_eq!(
+            loops.brief(&a_brief()),
+            Briefed::Took,
+            "the staging: a brief the door refused assigns nothing, and every claim below would \
+             then be about a datamodel no run ever reached",
+        );
+
+        let held = match loops.script.get_variable(&loops.session, DRIVER_BUILD) {
+            Ok(ScriptValue::String(word)) => word,
+            other => panic!(
+                "⛔⛔⛔⛔⛔ ITEM 1066: `{DRIVER_BUILD}` must be a word this run holds. The driver \
+                 puts it on the brief payload and the `brief` transition assigns it; anything else \
+                 here is a channel that has gone quiet, and the run's sentences go back to being \
+                 unattributable to a build. Got: {other:?}",
+            ),
+        };
+        assert_eq!(
+            held,
+            sprag_stamp::BUILD,
+            "⛔⛔⛔⛔⛔ ITEM 1066: THE RUN IS SIGNING ITS SENTENCES WITH A BUILD THAT IS NOT THIS \
+             ONE. What the document holds must be the constant compiled into the binary that \
+             briefed it — a value from anywhere else is somebody's REPORT about this driver, and a \
+             report is exactly what a reader cannot check against `/proc/<pid>/exe`",
+        );
+        assert_ne!(
+            held,
+            crate::STATECHARTS_FINGERPRINT,
+            "⛔⛔⛔ ITEM 1066'S CONTROL: the driver has always known which DOCUMENTS it was \
+             compiled from, and that word could not separate R317's skew — the two commits the \
+             stale image predated touched no `.scxml`, so it was identical on both sides. A \
+             repair that carried the fingerprint here would answer *which documents* to a reader \
+             asking *which code*",
+        );
+        assert!(
+            !held.is_empty(),
+            "⚠⚠⚠ AND THE EMPTY STRING IS THE DOCUMENT'S OWN `<data>` DEFAULT SURVIVING — the \
+             driver never sent the key, or the `brief` transition stopped assigning it. `unknown` \
+             is the word for *this image cannot say*; a blank is nobody saying anything",
+        );
+
+        assert!(
+            workspace.lock().unwrap().close(pane).is_some(),
+            "the pane this gate opened was there to close",
         );
     }
 

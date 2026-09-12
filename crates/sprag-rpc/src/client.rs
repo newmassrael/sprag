@@ -1224,31 +1224,20 @@ impl ScopeAsk {
 /// [`CLIENT_BUILD_PARAM`]: crate::CLIENT_BUILD_PARAM
 pub const WIRE_PROTOCOL: u32 = 46;
 
-/// WHICH BUILD THIS IMAGE IS — the identity [`WIRE_PROTOCOL`] above cannot carry, stamped in by
-/// this crate's build script as the commit it was compiled from (or `unknown`).
+/// WHICH BUILD THIS IMAGE IS — the identity [`WIRE_PROTOCOL`] above cannot carry, and the reason it
+/// is published from here is that this is where [`WIRE_PROTOCOL`] is: the two are read together,
+/// and a reader who finds the shape number needs the sentence saying which question it does NOT
+/// answer. See [`sprag_stamp::BUILD`] for that argument and for the measurement behind it.
 ///
-/// # ⚠⚠⚠⚠⚠ Why it sits beside a number that answers a different question (register item 438)
+/// # ⛔⛔⛔⛔⛔ It is a RE-EXPORT and not a second stamp — register item 1066
 ///
-/// The constant above is a SHAPE, and it moves only when a shape moves. A fix that changes what a
-/// run DOES — a new transition, a guard, a different word on a walk — earns no bump by that pin's
-/// own list, so both ends agree across it and neither can tell that one of them predates the fix.
-/// A daemon outlives its clients by design, so that skew is the ordinary state after a rebuild
-/// rather than an exotic one, and it is invisible from either end.
-///
-/// Measured 2026-08-18, which is what this exists for: a loop's entire walk was produced by a
-/// daemon built before two commits that changed the very edges the walk was being read for, and it
-/// was indistinguishable from a walk that carried them. The only probe that answered was `grep`
-/// over `/proc/<pid>/exe`.
-///
-/// ⚠⚠ **It is deliberately NOT a second version check.** Nothing refuses a connection over it and
-/// nothing should: a skew here is a fact a reader needs, not a shape neither end can parse. The
-/// number above owns refusal; this owns provenance, and conflating them would make every rebuild a
-/// forced restart.
-///
-/// ⚠ Every binary linking this crate is stamped with the SAME value — this is the identity of the
-/// image, not of a role — so a client and a daemon built from one `cargo build` agree, and one
-/// built later does not.
-pub const BUILD: &str = env!("SPRAG_BUILD");
+/// This crate's own `build.rs` computed the value until 2026-09-12, which quietly decided that only
+/// a crate linking the wire may say which build it is. `sprag-plugin` links no wire by charter and
+/// is the crate whose sentences a person reads and acts on, so the driver could not name the build
+/// that composed them — measured at a process audit and four string searches (R317). The stamp now
+/// lives below everything, and nothing here computes one: the value arriving through this name and
+/// the value the driver reads are **one constant**, not two that agree today.
+pub use sprag_stamp::BUILD;
 
 /// **WHICH RUNNING PROCESS THIS IS** — the identity [`BUILD`] above cannot carry, minted once on
 /// first ask and constant for the life of the process.

@@ -17220,6 +17220,130 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **AND WHICH BUILD OF THAT DRIVER COMPOSED IT** — register item 1066, the gate above's
+    /// other half and the one that closes the search it left the reader holding.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What knowing the MOUTH still did not answer, measured
+    ///
+    /// Item 1065 stopped the driver's sentence being published as the checker's, and the value of
+    /// that is real: a reader who knows the words are the loop's knows which code to go and read.
+    /// **They still do not know which BUILD of it**, and on 2026-09-12 (R317) that was the whole
+    /// question — the sentence had been composed by a seven-day-old daemon, the phrasing it used
+    /// had been replaced in the tree that morning, and telling those apart took a process audit and
+    /// four unique-string searches. A reader who reads it as today's tree concludes the fix did not
+    /// land, and the next move after that conclusion is to undo a fix that is already in.
+    ///
+    /// # ⚠⚠⚠ The three arms, and what each one is the absence of
+    ///
+    /// * **THE CLAUSE CARRIES THE WORD IT WAS HANDED**, so the value is the driver's and not a
+    ///   literal the document could have shipped. `outer.rs`'s
+    ///   `the_build_a_run_is_briefed_with_is_the_one_this_driver_was_compiled_from` owns the other
+    ///   direction — that what the driver hands over is its own image — and neither claim is the
+    ///   other: a document that spliced a constant would pass here, and a driver that sent the
+    ///   right word into a document that dropped it would pass there.
+    /// * ⛔⛔ **AND THE REASON ITSELF SURVIVES**, which is item 593's division and item 1065's own
+    ///   first assertion: a repair that made room for a build number by dropping the reason would
+    ///   trade one silence for another.
+    /// * ⛔⛔⛔⛔ **AND `disputing` DOES NOT GET IT.** That state's reason is the CHECKER's own
+    ///   words, and stamping this driver's build on them says the loop compiled the checker's
+    ///   sentence — item 1065's exact failure wearing a build number. This is the control, and it
+    ///   is the arm a lazy repair fails: appending the clause to every prompt satisfies the first
+    ///   two and puts a second mouth's provenance on the first mouth's words.
+    #[test]
+    fn the_uncertified_prompt_names_the_build_that_composed_its_reason() {
+        /// The reason the driver composes when nothing answered — `Unheard::describe`'s shape.
+        const DRIVERS_OWN: &str = "the checker was started and never answered";
+        /// And the reason a checker that DID answer gives for refusing.
+        const CHECKERS_OWN: &str = "the artifact names no file";
+        /// ⚠⚠ **NOT `sprag_stamp::BUILD`, ON PURPOSE.** What this half claims is that the clause
+        /// carries the word the DRIVER HANDED IT; asserting the real constant would also pass for a
+        /// document that had it baked in, which is the one shape that cannot track a rebuild. The
+        /// real constant is asserted where it is read — `outer.rs`, one gate.
+        const HANDED_IN: &str = "b0gusbu11d99";
+
+        /// The `brief` payload, composed in a function of its own — the sibling gate's shape.
+        fn briefed() -> String {
+            serde_json::json!({
+                "unanswered_rule": "ASK-THE-CHECKER-AGAIN",
+                "unreadable_rule": "FIX-THE-CHECKERS-PROMPT",
+                "unwell_rule": "WAIT-THEN-ASK-AGAIN",
+                // ⛔ REGISTER ITEM 1066. The driver reads this off `sprag_stamp::BUILD`; a fixture
+                // authors it so the assertion below is about the document's plumbing rather than
+                // about a constant both sides would agree on for free.
+                "driver_build": HANDED_IN,
+                // ⚠ The ceiling the `brief` transition assigns unconditionally — a payload that
+                // omits it writes nil over a number a guard then reads. See the sibling gate.
+                "reflect_after_refusals": 3,
+            })
+            .to_string()
+        }
+
+        /// Reach `judging`, judge with `data`, and answer with the prompt named by `read`.
+        fn prompt_after(data: &serde_json::Value, read: &str) -> String {
+            let (mut engine, host, lua, session) = started();
+            carried(&mut engine, &host, AiLoopEvent::Brief, &briefed());
+            carried(&mut engine, &host, AiLoopEvent::Start, "");
+            carried(&mut engine, &host, AiLoopEvent::PromptSent, "");
+            carried(&mut engine, &host, AiLoopEvent::TurnDone, TURN);
+            assert_eq!(
+                engine.get_current_state(),
+                AiLoopState::Judging,
+                "⚠⚠ THE PREMISE: the walk must reach `judging`",
+            );
+            carried(&mut engine, &host, AiLoopEvent::Judge, &data.to_string());
+            match lua.get_variable(&session, read) {
+                Ok(ScriptValue::String(said)) => said,
+                other => panic!("the composed prompt must be readable: {other:?}"),
+            }
+        }
+
+        let unverified = prompt_after(
+            &serde_json::json!({
+                "done": true,
+                "checked": "silent",
+                "silence": "unanswered",
+                "explained": DRIVERS_OWN,
+            }),
+            "unverified_prompt",
+        );
+        assert!(
+            unverified.contains(HANDED_IN),
+            "⛔⛔⛔⛔⛔ ITEM 1066: the driver's own sentence is published with no build on it. A \
+             reader who has been told the words are this loop's still cannot tell an image that \
+             predates the fix under test from one that carries it — which is R317, where that \
+             cost a process audit and four string searches. Got:\n{unverified}",
+        );
+        assert!(
+            unverified.contains(DRIVERS_OWN),
+            "⚠⚠⚠⚠⚠ AND THE REASON ITSELF MUST STILL SURVIVE: register item 593 bought the division \
+             between six ways of hearing nothing, and a repair that made room for a build by \
+             dropping the reason would hand that back. Got:\n{unverified}",
+        );
+
+        // ── THE CONTROL: the state whose reason is the CHECKER's is not signed by this driver ──
+        let disputed = prompt_after(
+            &serde_json::json!({
+                "done": true,
+                "checked": "failed",
+                "explained": CHECKERS_OWN,
+            }),
+            "dispute_prompt",
+        );
+        assert!(
+            !disputed.contains(HANDED_IN),
+            "⛔⛔⛔⛔⛔ THE CONTROL FAILED, AND IT IS ITEM 1065'S DEFECT WEARING A BUILD NUMBER: \
+             `disputing`'s reason is a reply the CHECKER really gave, so this driver's build says \
+             nothing true about it — a reader is sent to measure the loop over words the loop did \
+             not write. A repair that appended the clause to every prompt passes every assertion \
+             above and fails exactly here. Got:\n{disputed}",
+        );
+        assert!(
+            disputed.contains(CHECKERS_OWN),
+            "⚠⚠ AND THE CONTROL MUST BE A LIVE PROMPT rather than an empty string, or the \
+             assertion above holds for a prompt that says nothing at all. Got:\n{disputed}",
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **THE DOOR AN OUTAGE CAME IN AT DECIDES WHETHER ANYTHING MAY BE TYPED ON THE WAY
     /// OUT** — register item 715, and the judgement this document records rather than a tidy-up.
     ///
