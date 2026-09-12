@@ -108,11 +108,13 @@ pub mod briefing;
 /// walk's fiddly parts are where two copies of a rule drift apart.
 pub mod sources;
 
-/// Every SHELL script this workspace carries, and the argv of the commands they spell.
+/// Every SHELL script this workspace carries, the argv of the commands they spell, and which word
+/// of a command the shell runs.
 ///
 /// Beside [`sources`] and for its reason, on the other language this repository enforces itself in.
 /// What is shared is the WALK; the comment rule is each caller's own, because the two questions
-/// asked of shell here fail in opposite directions — register item 1006 has the measurement.
+/// asked of shell here fail in opposite directions — register item 1006 has the measurement. The
+/// command word is shared as well, because two gates answering it apart is register item 1085.
 pub mod shell;
 
 /// Which PACKAGE owns a binary, so a refusal can name the command that ENDS it — item 455.

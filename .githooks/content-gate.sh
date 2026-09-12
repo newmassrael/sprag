@@ -300,12 +300,13 @@ leave_the_commits_index_behind() {
 # ⚠ `no_hook_enters_the_mirror_without_leaving_the_commits_index_behind` is what makes the next
 # caller take it — the ratchet the hook layer did not have.
 #
-# ⚠⚠ It does NOT run the work: callers keep their own subshell, so the `"${BX}"` lines stay in
-# command position word-for-word. `every_command_this_repository_hands_the_wrapper_is_one_it_
-# measured` reads those lines and counts a site only when the wrapper leads a command — at the start
-# of a line or after `&&`, `||`, `;`, `then`, `else`, `do`, `(` or `{` — so an `env -u … "${BX}" …`
-# here would drop both routed lanes out of that population SILENTLY, which is the escape hatch that
-# clause exists to close. ⚠ DRIVEN rather than read off its rule: see that clause's own gate arm.
+# ⚠⚠ It does NOT run the work: callers keep their own subshell, so the `"${BX}"` lines stay the word
+# the shell runs. `every_command_this_repository_hands_the_wrapper_is_one_it_measured` reads EVERY
+# use of the wrapper and counts a site only where the wrapper is that word, so an
+# `env -u … "${BX}" …` here is REFUSED as a use it cannot read: whether `env` runs its operand, and
+# with what argv, is `env`'s grammar and not the shell's. ⚠ Until register item 1085 that same line
+# dropped both routed lanes out of the population SILENTLY — driven, not read off the rule: an
+# unmeasured argv behind that prefix left the clause green.
 enter_the_mirror() {
     cd "$1" || return 1
     leave_the_commits_index_behind

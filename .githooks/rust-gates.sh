@@ -376,8 +376,9 @@ rust_gates_run() {
     echo "rust-gates: on the INDEX — tree $RUST_GATES_COMPILED_TREE, checked out at $mirror, which is what this commit will carry" >&2
     # ⚠⚠ A SUBSHELL, so the caller's working directory is untouched and the `"${BX}"` line below
     # stays the one word-for-word command `a_fleet_ceiling_is_a_measurement_with_a_date` composes
-    # from this file's own assignments. A `(cd … && "${BX}" … )` one-liner would put a `)` on the
-    # end of that argv and the clause reading it could no longer say what the wrapper is given.
+    # from this file's own assignments. A `(cd … && "${BX}" … )` one-liner would stand in the
+    # mirror without `enter_the_mirror`, which `no_hook_enters_the_mirror_without_leaving_the_
+    # commits_index_behind` refuses — register item 1082.
     (
         # ⛔⛔⛔ AND THE COMMIT'S INDEX DOES NOT COME IN HERE — register item 1082. The mirror is a
         # linked worktree, so `GIT_INDEX_FILE` (relative on a plain commit, and an absolute

@@ -23,6 +23,14 @@
 //! the offence four characters in. A gate built on that rule would have been green on the very line
 //! it exists to catch. So the walk is shared and each caller states its own rule.
 //!
+//! # ⛔⛔⛔⛔⛔ Which word a command RUNS is answered here too — register item 1085
+//!
+//! [`crate::shell::simple_commands`] and [`crate::shell::command_word`] exist because two gates
+//! had each answered that question for themselves, with a list of what may stand in front of a
+//! command, and both lists read a shape they did not name as *not a command*. The grammar belongs
+//! to the one module that already splits the words; what a gate DOES with a word it cannot place
+//! is the gate's, and both gates now refuse it.
+//!
 //! # ⚠⚠ What a text scan can and cannot claim
 //!
 //! This crate takes no dependencies by charter and there is no shell parser in std, so
@@ -31,6 +39,10 @@
 //! end a command. It expands nothing, so a word keeps its `${variables}` verbatim; it does not
 //! follow a quote across a line break; and it cannot see a command assembled at run time. Those are
 //! stated here rather than implied, and every one of them MISSES rather than refusing wrongly.
+//!
+//! ⚠ A caller for whom a miss is the escape hatch holds the words against
+//! [`crate::shell::expansions_of`], a count over the TEXT that shares none of those limits, and
+//! refuses whatever the split did not reach.
 
 use crate::sources::workspace_root;
 use std::path::PathBuf;
@@ -194,11 +206,11 @@ pub fn commands_named(line: &str, program: &str) -> Vec<Vec<String>> {
                     found.push(argv);
                 }
             }
-            Token::Word(word, quoted) => {
+            Token::Word(word) => {
                 if let Some(argv) = collecting.as_mut() {
-                    argv.push(word);
-                } else if !quoted && word == program {
-                    collecting = Some(vec![word]);
+                    argv.push(word.text);
+                } else if !word.quoted && word.text == program {
+                    collecting = Some(vec![word.text]);
                 }
             }
         }
@@ -209,9 +221,128 @@ pub fn commands_named(line: &str, program: &str) -> Vec<Vec<String>> {
     found
 }
 
-/// One piece of a shell line: a word (with whether any of it was quoted), or the end of a command.
+/// One word of a line of shell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Word {
+    /// What the shell would hand the child: quotes removed, nothing expanded.
+    pub text: String,
+    /// The word exactly as the line spells it, quotes and all.
+    ///
+    /// ⚠ Kept beside [`Word::text`] because removing the quotes is already a decision about them:
+    /// `"${BX}"` and `'${BX}'` have the same text, and only the first expands the variable.
+    pub raw: String,
+    /// Whether any part of the word was quoted.
+    pub quoted: bool,
+}
+
+/// Every SIMPLE COMMAND spelled on one line of shell, as its words in order — register item 1085.
+///
+/// A command ends where [`commands_named`] ends one, so `[ -x "$w" ] && "$w" -- run` is two. The
+/// words are kept whole: the reserved words that introduce a command and the assignments that
+/// prefix one are still in the list, and [`command_word`] says which word the shell RUNS.
+///
+/// # ⛔⛔⛔⛔⛔ Why this is here and not in a gate
+///
+/// Two gates used to answer *is this word in command position* for themselves, each with a list
+/// of what may stand in front of it (`&&`, `;`, `then`, …), and each read a shape its list did not
+/// name as NOT A COMMAND. Measured 2026-09-13 by mutating the hooks: `env -u GIT_INDEX_FILE
+/// "${BX}" …`, `[ -x "${BX}" ] && "${BX}" …` and `"$BX" …` each handed the wrapper an argv nobody
+/// had measured while `a_fleet_ceiling_is_a_measurement_with_a_date` stayed green — the same argv
+/// with no prefix was red — and `if cd "$mirror"; then` stood in the mirror while
+/// `no_suite_hands_a_child_the_git_environment_it_inherited` stayed green. A list of leads is an
+/// allowlist whose default is the escape hatch.
+#[must_use]
+pub fn simple_commands(line: &str) -> Vec<Vec<Word>> {
+    let mut found = Vec::new();
+    let mut current = Vec::new();
+    for token in tokens(line) {
+        match token {
+            Token::Break => {
+                if !current.is_empty() {
+                    found.push(std::mem::take(&mut current));
+                }
+            }
+            Token::Word(word) => current.push(word),
+        }
+    }
+    if !current.is_empty() {
+        found.push(current);
+    }
+    found
+}
+
+/// The reserved words after which the shell BEGINS a command rather than running one.
+///
+/// ⚠ Only those. `fi`, `done`, `esac` and `}` close a construct and are followed by an operator.
+/// `for`, `case` and `select` take words that are not a command, so a caller asking behind one of
+/// them gets the reserved word back as the command word — a word nobody runs, which is the
+/// direction that refuses rather than guesses. `time` is out for the same reason: it takes options
+/// of its own, so the word after it is not reliably the one run.
+pub const INTRODUCERS: [&str; 9] = [
+    "!", "{", "if", "then", "elif", "else", "while", "until", "do",
+];
+
+/// Which word of one simple command the shell RUNS: the first past the [`INTRODUCERS`] and then
+/// past the `NAME=value` assignments that prefix a command.
+///
+/// ⚠ A reserved word is reserved only UNQUOTED — `"if"` is a program's name — so a quoted word is
+/// never skipped. And an operand of another program is not the command word even when that program
+/// runs it (`env`, `command`, `exec`): what such a program does with its operands is its own
+/// grammar and not the shell's, so the caller is handed the program and decides for itself.
+///
+/// `None` when every word is an introducer or an assignment.
+#[must_use]
+pub fn command_word(words: &[Word]) -> Option<usize> {
+    let mut at = 0;
+    while words
+        .get(at)
+        .is_some_and(|word| !word.quoted && INTRODUCERS.contains(&word.text.as_str()))
+    {
+        at += 1;
+    }
+    while words.get(at).is_some_and(|word| is_assignment(&word.raw)) {
+        at += 1;
+    }
+    (at < words.len()).then_some(at)
+}
+
+/// Whether a word, as spelled, is a `NAME=value` assignment: an unquoted name, then `=`.
+fn is_assignment(raw: &str) -> bool {
+    raw.split_once('=').is_some_and(|(name, _)| {
+        let mut chars = name.chars();
+        chars
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+            && chars.all(|rest| rest.is_ascii_alphanumeric() || rest == '_')
+    })
+}
+
+/// How many times `text` expands the shell variable `name`: `$name`, or `${name` followed by
+/// anything that cannot continue the name (`}`, `:-`, …).
+///
+/// ⚠ A COUNT OVER THE TEXT and not over a parse, on purpose: it is what a caller holds a parse
+/// against, so it must not share the parse's blind spots. It counts inside single quotes too, where
+/// the shell expands nothing — the direction that over-counts, so a caller comparing the two
+/// refuses rather than passes.
+#[must_use]
+pub fn expansions_of(text: &str, name: &str) -> usize {
+    ["$", "${"]
+        .iter()
+        .map(|lead| {
+            let needle = format!("{lead}{name}");
+            text.match_indices(needle.as_str())
+                .filter(|(at, _)| {
+                    !text[at + needle.len()..]
+                        .starts_with(|next: char| next.is_ascii_alphanumeric() || next == '_')
+                })
+                .count()
+        })
+        .sum()
+}
+
+/// One piece of a shell line: a word, or the end of a command.
 enum Token {
-    Word(String, bool),
+    Word(Word),
     Break,
 }
 
@@ -233,19 +364,35 @@ fn tokens(line: &str) -> Vec<Token> {
     let mut word = String::new();
     let mut quoted = false;
     let mut started = false;
+    // Where the word being built BEGAN, so its spelling can be handed back beside its text. Every
+    // arm that starts a word does so on the character this iteration opened with, so marking it
+    // once at the top of the loop is marking it for all of them.
+    let mut begin = 0;
     // The innermost context. A `$(` inside a double-quoted string pushes a plain one back on, so
     // the command inside is tokenised as a command.
     let mut inside_double: Vec<bool> = vec![false];
     let chars: Vec<char> = line.chars().collect();
     let mut at = 0;
-    let flush = |out: &mut Vec<Token>, word: &mut String, quoted: &mut bool, started: &mut bool| {
+    let flush = |out: &mut Vec<Token>,
+                 word: &mut String,
+                 quoted: &mut bool,
+                 started: &mut bool,
+                 from: usize,
+                 to: usize| {
         if *started {
-            out.push(Token::Word(std::mem::take(word), *quoted));
+            out.push(Token::Word(Word {
+                text: std::mem::take(word),
+                raw: chars[from..to].iter().collect(),
+                quoted: *quoted,
+            }));
             *quoted = false;
             *started = false;
         }
     };
     while at < chars.len() {
+        if !started {
+            begin = at;
+        }
         let one = chars[at];
         let in_double = *inside_double.last().expect("the stack keeps its floor");
         // ── INSIDE A DOUBLE-QUOTED STRING: only three things are not literal text.
@@ -254,12 +401,12 @@ fn tokens(line: &str) -> Vec<Token> {
                 inside_double.pop();
                 at += 1;
             } else if one == '$' && chars.get(at + 1) == Some(&'(') {
-                flush(&mut out, &mut word, &mut quoted, &mut started);
+                flush(&mut out, &mut word, &mut quoted, &mut started, begin, at);
                 out.push(Token::Break);
                 inside_double.push(false);
                 at += 2;
             } else if one == '`' {
-                flush(&mut out, &mut word, &mut quoted, &mut started);
+                flush(&mut out, &mut word, &mut quoted, &mut started, begin, at);
                 out.push(Token::Break);
                 inside_double.push(false);
                 at += 1;
@@ -286,7 +433,9 @@ fn tokens(line: &str) -> Vec<Token> {
                     word.push(chars[at]);
                     at += 1;
                 }
-                at += 1;
+                // ⚠ Past the closing quote, and never past the line: an unterminated one would
+                // otherwise leave `at` one beyond the end, and the spelling below is a slice.
+                at = (at + 1).min(chars.len());
             }
             '"' => {
                 quoted = true;
@@ -306,18 +455,18 @@ fn tokens(line: &str) -> Vec<Token> {
                 break;
             }
             ')' if inside_double.len() > 1 => {
-                flush(&mut out, &mut word, &mut quoted, &mut started);
+                flush(&mut out, &mut word, &mut quoted, &mut started, begin, at);
                 out.push(Token::Break);
                 inside_double.pop();
                 at += 1;
             }
             '|' | '&' | ';' | '(' | ')' | '<' | '>' | '`' => {
-                flush(&mut out, &mut word, &mut quoted, &mut started);
+                flush(&mut out, &mut word, &mut quoted, &mut started, begin, at);
                 out.push(Token::Break);
                 at += 1;
             }
             one if one.is_whitespace() => {
-                flush(&mut out, &mut word, &mut quoted, &mut started);
+                flush(&mut out, &mut word, &mut quoted, &mut started, begin, at);
                 at += 1;
             }
             one => {
@@ -327,13 +476,13 @@ fn tokens(line: &str) -> Vec<Token> {
             }
         }
     }
-    flush(&mut out, &mut word, &mut quoted, &mut started);
+    flush(&mut out, &mut word, &mut quoted, &mut started, begin, at);
     out
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{commands_named, is_shell_script};
+    use super::{command_word, commands_named, expansions_of, is_shell_script, simple_commands};
 
     #[test]
     fn a_name_or_a_shebang_decides_what_is_a_shell_script() {
@@ -424,6 +573,60 @@ mod tests {
                 vec!["sed".to_owned(), "-n".to_owned(), "p".to_owned()],
                 vec!["sed".to_owned(), "-n".to_owned(), "d".to_owned()],
             ],
+        );
+    }
+
+    /// ⛔⛔⛔ A word keeps its SPELLING beside its text — register item 1085. Removing the quotes is
+    /// a decision about them, and `'$w'` does not expand what `"$w"` does.
+    #[test]
+    fn a_word_keeps_its_spelling_beside_its_text() {
+        let commands = simple_commands(r#"[ -x "$w" ] && '$w' -- bash -c "$x""#);
+        let spelled: Vec<Vec<&str>> = commands
+            .iter()
+            .map(|words| words.iter().map(|word| word.raw.as_str()).collect())
+            .collect();
+        assert_eq!(
+            spelled,
+            vec![
+                vec!["[", "-x", "\"$w\"", "]"],
+                vec!["'$w'", "--", "bash", "-c", "\"$x\""],
+            ],
+        );
+        assert_eq!(commands[1][0].text, "$w");
+        assert_eq!(
+            simple_commands("'unterminated")[0][0].raw,
+            "'unterminated",
+            "an unterminated quote is the rest of the line, and its spelling must not run past it",
+        );
+    }
+
+    /// ⛔⛔⛔ The word a command RUNS is past the grammar that introduces it and the assignments that
+    /// prefix it — and a quoted reserved word, or an operand of another program, is not grammar.
+    #[test]
+    fn the_word_a_command_runs_is_past_its_grammar_and_its_assignments() {
+        let first = |line: &str| {
+            let commands = simple_commands(line);
+            command_word(&commands[0]).map(|at| commands[0][at].raw.clone())
+        };
+        assert_eq!(
+            first(r#"if ! LANE=x OTHER="a b" "$w" -- run"#).as_deref(),
+            Some("\"$w\""),
+        );
+        assert_eq!(
+            first(r#"env -u GIT_INDEX_FILE "$w""#).as_deref(),
+            Some("env")
+        );
+        assert_eq!(first(r#""if" x"#).as_deref(), Some("\"if\""));
+        assert_eq!(first("LANE=x"), None);
+    }
+
+    /// ⚠ The count a parse is held against, both ways: every spelling of this variable is counted,
+    /// and a name that merely begins with it is another variable.
+    #[test]
+    fn an_expansion_is_counted_under_every_spelling_and_no_longer_name() {
+        assert_eq!(
+            expansions_of(r#"$BX ${BX} "${BX:-}" '$BX' $BXY ${BXY} BX"#, "BX"),
+            4,
         );
     }
 }

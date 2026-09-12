@@ -251,6 +251,17 @@ fn hook_sources() -> Vec<(String, String)> {
 /// ⚠⚠ The constructor's own body is not an offender by accident but by construction: it takes its
 /// destination as `$1`, so the one line in this repository that may `cd` there does not name the
 /// mirror at all.
+///
+/// # ⛔⛔⛔⛔⛔ And "is this a directory change" is asked of the WORDS — register item 1085
+///
+/// This arm used to find a `cd ` at the start of a line or behind `(`, `; `, `&& `, `|| `, `then `,
+/// `else `, `do ` or `{ `, and it excused every line that so much as mentioned the door. That is a
+/// list of leads whose default is *not a directory change*: **measured 2026-09-13**, replacing the
+/// ratchet lane's door with `if cd "$mirror"; then :; fi` left this file at `7 passed`. So the line
+/// is split by [`sprag_gate::shell::simple_commands`] and ANY `cd` or `pushd` word on a line whose
+/// words name the mirror is an offender — the command itself, or an operand of `builtin`,
+/// `command` or anything else, where whether it changes directory is not this arm's to guess. The
+/// door is excused by not being a directory change, not by being mentioned.
 #[test]
 fn no_hook_enters_the_mirror_without_leaving_the_commits_index_behind() {
     let hooks = hook_sources();
@@ -270,16 +281,15 @@ fn no_hook_enters_the_mirror_without_leaving_the_commits_index_behind() {
                 .enumerate()
                 .filter(|(_, line)| {
                     let code = line.trim();
-                    if code.starts_with('#') || code.contains(THE_ONLY_WAY_IN) {
+                    if code.starts_with('#') {
                         return false;
                     }
-                    let enters = ["cd ", "pushd "].iter().any(|verb| {
-                        code.starts_with(verb)
-                            || ["(", "; ", "&& ", "|| ", "then ", "else ", "do ", "{ "]
-                                .iter()
-                                .any(|lead| code.contains(&format!("{lead}{verb}")))
-                    });
-                    enters && code.contains(names_it)
+                    let commands = sprag_gate::shell::simple_commands(code);
+                    let mut words = commands.iter().flatten();
+                    let enters = words
+                        .clone()
+                        .any(|word| ["cd", "pushd"].contains(&word.text.as_str()));
+                    enters && words.any(|word| word.raw.contains(names_it))
                 })
                 .map(move |(index, _)| format!("{name}:{}", index + 1))
         })

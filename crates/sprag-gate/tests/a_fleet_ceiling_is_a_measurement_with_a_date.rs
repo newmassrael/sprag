@@ -80,6 +80,7 @@
 
 use std::collections::BTreeMap;
 
+use sprag_gate::shell::{self, Word};
 use sprag_gate::sources::workspace_root;
 
 /// The declaration `bx` reads to decide where this repository's work goes.
@@ -770,7 +771,35 @@ fn judge_platform(
 /// place this repository hands work to the wrapper.
 const HOOKS: &str = ".githooks";
 
-/// Every `"${BX}"` invocation under [`HOOKS`], as `(path:line, the command it hands over)`.
+/// The variable the hooks keep the wrapper's path in.
+const WRAPPER: &str = "BX";
+
+/// The spellings under which a hook RUNS the wrapper: the whole word is the expansion, quoted or
+/// not. `'${BX}'` is not among them — single quotes expand nothing, so that word runs a file
+/// literally named `${BX}`.
+const RUNS_THE_WRAPPER: [&str; 4] = ["\"${BX}\"", "\"$BX\"", "${BX}", "$BX"];
+
+/// The commands whose operands are only LOOKED AT. A wrapper that is an operand of one of these is
+/// being asked about, and hands over nothing.
+const TESTS_IT: [&str; 3] = ["[", "[[", "test"];
+
+/// What one simple command on a hook line does with the wrapper.
+#[derive(Debug)]
+enum WrapperUse {
+    /// The wrapper is the word the shell runs, and these are the words after its `--`.
+    Runs(Vec<Word>),
+    /// The wrapper is an operand of a test, and runs nothing.
+    Tested,
+    /// Neither, or not reached at all — said in words, because it is a RED.
+    Unread(String),
+}
+
+/// Every run of the wrapper under [`HOOKS`], as `(path:line, the command it hands over)`.
+///
+/// # Panics
+///
+/// On every use of the wrapper [`wrapper_uses`] cannot read, all of them in one message: a commit
+/// hook stops at its first red, and a round that meets them one at a time buys a round trip each.
 fn wrapper_call_sites() -> Vec<(String, String)> {
     let dir = workspace_root().join(HOOKS);
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
@@ -780,6 +809,7 @@ fn wrapper_call_sites() -> Vec<(String, String)> {
     files.sort();
 
     let mut found = Vec::new();
+    let mut unread = Vec::new();
     for path in files {
         if !path.is_file() {
             continue;
@@ -793,74 +823,214 @@ fn wrapper_call_sites() -> Vec<(String, String)> {
             .into_owned();
         for (index, line) in text.lines().enumerate() {
             let code = line.trim();
-            if code.starts_with('#') || !code.contains("\"${BX}\"") {
+            // A WHOLE-LINE comment is prose about the wrapper, and the splitter would stop at its
+            // `#` and call the line unreached. A TRAILING one is not skipped here: it is refused,
+            // which is the direction `wrapper_uses` is built to err in.
+            if code.starts_with('#') {
                 continue;
             }
             let site = format!("{HOOKS}/{name}:{}", index + 1);
-            // ⛔⛔⛔ A CALL SITE IS THE WRAPPER IN A **COMMAND POSITION**, and getting to that rule
-            // took two wrong ones — both of which a mutation caught.
-            //
-            //   1. *skip every `"${BX}"` line without ` -- `* — reads as "skip the tests" and is
-            //      not: it makes a shape this cannot compose a SILENT PASS, the one thing this
-            //      clause's own doc says it must never be.
-            //   2. *skip lines starting `[` or `if [`* — a mutation of the form
-            //      `[ -n "${BX:-}" ] && "${BX}" --explain-declaration` walked straight through it,
-            //      because that line both tests AND invokes.
-            //
-            // So the question is asked of the OCCURRENCE, not the line: what comes before it. At
-            // the start of the line, or after `&&`, `||`, `;`, `then`, `else`, `do`, `(` or `{`,
-            // the wrapper is being RUN. Inside `[ -x … ]` it is an argument to a test and hands
-            // over nothing. The wrapper refuses an argv that does not follow `--` (`die "unknown
-            // flag $1 (commands go after --)"`), so a run without one is a line somebody reads.
-            let Some(at) = code.find("\"${BX}\"") else {
-                continue;
-            };
-            let before = code[..at].trim_end();
-            let runs = before.is_empty()
-                || ["&&", "||", ";", "then", "else", "do", "(", "{"]
-                    .iter()
-                    .any(|lead| before.ends_with(lead));
-            if !runs {
-                continue;
+            for used in wrapper_uses(code) {
+                match used {
+                    WrapperUse::Runs(argv) => {
+                        found.push((site.clone(), compose(&text, &argv, &site)));
+                    }
+                    WrapperUse::Tested => {}
+                    WrapperUse::Unread(why) => unread.push(format!("  {site} {why}\n    {code}")),
+                }
             }
-            let argv = code
-                .split_once(" -- ")
-                .map(|(_, tail)| tail.trim())
-                .unwrap_or_else(|| panic!(
-                    "⚠ {site} names the wrapper and separates no argv with ` -- `, and it is not a \
-                     test expression either. The wrapper takes its command after `--` and refuses \
-                     anything else, so this clause cannot say what would be handed over — and a \
-                     command it cannot name is one nobody measured (rule 6). The line:\n{code}",
-                ));
-            found.push((site.clone(), compose(&text, argv, &site)));
         }
     }
+    assert!(
+        unread.is_empty(),
+        "⛔ ITEM 1085: a hook uses the wrapper in a way this clause cannot read, so it cannot say \
+         whether that use hands over a command nobody measured — and a use it cannot place is a \
+         RED, never a skip (rule 6). Run it as the word the shell runs, with its command after \
+         `--`; a prefix the lane needs goes behind a function boundary, the way `enter_the_mirror` \
+         carries item 1082's cut.\n{}",
+        unread.join("\n"),
+    );
     found
 }
 
+/// Every use one line of a hook makes of the wrapper, one per simple command that names it.
+///
+/// Pure over the line, so [`every_shape_of_the_wrapper_is_read_or_refused`] drives each arm from a
+/// literal rather than hoping the hooks happen to hold one of each.
+///
+/// # ⛔⛔⛔⛔⛔ A call site is the wrapper as the word the shell RUNS — and three rules got it wrong
+///
+///   1. *skip every `"${BX}"` line without ` -- `* — reads as "skip the tests" and is not: it made
+///      a shape this cannot compose a SILENT PASS, the one thing this clause's own doc says it
+///      must never be.
+///   2. *skip lines starting `[` or `if [`* — `[ -n "${BX:-}" ] && "${BX}" --explain-declaration`
+///      walked straight through it, because that line both tests AND invokes.
+///   3. *count it when what comes before is `&&`, `||`, `;`, `then`, `else`, `do`, `(` or `{`* —
+///      register item 1085. **Measured 2026-09-13** by giving the ratchet lane an argv `[routed]`
+///      does not hold: with no prefix, red; and green, all three, for `env -u GIT_INDEX_FILE
+///      "${BX}" …` (a lead the list did not name), `[ -x "${BX}" ] && "${BX}" …` (only the FIRST
+///      occurrence on a line was ever asked about) and `"$BX" …` (a spelling the scan never
+///      looked for).
+///
+/// The first two were caught by mutation and the third was not, and all three are one mistake: a
+/// description of what a call LOOKS like, whose default is *not a call*. So the default is the
+/// other way round. The expansions of the wrapper on the line are COUNTED off the text by
+/// [`shell::expansions_of`]; the line is split into simple commands by
+/// [`shell::simple_commands`]; and each command that names the wrapper is exactly one of RUNS
+/// ([`shell::command_word`] is spelled as one of [`RUNS_THE_WRAPPER`]), TESTED (the command word
+/// is one of [`TESTS_IT`]) or UNREAD. Expansions the commands did not reach — a trailing comment,
+/// a quote carried across a line break — are unread too.
+///
+/// ⚠ `env -u X "${BX}" …` is UNREAD rather than a site, and deliberately: whether `env` runs its
+/// operand, and with what argv, is `env`'s grammar and not the shell's, and a clause that learned
+/// `env` would next have to learn `command`, `exec` and `nice`. Refusing costs a hook nothing it
+/// needs — a prefix goes behind a function boundary.
+fn wrapper_uses(line: &str) -> Vec<WrapperUse> {
+    let spelled = shell::expansions_of(line, WRAPPER);
+    if spelled == 0 {
+        return Vec::new();
+    }
+    let mut uses = Vec::new();
+    let mut reached = 0;
+    for words in shell::simple_commands(line) {
+        let naming: usize = words
+            .iter()
+            .map(|word| shell::expansions_of(&word.raw, WRAPPER))
+            .sum();
+        if naming == 0 {
+            continue;
+        }
+        reached += naming;
+        let Some(at) = shell::command_word(&words) else {
+            uses.push(WrapperUse::Unread(
+                "names the wrapper in a command with no word the shell runs".to_owned(),
+            ));
+            continue;
+        };
+        let runs = words[at].raw.as_str();
+        if RUNS_THE_WRAPPER.contains(&runs) {
+            // The wrapper takes its command after `--` and refuses anything else (`die "unknown
+            // flag $1 (commands go after --)"`), so a run without one is a line somebody reads.
+            uses.push(
+                match words[at + 1..].iter().position(|word| word.raw == "--") {
+                    Some(dash) => WrapperUse::Runs(words[at + 2 + dash..].to_vec()),
+                    None => WrapperUse::Unread(
+                        "runs the wrapper and separates no argv with `--`. The wrapper takes its \
+                         command after `--` and refuses anything else, so this clause cannot say \
+                         what would be handed over — and a command it cannot name is one nobody \
+                         measured"
+                            .to_owned(),
+                    ),
+                },
+            );
+        } else if TESTS_IT.contains(&runs) {
+            uses.push(WrapperUse::Tested);
+        } else {
+            uses.push(WrapperUse::Unread(format!(
+                "names the wrapper in a command that runs `{runs}`. Whether that program runs its \
+                 operand, and with what argv, is its own grammar and not the shell's",
+            )));
+        }
+    }
+    if reached != spelled {
+        uses.push(WrapperUse::Unread(format!(
+            "expands the wrapper {spelled} time(s) and the word splitter reached {reached}: a \
+             trailing comment, or a quote carried across a line break, hides the rest",
+        )));
+    }
+    uses
+}
+
 /// What a `bash -c "…"` argv actually runs, with the hook's own shell variables resolved.
-fn compose(text: &str, argv: &str, site: &str) -> String {
-    let inner = argv
-        .strip_prefix("bash -c ")
-        .or_else(|| argv.strip_prefix("sh -c "))
-        .unwrap_or_else(|| {
-            panic!(
-                "⚠ {site} hands the wrapper an argv this clause cannot read: `{argv}`. It knows \
-             `bash -c \"…\"` and `sh -c \"…\"`, which is every shape this repository has used. A \
-             shape it does not know is a RED rather than a skip — rule 6 — because the claim here \
-             is that nothing reaches the wrapper unmeasured.",
-            )
-        });
-    let inner = inner
+fn compose(text: &str, argv: &[Word], site: &str) -> String {
+    let spelled = argv
+        .iter()
+        .map(|word| word.raw.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let known = matches!(
+        argv,
+        [program, flag, _] if ["bash", "sh"].contains(&program.raw.as_str()) && flag.raw == "-c"
+    );
+    assert!(
+        known,
+        "⚠ {site} hands the wrapper an argv this clause cannot read: `{spelled}`. It knows `bash \
+         -c \"…\"` and `sh -c \"…\"`, which is every shape this repository has used. A shape it \
+         does not know is a RED rather than a skip — rule 6 — because the claim here is that \
+         nothing reaches the wrapper unmeasured.",
+    );
+    let script = &argv[2].raw;
+    let inner = script
         .strip_prefix('"')
         .and_then(|rest| rest.strip_suffix('"'))
         .unwrap_or_else(|| {
             panic!(
-                "⚠ {site} hands `bash -c` something that is not one double-quoted word: `{inner}`. \
+                "⚠ {site} hands `bash -c` something that is not one double-quoted word: `{script}`. \
              Composing it would be guessing at the caller's quoting.",
             )
         });
     expand(text, inner, site)
+}
+
+/// ⛔⛔⛔⛔⛔ **AND EVERY SHAPE OF THE WRAPPER IS READ OR REFUSED** — register item 1085.
+///
+/// Driven from literals, the way [`the_composer_answers_both_ways`] drives the composer, because
+/// the hooks hold two shapes today and the defect lived in the shapes they do not hold. Every row
+/// below the controls is one [`wrapper_uses`]'s predecessor read as *not a call*.
+#[test]
+fn every_shape_of_the_wrapper_is_read_or_refused() {
+    let read = |line: &str| -> Vec<String> {
+        wrapper_uses(line)
+            .into_iter()
+            .map(|used| match used {
+                WrapperUse::Runs(argv) => format!(
+                    "runs {}",
+                    argv.iter()
+                        .map(|word| word.raw.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ),
+                WrapperUse::Tested => "tested".to_owned(),
+                WrapperUse::Unread(_) => "unread".to_owned(),
+            })
+            .collect()
+    };
+    let runs = r#"runs bash -c "$x""#;
+
+    // The shape both call sites have today, and a line that does not name the wrapper at all.
+    assert_eq!(read(r#""${BX}" --label l -- bash -c "$x""#), [runs]);
+    assert!(read(r#"bash -c "$x""#).is_empty());
+    // ⛔ THE CONTROL: a test is asked about the wrapper and hands over nothing — the shape
+    // `rust_gates_wrapper_present` is, and the one the old rule existed not to count.
+    assert_eq!(
+        read(r#"[ -n "${BX:-}" ] && [ -x "${BX}" ]"#),
+        ["tested", "tested"]
+    );
+    assert_eq!(read("[[ -x $BX ]]"), ["tested"]);
+    assert_eq!(read(r#"test -x "$BX""#), ["tested"]);
+
+    // ⛔⛔⛔ THE ITEM: a word in front of the wrapper is refused, not skipped.
+    assert_eq!(
+        read(r#"env -u GIT_INDEX_FILE "${BX}" --label l -- bash -c "$x""#),
+        ["unread"]
+    );
+    // The FIRST occurrence on a line used to decide for the whole line.
+    assert_eq!(
+        read(r#"[ -x "${BX}" ] && "${BX}" -- bash -c "$x""#),
+        ["tested", runs]
+    );
+    // A spelling the old scan never looked for.
+    assert_eq!(read(r#""$BX" -- bash -c "$x""#), [runs]);
+    // Grammar in front of a command, and assignments, are not a program the wrapper is handed to.
+    assert_eq!(read(r#"if ! "${BX}" -- bash -c "$x"; then"#), [runs]);
+    assert_eq!(read(r#"LANE=ratchets "${BX}" -- bash -c "$x""#), [runs]);
+    assert_eq!(read(r#"out="$("${BX}" -- bash -c "$x")""#), [runs]);
+
+    // Mentions, and what cannot be read.
+    assert_eq!(read(r#"echo "wrapper: ${BX}""#), ["unread"]);
+    assert_eq!(read(r#""${BX}" --explain-declaration"#), ["unread"]);
+    assert_eq!(read(r#"'${BX}' -- bash -c "$x""#), ["unread"]);
+    assert_eq!(read(r#": # "${BX}" -- bash -c "$x""#), ["unread"]);
 }
 
 /// `$name` and `${name}` replaced by what the same file assigns them.
