@@ -255,6 +255,7 @@ fn main() -> std::process::ExitCode {
         standing,
         refuted,
         elsewhere,
+        intermittent,
     } = found;
     // ⛔⛔⛔⛔⛔ AND EVERY GATE THAT CAN RED, EACH SAYING HOW MANY QUESTIONS IT PUT — register
     // items 920, 902, 937 for the three of them, 924 for the count and 940 for the enumeration.
@@ -316,6 +317,16 @@ fn main() -> std::process::ExitCode {
         "  {} claim(s) are about another platform, so this {here} run did not judge them: {}",
         elsewhere.len(),
         others.join(" "),
+    );
+    // ⛔⛔⛔⛔⛔ AND A CLAIM NO SINGLE RUN MAY DECIDE IS COUNTED, NOT RUN — register item 1083. Put to
+    // the suite here, it would be deleted by whichever run happened to pass, which is how items 975
+    // and 1080 lost their marks. Its evidence is the `@judged:` line `--elsewhere` keeps moving.
+    let unsettled: Vec<String> = intermittent.iter().map(ToString::to_string).collect();
+    println!(
+        "  {} claim(s) are intermittent, so no single run can confirm or refute them and this one \
+         did not try: {}",
+        intermittent.len(),
+        unsettled.join(" "),
     );
     // ⛔⛔⛔⛔⛔ **WHAT TO TAKE NEXT, DERIVED — AND THE TERM THAT PLACED IT** — register item 1052.
     //
@@ -716,19 +727,34 @@ impl north_star::Suite for ReportedFailures {
 /// Both go through [`ReportedFailures::selected_by`] and the same prefix reading, so a module-shaped
 /// claim (`launcher::tests`) holds the tests inside it in the inverse direction too — a second
 /// spelling here would let one direction hold a failure the other reported unclaimed.
+///
+/// ⚠⚠ **EXCEPT AN INTERMITTENT CLAIM, AND THAT IS NOT A SECOND SPELLING** — register item 1083. The
+/// forward question is never put to one (no single run may decide it), so this is the only
+/// direction that reads it, and it reads the WHOLE name: as a prefix it would hold every test under
+/// that name for as long as its item stood, with nothing to refute it.
 impl north_star::Reported for ReportedFailures {
     fn failures(&self) -> Vec<String> {
         self.failed.clone()
     }
 
-    fn accounts_for(&self, argv: &str, failure: &str) -> Result<bool, String> {
+    fn accounts_for(&self, claim: &north_star::RedClaim, failure: &str) -> Result<bool, String> {
+        let argv = &claim.argv;
         let Some(selection) = Self::selected_by(argv) else {
             return Err(format!(
                 "the claim `{argv}` names no test selection this reader can put to a name, so \
                  whether it holds `{failure}` cannot be asked"
             ));
         };
-        Ok(failure == selection || failure.starts_with(&selection))
+        Ok(match claim.recurrence {
+            north_star::Recurrence::Standing => {
+                failure == selection || failure.starts_with(&selection)
+            }
+            // ⛔⛔⛔⛔⛔ THE WHOLE NAME AND NOTHING UNDER IT — register item 1083. A standing claim
+            // may name a module because a module whose tests pass refutes it; nothing refutes an
+            // intermittent one, so read as a prefix it would excuse every failure under that name
+            // for as long as its item stood. Its argv spells `--exact`, and this is what that means.
+            north_star::Recurrence::Intermittent => failure == selection,
+        })
     }
 }
 
@@ -1043,6 +1069,7 @@ fn elsewhere(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process
         standing,
         refuted,
         elsewhere,
+        intermittent,
     } = found;
     let confirmed: Vec<String> = standing.iter().map(ToString::to_string).collect();
     let others: Vec<String> = elsewhere.iter().map(ToString::to_string).collect();
@@ -1055,6 +1082,14 @@ fn elsewhere(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process
         "  {} claim(s) are about somewhere else, so this pass did not judge them: {}",
         elsewhere.len(),
         others.join(" "),
+    );
+    // ⛔⛔⛔ AND THE INTERMITTENT CLAIMS, COUNTED RATHER THAN JUDGED — register item 1083. Whether
+    // this report failed them is asked below, where it decides what the ledger owes.
+    let unsettled: Vec<String> = intermittent.iter().map(ToString::to_string).collect();
+    println!(
+        "  {} claim(s) are intermittent, so this report can neither confirm nor refute them: {}",
+        intermittent.len(),
+        unsettled.join(" "),
     );
     // ⚠ THE SAME SENTENCE THE DEFAULT RUN PRINTS, because it is the same finding: a claim the
     // evidence refutes is stale wherever the evidence came from.
@@ -1112,42 +1147,43 @@ fn elsewhere(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process
             );
         }
     }
-    // ⛔⛔⛔⛔⛔ **AND WHAT THIS JUDGEMENT LEAVES THE LEDGER OWING** — register item 1000. A claim
-    // this pass CONFIRMED was judged just now, at a run this caller named; if the ledger records an
-    // older run, that record is stale from this moment and the line to write is one this pass can
-    // print in full.
+    // ⛔⛔⛔⛔⛔ **AND WHAT THIS JUDGEMENT LEAVES THE LEDGER OWING** — register items 1000 and 1083.
+    // Every claim this report shows failing was judged just now, at a run this caller named; if the
+    // ledger records an older run, that record is stale from this moment and the line to write is
+    // one this pass can print in full.
     //
-    // ⚠ Only the STANDING claims. A refuted one's remedy is to delete its `@red:` line, and the
-    // evidence obligation goes with it — telling an author to record a run for a claim they are
-    // being told to remove would be two instructions pointing opposite ways.
+    // ⚠⚠ WHICH CLAIMS OWE IS `recordings`' ANSWER AND NOT THIS LOOP'S. It walked `standing` here —
+    // the right set for a standing claim, and one that never contains an intermittent one, so a
+    // claim no run refutes would have kept the evidence it was written with however often it failed
+    // again. A refuted claim is absent from that answer by construction: its remedy is to delete its
+    // line, and telling an author to record a run for a claim they are removing would be two
+    // instructions pointing opposite ways.
+    let owed = match reading.recordings(&suite, &platform, &at, &Repository) {
+        Ok(owed) => owed,
+        Err(why) => {
+            eprintln!("north-star: {why}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
     let mut unrecorded = 0;
-    for number in &standing {
-        let owed = match reading.recording_of(*number, &at, &Repository) {
-            Ok(owed) => owed,
-            Err(why) => {
-                eprintln!("north-star: {why}");
-                return std::process::ExitCode::FAILURE;
-            }
-        };
+    for (number, recording) in &owed {
         let line = format!("{} @{platform} {run} {at}", north_star::JUDGED);
-        match owed {
+        match recording {
             north_star::Recording::Current => {}
             north_star::Recording::Absent => {
                 unrecorded += 1;
                 eprintln!(
-                    "north-star: item {number} is confirmed red by run {run} and records no \
-                     `{}` line at all. Write it, under that item's `{}` line: `{line}`",
+                    "north-star: item {number} fails in run {run} and records no `{}` line at \
+                     all. Write it, under that item's claim line: `{line}`",
                     north_star::JUDGED,
-                    north_star::RED,
                 );
             }
             north_star::Recording::Stale(was) => {
                 unrecorded += 1;
                 eprintln!(
-                    "north-star: item {number} is confirmed red by run {run} at {at}, and still \
-                     records run {} at {}, which that commit descends from. The judgement just \
-                     made is the newer one and nothing has written it down — replace that line \
-                     with: `{line}`",
+                    "north-star: item {number} fails in run {run} at {at}, and still records run \
+                     {} at {}, which that commit descends from. The judgement just made is the \
+                     newer one and nothing has written it down — replace that line with: `{line}`",
                     was.run, was.at,
                 );
             }
@@ -1172,9 +1208,11 @@ fn elsewhere(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process
             }
         }
     }
+    let shown: Vec<String> = owed.iter().map(|(number, _)| number.to_string()).collect();
     println!(
-        "unrecorded on {platform}: {unrecorded} of {} standing claim(s)",
-        standing.len()
+        "unrecorded on {platform}: {unrecorded} of {} claim(s) this report shows failing: {}",
+        owed.len(),
+        shown.join(" "),
     );
     if refuted.is_empty() && unclaimed.failures.is_empty() && unrecorded == 0 {
         std::process::ExitCode::SUCCESS
@@ -1451,7 +1489,17 @@ fn admits(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::E
 #[cfg(test)]
 mod tests {
     use super::{ReportedFailures, Unread, tests_run, verdict_of};
-    use sprag_gate::north_star::{Reported, Suite};
+    use sprag_gate::north_star::{Recurrence, RedClaim, Reported, Suite};
+
+    /// A claim on the mark `recurrence` names, about no particular platform — what the match rule
+    /// below is asked with.
+    fn claimed(recurrence: Recurrence, argv: &str) -> RedClaim {
+        RedClaim {
+            on: None,
+            argv: argv.to_owned(),
+            recurrence,
+        }
+    }
 
     /// A macOS job log's shape, cut to what this reader has to recognise: the runner glues a job
     /// name and a timestamp to the front of every line, which is why nothing here is anchored.
@@ -1595,13 +1643,19 @@ headless (macos)\tTest\t2026-09-09T02:18:52Z test result: FAILED. 610 passed; 3 
         let suite = ReportedFailures::of(A_MACOS_LOG).expect("that reads as a test log");
         let module = "-p sprag-gate --lib launcher::tests -- --exact";
         assert_eq!(
-            suite.accounts_for(module, "launcher::tests::a_daemon_moved_past"),
+            suite.accounts_for(
+                &claimed(Recurrence::Standing, module),
+                "launcher::tests::a_daemon_moved_past"
+            ),
             Ok(true),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 998: a MODULE-shaped claim must hold the tests inside it, or \
              970's two failures would both be reported as claimed by nobody",
         );
         assert_eq!(
-            suite.accounts_for(module, "plugins::tests::a_loop_over_the_wire"),
+            suite.accounts_for(
+                &claimed(Recurrence::Standing, module),
+                "plugins::tests::a_loop_over_the_wire"
+            ),
             Ok(false),
             "⛔⛔ AND IT MUST NOT HOLD A TEST OUTSIDE IT — a reader answering true to everything \
              excuses every red there is, which is the quiet version of the hole this item is about",
@@ -1615,11 +1669,52 @@ headless (macos)\tTest\t2026-09-09T02:18:52Z test result: FAILED. 610 passed; 3 
         );
         assert!(
             suite
-                .accounts_for("-p sprag-host --lib", "rpc::tests::anything")
+                .accounts_for(
+                    &claimed(Recurrence::Standing, "-p sprag-host --lib"),
+                    "rpc::tests::anything"
+                )
                 .is_err_and(|why| why.contains("no test selection")),
             "⛔⛔⛔ REGISTER ITEM 998: a claim this reader cannot place must REFUSE — answered \
              false it invents an unclaimed red, answered true it excuses one, and it is the same \
              refusal the forward question already gives",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AN INTERMITTENT CLAIM HOLDS ITS ONE TEST AND NOT THE TESTS UNDER ITS NAME** —
+    /// register item 1083.
+    ///
+    /// A standing claim may name a module, because a module whose tests pass refutes it. Nothing
+    /// refutes an intermittent one, so read as a prefix it would excuse every failure under that name
+    /// for as long as its item stood.
+    ///
+    /// ⚠⚠ THE CONTROL is the same argv as a STANDING claim, off the same report, still holding by
+    /// prefix — done-when ⑶ — and the arm that makes it hold anything at all is its own whole name.
+    #[test]
+    fn an_intermittent_claim_holds_its_one_test_and_not_the_tests_under_its_name() {
+        let suite = ReportedFailures::of(A_MACOS_LOG).expect("that reads as a test log");
+        let module = "-p sprag-gate --lib launcher::tests -- --exact";
+        let inside = "launcher::tests::a_daemon_moved_past";
+        assert_eq!(
+            suite.accounts_for(&claimed(Recurrence::Intermittent, module), inside),
+            Ok(false),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1083: an intermittent claim naming a module must not hold the \
+             tests inside it — nothing ever refutes it, so it would hold them for good",
+        );
+        assert_eq!(
+            suite.accounts_for(&claimed(Recurrence::Standing, module), inside),
+            Ok(true),
+            "⚠⚠ DONE-WHEN ⑶, THE CONTROL: the same argv as a STANDING claim still holds by prefix",
+        );
+        assert_eq!(
+            suite.accounts_for(
+                &claimed(
+                    Recurrence::Intermittent,
+                    "-p sprag-gate --lib launcher::tests::a_daemon_moved_past -- --exact"
+                ),
+                inside,
+            ),
+            Ok(true),
+            "⚠ and the claim naming that test by its whole name holds it, or this holds nothing",
         );
     }
 

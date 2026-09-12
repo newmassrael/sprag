@@ -368,7 +368,61 @@ pub fn met_while(reason: &str) -> Option<&'static str> {
 ///
 /// ⚠ It is read from OPEN items only. A paid item's red is history, and one outside the population
 /// was never this loop's to run.
+///
+/// ⚠⚠ **A RED THAT ONE RUN CANNOT DECIDE IS NOT WRITTEN HERE** — it goes on [`INTERMITTENT`],
+/// register item 1083. This mark means *red on every run*, which is what makes one green run a
+/// refutation of it.
 pub const RED: &str = "@red:";
+
+/// ⛔⛔⛔⛔⛔ **THE LINE AN ITEM CLAIMS AN INTERMITTENT RED ON**: `@intermittent: <cargo test
+/// arguments>` — register item 1083, and the claim [`RED`] could not make.
+///
+/// # ⛔⛔⛔⛔⛔ What could not be written down, measured
+///
+/// A [`RED`] claim is put to ONE run — the suite here, or one platform's report — and a run that
+/// finds it green refutes it: *the claim is stale, so remove the `@red:` line*, exit 1. That is
+/// right for a red that stands, and it made a red that is **green alone and red under load**
+/// impossible to hold:
+///
+/// * item 975 (2026-09-08) was marked on six red runs in six; the next eight runs of the same argv
+///   were six red and two green, the instrument drew a green, and the mark came off;
+/// * item 1080 (2026-09-12) was marked red on two platforms and taken off within the hour, when
+///   the next macOS run happened to pass;
+/// * item 1061 (2026-09-12) counted three red and two green on macOS and could be marked on none.
+///
+/// Left unmarked, the same failures come back as *"this red stands in nobody's register"*, and
+/// `--elsewhere` exits 1 — measured 2026-09-13 on `e38f4b8c`'s macOS log: `unclaimed on macos: 1
+/// of 1`. **So such a red had two possible ledger states and both were red**: marked, the next
+/// green refutes it; unmarked, the next red is nobody's.
+///
+/// # ⚠⚠⚠ What this claim says, and the three things it does NOT buy
+///
+/// *This test has been seen failing, and one run that passes says nothing about it.* So:
+///
+/// 1. **No run refutes it.** Neither the suite here nor a report is asked to confirm it;
+///    [`Reds::intermittent`] counts it instead.
+/// 2. **It is never a standing red**, so it does not jump the queue. The override is bought by a
+///    red the repository confirms NOW (register item 843), and one run cannot confirm this.
+/// 3. **It holds exactly ONE test.** A [`RED`] claim may name a module, because a module whose
+///    tests all pass refutes it. Nothing refutes this one, so a module-wide claim would excuse every
+///    failure under that name for as long as its item stood. The argv must say `--exact` past its
+///    `--`, and a report matches it by the whole name.
+///
+/// # ⛔⛔⛔ What keeps a claim nothing refutes from being an escape hatch
+///
+/// That is the unfalsifiable red item 843 built `refuted` to prevent, unless something else holds
+/// it to evidence. Two things do. It must name a [`JUDGED`] line — a run that SAW it red — and
+/// [`Fault::UnseenIntermittent`] stands until it does. And every report that shows it red again
+/// owes a new record, the obligation [`Reading::recordings`] puts on every claim a report shows
+/// failing. So its evidence moves forward each time it fails, and its age is on the line.
+///
+/// # ⚠⚠⚠ THE RESIDUE, STATED RATHER THAN HIDDEN
+///
+/// **Nothing retires it.** A test that stops failing leaves its record ageing and the claim stands
+/// until its item is paid. A boundary (*not seen red in N runs*) needs the frequency these items are
+/// still measuring, so it is not guessed here. **And nothing stops a red that stands from being
+/// written this way** — which costs its item the override and buys it nothing.
+pub const INTERMITTENT: &str = "@intermittent:";
 
 /// ⛔⛔⛔⛔⛔ **THE EVIDENCE THAT LAST JUDGED A PLATFORM-MARKED [`RED`]**:
 /// `@judged: @macos <run-id> <commit>` — register item 989.
@@ -748,15 +802,49 @@ pub struct RedClaim {
     pub on: Option<Platform>,
     /// The argv `cargo test` is to be asked with, every token checked by `safe_argument`.
     pub argv: String,
+    /// ⛔⛔⛔ **WHETHER ONE RUN CAN ANSWER IT** — register item 1083, and which mark it was written
+    /// on. See [`Recurrence`].
+    pub recurrence: Recurrence,
 }
 
-/// Why a [`RED`] line could not be read — see [`RedClaim::parse`].
+/// ⛔⛔⛔⛔⛔ **WHAT ONE RUN'S ANSWER MEANS FOR A RED CLAIM** — register item 1083, and the axis
+/// [`RED`] shipped with exactly one value of, unnamed.
+///
+/// ⚠⚠ SPELLED BY WHICH MARK THE LINE IS ON and never inside the value — [`Role`]'s rule, for
+/// [`Role`]'s reason: the two marks share one grammar and differ in what an answer MEANS, and the
+/// mark name is where a reader looks to see what a line means. A word inside the value would be a
+/// second thing to mis-spell, and a mis-spelled one would land in the argv.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Recurrence {
+    /// A [`RED`] line: red on every run. One green run refutes it, and a confirmed one is an
+    /// override in the derived order.
+    Standing,
+    /// An [`INTERMITTENT`] line: seen red, and not decided by one run. No run refutes it, it is
+    /// never an override, and it holds exactly one test.
+    Intermittent,
+}
+
+impl Recurrence {
+    /// The mark a claim of this recurrence is written on, for a reader and for a refusal.
+    #[must_use]
+    pub const fn mark(self) -> &'static str {
+        match self {
+            Self::Standing => RED,
+            Self::Intermittent => INTERMITTENT,
+        }
+    }
+}
+
+/// Why a [`RED`] or [`INTERMITTENT`] line could not be read — see [`RedClaim::parse`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RedUnread {
     /// A leading `@word` this reader has no [`Platform`] for.
     Platform,
     /// Empty, or a token `cargo test` must not be handed.
     Argv,
+    /// ⛔⛔⛔ An [`INTERMITTENT`] argv that does not spell `--exact` past its `--` — register item
+    /// 1083. See that constant's third rule.
+    Inexact,
 }
 
 /// ⛔⛔⛔⛔⛔ **WHAT A [`JUDGED`] LINE RECORDS** — register item 989: which platform's own report
@@ -973,14 +1061,16 @@ fn safe_path(path: &str) -> bool {
 }
 
 impl RedClaim {
-    /// Read a [`RED`] line's value: an optional leading `@<platform>`, then the argv.
+    /// Read a [`RED`] or [`INTERMITTENT`] line's value: an optional leading `@<platform>`, then the
+    /// argv. `recurrence` comes from WHICH MARK the line was on — see [`Recurrence`].
     ///
     /// # Errors
     ///
     /// [`RedUnread::Platform`] for a leading `@word` outside [`Platform`]'s set — never a silent
     /// *not here*, which would make the claim unfalsifiable everywhere. [`RedUnread::Argv`] for an
-    /// empty argv or a token outside `safe_argument`.
-    pub fn parse(value: &str) -> Result<Self, RedUnread> {
+    /// empty argv or a token outside `safe_argument`. [`RedUnread::Inexact`] for an intermittent
+    /// argv that could select more than the one test it may hold.
+    pub fn parse(value: &str, recurrence: Recurrence) -> Result<Self, RedUnread> {
         let named = value.trim();
         let (on, rest) = match named.split_once(char::is_whitespace) {
             Some((first, rest)) if first.starts_with('@') => (
@@ -997,11 +1087,39 @@ impl RedClaim {
         if argv.is_empty() || !argv.split_whitespace().all(safe_argument) {
             return Err(RedUnread::Argv);
         }
+        // ⛔⛔⛔ AN INTERMITTENT CLAIM HOLDS ONE TEST, AND ITS ARGV MUST SAY SO — register item 1083.
+        // No run refutes it, so a report matches it by the whole name. An argv without `--exact`
+        // would mean a SUBSTRING to `cargo` and a NAME to the report — two readers of one line
+        // disagreeing about what it selects, which is register item 1077's defect exactly.
+        if recurrence == Recurrence::Intermittent && !spells_exact(argv) {
+            return Err(RedUnread::Inexact);
+        }
         Ok(Self {
             on,
             argv: argv.to_string(),
+            recurrence,
         })
     }
+
+    /// Whether a run on `here` may answer this claim at all: it names no platform, or names that
+    /// one.
+    ///
+    /// ⚠ ONE PREDICATE for the three questions put to a run — [`Reading::standing_reds`],
+    /// [`Reading::unclaimed_failures`] and [`Reading::recordings`]. Spelled three times, it is the
+    /// rule a `@macos` mark must not excuse a linux red by, kept in step by hand.
+    #[must_use]
+    pub fn answerable_on(&self, here: &str) -> bool {
+        self.on.is_none_or(|on| on.word() == here)
+    }
+}
+
+/// Whether an argv hands the harness `--exact`, which only binds past the `--` — register item
+/// 1083. Before the separator it is a CARGO argument, and cargo refuses it (register item 949
+/// measured the exit 1).
+fn spells_exact(argv: &str) -> bool {
+    argv.split_whitespace()
+        .skip_while(|token| *token != "--")
+        .any(|token| token == "--exact")
 }
 
 /// 🎯🎯🎯 **WHAT THE REPOSITORY SAID ABOUT THE LEDGER'S RED CLAIMS** — register item 949.
@@ -1025,6 +1143,14 @@ pub struct Reds {
     /// claims unwritable. It is counted and printed, so *nobody asked* is a sentence a reader can
     /// see rather than a zero they cannot tell from *asked and clean*.
     pub elsewhere: Vec<u32>,
+    /// ⛔⛔⛔ **[`INTERMITTENT`] claims this run was entitled to and did not put** — register item
+    /// 1083, because no single run may decide one.
+    ///
+    /// ⚠⚠ NOT A VERDICT, for [`elsewhere`](Self::elsewhere)'s reason. Into `standing` it would jump
+    /// the queue on a red nothing confirmed; into `refuted` it would be deleted by the first run that
+    /// passed, which is how items 975 and 1080 lost their marks. A claim about another platform is
+    /// counted in `elsewhere` and not here, so the four lists are one partition of the claims.
+    pub intermittent: Vec<u32>,
 }
 
 /// Whether one token of a [`RED`] value may be handed to `cargo test`.
@@ -1310,6 +1436,9 @@ pub struct Item {
     /// ⚠⚠ IT CARRIES THE PLATFORM IT IS ABOUT — register item 949. A claim about another platform
     /// is one this machine may not refute, and until that rode along it could not be written at
     /// all. See [`RedClaim`].
+    ///
+    /// ⚠⚠ AND WHETHER ONE RUN CAN ANSWER IT — register item 1083. The claim may come off an
+    /// [`INTERMITTENT`] line instead, which no run refutes; [`RedClaim::recurrence`] says which.
     pub red: Option<RedClaim>,
     /// ⛔⛔⛔⛔⛔ **THE EVIDENCE THAT LAST JUDGED ITS [`Item::red`]**, if it states any — register
     /// item 989. [`None`] for every item that states none, which is what
@@ -1561,6 +1690,32 @@ pub enum Fault {
         id: String,
         /// The run its evidence names, so a reader can go and look.
         run: String,
+    },
+    /// ⛔⛔⛔⛔⛔ **AN [`INTERMITTENT`] CLAIM WITH NO RECORD OF A RUN THAT SAW IT RED** — register
+    /// item 1083. [`UnjudgedRed`](Self::UnjudgedRed)'s obligation, owed by every intermittent claim
+    /// and not only a platform-marked one: no run is asked to confirm it, so the record is the only
+    /// thing that says it was ever red at all.
+    UnseenIntermittent {
+        /// The item that made the claim.
+        number: u32,
+    },
+    /// ⛔⛔⛔ **AN [`INTERMITTENT`] ARGV THAT COULD SELECT MORE THAN ITS ONE TEST** — register item
+    /// 1083. A separate fault from [`UnrunnableRed`](Self::UnrunnableRed) because the argv runs
+    /// perfectly well: what is missing is the `--exact` that makes `cargo` and a report read the
+    /// same one name.
+    InexactIntermittent {
+        /// The item that made it.
+        number: u32,
+        /// The line as written.
+        line: String,
+    },
+    /// ⛔⛔⛔ **ONE BLOCK CARRYING MORE THAN ONE RED CLAIM** — register item 1083. An item holds one
+    /// claim, so all but the first line would be dropped while still reading as claims.
+    RedClaimedTwice {
+        /// The item whose block it is.
+        number: u32,
+        /// How many [`RED`] and [`INTERMITTENT`] lines the block carries.
+        count: usize,
     },
     /// An item names a parent section A does not have. **A chain that leaves the ledger cannot be
     /// walked**, so the depth of everything below it is unknown rather than zero.
@@ -1992,7 +2147,8 @@ impl fmt::Display for Fault {
             Self::UnrunnableRed { number, line } => write!(
                 f,
                 "item {number}: `{}` is a red this instrument cannot put to the repository — a \
-                 `{RED}` value is the argv `cargo test` is asked with, so every token must be a \
+                 `{RED}` or `{INTERMITTENT}` value is the argv `cargo test` is asked with, so \
+                 every token must be a \
                  flag, a crate name, a module path or a file (letters, digits and `-_:./`). A \
                  claim nothing can check buys an item past the severity gate on a line nobody \
                  verified",
@@ -2004,7 +2160,8 @@ impl fmt::Display for Fault {
             Self::UnknownRedPlatform { number, line } => write!(
                 f,
                 "item {number}: `{}` names a platform this instrument has no word for. A `{RED}` \
-                 value may open with {} and nothing else — a platform matching no machine is a red \
+                 or `{INTERMITTENT}` value may open with {} and nothing else — a platform matching \
+                 no machine is a red \
                  no job ever checks, which is the unfalsifiable claim the refutation exists to \
                  refuse",
                 line.trim(),
@@ -2048,6 +2205,33 @@ impl fmt::Display for Fault {
                 "item {number} says run {run} judged its red at commit {id}, which this tree \
                  cannot resolve. Evidence naming a commit nobody has is the absence of evidence \
                  with a citation attached — the finding a `paid` mark's id is checked for",
+            ),
+            Self::UnseenIntermittent { number } => write!(
+                f,
+                "item {number} claims an intermittent red and names no `{JUDGED}` line, so nothing \
+                 records a run that ever saw it fail. No run is asked to confirm an \
+                 `{INTERMITTENT}` claim — that is what it means — so the record is its only \
+                 evidence: feed a job log that failed it to `north-star --elsewhere <ledger> \
+                 <platform> <log> <run-id> <commit>` and write the line it prints, `{JUDGED} \
+                 @<platform> <run-id> <commit>`. A claim no run refutes and no record supports \
+                 excuses a failure on nobody's word",
+            ),
+            Self::InexactIntermittent { number, line } => write!(
+                f,
+                "item {number}: `{}` could select more than one test. No run refutes an \
+                 `{INTERMITTENT}` claim, so it holds exactly one, matched by its whole name — and \
+                 the argv must mean that to `cargo` too: `--exact` past the `--`, as in \
+                 `{INTERMITTENT} -p <crate> --lib <module>::tests::<name> -- --exact`. A claim \
+                 read as a prefix would excuse every failure under that name for as long as the \
+                 item stood",
+                line.trim()
+            ),
+            Self::RedClaimedTwice { number, count } => write!(
+                f,
+                "item {number}: one block carries {count} red claims (`{RED}` and `{INTERMITTENT}` \
+                 lines together), and an item holds one — the first would be read and the rest \
+                 dropped while still reading as claims. Keep the one that is true, and open an \
+                 item for any other test that needs holding",
             ),
             Self::DanglingParent { number, named } => write!(
                 f,
@@ -2522,8 +2706,15 @@ impl Reading {
             // it in as many words: do not make `refuted` tolerant. The platform mark buys one
             // thing only — a claim about ANOTHER platform is not refuted here — and every claim
             // about this one is still put to the repository.
-            if claim.on.is_some_and(|on| on.word() != here) {
+            if !claim.answerable_on(here) {
                 found.elsewhere.push(number);
+                continue;
+            }
+            // ⛔⛔⛔⛔⛔ AND AN INTERMITTENT CLAIM IS NEVER PUT TO ONE RUN — register item 1083. Asked,
+            // the run that happened to pass would refute it and the run that happened to fail would
+            // make it an override, and neither is an answer about a red that one run cannot decide.
+            if claim.recurrence == Recurrence::Intermittent {
+                found.intermittent.push(number);
                 continue;
             }
             if suite.is_red(&claim.argv)? {
@@ -2604,7 +2795,7 @@ impl Reading {
         let asked: Vec<RedClaim> = self
             .red_claims()
             .into_iter()
-            .filter(|(_, claim)| !claim.on.is_some_and(|on| on.word() != here))
+            .filter(|(_, claim)| claim.answerable_on(here))
             .map(|(_, claim)| claim)
             .collect();
         let reported = report.failures();
@@ -2612,7 +2803,7 @@ impl Reading {
         for failure in &reported {
             let mut held = false;
             for claim in &asked {
-                if report.accounts_for(&claim.argv, failure)? {
+                if report.accounts_for(claim, failure)? {
                     held = true;
                     break;
                 }
@@ -2626,6 +2817,53 @@ impl Reading {
             reported: reported.len(),
             asked: asked.len(),
         })
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY CLAIM A REPORT SHOWS FAILING, AND WHAT ITS EVIDENCE OWES** — register items
+    /// 1000 and 1083.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the population is *shown failing* and not *standing*
+    ///
+    /// Item 1000 put this question to the claims a report CONFIRMED, and for a [`RED`] claim that is
+    /// the same set as the claims accounting for a reported failure — one match rule, reached from
+    /// both directions (register item 998). An [`INTERMITTENT`] claim is never confirmed, so a walk
+    /// over `standing` would never record one: its evidence would stay at the run it was written
+    /// from however often it failed again. **A claim no run refutes is honest only while its record
+    /// moves**, which is why the population is decided here, by the report, and not by the caller.
+    ///
+    /// ⚠ A refuted claim is absent by construction — nothing it selects failed — and its remedy is
+    /// to delete its line, so no author is told to record evidence for a claim they are removing.
+    /// ⚠ A claim about another platform is not asked, by [`RedClaim::answerable_on`].
+    ///
+    /// # Errors
+    ///
+    /// A sentence naming why a claim could not be put to a name, or why the history could not be
+    /// asked — never a verdict about one claim, for [`Reading::unclaimed_failures`]' reason.
+    pub fn recordings(
+        &self,
+        report: &dyn Reported,
+        here: &str,
+        at: &str,
+        commits: &dyn Commits,
+    ) -> Result<Vec<(u32, Recording)>, String> {
+        let failures = report.failures();
+        let mut owed = Vec::new();
+        for (number, claim) in self.red_claims() {
+            if !claim.answerable_on(here) {
+                continue;
+            }
+            let mut shown = false;
+            for failure in &failures {
+                if report.accounts_for(&claim, failure)? {
+                    shown = true;
+                    break;
+                }
+            }
+            if shown {
+                owed.push((number, self.recording_of(number, at, commits)?));
+            }
+        }
+        Ok(owed)
     }
 
     /// 🎯🎯🎯🎯🎯 **HOW MANY STILL-OPEN DEBTS THIS ONE SITS UNDER** — register item 921, and the
@@ -3911,9 +4149,19 @@ fn parent_value(line: &str) -> Option<&str> {
     line.trim_start().strip_prefix(PARENT)
 }
 
-/// The value of a [`RED`] line, by the same whole-line rule [`mark_value`] holds.
-fn red_value(line: &str) -> Option<&str> {
-    line.trim_start().strip_prefix(RED)
+/// The value of a [`RED`] or [`INTERMITTENT`] line with the recurrence that mark gives it, by the
+/// same whole-line rule [`mark_value`] holds.
+///
+/// ⚠ ONE READER FOR BOTH — register item 1083, and [`witness_value`]'s reason: two readers would be
+/// two places to keep the trimming rule in step.
+fn red_value(line: &str) -> Option<(&str, Recurrence)> {
+    let bare = line.trim_start();
+    [Recurrence::Standing, Recurrence::Intermittent]
+        .into_iter()
+        .find_map(|recurrence| {
+            bare.strip_prefix(recurrence.mark())
+                .map(|value| (value, recurrence))
+        })
 }
 
 /// The value of a [`JUDGED`] line, by the same whole-line rule [`mark_value`] holds.
@@ -3998,15 +4246,17 @@ pub trait Reported {
     /// Every test this report says FAILED, in the harness's own spelling and in the report's order.
     fn failures(&self) -> Vec<String>;
 
-    /// Whether one [`RED`] claim's argv ACCOUNTS FOR `failure` — the same match
-    /// [`Suite::is_red`] makes, asked of one name instead of all of them.
+    /// Whether one claim ACCOUNTS FOR `failure`. For a [`RED`] claim it is the same match
+    /// [`Suite::is_red`] makes, asked of one name instead of all of them; for an [`INTERMITTENT`]
+    /// one it is the WHOLE name and nothing under it — register item 1083, and the reason the claim
+    /// is handed over rather than its argv.
     ///
     /// # Errors
     ///
     /// A sentence naming why that claim could not be put to a NAME. Never *no*: a claim this reader
     /// cannot place might be the very one holding `failure`, so guessing `false` would invent an
     /// unclaimed red and guessing `true` would excuse one.
-    fn accounts_for(&self, argv: &str, failure: &str) -> Result<bool, String>;
+    fn accounts_for(&self, claim: &RedClaim, failure: &str) -> Result<bool, String>;
 }
 
 /// ⛔⛔⛔⛔⛔ **WHAT THE LEDGER STILL OWES ABOUT ONE CLAIM, GIVEN THE RUN IN HAND** — register item
@@ -4893,18 +5143,24 @@ pub fn read(text: &str) -> Reading {
                 // FAULT and never a silence: a claim this instrument cannot put to the repository
                 // would otherwise sit in the ledger looking like a checked one, which is exactly
                 // the shape item 902 measured on a `paid` mark that named no commit.
-                if let Some(value) = red_value(line) {
+                if let Some((value, recurrence)) = red_value(line) {
                     // ⚠⚠ AND A PLATFORM THIS READER HAS NO WORD FOR IS ITS OWN FAULT — register
                     // item 949. Folded into `UnrunnableRed` it would tell the author to fix an
                     // argv that is fine; left silent it would mean *no machine ever checks this*,
                     // which is the unfalsifiable claim item 843 exists to refuse.
-                    match RedClaim::parse(value) {
+                    match RedClaim::parse(value, recurrence) {
                         Ok(claim) => reds.push(claim),
                         Err(RedUnread::Platform) => faults.push(Fault::UnknownRedPlatform {
                             number: *number,
                             line: (*line).to_string(),
                         }),
                         Err(RedUnread::Argv) => faults.push(Fault::UnrunnableRed {
+                            number: *number,
+                            line: (*line).to_string(),
+                        }),
+                        // ⛔⛔⛔ register item 1083: the argv is perfectly runnable, so this is not
+                        // `UnrunnableRed` — the author is sent to the one thing that is missing.
+                        Err(RedUnread::Inexact) => faults.push(Fault::InexactIntermittent {
                             number: *number,
                             line: (*line).to_string(),
                         }),
@@ -4996,6 +5252,16 @@ pub fn read(text: &str) -> Reading {
             // Topmost block wins, exactly as the membership mark does.
             if severity.is_none() {
                 severity = severities.first().copied();
+            }
+            // ⛔⛔⛔ AND ONE BLOCK CLAIMS ONE RED — register item 1083. An item holds one claim and the
+            // first line below is the one read, so a second was silently dropped. With two marks a
+            // claim can be written on, rewriting one as the other and leaving both is the ordinary
+            // mistake — and the dropped line would go on saying something else in plain sight.
+            if reds.len() > 1 {
+                faults.push(Fault::RedClaimedTwice {
+                    number: *number,
+                    count: reds.len(),
+                });
             }
             // ⚠ Topmost block wins, exactly as the three marks above it do — see `Item`'s own doc
             // about a number owning several blocks. Register item 843.
@@ -5101,20 +5367,30 @@ pub fn read(text: &str) -> Reading {
         if item.tag != Some(Tag::Open) {
             continue;
         }
-        let Some(RedClaim { on: Some(on), .. }) = item.red else {
+        let Some(claim) = &item.red else {
             continue;
         };
-        match &item.judged {
-            None => faults.push(Fault::UnjudgedRed {
+        match (claim.recurrence, claim.on, &item.judged) {
+            // ⛔⛔⛔⛔⛔ AN INTERMITTENT CLAIM OWES A RECORD WHEREVER IT IS ABOUT — register item 1083.
+            // An unqualified STANDING claim is put to the suite by every default run, so the run
+            // being read is its evidence. An intermittent one is put to no run at all, so without a
+            // record of one that saw it red it is a claim nothing has ever stood behind.
+            (Recurrence::Intermittent, _, None) => faults.push(Fault::UnseenIntermittent {
+                number: item.number,
+            }),
+            (Recurrence::Standing, Some(on), None) => faults.push(Fault::UnjudgedRed {
                 number: item.number,
                 on,
             }),
-            Some(evidence) if evidence.on != on => faults.push(Fault::JudgedElsewhere {
-                number: item.number,
-                claimed: on,
-                judged: evidence.on,
-            }),
-            Some(_) => {}
+            (_, Some(on), Some(evidence)) if evidence.on != on => {
+                faults.push(Fault::JudgedElsewhere {
+                    number: item.number,
+                    claimed: on,
+                    judged: evidence.on,
+                });
+            }
+            // ⚠ Evidence from any platform answers a claim naming none: it is about every one.
+            (Recurrence::Standing, None, None) | (_, None | Some(_), Some(_)) => {}
         }
     }
 
@@ -7032,7 +7308,8 @@ mod tests {
             self.failed.clone()
         }
 
-        fn accounts_for(&self, argv: &str, failure: &str) -> Result<bool, String> {
+        fn accounts_for(&self, claim: &RedClaim, failure: &str) -> Result<bool, String> {
+            let argv = claim.argv.as_str();
             if self.unplaceable.iter().any(|one| one == argv) {
                 return Err(format!(
                     "the claim `{argv}` names no test selection this reader can put to a name"
@@ -7077,6 +7354,7 @@ mod tests {
                 RedClaim {
                     on: None,
                     argv: "-p sprag-gate --lib north_star".to_string(),
+                    recurrence: Recurrence::Standing,
                 },
             )],
             "⚠ THE CONTROL: the ledger claims exactly one red, so the two arms below differ by the \
@@ -7136,6 +7414,7 @@ mod tests {
                 standing: vec![898],
                 refuted: Vec::new(),
                 elsewhere: Vec::new(),
+                intermittent: Vec::new(),
             },
             "the suite ran it and it failed, so the claim stands",
         );
@@ -7149,6 +7428,7 @@ mod tests {
                 standing: Vec::new(),
                 refuted: vec![898],
                 elsewhere: Vec::new(),
+                intermittent: Vec::new(),
             },
             "⛔ THE SAME LEDGER, THE OPPOSITE ANSWER. A `@red:` line is a CLAIM about a tree, and \
              an item whose claim the suite refutes must not be admitted on it — item 902's \
@@ -7199,6 +7479,7 @@ mod tests {
                 RedClaim {
                     on: Some(Platform::Macos),
                     argv: "-p sprag-gate --lib north_star".to_string(),
+                    recurrence: Recurrence::Standing,
                 },
             )],
             "⚠ THE CONTROL: the platform came off the value and the argv is what is left — a \
@@ -7219,6 +7500,7 @@ mod tests {
                 standing: Vec::new(),
                 refuted: Vec::new(),
                 elsewhere: vec![898],
+                intermittent: Vec::new(),
             },
             "⛔ ITEM 949: a Linux run must not REFUTE a macOS claim. Before this, marking the red \
              made the instrument exit 1 and not marking it left `reds` blind — those were the only \
@@ -7232,6 +7514,7 @@ mod tests {
                 standing: Vec::new(),
                 refuted: vec![898],
                 elsewhere: Vec::new(),
+                intermittent: Vec::new(),
             },
             "⛔⛔ AND DONE-WHEN ⑶: on the platform it names, the claim is put to the suite exactly \
              as an unqualified one is. A platform mark that made a claim unfalsifiable EVERYWHERE \
@@ -7248,6 +7531,7 @@ mod tests {
                 standing: Vec::new(),
                 refuted: vec![898],
                 elsewhere: Vec::new(),
+                intermittent: Vec::new(),
             },
             "a claim naming no platform is a claim about wherever this runs, as it always was",
         );
@@ -7664,6 +7948,339 @@ mod tests {
                 .is_err_and(|why| why.contains("no test selection")),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 998: a question this could not put must be a refusal naming \
              why, never a list of unclaimed reds computed without the claim that may hold them",
+        );
+    }
+
+    // ── register item 1083: a red that one run cannot decide ───────────────────────────────────
+
+    /// The argv every intermittent arm below claims — ONE test, by its whole name, `--exact` past
+    /// the `--`.
+    const ONE_TEST: &str = "-p sprag-gate --lib north_star::tests::one -- --exact";
+
+    /// The name a report gives the test [`ONE_TEST`] selects.
+    const ONE_TEST_NAME: &str = "north_star::tests::one";
+
+    /// Evidence that a linux run saw it fail — what most arms below need to be well formed.
+    const SEEN_ON_LINUX: &str = "\n     @judged: @linux 111 aaa";
+
+    /// [`with_a_standing_red`]'s ledger with its claim written on [`INTERMITTENT`] instead:
+    /// `platform` goes before the argv (`""` or `"@macos "`), and `rest` after the claim line.
+    fn with_an_intermittent_red(platform: &str, rest: &str) -> String {
+        with_a_standing_red().replace(
+            "@red: -p sprag-gate --lib north_star",
+            &format!("@intermittent: {platform}{ONE_TEST}{rest}"),
+        )
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A RED ONE RUN CANNOT DECIDE IS NEITHER REFUTED NOR ADMITTED BY ONE RUN** —
+    /// register item 1083's done-when ⑴ and ⑶.
+    ///
+    /// # ⛔⛔⛔ What the ledger could not hold
+    ///
+    /// Items 975 and 1080 were each marked `@red:` on runs that failed and lost the mark to the
+    /// next run that passed — the instrument's own instruction, and right for a red that stands. A
+    /// red that is green alone and red under load had no line it could live on.
+    ///
+    /// # ⚠⚠⚠ The control is the SAME argv on [`RED`]
+    ///
+    /// A reader that stopped refuting anything would pass the first arm. So the standing claim is
+    /// put to a suite that answers green, and it is refuted exactly as before.
+    #[test]
+    fn a_red_one_run_cannot_decide_is_neither_refuted_nor_admitted_by_one_run() {
+        let reading = read(&with_an_intermittent_red("", SEEN_ON_LINUX));
+        assert_eq!(
+            reading.faults,
+            Vec::new(),
+            "⚠ THE PREMISE: the claim is well formed and names a run that saw it fail",
+        );
+        assert_eq!(
+            reading.red_claims(),
+            vec![(
+                898,
+                RedClaim {
+                    on: None,
+                    argv: ONE_TEST.to_owned(),
+                    recurrence: Recurrence::Intermittent,
+                },
+            )],
+            "⚠ the recurrence comes off the MARK, and the argv is what is left",
+        );
+        // ⛔ `Answers` PANICS when asked about an argv it has no answer for, so an EMPTY table is the
+        // assertion that the suite is never put this question at all.
+        let never_asked = Answers(std::collections::BTreeMap::new());
+        let found = reading
+            .standing_reds(&never_asked, "linux")
+            .expect("nothing was asked, so nothing could fail");
+        assert_eq!(
+            found,
+            Reds {
+                standing: Vec::new(),
+                refuted: Vec::new(),
+                elsewhere: Vec::new(),
+                intermittent: vec![898],
+            },
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1083: one run is not asked about an intermittent claim, so the run \
+             that happens to pass cannot tell a round to delete it — which is how 975 and 1080 lost \
+             theirs",
+        );
+        // ⚠⚠ AND IT BUYS NO OVERRIDE — which is the assertion above and not a second one. The derived
+        // order takes its reds off `standing` alone, so a claim kept out of it cannot jump the queue.
+        // An `admits` arm stood here and was removed: measured by mutation, it could only go red
+        // together with the assertion above (pushing the claim into `standing` redded that one
+        // first), so it was never a gate of its own.
+        // ⚠ And a claim about another platform is `elsewhere` whatever its recurrence, so the four
+        // lists stay one partition of the claims.
+        assert_eq!(
+            read(&with_an_intermittent_red(
+                "@macos ",
+                "\n     @judged: @macos 111 aaa"
+            ))
+            .standing_reds(&never_asked, "linux")
+            .expect("nothing was asked"),
+            Reds {
+                standing: Vec::new(),
+                refuted: Vec::new(),
+                elsewhere: vec![898],
+                intermittent: Vec::new(),
+            },
+            "⚠ a macOS claim is not this linux run's in either sense",
+        );
+        let standing = read(&with_a_standing_red().replace(
+            "@red: -p sprag-gate --lib north_star",
+            &format!("@red: {ONE_TEST}"),
+        ));
+        let green = Answers([(ONE_TEST.to_owned(), Ok(false))].into_iter().collect());
+        assert_eq!(
+            standing
+                .standing_reds(&green, "linux")
+                .expect("the suite answered"),
+            Reds {
+                standing: Vec::new(),
+                refuted: vec![898],
+                elsewhere: Vec::new(),
+                intermittent: Vec::new(),
+            },
+            "⛔⛔⛔⛔⛔ DONE-WHEN ⑶, THE CONTROL: the same argv claimed as a STANDING red is refuted by \
+             a green run exactly as before — the new mark weakened nothing about the old one",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A REPORT THAT FAILS AN INTERMITTENT RED FINDS IT HELD, AND OWES ITS RECORD** —
+    /// register item 1083's done-when ⑵, and register item 1000's obligation over the claims it
+    /// could not reach.
+    ///
+    /// # ⛔⛔⛔ Why the record is the half that matters
+    ///
+    /// Holding the failure is what takes it out of `unclaimed`. On its own that is a line excusing a
+    /// failure for ever, so the same report must also move the claim's evidence forward — which
+    /// item 1000 asked only of CONFIRMED claims, and an intermittent claim is never confirmed.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Both arms off one ledger, or this is a constant
+    ///
+    /// A report that failed it owes the record; a report that passed it owes nothing, or every green
+    /// run would demand an edit and the gate would be off within a round. And a failure it does NOT
+    /// hold stays unclaimed.
+    #[test]
+    fn a_report_that_fails_an_intermittent_red_finds_it_held_and_owes_its_record() {
+        let reading = read(&with_an_intermittent_red("", SEEN_ON_LINUX));
+        let nobodys = "rpc::tests::nobody_holds_this".to_owned();
+        let held = vec![(ONE_TEST.to_owned(), ONE_TEST_NAME.to_owned())];
+        let failed_it = Said {
+            failed: vec![ONE_TEST_NAME.to_owned(), nobodys.clone()],
+            held: held.clone(),
+            unplaceable: Vec::new(),
+        };
+        assert_eq!(
+            reading
+                .unclaimed_failures(&failed_it, "linux")
+                .expect("the claim was placed"),
+            Unclaimed {
+                failures: vec![nobodys.clone()],
+                reported: 2,
+                asked: 1,
+            },
+            "⛔⛔⛔⛔⛔ DONE-WHEN ⑵: the failure an intermittent claim holds is not reported as nobody's \
+             — and the one it does not hold still is",
+        );
+        let history = Line(vec![("aaa", "bbb")]);
+        assert_eq!(
+            reading
+                .recordings(&failed_it, "linux", "bbb", &history)
+                .expect("everything answered"),
+            vec![(
+                898,
+                Recording::Stale(Judged {
+                    on: Platform::Linux,
+                    run: "111".to_owned(),
+                    at: "aaa".to_owned(),
+                }),
+            )],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1083: a newer run failed it and the ledger still records the old \
+             one. A claim no run refutes stays honest only while its record moves, and a walk over \
+             CONFIRMED claims would never have reached it",
+        );
+        let passed_it = Said {
+            failed: vec![nobodys],
+            held,
+            unplaceable: Vec::new(),
+        };
+        assert_eq!(
+            reading
+                .recordings(&passed_it, "linux", "bbb", &history)
+                .expect("everything answered"),
+            Vec::new(),
+            "⚠⚠ THE ARM THAT KEEPS IT FROM BEING A BAN: a run that did not fail it owes no record",
+        );
+        // ⚠⚠ AND A STANDING CLAIM IS STILL IN THAT POPULATION — item 1000's obligation now arrives
+        // through this call, so it must not have been lost on the way.
+        let failed_module = Said {
+            failed: vec![ONE_TEST_NAME.to_owned()],
+            held: vec![(
+                "-p sprag-gate --lib north_star".to_owned(),
+                ONE_TEST_NAME.to_owned(),
+            )],
+            unplaceable: Vec::new(),
+        };
+        assert_eq!(
+            read(&with_a_macos_red("\n     @judged: @macos 111 aaa"))
+                .recordings(&failed_module, "macos", "bbb", &history)
+                .expect("everything answered"),
+            vec![(
+                898,
+                Recording::Stale(Judged {
+                    on: Platform::Macos,
+                    run: "111".to_owned(),
+                    at: "aaa".to_owned(),
+                }),
+            )],
+            "⚠⚠⚠ DONE-WHEN ⑶: a standing claim the report shows failing owes its record exactly as \
+             it did when the binary walked `standing`",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AN INTERMITTENT RED OWES THE RUN THAT SAW IT, WHEREVER IT IS ABOUT** — register
+    /// item 1083, and register item 989's obligation on the claim that needs it most.
+    ///
+    /// A standing claim naming no platform is put to the suite by every default run, so it owes no
+    /// record. An intermittent one is put to nothing, so a record is the only evidence it has —
+    /// without this, one line would excuse a failure on nobody's word.
+    #[test]
+    fn an_intermittent_red_owes_the_run_that_saw_it_wherever_it_is_about() {
+        assert_eq!(
+            read(&with_an_intermittent_red("", "")).faults,
+            vec![Fault::UnseenIntermittent { number: 898 }],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1083: no platform and no record — and still owed, which is where \
+             this differs from `@red:`",
+        );
+        assert_eq!(
+            read(&with_an_intermittent_red("@macos ", "")).faults,
+            vec![Fault::UnseenIntermittent { number: 898 }],
+            "⚠ and ONE fault for a platform-marked one, not this and `UnjudgedRed` saying it twice",
+        );
+        assert_eq!(
+            read(&with_an_intermittent_red("@macos ", SEEN_ON_LINUX)).faults,
+            vec![Fault::JudgedElsewhere {
+                number: 898,
+                claimed: Platform::Macos,
+                judged: Platform::Linux,
+            }],
+            "⛔⛔ a linux run that saw it fail proves nothing about a claim that it fails on macOS",
+        );
+        assert_eq!(
+            read(&with_an_intermittent_red(
+                "",
+                "\n     @judged: @macos 111 aaa"
+            ))
+            .faults,
+            Vec::new(),
+            "⚠⚠ THE DISCHARGE: a claim naming no platform is about every one, so a run on either \
+             that saw it fail is evidence",
+        );
+        assert_eq!(
+            read(&with_a_standing_red()).faults,
+            Vec::new(),
+            "⚠⚠⚠ DONE-WHEN ⑶, THE CONTROL: an unqualified STANDING claim still owes nothing — the \
+             default run is its evidence",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AN INTERMITTENT CLAIM THAT COULD SELECT MORE THAN ONE TEST IS REFUSED** — register
+    /// item 1083.
+    ///
+    /// No run refutes an intermittent claim, so one naming a MODULE would excuse every failure under
+    /// it for as long as its item stood. A report matches it by the whole name, and the argv has to
+    /// mean the same to `cargo`: `--exact`, past the `--`.
+    ///
+    /// ⚠⚠ The controls are the spellings such a claim is really written with, and `@red:` naming a
+    /// module — which must still read, because the rule is the new mark's and not the old one's.
+    #[test]
+    fn an_intermittent_claim_that_could_select_more_than_one_test_is_refused() {
+        let evidenced = with_an_intermittent_red("", "\n     @judged: @macos 111 aaa");
+        let written = format!("@intermittent: {ONE_TEST}");
+        for spelled in [
+            "@intermittent: -p sprag-gate --lib north_star::tests::one",
+            "@intermittent: -p sprag-gate --lib north_star::tests::one --exact",
+            "@intermittent: -p sprag-gate --lib -- north_star::tests::one",
+        ] {
+            let reading = read(&evidenced.replace(&written, spelled));
+            assert!(
+                reading
+                    .faults
+                    .iter()
+                    .any(|fault| matches!(fault, Fault::InexactIntermittent { number: 898, .. })),
+                "⛔⛔⛔ REGISTER ITEM 1083: {spelled:?} could hold more than its one test: {:?}",
+                reading.faults,
+            );
+            assert!(
+                reading.red_claims().is_empty(),
+                "⚠ and a line the reader refused carries no claim: {:?}",
+                reading.red_claims(),
+            );
+        }
+        for spelled in [
+            "@intermittent: -p sprag-tui --test pty_round_trip -- \
+             the_deadline_says_whether_anything_was_still_arriving --exact",
+            "@intermittent: @macos -p sprag-gate --lib north_star::tests::one -- --exact",
+        ] {
+            let reading = read(&evidenced.replace(&written, spelled));
+            assert!(
+                reading.is_green() && reading.red_claims().len() == 1,
+                "⚠⚠ THE CONTROL: {spelled:?} is how such a claim is really written: {:?}",
+                reading.faults,
+            );
+        }
+        assert!(
+            read(&with_a_standing_red()).is_green(),
+            "⛔⛔ DONE-WHEN ⑶: a standing `@red:` naming a module still reads — a module whose tests \
+             all pass refutes it, which is exactly what an intermittent claim does not have",
+        );
+    }
+
+    /// ⛔⛔⛔ **ONE BLOCK, ONE RED CLAIM** — register item 1083. With two marks a claim can be written
+    /// on, rewriting one as the other and leaving both is the ordinary mistake, and only the first
+    /// line would have been read.
+    #[test]
+    fn a_block_claiming_two_reds_is_refused_rather_than_read_by_its_first_line() {
+        let both = read(&with_an_intermittent_red(
+            "",
+            &format!("{SEEN_ON_LINUX}\n     @red: -p sprag-gate --lib north_star"),
+        ));
+        assert!(
+            both.faults.contains(&Fault::RedClaimedTwice {
+                number: 898,
+                count: 2,
+            }),
+            "⛔⛔⛔ REGISTER ITEM 1083: the `@red:` line under the intermittent one would be dropped \
+             while reading as a claim: {:?}",
+            both.faults,
+        );
+        let one = read(&with_an_intermittent_red("", SEEN_ON_LINUX));
+        assert!(
+            !one.faults
+                .iter()
+                .any(|fault| matches!(fault, Fault::RedClaimedTwice { .. })),
+            "⚠ THE CONTROL: one claim line is not two: {:?}",
+            one.faults,
         );
     }
 
@@ -8232,6 +8849,11 @@ mod tests {
             | Fault::UnreadJudged { .. }
             | Fault::JudgedElsewhere { .. }
             | Fault::JudgedCommitUnresolved { .. }
+            // ⚠ Register item 1083's three name ONE item each, with the line or the count in the
+            // message. The same gate working again.
+            | Fault::UnseenIntermittent { .. }
+            | Fault::InexactIntermittent { .. }
+            | Fault::RedClaimedTwice { .. }
             // ⚠ Register item 939's first fault is about ONE line, which its message quotes.
             | Fault::UnknownOwned { .. }
             // ⚠⚠ Register item 488's four name ONE item each — the item, the path and the text it
