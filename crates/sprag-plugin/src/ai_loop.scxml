@@ -1784,6 +1784,73 @@
     <data id="progress_marks" expr="[]"/>
 
     <!--
+      ⛔⛔⛔⛔⛔ WHICH FILES A CHECKER OF THIS KIND IS TOLD TO OPEN — register
+      item 1074, and the clause the sentence above was being BORROWED for.
+
+      ⚠⚠⚠⚠⚠ WHY IT IS NOT `progress_marks`, WHICH IS THE WHOLE ITEM. Item 1072
+      shipped the one remedy anybody has TIMED for a checker that goes silent —
+      naming the files to open instead of handing over a directory, 33.3 s under
+      four times the load that produced a 185.2 s worst case — and it fed that
+      clause from the marks above, because they were the only list a document
+      had. One declaration, two readers, and the two want different lists on
+      three independent axes:
+
+        the ceiling wants FEW marks that are cheap to stat every pass and move
+        reliably — a reflog is ideal; the checker wants the files the WORK is
+        in, and a reflog tells it almost nothing;
+
+        adding a mark for the checker's sake CHANGES THE CEILING'S PREDICATE —
+        a joined reading that moves more often is a stall that bites later, so
+        feeding one reader through the other's clause quietly softens it;
+
+        a mark may live OUTSIDE the tree and this file says so above — the
+        register of the kind beside this one does — while a checker stands in a
+        COPY and mutates what it judges, so such a mark can never be named to
+        it and is dropped.
+
+      ⚠⚠⚠ EMPTY MEANS *THIS KIND HAS NOT SAID*, AND THE MARKS ABOVE ARE THEN
+      READ INSTEAD — which is exactly what every run did between item 1072 and
+      this datum, so a kind that never learns this word loses nothing. It is a
+      fall-back and NOT a merge: a kind that fills this in is naming the
+      checker's list outright, and the ceiling above goes on reading only its
+      own. That one-way default is the only coupling left, and it cannot soften
+      anything, because nothing ever needs adding to `progress_marks` for the
+      checker's sake again.
+
+      ⚠⚠ EACH ENTRY IS A PATH AND A DIRECTORY IS A FINE ONE — *where to start
+      looking* is what this clause says, so the directory a repository keeps its
+      sources in is a narrower answer than the tree and a legitimate one. What a
+      document names here is its own business. Whatever is named is reduced to
+      the checker's own feet before it is spoken: a path outside the tree is
+      dropped, an absolute path inside it is re-spelled relative, and a path
+      naming the tree itself is not a file to open. That reduction belongs to
+      the DRIVER and not to this document, because which tree a checker stands
+      in is a fact about the run.
+
+      ⚠⚠ AND IT IS THE DOCUMENT'S LIST AND NEVER THE AGENT'S — register item
+      428. A claimant that could choose what its own judge opens is steering the
+      verdict while appearing to report, so these paths are authored by a person
+      and nothing an agent says reaches them.
+
+      ⚠⚠ A KIND DECIDES THIS AND IS NOT HELD TO IT, which is the one place this
+      differs from every bound above and is a decision rather than an omission.
+      The claim sentence those carry puts a `<data>` in `LoopKind::CLAIMED`, and
+      a document answering some of that table and not the rest is refused
+      outright (`NoKind::HalfAuthored`) — so writing the sentence here would
+      turn every kind in existence into a launch failure over a clause whose
+      whole default is *carry on exactly as before*. **Declining is a real
+      answer here** — a kind whose marks already are the files its work is in
+      has nothing to add — and it is not the silence that rule exists to catch,
+      because empty falls back to a list the same document authored rather than
+      to a number written in a file nobody in that tree owns.
+
+      ⚠ AND IT IS DELIBERATELY NOT A WIRE KEY, like `milestone_check` above: a
+      caller who could name it could point a judge at files that flatter the
+      run, on the launches least likely to be watched.
+    -->
+    <data id="check_opens" expr="[]"/>
+
+    <!--
       HOW FAR THIS RUN HAS RE-AIMED ITSELF ALREADY - incremented by
       `reflect.applied` below, and only where that transition ACTUALLY MOVES
       the milestone, so the count cannot drift from the thing it counts.
@@ -3653,6 +3720,17 @@
       -->
       <assign location="stall_after_steps" expr="_event.data.stall_after_steps"/>
       <assign location="progress_marks" expr="_event.data.progress_marks"/>
+      <!--
+        ⛔⛔⛔⛔⛔ AND WHICH FILES THIS RUN'S CHECKER IS TOLD TO OPEN — register
+        item 1074, on the two lines above's exact terms and NOT on their axis.
+
+        ⚠⚠ UNCONDITIONAL, like every neighbour: the driver echoes this
+        document's own list back when nobody named one. A nil assigned here
+        would not delete a ceiling — it would turn off the one remedy that has
+        been TIMED for a checker going silent (item 1072), and that failure is
+        the quiet kind, because a slow check still answers.
+      -->
+      <assign location="check_opens" expr="_event.data.check_opens"/>
       <!--
         🎯🎯🎯 AND HOW MANY TIMES A RUN MAY ASK AGAIN WHEN THAT CAP TURNS A
         PROPOSAL AWAY — register item 840, on the line above's exact terms. The

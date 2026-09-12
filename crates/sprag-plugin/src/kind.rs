@@ -1203,6 +1203,37 @@ impl LoopKind {
         OuterLoop::authored_paths_in(&self.script, &self.session, "progress_marks")
     }
 
+    /// ⛔⛔⛔⛔⛔ **WHICH FILES A CHECKER OF THIS KIND IS TOLD TO OPEN**, as paths — or [`None`]
+    /// where this kind names none, which is the template's shipped state and means *read
+    /// [`progress_marks`](Self::progress_marks) instead*. Register item 1074.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why it is not the marks, which is the whole item
+    ///
+    /// Item 1072 shipped the one remedy anybody has TIMED for a checker that goes silent — the
+    /// question naming the files to open rather than handing over a directory — and fed it from
+    /// [`progress_marks`](Self::progress_marks), the only list a document had. That made one
+    /// declaration answer two questions which disagree on three independent axes: the ceiling wants
+    /// few marks that are cheap to `stat` and move reliably (a reflog is ideal and tells a checker
+    /// nothing), a mark added for the checker's sake makes the ceiling's joined reading move more
+    /// often and so bite LATER, and a mark may live outside the tree — this repository's own kind
+    /// names one — where a checker standing in a copy may never be sent.
+    ///
+    /// Measured on `debt_loop.scxml` the day 1072 landed: of its two marks one is outside the tree
+    /// and the other is `.git/logs/HEAD`, so the checker's whole list was a reflog. The 6x arm was
+    /// switched on with nothing to feed it.
+    ///
+    /// ⚠⚠ **EMPTY IS A FALL-BACK AND NOT A MERGE.** A kind that says nothing here gets the marks,
+    /// which is what every run did between item 1072 and this accessor; a kind that fills it in is
+    /// naming the checker's list outright and the ceiling goes on reading only its own.
+    ///
+    /// ⚠ A directory is a legitimate entry — *where to start looking* is what this answers — and
+    /// what a checker may actually be told is narrower than what is written here: the driver drops
+    /// anything that does not land under the tree the checker stands in.
+    #[must_use]
+    pub fn check_opens(&self) -> Option<Vec<String>> {
+        OuterLoop::authored_paths_in(&self.script, &self.session, "check_opens")
+    }
+
     /// **WHO DECIDES A MILESTONE OF THIS KIND WAS REACHED**, as an argv — or [`None`] where this
     /// kind says nothing and the working agent's own word stands.
     ///
@@ -2856,9 +2887,13 @@ mod tests {
         let mine = declared(include_str!("debt_loop.scxml"));
         // ⛔ 28 SINCE REGISTER ITEM 942, which added `stall_after_steps` and `progress_marks` —
         // the bound and the marks behind `Ceiling::Stall`, each with a reader on `LoopKind`.
+        // ⛔ 29 SINCE REGISTER ITEM 1074, which added `check_opens`: which files a checker of this
+        // kind is told to open. It is beside `progress_marks` and is NOT a second spelling of it —
+        // the item measured three axes on which the stall ceiling's list and the checker's
+        // disagree, and until it existed this kind's judge was handed `.git/logs/HEAD` alone.
         assert_eq!(
             mine.len(),
-            28,
+            29,
             "⚠⚠ the needle stopped seeing this repository's own kind, so the assertion above is \
              green about a document nobody read: {mine:?}",
         );

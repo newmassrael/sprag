@@ -2652,6 +2652,7 @@ mod tests {
             // measure this ceiling arm both halves themselves, in both directions.
             stall_after_steps: None,
             progress_marks: None,
+            check_opens: None,
             milestone_check: None,
             successor_check: None,
             // ⚠ DECLINED, so the template's own number stands. The base brief must not author a
@@ -5409,6 +5410,118 @@ mod tests {
              have ended is being sent to the wrong end of the bound. Walked {walked:?}",
         );
         access.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **FILLING THE CHECKER'S CLAUSE DOES NOT MOVE THE STALL CEILING'S PREDICATE** —
+    /// register item 1074's third axis, and the one that cannot be read off the source.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What the item measured, and why it needed a running run to say
+    ///
+    /// Between item 1072 and item 1074 the files a checker was told to open came out of
+    /// `progress_marks`, so a kind that wanted its judge pointed at real work had exactly one place
+    /// to put them — the stall ceiling's list. **Adding a mark there changes what the ceiling
+    /// observes**: the reading is per-mark and joined, so a longer list moves more often, the count
+    /// resets more often, and the bound bites LATER. A person helping a judge would have been
+    /// softening the only ceiling in `Ceiling::ALL` that measures progress, and nothing would have
+    /// said so.
+    ///
+    /// The separation is invisible in the source — both lists are `Vec<String>` and both are read
+    /// through `authored_paths` — so what says the two are really apart is a RUN whose document
+    /// names both and whose journal still counts only one of them.
+    ///
+    /// ⚠⚠ **THE ARITY IS THE NEEDLE BECAUSE IT IS WHAT A JOIN WOULD CHANGE FIRST.** `Watching::of`
+    /// is built from `(readable, marks.len())`, so a `watch_for_progress` that read `check_opens`
+    /// instead — or unioned the two — reports a different denominator on the very first pass. The
+    /// run below names three `check_opens` that all exist and are all readable, which is the shape
+    /// that would hide a union behind a still-green *all of them answer* sentence if the count were
+    /// not asserted.
+    #[test]
+    fn filling_the_checkers_clause_leaves_the_stall_ceilings_reading_alone() {
+        /// Out of reach: the subject is the DENOMINATOR the journal prints, and a run ended by the
+        /// stall bound would be a different walk.
+        const NEVER_STALLS: i64 = 100_000;
+
+        /// What the ceiling's own document names, and the number its sentence must keep printing.
+        const MARKS: usize = 2;
+
+        // ⛔ `sprag_scratch::scratch_for` AND NOT `std::env::temp_dir()` — register item 794.
+        let home = sprag_scratch::scratch_for("sprag-1074-two-lists", "");
+        std::fs::create_dir_all(&home).expect("a directory to put both lists in");
+        let put = |name: &str| -> String {
+            let at = home.join(name);
+            std::fs::write(&at, b"readable").expect("a readable path");
+            at.display().to_string()
+        };
+        let marks: Vec<String> = vec![put("ceiling-a"), put("ceiling-b")];
+        assert_eq!(
+            marks.len(),
+            MARKS,
+            "the fixture's own precondition: the sentences below count this list",
+        );
+        // ⚠⚠⚠ ALL READABLE AND ALL DIFFERENT FROM THE MARKS. If a union were what the ceiling
+        // read, its denominator would be five and every one of them would answer — so the run
+        // would still say *all of them* and only the NUMBER would betray it.
+        let opens: Vec<String> = vec![put("checker-a"), put("checker-b"), put("checker-c")];
+
+        let (workspace, pane) = crate::testing::standin_agent_reporting(
+            crate::testing::Accounts::ForARunThatRanOutOfTurns,
+            NO_THINKING,
+        );
+        let access = supervised(&workspace);
+        let brief = Brief {
+            stall_after_steps: Some(crate::outer::Counted::Of(NEVER_STALLS)),
+            progress_marks: Some(marks.clone()),
+            check_opens: Some(opens.clone()),
+            // ⚠ OUT OF REACH, so the document's own turn budget cannot be what ends this run.
+            ..brief_for(1_000_000)
+        };
+        let mut loops =
+            AiLoop::new(engine(), pane, &brief, &standin_spec()).expect("a well-briefed loop");
+        let progress = ProgressCell::default();
+        let outcome = Driver::new(Guardrails {
+            max_iterations: Some(40),
+            max_cost: None,
+            max_duration: Some(Duration::from_secs(60)),
+        })
+        .reporting_to(Arc::clone(&progress))
+        .run(&mut loops, &access, &RunContext::uncancellable());
+        assert_eq!(
+            outcome.state,
+            OutcomeState::Exhausted(Ceiling::Iterations),
+            "⚠⚠ this fixture's run must spend its iteration backstop, or the journal below is \
+             about a walk that did not happen",
+        );
+        let walked: Vec<String> = progress
+            .lock()
+            .expect("the progress cell")
+            .journal
+            .iter()
+            .filter_map(|entry| entry.note.clone())
+            .collect();
+        access.lifecycle().expect("lifecycle").close(pane);
+
+        assert!(
+            walked
+                .iter()
+                .any(|note| note.contains(&format!("all {MARKS} of the mark(s)"))),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1074: this run's document named {MARKS} progress marks and {} \
+             files for its checker, and the ceiling did not report the {MARKS}. A joined list is \
+             the failure the item was filed on — it makes the only ceiling that measures PROGRESS \
+             bite later, and a person adding a file for a JUDGE would never know they had done it. \
+             Walked {walked:?}",
+            opens.len(),
+        );
+        let joined = MARKS + opens.len();
+        assert!(
+            !walked
+                .iter()
+                .any(|note| note.contains(&format!("of the {joined} mark(s)"))),
+            "⛔⛔⛔⛔⛔ THE TWO LISTS WERE JOINED: the ceiling read {joined} marks where its own \
+             clause names {MARKS}. Every entry the checker's clause adds is a term in a predicate \
+             it was never meant to be in, and the direction is the dangerous one — more terms move \
+             more often, so the stall count resets more often and the bound fires later. \
+             Walked {walked:?}",
+        );
     }
 
     /// ⛔⛔⛔⛔⛔ **A TURN THAT MET A BASE THIS REPOSITORY DOES NOT OWN LEFT A RECORD AND STOOD, AND

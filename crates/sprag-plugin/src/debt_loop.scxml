@@ -1330,6 +1330,60 @@
           ]"/>
 
     <!--
+      ⛔⛔⛔⛔⛔ WHERE A CHECKER OF THIS KIND SHOULD START LOOKING — register item
+      1074, and a DIFFERENT list from the two marks above on purpose.
+
+      ⚠⚠⚠⚠⚠ WHAT THE MARKS GAVE A CHECKER, AND WHY THAT IS THE ITEM. Item 1072
+      put the files to open into the question — the one remedy anybody has TIMED
+      for a checker going silent — and fed it from `progress_marks`, because a
+      document had no other list. Run that list through the driver's own
+      reduction and THIS kind's checker was handed exactly one path: the
+      register is outside the tree and cannot be named to a judge standing in a
+      copy, leaving `.git/logs/HEAD`. A reflog says a commit happened and
+      nothing whatever about what was fixed. The measured arm was switched on
+      with nothing to feed it.
+
+      ⚠⚠⚠⚠ WHY DIRECTORIES AND NOT FILES, which is the honest shape for this
+      kind. A round of this loop pays ONE register item, and which files that
+      touches is different every round — a static list of files would be wrong
+      on almost every run, and a judge told to open the wrong five files is
+      worse off than one told to search. What IS stable is where the work lands,
+      and that is a measurement rather than a guess: over the 200 commits before
+      2026-09-12 (702 changed paths), every directory taking at least a
+      TWENTIETH of them is named below and nothing else is. The five hold
+      **80.1%** of the changed paths while being 196 of the tree's 367 tracked
+      files, so a judge that opens these and stops has missed a fifth of what a
+      round of this kind has ever moved.
+
+      ⚠⚠⚠ THE THRESHOLD IS WRITTEN DOWN BECAUSE IT IS THE ONLY THING THAT MAKES
+      THIS LIST RE-DERIVABLE. A list chosen by eye is a list nobody can check
+      and nobody can update. The word *a twentieth* is what the next reader
+      measures against, the exact command that produces the table is in the doc
+      of `the_debt_kind_sends_a_checker_somewhere_other_than_its_own_reflog`
+      (an XML comment cannot hold a git flag), and that gate is also what
+      refuses a name here that has stopped existing.
+
+      ⚠⚠ THE REGISTER IS DELIBERATELY ABSENT, though it is a mark above and
+      though a round writes in it. The checker stands in a COPY and mutates what
+      it judges (item 705), so a path outside the tree may never be named to it
+      — the driver would drop this one anyway, and writing it here would be a
+      sentence claiming something the product refuses. What a run says to
+      CONSULT is `reference` below, which is the clause that world belongs to.
+
+      ⚠ AND `.git/logs/HEAD` IS ABSENT for the opposite reason: it is a perfect
+      stall mark and worthless to a judge. That the two lists barely overlap is
+      the item, not an oversight.
+    -->
+    <data id="check_opens"
+          expr="[
+            'crates/sprag-plugin/src',
+            'crates/sprag-host/src',
+            'crates/sprag-gate/src',
+            'crates/sprag-gate/tests',
+            'crates/sprag-host/tests'
+          ]"/>
+
+    <!--
       ⛔⛔⛔⛔⛔ WHERE A RUN OF THIS KIND WORKS — register item 738, layer 4, and the
       one fact about a debt run that nothing anywhere had ever written down.
 

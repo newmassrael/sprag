@@ -829,9 +829,13 @@ pub(crate) const DEFAULT_SERVICE_RETRY_TEXT: &str = "continue";
 /// 1072. For ten days this paragraph was the whole of it: a 6x remedy, measured, sitting in a doc
 /// beside a literal, while [`check_question`](OuterLoop::check_question) went on handing a judge a
 /// directory and `Unheard::Unfinished` told a PERSON to ask a smaller question they were not
-/// holding. The marks a run's document names are put in the question now — see
-/// [`marks_a_check_can_open`](OuterLoop::marks_a_check_can_open) — so this bound's generosity is
+/// holding. The paths a run's document names are put in the question now — see
+/// [`paths_a_check_can_open`](OuterLoop::paths_a_check_can_open) — so this bound's generosity is
 /// spent on judging rather than on searching, for every kind that declares them.
+///
+/// ⚠⚠ **AND THE CLAUSE THEY COME OUT OF IS THE CHECKER'S OWN AS OF REGISTER ITEM 1074**
+/// (`check_opens`). 1072 fed this arm from the stall ceiling's marks, which for this repository's
+/// own kind reduced to a reflog — the arm switched on with nothing to feed it.
 ///
 /// ⚠ It is a constant and not a `<data>`, on register item 314's correction: the rule that a
 /// duration belongs to the document bites on durations a CALLER can pass, and no caller can pass
@@ -1096,6 +1100,14 @@ const STALL_AFTER_KEY: &str = "stall_after_steps";
 /// [`STALL_AFTER_KEY`], and the half that keeps its predicate from being one signal. Register item
 /// 942, and see [`OuterLoop::authored_paths_in`].
 const PROGRESS_MARKS_KEY: &str = "progress_marks";
+/// ⛔⛔⛔ **WHICH FILES A RUN'S CHECKER IS TOLD TO OPEN**, as paths — register item 1074, and NOT
+/// [`PROGRESS_MARKS_KEY`] although it was read out of it between item 1072 and this constant.
+///
+/// ⚠⚠ The two lists answer different questions and the item measured three axes on which they
+/// disagree; [`crate::kind::LoopKind::check_opens`] holds the argument. An empty list here is
+/// *this kind has not said*, and the marks are then read instead — see
+/// [`OuterLoop::a_check_to_put`].
+const CHECK_OPENS_KEY: &str = "check_opens";
 /// **WHAT A MARK NOTHING COULD STAT READS AS** — the one fixed word register item 943's whole
 /// argument turns on, spelled once so the reading and the question *was this mark readable* cannot
 /// come to disagree. See [`OuterLoop::progress_reading`] and [`OuterLoop::unreadable_mark`].
@@ -1463,6 +1475,17 @@ pub struct Brief {
     /// [`None`] (*keep the document's own*), which is [`screen_rules`](Self::screen_rules)' own
     /// distinction one field down.
     pub progress_marks: Option<Vec<String>>,
+
+    /// ⛔⛔⛔ **WHICH FILES THIS RUN'S CHECKER IS TOLD TO OPEN**, as paths, or [`None`] to keep what
+    /// the document says. Register item 1074, and NOT a second spelling of
+    /// [`progress_marks`](Self::progress_marks): the ceiling's list and the checker's disagree on
+    /// three axes, which [`crate::kind::LoopKind::check_opens`] holds.
+    ///
+    /// ⚠ An empty list is *this kind has not said* and the marks are read instead — the fall-back
+    /// that keeps a document written before item 1074 behaving exactly as it did. It is the one
+    /// path-valued field here whose emptiness is NOT a decision, and that is stated rather than
+    /// implied, because [`progress_marks`](Self::progress_marks) one field up is the opposite.
+    pub check_opens: Option<Vec<String>>,
 
     /// **STANDING INSTRUCTIONS FOR DIALOGS THIS CALLER HAS ALREADY DECIDED ABOUT** — the authored
     /// `screen_rules`, supplied by somebody who did not edit the file.
@@ -8726,6 +8749,20 @@ impl OuterLoop {
                 held: None,
             };
         };
+        // ⛔⛔⛔⛔⛔ **AND WHICH FILES THIS RUN'S CHECKER IS TOLD TO OPEN** — register item 1074, on
+        // the two-step fall-through above and DELIBERATELY NOT on its refusal.
+        //
+        // ⚠⚠⚠ THE PAIR ABOVE IS REFUSED WHEN A DOCUMENT DECLARES NEITHER HALF, because a bound
+        // whose marks are missing is a ceiling that can never end a run. This is not half of a
+        // bound: a document that says nothing here has said *read the marks instead*, which is what
+        // every run did between item 1072 and this key. Refusing it would turn every kind written
+        // before today into a launch failure, and `unwrap_or_default` is the spelling of that —
+        // the empty list crosses, and `a_check_to_put` is where *empty means the marks* is decided.
+        let opens = brief
+            .check_opens
+            .clone()
+            .or_else(|| self.authored_paths(CHECK_OPENS_KEY))
+            .unwrap_or_default();
         let payload = serde_json::json!({
             "north_star": brief.north_star,
             "context_ceiling": ceiling,
@@ -8773,6 +8810,7 @@ impl OuterLoop {
             // bound crosses as the word `never` — the workspace's one spelling of unbounded.
             STALL_AFTER_KEY: stalling.as_json(),
             PROGRESS_MARKS_KEY: marks.clone(),
+            CHECK_OPENS_KEY: opens.clone(),
             // ⚠ Unconditional, like `screen_rules` beside it and for the same reason: the template
             // ships `''` and a caller who adds nothing must not delete what the document composes.
             "closing_rules": brief.closing_rules.clone().unwrap_or_default(),
@@ -8884,17 +8922,23 @@ impl OuterLoop {
             return Briefed::TooLate(at);
         }
 
-        let briefing =
-            match self.held_as_briefed(brief, rules.as_ref(), (turns, reflect), stalling, &marks) {
-                Ok(briefing) => briefing,
-                Err(held) => {
-                    // The mangled or missing part is already in the datamodel; there is no
-                    // un-assigning it from out here. `fail` is what the document says happens to a
-                    // run that cannot go on, and it stops a caller pumping past this answer.
-                    self.machine.process_event(AiLoopEvent::Fail);
-                    return held;
-                }
-            };
+        let briefing = match self.held_as_briefed(
+            brief,
+            rules.as_ref(),
+            (turns, reflect),
+            stalling,
+            &marks,
+            &opens,
+        ) {
+            Ok(briefing) => briefing,
+            Err(held) => {
+                // The mangled or missing part is already in the datamodel; there is no
+                // un-assigning it from out here. `fail` is what the document says happens to a
+                // run that cannot go on, and it stops a caller pumping past this answer.
+                self.machine.process_event(AiLoopEvent::Fail);
+                return held;
+            }
+        };
         // ⚠⚠⚠⚠⚠ **AND HOW BIG WHAT IT TOOK IS** — register item 719's second direction, and the one
         // fact this door used to discard. The read-back above is the only place the three parts
         // exist as the MACHINE holds them, so the size is taken from it rather than measured again
@@ -8954,6 +8998,7 @@ impl OuterLoop {
         counts: (Counted, Counted),
         stalling: Counted,
         marks: &[String],
+        opens: &[String],
     ) -> Result<Briefing, Briefed> {
         // ⚠⚠⚠⚠⚠ **MEASURED HERE, OFF WHAT THE DATAMODEL HELD, AND NOWHERE ELSE** — register item
         // 719's second direction. This loop is the one place in the product that has the three
@@ -9076,6 +9121,26 @@ impl OuterLoop {
             None => {
                 return Err(Briefed::NotHeld {
                     part: PROGRESS_MARKS_KEY,
+                    held: None,
+                });
+            }
+        }
+        // ⛔⛔⛔ AND THE CHECKER'S OWN LIST, READ BACK THROUGH THE SAME READER — register item 1074.
+        // A list that crossed as something `authored_paths_in` cannot read does not fail a run: it
+        // silently returns the checker to the directory-only question item 1072 measured at six
+        // times the latency, and a slow check still ANSWERS — so nothing downstream would ever say
+        // so. That is the same silence the marks above are read back for, one reader over.
+        match self.authored_paths(CHECK_OPENS_KEY) {
+            Some(held) if held == opens => {}
+            Some(held) => {
+                return Err(Briefed::NotHeld {
+                    part: CHECK_OPENS_KEY,
+                    held: Some(format!("{held:?}")),
+                });
+            }
+            None => {
+                return Err(Briefed::NotHeld {
+                    part: CHECK_OPENS_KEY,
                     held: None,
                 });
             }
@@ -15344,9 +15409,9 @@ impl OuterLoop {
     /// ⛔⛔⛔⛔ **AND THE FILES TO OPEN ARE THE SAME DECISION, WHICH IS WHY THEY ARE RESOLVED HERE
     /// AND NOT IN THE SENTENCE** — register item 1072. A list of files is a claim about a tree, so
     /// naming one file that is not in the copy is the walk-out above arriving by a second road.
-    /// The reduction runs against `work_is_in` — the tree the marks were AUTHORED against and the
-    /// one `progress_reading` places them in — precisely so what is named is true of the copy too.
-    /// See [`marks_a_check_can_open`](Self::marks_a_check_can_open).
+    /// The reduction runs against `work_is_in` — the tree the paths were AUTHORED against and the
+    /// one `progress_reading` places the marks in — precisely so what is named is true of the copy
+    /// too. See [`paths_a_check_can_open`](Self::paths_a_check_can_open).
     ///
     /// ⚠⚠⚠⚠ **AND IT EXISTS SO A GATE CAN DRIVE THE PRODUCT'S OWN RESOLUTION.** The first form of
     /// item 705's gate rebuilt these three steps in the test and asserted on its own copy — a
@@ -15382,16 +15447,40 @@ impl OuterLoop {
         let copy = work_is_in
             .as_deref()
             .and_then(|dir| panes.checkout().and_then(|surface| surface.cut(dir)));
-        // ⛔⛔⛔⛔⛔ **AND WHICH FILES IN IT THE CHECKER IS TOLD TO OPEN** — register item 1072.
-        // Reduced against `work_is_in` and NOT against `standing_in`: the marks a document authors
-        // are placed against the tree the pane was born in (`progress_reading` resolves them
-        // there), while the sentence may name a COPY of that tree. Reducing them to paths relative
-        // to the original is exactly what makes them true of the copy as well — see
-        // [`marks_a_check_can_open`](Self::marks_a_check_can_open), which holds the argument.
-        let to_open = Self::marks_a_check_can_open(
-            &self.authored_paths(PROGRESS_MARKS_KEY).unwrap_or_default(),
-            work_is_in.as_deref(),
-        );
+        // ⛔⛔⛔⛔⛔ **AND WHICH FILES IN IT THE CHECKER IS TOLD TO OPEN** — register item 1072, out
+        // of the clause register item 1074 gave it.
+        //
+        // ⚠⚠⚠⚠⚠ **`check_opens` FIRST AND THE MARKS ONLY WHERE IT IS EMPTY**, which is 1074's
+        // whole finding: this question and the stall ceiling's want different lists, and while one
+        // declaration answered both, a kind could not feed this one without softening that one.
+        // The fall-back is what makes every document written before 1074 behave exactly as it did,
+        // and it is one-way — nothing needs adding to `progress_marks` for a checker's sake again,
+        // so it cannot be the coupling it replaces.
+        //
+        // ⚠⚠ Reduced against `work_is_in` and NOT against `standing_in`: the paths a document
+        // authors are placed against the tree the pane was born in (`progress_reading` resolves the
+        // marks there), while the sentence may name a COPY of that tree. Reducing them to paths
+        // relative to the original is exactly what makes them true of the copy as well — see
+        // [`paths_a_check_can_open`](Self::paths_a_check_can_open), which holds the argument.
+        //
+        // ⚠⚠⚠ **THE CHOICE IS MADE ON THE REDUCED LISTS AND NOT ON THE AUTHORED ONES**, which is
+        // the one ordering that keeps the fall-back honest. Whether a path is usable is a fact
+        // about THIS RUN — which tree the checker was given — so a kind whose `check_opens` is all
+        // out-of-tree has, from the checker's own feet, said nothing this question can carry. That
+        // reads as *has not said*, and the marks are then still the best list the document holds.
+        // Choosing before reducing would make a single unusable entry switch item 1072's arm off
+        // for a kind whose marks were feeding it fine — silently, because a checker with no file
+        // list still ANSWERS and only takes six times as long.
+        let reduce = |key: &str| {
+            Self::paths_a_check_can_open(
+                &self.authored_paths(key).unwrap_or_default(),
+                work_is_in.as_deref(),
+            )
+        };
+        let to_open = match reduce(CHECK_OPENS_KEY) {
+            named if !named.is_empty() => named,
+            _ => reduce(PROGRESS_MARKS_KEY),
+        };
         // ⚠⚠ THE COPY WINS WHERE THERE IS ONE, and the shared tree is the fallback rather than the
         // default. Written as `or` on the copy — not as a branch on the capability — so there is no
         // arrangement in which the spawn and the sentence disagree.
@@ -15403,8 +15492,14 @@ impl OuterLoop {
         (copy, standing_in, question)
     }
 
-    /// ⛔⛔⛔⛔⛔ **WHICH OF A RUN'S MARKS MAY BE NAMED TO A CHECKER STANDING IN A COPY OF ITS
-    /// TREE** — register item 1072, as paths relative to whichever tree the checker is in.
+    /// ⛔⛔⛔⛔⛔ **WHICH OF THE PATHS A DOCUMENT AUTHORED MAY BE NAMED TO A CHECKER STANDING IN A
+    /// COPY OF ITS TREE** — register item 1072, as paths relative to whichever tree the checker is
+    /// in.
+    ///
+    /// ⚠⚠ **IT WAS `marks_a_check_can_open` AND THE NAME WAS A LIE AS OF ITEM 1074**: the list it
+    /// reduces is `check_opens` wherever a kind authored one, and the marks only where none was.
+    /// The reduction is the same either way, because what it is about is the checker's own feet
+    /// and not which clause a path was written in.
     ///
     /// # ⭐⭐⭐⭐⭐ Why the question names files at all: the remedy was MEASURED and then not shipped
     ///
@@ -15444,11 +15539,11 @@ impl OuterLoop {
     /// different tree than the one the sentence is about, which is this crate's oldest class (two
     /// readers of one thing, free to disagree). Whether a named file is there is what the checker
     /// finds out by opening it, and the sentence says *supposed to* for that reason.
-    fn marks_a_check_can_open(
-        marks: &[String],
+    fn paths_a_check_can_open(
+        authored: &[String],
         work_is_in: Option<&std::path::Path>,
     ) -> Vec<String> {
-        marks
+        authored
             .iter()
             .filter_map(|mark| {
                 let path = std::path::Path::new(mark);
@@ -20659,6 +20754,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -20782,6 +20878,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -21871,6 +21968,7 @@ mod tests {
             reaim_max: None,
             stall_after_steps: None,
             progress_marks: None,
+            check_opens: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -22009,6 +22107,7 @@ mod tests {
                         still.display().to_string(),
                         moves.display().to_string(),
                     ]),
+                    check_opens: None,
                     milestone_check: None,
                     successor_check: None,
                     reask_max: None,
@@ -22150,6 +22249,7 @@ mod tests {
             reaim_max: None,
             stall_after_steps: None,
             progress_marks: None,
+            check_opens: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -22307,6 +22407,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 // ⚠ NO CHECKER AUTHORED — the world that must stay silent, and the control.
                 milestone_check: None,
                 successor_check: None,
@@ -22394,6 +22495,7 @@ mod tests {
             reaim_max: None,
             stall_after_steps: None,
             progress_marks: None,
+            check_opens: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -22494,6 +22596,7 @@ mod tests {
             reaim_max: None,
             stall_after_steps: None,
             progress_marks: None,
+            check_opens: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -22592,6 +22695,7 @@ mod tests {
             reaim_max,
             stall_after_steps: None,
             progress_marks: None,
+            check_opens: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -22692,6 +22796,7 @@ mod tests {
             reaim_max: None,
             stall_after_steps: None,
             progress_marks: None,
+            check_opens: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -22783,6 +22888,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -22949,6 +23055,7 @@ mod tests {
             reaim_max: None,
             stall_after_steps: None,
             progress_marks: None,
+            check_opens: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -23148,6 +23255,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -23363,6 +23471,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -23506,6 +23615,7 @@ mod tests {
             reaim_max: None,
             stall_after_steps: None,
             progress_marks: None,
+            check_opens: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -24670,6 +24780,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: Some("/bin/echo YES".to_string()),
                 successor_check: None,
                 reask_max: None,
@@ -25095,6 +25206,7 @@ mod tests {
             reaim_max: None,
             stall_after_steps: None,
             progress_marks: None,
+            check_opens: None,
             milestone_check: Some(check.to_string()),
             successor_check: None,
             reask_max: None,
@@ -25594,6 +25706,185 @@ mod tests {
         let _ = std::fs::remove_dir_all(&repo);
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE FILES A CHECKER IS TOLD TO OPEN COME OUT OF THE CHECKER'S OWN CLAUSE** —
+    /// register item 1074, and the clause item 1072 had to borrow because there was none.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The defect: one declaration feeding two readers that want different lists
+    ///
+    /// Item 1072 put the measured remedy into the product — the question naming the files to open
+    /// rather than handing a judge a directory — and fed it from `progress_marks`, the stall
+    /// ceiling's list, because a document had nowhere else to say it. The two questions disagree on
+    /// three axes and each is independent:
+    ///
+    /// * the ceiling wants FEW marks that are cheap to `stat` every pass and move reliably — a
+    ///   reflog is ideal, and tells a checker nothing at all;
+    /// * a mark added for the checker's sake changes the CEILING's predicate, because a joined
+    ///   reading that moves more often is a stall that bites later — so feeding one reader through
+    ///   the other's clause is a way to soften a ceiling while believing you are helping a judge;
+    /// * a mark may live OUTSIDE the tree and this repository's own kind names one, while a checker
+    ///   stands in a copy and mutates what it judges (item 705), so such a mark is dropped.
+    ///
+    /// Measured on `debt_loop.scxml` the day 1072 landed: of its two marks the register is outside
+    /// the tree and the other is `.git/logs/HEAD`, so the 6x arm was switched on with a reflog to
+    /// feed it.
+    ///
+    /// # ⚠⚠ Why the control arm is the one that decides the shape
+    ///
+    /// A kind that says nothing here must get **exactly** what it got before this datum existed —
+    /// the marks, reduced. That is what makes the fall-back a fall-back rather than a merge, and it
+    /// is why `check_opens` is not in `LoopKind::CLAIMED`: the claim sentence would make every kind
+    /// in existence a `NoKind::HalfAuthored` refusal over a clause whose whole default is *carry on
+    /// as before*.
+    #[test]
+    fn a_checks_question_opens_the_clause_written_for_it_and_not_the_ceilings_marks() {
+        let repo = a_directory_this_gate_owns("1074-the-checkers-own-clause");
+        let copy = repo.join("a-copy-nobody-else-is-in");
+        let silent = Produced::Stated(String::new());
+
+        // ⚠⚠⚠⚠⚠ THROUGH THE PRODUCT'S OWN RESOLUTION, on the 705 gate's measured lesson: a test
+        // that rebuilt these steps and asserted on its own copy stayed GREEN under a mutation that
+        // made the product name the wrong tree. `a_check_to_put` is the one function.
+        let asked =
+            |panes: &dyn PaneAccess, pane: PaneId, marks: &[&str], opens: &[&str]| -> String {
+                let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+                let loops = bounded_at(lua, pane, Duration::from_secs(20))
+                    .expect("the document's four authored strings");
+                for (key, paths) in [(PROGRESS_MARKS_KEY, marks), (CHECK_OPENS_KEY, opens)] {
+                    loops
+                        .script
+                        .set_variable(
+                            &loops.session,
+                            key,
+                            ScriptValue::Array(
+                                paths
+                                    .iter()
+                                    .map(|path| ScriptValue::String((*path).to_owned()))
+                                    .collect(),
+                            ),
+                        )
+                        .expect("a document's own paths are writable");
+                    // ⚠⚠⚠ THE PLANT'S OWN CONTROL, before a sentence is read: `authored_paths` is what
+                    // the product calls, so a plant that did not survive the datamodel would make every
+                    // arm below an assertion about a run that declared nothing — which IS the control
+                    // arm, and the two would be one test wearing two names.
+                    assert_eq!(
+                        loops.authored_paths(key).as_deref(),
+                        Some(
+                            paths
+                                .iter()
+                                .map(|path| (*path).to_owned())
+                                .collect::<Vec<_>>()
+                                .as_slice()
+                        ),
+                        "⚠⚠⚠⚠⚠ THE PLANT OF `{key}` DID NOT SURVIVE THE DATAMODEL",
+                    );
+                }
+                let (_copy, _where, question) = loops.a_check_to_put(panes, &silent);
+                question
+            };
+
+        let (workspace, pane) = pane_born_in(&repo);
+        let isolating = Isolating {
+            inner: WorkspacePaneAccess::new(Arc::clone(&workspace)),
+            copy: copy.clone(),
+        };
+
+        // ── ⭐ THE CLAIM: the checker's own clause is what reaches the question ────────────────
+        //
+        // ⚠ The mark here is the shape this repository really ships — a reflog, which is a perfect
+        // stall mark and worthless to a judge — so the arm is not *some list arrives* but *the
+        // list a person wrote FOR THE CHECKER arrives, and the ceiling's does not*.
+        let its_own = asked(
+            &isolating,
+            pane,
+            &[".git/logs/HEAD"],
+            &["crates/sprag-plugin/src", "crates/sprag-gate/tests"],
+        );
+        assert!(
+            its_own.contains("crates/sprag-plugin/src")
+                && its_own.contains("crates/sprag-gate/tests"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1074: this document wrote down where a checker should look and \
+             the question did not carry it. The measured remedy is 33.3 s against a 185.2 s worst \
+             case (`CHECK_READINGS`) and it is only worth that if the list is about the WORK: \
+             {its_own}",
+        );
+        assert!(
+            !its_own.contains(".git/logs/HEAD"),
+            "⛔⛔⛔⛔ AND THE CEILING'S MARK CAME THROUGH ANYWAY, so the two readers are still one \
+             declaration wearing two names. A reflog says a commit happened and nothing about what \
+             was fixed; a judge told to open it has been given the appearance of a narrowed search: \
+             {its_own}",
+        );
+
+        // ── ⛔ THE CONTROL: a kind that says nothing gets what it got before this datum ────────
+        //
+        // ⚠⚠⚠ THE SHARPEST ARM IN THE TEST. Item 1072's remedy is in every kind that names marks
+        // inside its tree, and a `check_opens` that simply REPLACED the marks would switch that off
+        // for every one of them — silently, because a checker with no file list still answers, just
+        // six times slower. Nothing downstream would ever say so.
+        let unsaid = asked(&isolating, pane, &["kept/inside.rs"], &[]);
+        assert!(
+            unsaid.contains("kept/inside.rs"),
+            "⛔⛔⛔⛔⛔ THE FALL-BACK IS GONE: a kind that never learns the word `check_opens` must \
+             get EXACTLY what item 1072 gave it — its marks, reduced. Replacing rather than \
+             falling back turns the one timed remedy off for every document written before today, \
+             and a slow check still answers, so no run would report it: {unsaid}",
+        );
+
+        // ── ⚠⚠ AND THE REDUCTION IS THE CHECKER'S FEET, WHICHEVER CLAUSE A PATH CAME OUT OF ───
+        //
+        // ⛔⛔ Item 705 undone by the sentence after it was fixed: the checker MUTATES what it
+        // judges, so a path outside the tree is an instruction to walk out of the copy and into
+        // somebody's work. `check_opens` is a NEW road to that same failure, and both shapes are
+        // driven because only one of them looks dangerous — `is_relative` would pass the second.
+        let outside = asked(
+            &isolating,
+            pane,
+            &[],
+            &[
+                "/home/coin/.claude/projects/-home-coin-sprag/memory/debt-open.md",
+                "../somebody-elses-tree/notes.md",
+                "crates/kept.rs",
+            ],
+        );
+        assert!(
+            !outside.contains("debt-open.md") && !outside.contains("somebody-elses-tree"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 705, REACHED BY THE NEW CLAUSE: a checker handed a copy was \
+             told to open a file that is not in it. That the path was written in `check_opens` \
+             rather than in `progress_marks` changes nothing about whose tree gets written in: \
+             {outside}",
+        );
+        assert!(
+            outside.contains("crates/kept.rs"),
+            "⚠⚠⚠ AND THE REDUCTION MUST NOT BE A REFUSAL: one unusable path cannot cost the usable \
+             ones, or a kind that names its register beside its sources loses the whole arm: \
+             {outside}",
+        );
+
+        // ── ⚠ AND A CLAUSE THAT REDUCES TO NOTHING FALLS BACK, because it said nothing usable ──
+        //
+        // ⚠⚠ THE CASE NEITHER ARM ABOVE COVERS, and it is this repository's own history: a kind
+        // whose `check_opens` is all out-of-tree has told the checker nothing it may act on. The
+        // marks are then still the best list the document has, and dropping to the bare sentence
+        // would be a worse answer than the one this kind had yesterday.
+        let all_outside = asked(
+            &isolating,
+            pane,
+            &["kept/inside.rs"],
+            &["/somewhere/else/entirely.md"],
+        );
+        assert!(
+            all_outside.contains("kept/inside.rs"),
+            "⚠⚠⚠⚠ A `check_opens` THAT REDUCES TO NOTHING IS NOT A DECISION TO NAME NOTHING. \
+             Every path in it was unusable from where the checker stands, so the document has said \
+             nothing this question can carry — and the marks are still the best list it holds: \
+             {all_outside}",
+        );
+
+        isolating.lifecycle().expect("lifecycle").close(pane);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
     /// ⛔⛔⛔⛔⛔ **THE CHECKER THE PRODUCT SPAWNS REALLY STANDS IN THE COPY** — register item 705's
     /// last link, and the one nothing but a running check can say.
     ///
@@ -25700,6 +25991,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: Some(format!("/bin/sh {}", script.display())),
                 successor_check: None,
                 reask_max: None,
@@ -26580,6 +26872,7 @@ mod tests {
                     reaim_max: None,
                     stall_after_steps: None,
                     progress_marks: None,
+                    check_opens: None,
                     milestone_check: None,
                     successor_check: None,
                     reask_max: None,
@@ -26872,6 +27165,7 @@ mod tests {
                     reaim_max: None,
                     stall_after_steps: None,
                     progress_marks: None,
+                    check_opens: None,
                     milestone_check: None,
                     successor_check: None,
                     reask_max: None,
@@ -27062,6 +27356,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -27553,6 +27848,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -27748,6 +28044,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -27972,6 +28269,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -28216,6 +28514,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -28418,6 +28717,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -28603,6 +28903,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -28920,6 +29221,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -29025,6 +29327,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -29265,6 +29568,7 @@ mod tests {
                     reaim_max: None,
                     stall_after_steps: None,
                     progress_marks: None,
+                    check_opens: None,
                     milestone_check: None,
                     successor_check: None,
                     reask_max: None,
@@ -29356,6 +29660,7 @@ mod tests {
                     reaim_max: None,
                     stall_after_steps: None,
                     progress_marks: None,
+                    check_opens: None,
                     milestone_check: None,
                     successor_check: None,
                     reask_max: None,
@@ -29911,6 +30216,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -30178,6 +30484,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -30450,6 +30757,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -30746,6 +31054,7 @@ mod tests {
                     reaim_max: None,
                     stall_after_steps: None,
                     progress_marks: None,
+                    check_opens: None,
                     milestone_check: Some(DENIES.to_string()),
                     successor_check: None,
                     reask_max: None,
@@ -30959,6 +31268,7 @@ mod tests {
                     reaim_max: None,
                     stall_after_steps: None,
                     progress_marks: None,
+                    check_opens: None,
                     // ⚠⚠⚠ THROUGH THE BRIEF, WHICH IS THE CHANNEL A KIND'S CHECK ACTUALLY TRAVELS.
                     // This used to `set_variable` the slot behind the brief's back, on the reading
                     // that no caller could name one — true of the WIRE and never of a kind. What
@@ -31281,6 +31591,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: check.map(ToOwned::to_owned),
                 successor_check: None,
                 reask_max: None,
@@ -32119,6 +32430,7 @@ mod tests {
                     reaim_max: None,
                     stall_after_steps: None,
                     progress_marks: None,
+                    check_opens: None,
                     milestone_check: None,
                     successor_check: None,
                     reask_max: None,
@@ -32318,6 +32630,7 @@ mod tests {
             reaim_max: None,
             stall_after_steps: None,
             progress_marks: None,
+            check_opens: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -32645,6 +32958,7 @@ mod tests {
             reaim_max: None,
             stall_after_steps: None,
             progress_marks: None,
+            check_opens: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -32830,6 +33144,7 @@ mod tests {
             reaim_max: None,
             stall_after_steps: None,
             progress_marks: None,
+            check_opens: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -33027,6 +33342,7 @@ mod tests {
             reaim_max: None,
             stall_after_steps: None,
             progress_marks: None,
+            check_opens: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -33270,6 +33586,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: Some(DENIES.to_string()),
                 successor_check: None,
                 reask_max: None,
@@ -33486,6 +33803,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: Some(CANNOT_ANSWER.to_string()),
                 successor_check: None,
                 reask_max: None,
@@ -33773,6 +34091,7 @@ mod tests {
             reaim_max: None,
             stall_after_steps: None,
             progress_marks: None,
+            check_opens: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -34389,6 +34708,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -34521,6 +34841,7 @@ mod tests {
             reaim_max: None,
             stall_after_steps: None,
             progress_marks: None,
+            check_opens: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,
@@ -35144,6 +35465,7 @@ mod tests {
                         reaim_max: None,
                         stall_after_steps: None,
                         progress_marks: None,
+                        check_opens: None,
                         milestone_check: None,
                         successor_check: None,
                         reask_max: None,
@@ -35712,6 +36034,7 @@ mod tests {
                     reaim_max: None,
                     stall_after_steps: None,
                     progress_marks: None,
+                    check_opens: None,
                     milestone_check: None,
                     successor_check: None,
                     reask_max: None,
@@ -35897,6 +36220,7 @@ mod tests {
                 reaim_max: None,
                 stall_after_steps: None,
                 progress_marks: None,
+                check_opens: None,
                 milestone_check: None,
                 successor_check: None,
                 reask_max: None,
@@ -36106,6 +36430,7 @@ mod tests {
                     reaim_max: None,
                     stall_after_steps: None,
                     progress_marks: None,
+                    check_opens: None,
                     milestone_check: None,
                     successor_check: None,
                     reask_max: None,
@@ -36391,6 +36716,7 @@ mod tests {
                     reaim_max: None,
                     stall_after_steps: None,
                     progress_marks: None,
+                    check_opens: None,
                     milestone_check: None,
                     successor_check: None,
                     reask_max: None,
@@ -36984,6 +37310,7 @@ mod tests {
             reaim_max: None,
             stall_after_steps: None,
             progress_marks: None,
+            check_opens: None,
             milestone_check: None,
             successor_check: None,
             reask_max: None,

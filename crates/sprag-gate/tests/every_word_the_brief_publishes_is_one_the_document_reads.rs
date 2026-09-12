@@ -46,6 +46,12 @@ use sprag_gate::sources::{rust_sources, workspace_root};
 /// scan stopped seeing part of the edge.
 const CARRIED: &[&str] = &[
     "await_person_ms",
+    // ⛔⛔⛔ REGISTER ITEM 1074: which files this run's checker is told to open. It is beside
+    // `progress_marks` in the document and is NOT a second spelling of it — the item measured three
+    // axes on which the stall ceiling's list and the checker's disagree, and the last one is why
+    // this word had to exist: a mark may live outside the tree, and a checker standing in a copy
+    // may never be sent there.
+    "check_opens",
     "closing_rules",
     "context_ceiling",
     // ⛔⛔⛔ REGISTER ITEM 1066, AND THE ONE WORD HERE THAT IS NOBODY'S DECISION. Every other key

@@ -5908,6 +5908,14 @@ fn ai_loop_brief(
         // second resolved in `OuterLoop::brief`, which REFUSES a document declaring neither.
         stall_after_steps: kind.stall_after_steps(),
         progress_marks: kind.progress_marks(),
+        // ⛔⛔⛔⛔⛔ REGISTER ITEM 1074 — the two-step fall-through again, and NOT a third half of
+        // the ceiling above. It is the CHECKER's list, and the reason it is a clause of its own is
+        // that a kind which fed the checker through the marks was moving the ceiling's predicate
+        // while it did so. Kind-then-template, with no `opt_*` in front of it on
+        // `milestone_check`'s argument three fields down: a caller who could name what a judge
+        // opens could point it at files that flatter the run, on the launches least likely to be
+        // watched.
+        check_opens: kind.check_opens(),
         // ⚠⚠ ABSENT MEANS "WHAT THE DOCUMENT'S AUTHOR WROTE", not *"screen nothing"*.
         // The rules live in the loop template, so a caller who says nothing about
         // screening is not overriding it — and the driver echoes the document's own

@@ -339,6 +339,41 @@ pub fn uncommented(scxml: &str) -> String {
     kept
 }
 
+/// **THE PATHS A `<data>` AUTHORS AS A LIST** — the single-quoted segments of its `expr`, in the
+/// order the document writes them — or [`None`] where no such id is declared.
+///
+/// # ⚠⚠⚠ Why a gate needs this at all, when the product has readers of its own
+///
+/// The product reads a kind's list through a SCRIPT ENGINE: the document is compiled, the datamodel
+/// evaluated, and `OuterLoop::authored_paths_in` asks the session. That is the right reader for a
+/// run and the wrong one for a gate, because this crate declares no dependencies on purpose — a
+/// judge that had to compile the product could not run when the product failed to compile, which is
+/// exactly when a gate is worth most.
+///
+/// ⚠⚠ **COMMENTS FIRST**, on [`crate::classifier::authored_argv`]'s measured reason one module
+/// over: these documents explain themselves at length and name their own ids in prose, so a scan
+/// over the raw text reads whichever came first. ⚠ The `expr` attribute is delimited by `"` and a
+/// list inside it is written in SINGLE quotes, which is what makes the end unambiguous.
+///
+/// ⚠ An id declared with an `expr` holding no quoted text answers `Some(vec![])` — *declared and
+/// empty*, which is a document's real answer and not the same as not declaring it at all.
+#[must_use]
+pub fn authored_list(scxml: &str, id: &str) -> Option<Vec<String>> {
+    let text = uncommented(scxml);
+    let at = text.find(&format!("id=\"{id}\""))?;
+    let opening = "expr=\"";
+    let rest = &text[at..];
+    let body = &rest[rest.find(opening)? + opening.len()..];
+    let expr = &body[..body.find('"')?];
+    Some(
+        expr.split('\'')
+            .enumerate()
+            .filter(|(nth, _)| nth % 2 == 1)
+            .map(|(_, segment)| segment.to_owned())
+            .collect(),
+    )
+}
+
 /// The document's lines with every comment BLANKED rather than removed, one-indexed.
 ///
 /// # ⛔⛔⛔⛔⛔ Why this exists beside [`uncommented`], which already drops comments
