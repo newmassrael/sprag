@@ -11397,6 +11397,68 @@ mod tests {
              endings. A different word here means a repeat has become adoptable, and arm ①'s claim \
              then rests on something other than the read it is about. Walked {again_walk:?}",
         );
+
+        // ── ⛔⛔⛔⛔⛔ ARM ③: THE SAME RUN ON A TALLER PANE — register item 1070 ──────────────────
+        //
+        // ⛔⛔⛔⛔⛔ **THE ENDING USED TO BE A FUNCTION OF WHERE THE ROWS LANDED, AND THAT IS WHAT
+        // THIS ARM EXISTS TO FORBID.** Arm ② above got its answer from `RowTrail::fresh` — *did
+        // this row's TEXT change, index by index* — so a peer reprinting the same rows into the
+        // same positions read as *nothing named*. That agreed with the truth by a mechanism that is
+        // not about the truth, and item 1070 measured what moved it: **one part added to the
+        // template's standing instructions** lengthened every prompt, the rows stopped landing
+        // where the mark was taken, and this gate went red at height 16 on one arm and at 64 on
+        // another — both closing `capped`, which tells a reader that *an agent which named nothing
+        // had its successor refused by a budget*.
+        //
+        // ⚠⚠⚠ **MEASURED HERE, 2026-09-12, BOTH WAYS ROUND.** With the freshness read restored as
+        // the gate and this fixture at 64, arm ② fails at exactly that word — `left: Some("capped")`
+        // — which is the defect reproduced on demand. With the answer compared against what the
+        // label last named ([`crate::outer::Session::named`]) it is `no_successor` at 16 and at 64
+        // alike. So this arm is not a second copy of arm ②: **it is the claim that the height
+        // cannot decide the word**, and it is the only assertion in this file that says so.
+        //
+        // ⚠ A SECOND HEIGHT AND NOT A SECOND PEER, deliberately — everything else is held identical
+        // to arm ②, so a difference here can only be the geometry.
+        let (tall_workspace, tall_pane) = crate::testing::standin_agent_reflecting_at(
+            crate::testing::STANDIN_COLUMNS,
+            crate::testing::STANDIN_ROWS,
+            PROMPTS,
+            NEXT,
+            READ_NEXT,
+        );
+        let tall_access = supervised(&tall_workspace);
+        let mut tall_loops = AiLoop::new(engine(), tall_pane, &briefed(), &standin_spec())
+            .expect("a well-briefed loop over a live pane starts");
+        let (tall_end, tall_walk, tall_held) = walked(&mut tall_loops, &tall_access);
+
+        // ⚠⚠⚠⚠⚠ THE PREMISE OF THIS ARM, AND IT IS A COMPILE-TIME FACT RATHER THAN A RUNTIME ONE.
+        // Both heights are constants, so a runtime `assert!` here is a line that cannot fail where
+        // it runs — clippy says so (`assertions_on_constants`) and it is right. In a `const` block
+        // the same claim fails the BUILD, so nobody can quietly make the two equal and leave this
+        // arm as arm ② run twice.
+        const { assert!(crate::testing::STANDIN_ROWS != crate::testing::STANDIN_REPEATING_ROWS) };
+        assert!(
+            reflections(&tall_walk) >= 2,
+            "⚠⚠ THE PREMISE, as in arm ②: a second reflection has to happen before what the peer \
+             answers at it can mean anything. Entered `reflecting` {} time(s), walked {tall_walk:?}",
+            reflections(&tall_walk),
+        );
+        assert_eq!(
+            said_by(&tall_held, NEXT),
+            2,
+            "⚠⚠⚠ THE PREMISE: this peer answers every reflection on the taller pane too, so its \
+             checkpoint is on the pane twice — otherwise the run below is not the repeat this arm \
+             is about. Held {tall_held:?}",
+        );
+        assert_eq!(
+            tall_end.done_reason.as_deref(),
+            again_end.done_reason.as_deref(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1070: the SAME peer, the same brief and the same answers ended \
+             this run differently on a pane of a different height. That is the ending being decided \
+             by scroll arithmetic rather than by what the agent said — and the failure it becomes \
+             in the field is `capped` on a run whose agent named nothing, which publishes on the \
+             row that a budget refused a successor nobody proposed. Tall walked {tall_walk:?}",
+        );
     }
 
     /// ⚠⚠⚠ **THE WALK SAYS WHICH OF THE TWO ENDINGS CLOSED THE RUN** — register item 267, which is

@@ -4908,6 +4908,36 @@ struct Session {
     /// A reflection's labels do not have that problem, because their reader requires the label to
     /// OPEN the row and the prompt names them mid-sentence. See register item 270.
     judged: crate::access::RowTrail,
+    /// ⛔⛔⛔⛔⛔ **THE LAST LINE EACH LABEL PRODUCED IN THIS SESSION** — register item 1070, and the
+    /// answer to *is this a NEW proposal* that does not depend on where rows landed.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What decided it before: the scroll arithmetic
+    ///
+    /// [`proposed`](OuterLoop::proposed) asked [`RowTrail::fresh`](crate::access::RowTrail::fresh),
+    /// which answers *did this row's TEXT change* index by index. A peer that reprints the same
+    /// rows into the same positions therefore produces no fresh row — so *the agent repeated the
+    /// checkpoint it was just refused* read as *the agent named nothing*, *by accident of where the
+    /// rows fell*. Both are `no_successor` and that is the right word for both, so the accident
+    /// agreed with the answer — until a prompt changed length.
+    ///
+    /// ⚠⚠⚠ **AND ONE PART ADDED TO A TEMPLATE WAS ENOUGH**, measured 2026-09-12 (item 1070): with
+    /// `when_to_ask` in the standing instructions every prompt grew, the rows stopped landing where
+    /// the mark was taken, and `a_reflection_that_answered_nothing_does_not_adopt_the_last_one`
+    /// went red at height **16 on arm ③** and at **64 on arm ①** — both at `capped`, which that
+    /// gate itself calls *a build without the freshness read*. A run in that state tells its reader
+    /// **an agent which named nothing had its successor refused by a budget**.
+    ///
+    /// ⚠ So the repair is not a taller pane. It is asking the question of the ANSWER: a proposal is
+    /// new when its text differs from the last one this label produced, which no repaint, reflow or
+    /// prompt-length change can move.
+    ///
+    /// ⚠⚠ **PER SESSION, and [`replacing`](Self::replacing) forgets it** — a fresh agent has
+    /// proposed nothing, and a name carried over from the session it replaced would make the
+    /// replacement's first real answer read as a repeat.
+    ///
+    /// ⚠ Keyed by MARKER because two labels are read through one function (the milestone and the
+    /// reference), and a single slot would let one label's answer silence the other's.
+    named: std::collections::BTreeMap<String, String>,
     /// **WHERE THIS TURN'S OUTPUT BEGINS**, as an ADDRESS into the pane's logical lines — what the
     /// closing report is read from, and per-pane for the same reason everything else here is: a
     /// replacement pane numbers its lines from one again, so an address carried over would name
@@ -5053,6 +5083,10 @@ impl Session {
             pane: fresh,
             ready: self.ready.rearmed(),
             judged: crate::access::RowTrail::default(),
+            // ⚠⚠ AND WHAT ANY LABEL NAMED IS THE PREDECESSOR'S — register item 1070. A fresh agent
+            // has proposed nothing, so carrying these over would read its first real answer as a
+            // repeat and hand the run `no_successor` on a session that had just named something.
+            named: std::collections::BTreeMap::new(),
             // ⚠ A LINE ADDRESS IS A FACT ABOUT ONE PANE. The replacement numbers its own lines from
             // the beginning, so the predecessor's cursor would point into the middle of it.
             since: crate::report::Since::default(),
@@ -7966,6 +8000,8 @@ impl OuterLoop {
                     Self::seed_expecting(&script, &session),
                 ),
                 judged: crate::access::RowTrail::default(),
+                // ⚠ Nothing has been proposed yet either — register item 1070.
+                named: std::collections::BTreeMap::new(),
                 since: crate::report::Since::default(),
                 // Nothing has been asked, so nothing can have been answered — and the reader
                 // compares with `>`, so a peer that stated an answer before this run existed is
@@ -13714,6 +13750,38 @@ impl OuterLoop {
         // answer for this label, and the ONLY thing that can price what reading rows would cost.
         // Taking the widest is the reading most favourable to the old code: any narrower row would
         // report a bigger loss, so a build that read rows cannot be flattered by this number.
+        let said = panes
+            .pane_full_lines(self.driving.pane)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|line| opens_with(line, &label))
+            .rfind(|said| !said.is_empty() && !echoes(asked, &label, said))?;
+        // ⛔⛔⛔⛔⛔ **AND WHETHER THAT IS A NEW PROPOSAL IS ASKED OF THE ANSWER, NOT OF THE SCREEN**
+        // — register item 1070, and this replaced a `?` on the freshness read above.
+        //
+        // Both readings answer the same two cases and only one of them is a FACT ABOUT THE ANSWER:
+        //
+        // * *the agent named nothing* — the label is still in the scrollback from an earlier
+        //   reflection, and `rfind` picks it up as though this turn had just said it;
+        // * *the agent named the same thing again* — the re-ask asks for a checkpoint DIFFERENT
+        //   from the one just refused, so a repeat has named none.
+        //
+        // Freshness got both right by a mechanism that is not about either: a peer reprinting the
+        // same rows into the same positions produces no fresh row. **That is where the rows fell,
+        // and one part added to a template moves it** — see [`Session::named`], which carries the
+        // measurement. Compared against what this label last produced, both cases are decided by
+        // the text, and no repaint, reflow or prompt-length change can reach the answer.
+        //
+        // ⚠ The ordering is load-bearing: this returns before the tally below, so a repeat records
+        // no width either — it is not an answer, and item 866's number is about answers.
+        if self.driving.named.get(marker) == Some(&said) {
+            return None;
+        }
+        // ⚠⚠ THE FRESHNESS READ SURVIVES AS THE TALLY'S INPUT AND NOT AS A GATE — register item
+        // 866's ⑵ needs the widest RENDERED row carrying this label to price what reading rows
+        // would have cost, and that is the only question it was ever the right answer to. It no
+        // longer decides whether an answer arrived, so a pane that sheds the row costs a tally
+        // entry rather than a proposal.
         let arrived = self
             .driving
             .judged
@@ -13721,18 +13789,18 @@ impl OuterLoop {
             .iter()
             .filter_map(|row| opens_with(row, &label))
             .filter(|said| !said.is_empty() && !echoes(asked, &label, said))
-            .max_by_key(|said| said.chars().map(sprag_vt::char_columns).sum::<usize>())?;
-        let said = panes
-            .pane_full_lines(self.driving.pane)
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|line| opens_with(line, &label))
-            .rfind(|said| !said.is_empty() && !echoes(asked, &label, said))?;
+            .max_by_key(|said| said.chars().map(sprag_vt::char_columns).sum::<usize>());
         // ⛔⛔⛔⛔⛔ **AND WHAT THE WIDTH WOULD HAVE WITHHELD IS RECORDED HERE** — register item
         // 866's ⑵, at the one moment both surfaces are in hand. A tally taken anywhere else would
         // have to re-derive one of them, and a second reading of *how wide is this answer* is the
         // defect this whole function exists to have ended. See [`WidthWithheld`].
-        self.withheld.record(&arrived, &said);
+        if let Some(arrived) = arrived {
+            self.withheld.record(&arrived, &said);
+        }
+        // ⚠ RECORDED ONLY ONCE THE ANSWER IS A PROPOSAL, so the slot holds what this label last
+        // NAMED rather than everything that ever matched it — which is what the comparison above
+        // is asking about.
+        self.driving.named.insert(marker.to_owned(), said.clone());
         Some(said)
     }
 
@@ -26261,14 +26329,31 @@ mod tests {
                 }
             })
             .collect();
+        // ⛔⛔⛔⛔⛔ **THE ORDER MOVED AT REGISTER ITEM 1070, AND HALF OF 866's SENTENCE MOVED
+        // WITH IT.** This read `["rows", "content"]` and its message said *the FIRST asks «did an
+        // answer arrive at all», which only a fresh ROW can say*. That half is superseded and by
+        // measurement, not by preference: asking the rendering makes the answer a function of where
+        // the rows landed, so **one part added to a template's standing instructions flipped which
+        // arm of `a_reflection_that_answered_nothing_does_not_adopt_the_last_one` went red** — at
+        // height 16 one, at 64 another, both closing `capped`. *Is this a NEW proposal* is asked of
+        // the ANSWER now ([`Session::named`]), so the logical lines are read FIRST and the
+        // rendering read that follows exists only to price what rows would have cost (866 ⑵).
+        //
+        // ⚠⚠⚠ **WHAT DID NOT MOVE IS THE HALF RUN 181 MEASURED, AND THIS STILL GUARDS IT**: the
+        // value that becomes a run's milestone must come from the LOGICAL LINES and never from the
+        // rendering. A build that fed the answer off `fresh` would put `rows` first here and go
+        // red, exactly as before — this assertion is re-pinned, not relaxed.
         assert_eq!(
             fed,
-            vec!["rows", "content"],
-            "⛔⛔⛔⛔⛔ REGISTER ITEM 866: a marker match is fed by the wrong surface. The FIRST \
-             asks *did an answer arrive at all*, which only a fresh ROW can say; the SECOND asks \
-             *what was it*, which only the LOGICAL LINES can say. Measured over another \
-             repository's run 181, reading rows for the second delivered 161 cells of a 762-cell \
-             answer — every reflection, while `ReflectApplied` published success",
+            vec!["content", "rows"],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 866: a marker match is fed by the wrong surface. The ANSWER — \
+             what this run's milestone becomes — may only come from the LOGICAL LINES: measured \
+             over another repository's run 181, reading rows for it delivered 161 cells of a \
+             762-cell answer, every reflection, while `ReflectApplied` published success. The \
+             rendering is read AFTER it and only to price that loss (866 ⑵). ⚠ If this now says \
+             `rows` first, something has gone back to deciding a milestone off a surface whose \
+             width belongs to whichever client happened to attach — and register item 1070 \
+             measured that the ENDING moves with it",
         );
     }
 

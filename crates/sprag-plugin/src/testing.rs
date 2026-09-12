@@ -1650,9 +1650,20 @@ pub(crate) const STANDIN_REPORTING_ROWS: u16 = 16;
 /// ⚠⚠ SO THE HEIGHT IS THIS FIXTURE'S STAGING, NAMED HERE RATHER THAN LEFT AS A LITERAL, and the
 /// register carries what it costs: **a repeat of a refused checkpoint is adoptable when the scroll
 /// arithmetic falls the other way**, which is a fact about the DRIVER and not about this fixture.
-/// Deciding *is this a new proposal* by comparing it with the one just refused, instead of by
-/// rendering freshness, is the repair — and it is a different structure from the one this round is
-/// paying, so it is registered.
+///
+/// # ✅ THAT IS PAID — register item 1070, and this height no longer decides anything
+///
+/// *Is this a new proposal* is asked of the ANSWER now, not of the screen: the driver compares what
+/// a label says against what that label last named ([`crate::outer::Session::named`]). So the
+/// paragraph above describes what this number USED to stage, and what it stages today is only
+/// whether the previous answer is still visible — which no verdict depends on.
+///
+/// ⚠⚠⚠ **AND THE HEIGHT-INDEPENDENCE IS A PREDICATE RATHER THAN THIS SENTENCE.**
+/// `a_reflection_that_answered_nothing_does_not_adopt_the_last_one`'s arm ③ drives the identical
+/// run at [`STANDIN_ROWS`] and asserts it ends on the same word, and a `const` block there fails
+/// the BUILD if the two heights are ever made equal. Measured 2026-09-12, both ways round: with
+/// the old freshness gate restored this fixture at 64 closed `capped`, and with the comparison it
+/// closes `no_successor` at 16 and 64 alike.
 pub(crate) const STANDIN_REPEATING_ROWS: u16 = 16;
 
 /// [`standin_agent_reflecting`] on a pane of a chosen width.
