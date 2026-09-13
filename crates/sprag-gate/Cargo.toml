@@ -60,3 +60,11 @@ path = "src/bin/scratch-litter.rs"
 [[bin]]
 name = "doc-attachment"
 path = "src/bin/doc-attachment.rs"
+
+# Register item 1093: the four images a promotion moves, stood in for. ⚠ NOT a gate binary — it is a
+# double that `a_promotion_outlives_the_executor_that_starts_it` hard-links into a fixture, and it is
+# compiled rather than scripted because `/proc/<pid>/exe` names a script's INTERPRETER, which is the
+# very identity the gate exists to judge. It keeps this crate's charter regardless: no dependencies.
+[[bin]]
+name = "loop-promotion-stand-in"
+path = "src/bin/loop-promotion-stand-in.rs"

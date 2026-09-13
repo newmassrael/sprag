@@ -1,0 +1,497 @@
+#!/usr/bin/env bash
+# PROMOTE THE RUNNING LOOP DAEMON TO A CHECKOUT'S BUILD -- register item 1093.
+#
+#   bash crates/sprag-host/tools/promote-loop-daemon --verdict /abs/path/promote.rc
+#
+# ⛔⛔⛔⛔⛔ WHAT THIS FILE IS FOR, MEASURED 2026-09-13 18:54:59.
+#
+# The procedure this replaces lived in a skill document as a block of shell for an
+# agent to copy. Run 344's agent copied it and ran it in its own shell, and that
+# shell was a descendant of a pane the loop daemon owned. `kill-server` took the
+# daemon down, the daemon took its panes down, and the pane took the script with
+# it -- in the window between `kill-server` and the copy. The last line of that
+# run's output is `promote: loop daemon is 3062314`; the very next statement,
+# `echo "promote: kill-server rc=$?"`, never ran. `$L/bin` kept its 09-11
+# binaries, no daemon came back, and three runs (344, 342, 355) were left
+# cancelled with the GUI down for 42 minutes. A person had to finish it by hand.
+#
+# ⭐ THE KNOWLEDGE EXISTED AND THE REGISTER THREW IT AWAY. Item 758 was this exact
+# face. It was cancelled on 8-29 because the daemon came back in 28 seconds that
+# day -- and it came back because THAT day's agent wrote *「이 세션이 죽어도
+# 살아남도록 분리 실행한다」* and did it. The improvisation was never written down
+# anywhere, so the cancellation meant *one agent thought of it*, not *this cannot
+# happen*. The whole safety of a promotion sat in whoever was promoting.
+#
+# ⇒ SO THE REQUIREMENT IS CARRIED HERE AND NOT BY THE PROMOTER. A promoter must
+# outlive the daemon it kills. This script puts itself in a new session before it
+# touches anything, and then MEASURES that the session really changed: a detach
+# that silently did not take is refused rather than assumed. A caller that knows
+# none of this gets the safe behaviour, which is the half item 758 never had.
+#
+# ⚠⚠ THE STATUS THIS PRINTS TO ITS CALLER MEANS *LAUNCHED*, NOT *PROMOTED*. The
+# verdict is the `--verdict` file, written by an EXIT trap that carries the status
+# rather than by a final line that runs whatever happened -- the shape the
+# harness's guard C was written for, after a detached run's log ended `EXPERIMENT
+# COMPLETE` having failed all four of its conditions.
+#
+# Self-tested: `bash crates/sprag-host/tools/promote-loop-daemon --selftest`,
+# which drives the identity predicate below against the process strings measured
+# on this machine. The whole procedure is driven, with its executor killed at the
+# instant run 344's died, by
+# `crates/sprag-gate/tests/a_promotion_outlives_the_executor_that_starts_it.rs`.
+set -uo pipefail
+
+# ── WHAT A PROMOTION MOVES, AND WHAT IT CALLS A DAEMON ──────────────────────────
+#
+# ⚠ Both are spelled ONCE in this tree and this is a second READER, not a second
+# authority: the gate named above holds this list to `sprag_host::promotion::IMAGES`
+# and this name to `sprag_rpc::DAEMON_BIN_NAME`, so a fifth image or a renamed
+# daemon reds there rather than being quietly half-promoted here.
+IMAGES=(sprag sprag-term sprag-gui sprag-mcp)
+DAEMON_BIN_NAME="sprag-term"
+
+# What the kernel appends to `/proc/<pid>/exe` once the running binary's directory
+# entry is gone -- which is what a promotion DOES to the daemon it replaces, so a
+# scan that did not strip this would lose the daemon at the one moment it has to
+# find it. `runs_the_daemon` in `sprag.rs` strips the same suffix.
+UNLINKED=" (deleted)"
+
+# ── THE IDENTITY PREDICATE — pure, so its arms can be driven ────────────────────
+#
+# ⛔⛔⛔⛔⛔ WHY argv[0] IS NOT AN IDENTITY TEST, MEASURED 2026-09-13. The procedure
+# this replaces asked `case "$c" in "$L/bin/sprag-term"*--drive*)`. Every driver on
+# this machine spells argv[0] as the literal string `/proc/self/exe`, because item
+# 763 has the daemon start its drivers by the kernel's handle to its own image --
+# deliberately, so that a driver cannot be a different build from its daemon. So
+# that block matched NOTHING, and had never matched anything: run 344's output says
+# `promote: killing driver` zero times. The daemon half of the same `case` matched
+# only because the procedure had launched that daemon itself, with that spelling.
+#
+# ⇒ The kernel's answer is `/proc/<pid>/exe`, which names the image whatever argv
+# says. Measured the same day:
+#
+#   pid      comm         /proc/<pid>/exe     argv[0]
+#   1205215  sprag-term   $BIN/sprag-term     $BIN/sprag-term
+#   2969358  sprag-term   $BIN/sprag-term     /proc/self/exe
+#
+# ⚠⚠ AND THE DIRECTORY IS COMPARED, NOT JUST THE NAME. At that same moment FOUR
+# unrelated `/tmp/sprag-check-target/debug/sprag-term --daemon` processes were live
+# -- this repository's own gates spawn them. A predicate that matched on the
+# basename, which is all `runs_the_daemon` needs for the one pid already known to
+# serve our socket, would have this scan signal every one of them. This one walks
+# every pid on the machine, so it has to be the stricter test.
+#
+# role_of <exe link> <cmdline, NULs turned to spaces> <bin dir> -> daemon|driver|other
+role_of() {
+    local exe=$1 args=$2 bin=$3
+    exe=${exe%"$UNLINKED"}
+    if [ "$exe" != "$bin/$DAEMON_BIN_NAME" ]; then
+        printf 'other\n'
+        return 0
+    fi
+    case " $args " in
+        *" --daemon "*) printf 'daemon\n' ;;
+        *" --drive "*) printf 'driver\n' ;;
+        *) printf 'other\n' ;;
+    esac
+}
+
+# Whether <pid> is still a RUNNING process.
+#
+# ⚠⚠ A ZOMBIE IS NOT ONE, and `[ -e /proc/<pid> ]` cannot tell: the entry survives a killed process
+# until its parent reaps it. A promoter that read that as *the daemon is still up* would refuse a
+# promotion that had already succeeded -- measured on this gate's own fixture, 2026-09-13, where the
+# wait below sat out its whole budget on a process that had been dead for thirty seconds.
+# ⚠ The state is read after the LAST `)`, because field 2 is a name in parentheses that may contain
+# spaces and brackets of its own.
+still_running() {
+    local stat
+    stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+    stat=${stat##*)}
+    case $stat in " Z"*) return 1 ;; esac
+    return 0
+}
+
+# Every pid on this machine whose role is <want>, one per line.
+#
+# ⚠ A pid whose `exe` cannot be read is skipped rather than guessed at: it is
+# another user's, or it is already gone. `runs_the_daemon`'s neighbour `unreadable`
+# makes the same call -- a guard that cannot tell must never wave a signal through.
+pids_of_role() {
+    local want=$1 bin=$2 entry pid exe args
+    for entry in /proc/[0-9]*; do
+        [ -e "$entry" ] || continue
+        pid=${entry#/proc/}
+        exe=$(readlink "$entry/exe" 2>/dev/null) || continue
+        args=$(tr '\0' ' ' <"$entry/cmdline" 2>/dev/null) || continue
+        if [ "$(role_of "$exe" "$args" "$bin")" = "$want" ]; then
+            printf '%s\n' "$pid"
+        fi
+    done
+    return 0
+}
+
+# ── WHERE THINGS ARE — every one overridable, so the gate can drive this whole ──
+# file against stand-ins instead of the machine's real loop.
+#
+# ⚠ The checkout defaults to THE ONE THIS SCRIPT IS IN rather than to a spelled
+# path. A tool that promoted some other tree than the one it was run out of is the
+# skew `doctor` exists to name.
+here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+PROMOTE_TREE=${PROMOTE_TREE:-$(cd -- "$here/../../.." && pwd)}
+PROMOTE_ROOT=${PROMOTE_ROOT:-$HOME/.local/share/sprag-loop}
+PROMOTE_SOCK=${PROMOTE_SOCK:-/run/user/$(id -u)/sprag-loop.sock}
+PROMOTE_GUI_UNIT=${PROMOTE_GUI_UNIT-sprag-gui}
+PROMOTE_WAIT=${PROMOTE_WAIT:-60}
+# ⚠⚠ THE PHYSICAL PATH, because the kernel answers `/proc/<pid>/exe` with the
+# canonical one. Measured 2026-09-13 by the gate below, whose fixture sits under a
+# `target/` that is itself a symlink: the daemon's exe read back as
+# `~/.buildcache/sprag/…/bin/sprag-term` while `$BIN` still said `…/target/…`, and
+# the identity test matched nothing. An install reached through any symlinked
+# directory would have had the same silent miss.
+BIN="$PROMOTE_ROOT/bin"
+if [ -d "$BIN" ]; then
+    BIN=$(cd -P -- "$BIN" && pwd)
+fi
+
+# Where the verdict goes and what is being staged, at FILE scope: the EXIT trap
+# runs after every function has returned, so anything it names has to outlive them.
+VERDICT=""
+STAGING=""
+
+say() { printf 'promote: %s\n' "$*"; }
+
+# Why <path> cannot be a verdict file, or nothing when it can.
+#
+# ⚠ Both halves are the harness guard's, not decoration: ABSOLUTE, because a
+# relative path means whatever directory the detached copy happens to land in, and
+# a `.rc` SUFFIX, because that is the suffix a completion record is looked for
+# under. A tool whose record cannot be found has not reported.
+verdict_refusal() {
+    case $1 in
+        /*) ;;
+        *)
+            printf 'it must be absolute, so that the detached copy and the caller name one file\n'
+            return 0
+            ;;
+    esac
+    case $1 in
+        *.rc) ;;
+        *)
+            printf 'it must end in .rc, the suffix a completion record is looked for under\n'
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+# One arm of the selftest below. At file scope rather than nested, so that the
+# static checker reads it as the reachable function it is.
+selftest_pass=0
+selftest_fail=0
+selftest_role() { # <expected> <exe> <args> <what this case is>
+    local got
+    got=$(role_of "$2" "$3" "$BIN")
+    if [ "$got" = "$1" ]; then
+        selftest_pass=$((selftest_pass + 1))
+    else
+        selftest_fail=$((selftest_fail + 1))
+        printf 'promote-loop-daemon selftest: %s -- wanted %s, got %s\n' "$4" "$1" "$got" >&2
+    fi
+}
+
+# ── THE SELFTEST — the predicate's arms, on the strings that were measured ───────
+selftest() {
+    local ours="$BIN/$DAEMON_BIN_NAME" why
+    selftest_role daemon "$ours" "$ours --daemon " "the daemon, launched by path"
+    # ⛔ THE 2026-09-13 REGRESSION ITSELF. This is the string run 344's block was
+    # asked about and answered `other` to, three times in a row, silently.
+    selftest_role driver "$ours" "/proc/self/exe --drive 344 -t loop -w sprag " "a driver, started by handle"
+    selftest_role driver "$ours" "/proc/self/exe --drive 355 -t loop -w wz-loop " "another repository's driver"
+    # ⛔ AND THE STRAYS. Four of these were live while run 344 promoted, and a scan
+    # that read only the basename would have signalled every one of them.
+    selftest_role other "/tmp/sprag-check-target/debug/sprag-term$UNLINKED" \
+        "/tmp/sprag-check-target/debug/sprag-term --daemon " "a gate's own daemon, elsewhere"
+    selftest_role other "/tmp/sprag-check-target/debug/sprag-term" \
+        "/tmp/sprag-check-target/debug/sprag-term --daemon " "a gate's own daemon, not unlinked"
+    # ⚠ OUR daemon, after this very script has replaced its image -- the one moment
+    # the suffix has to be stripped rather than read as somebody else's process.
+    selftest_role daemon "$ours$UNLINKED" "$ours --daemon " "our daemon, image already replaced"
+    selftest_role other "$ours" "$ours runs " "this install's CLI, which is not a daemon"
+    selftest_role other "/opt/elsewhere/bin/$DAEMON_BIN_NAME" \
+        "/opt/elsewhere/bin/$DAEMON_BIN_NAME --daemon " "the same name under another root"
+
+    for why in "relative.rc" "/tmp/no-suffix" "/tmp/x.rc.log"; do
+        if verdict_refusal "$why" >/dev/null; then
+            selftest_pass=$((selftest_pass + 1))
+        else
+            selftest_fail=$((selftest_fail + 1))
+            printf 'promote-loop-daemon selftest: %s was accepted as a verdict path\n' "$why" >&2
+        fi
+    done
+    if verdict_refusal "/tmp/fine.rc" >/dev/null; then
+        selftest_fail=$((selftest_fail + 1))
+        printf 'promote-loop-daemon selftest: an absolute .rc path was refused\n' >&2
+    else
+        selftest_pass=$((selftest_pass + 1))
+    fi
+
+    printf 'promote-loop-daemon selftest: %s/%s arm(s) pass\n' \
+        "$selftest_pass" "$((selftest_pass + selftest_fail))"
+    [ "$selftest_fail" -eq 0 ]
+}
+
+# ── PHASE 0: in the caller's shell, which is the shell that is about to die ──────
+phase_caller() {
+    local verdict=$1 why dir sid log
+    shift
+    if why=$(verdict_refusal "$verdict"); then
+        printf 'promote-loop-daemon: --verdict %s: %s' "$verdict" "$why" >&2
+        return 2
+    fi
+    dir=${verdict%/*}
+    if [ ! -d "$dir" ]; then
+        printf 'promote-loop-daemon: --verdict %s: %s is not a directory\n' "$verdict" "$dir" >&2
+        return 2
+    fi
+    if ! command -v setsid >/dev/null 2>&1; then
+        printf 'promote-loop-daemon: this machine has no setsid, so a promotion here cannot be made to outlive its caller -- and item 1093 is what running one anyway costs\n' >&2
+        return 2
+    fi
+    log="${verdict%.rc}.log"
+    # ⚠ A verdict left over from a previous promotion is removed BEFORE the new one
+    # starts, so that waiting for the file cannot be answered by the last run's.
+    rm -f -- "$verdict"
+    sid=$(ps -o sid= -p $$ 2>/dev/null)
+    sid=${sid// /}
+    say "the verdict will be $verdict, and the running account $log"
+    say "this status says LAUNCHED, not promoted -- wait for $verdict and read it"
+    PROMOTE_DETACHED=1 PROMOTE_CALLER_SID="$sid" \
+        setsid bash "${BASH_SOURCE[0]}" "$@" </dev/null >>"$log" 2>&1 &
+    return 0
+}
+
+# ── PHASE 1: detached, and it proves that before it touches anything ─────────────
+phase_promote() {
+    local ended=$1
+    local head image built drivers daemon waited pid
+    STAGING="$BIN/.promoting.$$"
+
+    # ── the detach is MEASURED, never assumed ───────────────────────────────────
+    local sid
+    sid=$(ps -o sid= -p $$ 2>/dev/null)
+    sid=${sid// /}
+    if [ -z "$sid" ]; then
+        say "STOP: this machine will not say which session this process is in, so whether this promotion can outlive its caller is unknown -- and unknown is not a pass"
+        return 1
+    fi
+    if [ "$sid" = "${PROMOTE_CALLER_SID:-}" ]; then
+        say "STOP: still in session $sid, the caller's own -- the detach did not take, and this is the state that cost item 1093"
+        return 1
+    fi
+    say "detached: session $sid, the caller was in ${PROMOTE_CALLER_SID:-unknown}"
+
+    # ── one promotion at a time ─────────────────────────────────────────────────
+    if ! exec 9>"$BIN/.promote.lock"; then
+        say "STOP: cannot open the promotion lock under $BIN"
+        return 1
+    fi
+    if ! flock -n 9; then
+        say "STOP: another promotion holds the lock under $BIN"
+        return 1
+    fi
+
+    # ── what is about to be promoted, and that it is what this tree is at ───────
+    head=$(git -C "$PROMOTE_TREE" rev-parse --short HEAD 2>/dev/null)
+    if [ -z "$head" ]; then
+        say "STOP: $PROMOTE_TREE will not say what HEAD is"
+        return 1
+    fi
+    say "$PROMOTE_TREE is at $head"
+    for image in "${IMAGES[@]}"; do
+        if [ ! -x "$PROMOTE_TREE/target/debug/$image" ]; then
+            say "STOP: $PROMOTE_TREE/target/debug/$image is not there to promote -- all ${#IMAGES[@]} move together, or a daemon serves one image and a CLI another"
+            return 1
+        fi
+        built=$("$PROMOTE_TREE/target/debug/$image" --version 2>/dev/null)
+        built=${built#*\(}
+        built=${built%\)*}
+        case $built in
+            "$head"*) say "$image says $built" ;;
+            *)
+                say "STOP: $image says ${built:-nothing} and this tree is at $head -- an image is judged by what is IN it, never by an mtime"
+                return 1
+                ;;
+        esac
+    done
+
+    # ── STAGE BEFORE KILLING, so the daemon is down for renames and not for a copy ─
+    #
+    # ⛔ Every byte is copied while the old daemon is still serving, onto the SAME
+    # filesystem as `$BIN`, so that what happens after the kill is four renames. The
+    # window in which this machine has no daemon AND old binaries is the one item
+    # 1093 was left standing in; this makes it as short as a rename instead of as
+    # long as four debug binaries. A rename also cannot fail with `ETXTBSY` the way
+    # a copy over a running image can.
+    rm -rf -- "$STAGING"
+    if ! mkdir -p -- "$STAGING"; then
+        say "STOP: cannot stage under $BIN"
+        return 1
+    fi
+    for image in "${IMAGES[@]}"; do
+        if ! cp -f -- "$PROMOTE_TREE/target/debug/$image" "$STAGING/$image"; then
+            say "STOP: staging $image failed, and nothing has been taken down yet"
+            return 1
+        fi
+    done
+    say "staged ${#IMAGES[@]} image(s) in $STAGING, with the daemon still up"
+
+    # ── who is running, by the kernel's answer ──────────────────────────────────
+    mapfile -t drivers < <(pids_of_role driver "$BIN")
+    daemon=$(pids_of_role daemon "$BIN" | head -1)
+    say "found ${#drivers[@]} driver(s) and daemon ${daemon:-none} running $BIN/$DAEMON_BIN_NAME"
+
+    # ⚠ ENDING THE DRIVERS IS THE `.scxml` BRANCH, AND IS ASKED FOR RATHER THAN
+    # GUESSED. When the statechart fingerprint has moved no run comes back, so a
+    # driver left alive is an orphan; when it has not, killing one ENDS a run that
+    # would have resumed.
+    # ⚠⚠ Either way the count above and the one at the end are the first real
+    # measurement of what a promotion leaves behind. Item 740 has been waiting for
+    # it and could not have it while the scan matched nothing.
+    if [ "$ended" = yes ]; then
+        for pid in "${drivers[@]}"; do
+            say "ending driver $pid"
+            kill -9 "$pid" 2>/dev/null || say "driver $pid was already gone"
+        done
+    fi
+
+    # ── down ────────────────────────────────────────────────────────────────────
+    say "kill-server via $BIN/sprag"
+    SPRAG_HOST_RPC_SOCK="$PROMOTE_SOCK" "$BIN/sprag" kill-server
+    say "kill-server rc=$?"
+    waited=0
+    while [ -n "$daemon" ] && still_running "$daemon" && [ "$waited" -lt "$PROMOTE_WAIT" ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+    if [ -n "$daemon" ] && still_running "$daemon"; then
+        say "STOP: daemon $daemon was still there ${PROMOTE_WAIT}s after kill-server, and copying under a live daemon is what this wait exists to avoid"
+        return 1
+    fi
+    say "the daemon is gone after ${waited}s"
+
+    # ⛔⛔ AND THE SOCKET IS ASKED, NOT ONLY THE PID -- rule 6, that what was not classified is a
+    # RED and never a pass. A scan that found no daemon leaves `$daemon` empty and the wait above
+    # skips entirely, so *nothing matched* would otherwise read as *nothing was running* and the
+    # renames would go in under a live daemon. `doctor` is the product's own word for whether
+    # anything is still serving, and it is asked whatever the scan said.
+    waited=0
+    while SPRAG_HOST_RPC_SOCK="$PROMOTE_SOCK" "$BIN/sprag" doctor >/dev/null 2>&1 &&
+        [ "$waited" -lt "$PROMOTE_WAIT" ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+    if SPRAG_HOST_RPC_SOCK="$PROMOTE_SOCK" "$BIN/sprag" doctor >/dev/null 2>&1; then
+        say "STOP: something is still serving $PROMOTE_SOCK ${PROMOTE_WAIT}s after kill-server, so the images are NOT going in under it"
+        return 1
+    fi
+    say "nothing is serving $PROMOTE_SOCK any more"
+
+    # ── the promotion is these renames ──────────────────────────────────────────
+    for image in "${IMAGES[@]}"; do
+        if ! mv -f -- "$STAGING/$image" "$BIN/$image"; then
+            say "STOP: $image could not be moved into $BIN -- this machine now has a partly promoted set and no daemon, and that is a person's to sort out"
+            return 1
+        fi
+    done
+    say "promoted ${#IMAGES[@]} image(s) into $BIN"
+
+    # ── up ──────────────────────────────────────────────────────────────────────
+    #
+    # ⚠ The harness's own variables are dropped rather than passed on: a daemon that
+    # inherited them would hand every agent it drives the session that promoted it.
+    env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT \
+        -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MAX_RETRIES -u CLAUDE_CODE_MESSAGING_SOCKET \
+        -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_SESSION_ID -u CLAUDE_EFFORT -u CLAUDE_PID \
+        -u PROMOTE_DETACHED -u PROMOTE_CALLER_SID \
+        SPRAG_HOST_RPC_SOCK="$PROMOTE_SOCK" \
+        XDG_CONFIG_HOME="$PROMOTE_ROOT/config" XDG_DATA_HOME="$PROMOTE_ROOT/data" \
+        XDG_STATE_HOME="$PROMOTE_ROOT/state" \
+        setsid "$BIN/$DAEMON_BIN_NAME" --daemon </dev/null >>"$PROMOTE_ROOT/daemon.log" 2>&1 &
+    waited=0
+    while [ "$waited" -lt "$PROMOTE_WAIT" ]; do
+        if SPRAG_HOST_RPC_SOCK="$PROMOTE_SOCK" "$BIN/sprag" doctor >/dev/null 2>&1; then
+            break
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    if ! SPRAG_HOST_RPC_SOCK="$PROMOTE_SOCK" "$BIN/sprag" doctor >/dev/null 2>&1; then
+        say "STOP: nothing was serving $PROMOTE_SOCK ${PROMOTE_WAIT}s after the relaunch; $PROMOTE_ROOT/daemon.log is where it said why"
+        return 1
+    fi
+    say "the daemon is serving again after ${waited}s"
+
+    # ⚠ The GUI dies with the daemon. It is a unit rather than a child of this, so
+    # it is named and not discovered, and an install without one says so by being
+    # given an empty name.
+    if [ -n "$PROMOTE_GUI_UNIT" ]; then
+        systemctl --user restart "$PROMOTE_GUI_UNIT"
+        say "systemctl --user restart $PROMOTE_GUI_UNIT rc=$?"
+    fi
+
+    # ── what it is now, by its own word ─────────────────────────────────────────
+    SPRAG_HOST_RPC_SOCK="$PROMOTE_SOCK" "$BIN/sprag" doctor 2>&1 | head -1
+    mapfile -t drivers < <(pids_of_role driver "$BIN")
+    say "${#drivers[@]} driver(s) running $BIN/$DAEMON_BIN_NAME afterwards"
+    say "done"
+    return 0
+}
+
+# What the EXIT trap writes. Installed before any work, so that the only window in
+# which this process can die without leaving a record is the one before `bash`
+# has read the file -- which nothing here could cover anyway.
+on_exit() {
+    local rc=$?
+    [ -z "$STAGING" ] || rm -rf -- "$STAGING"
+    [ -z "$VERDICT" ] || printf 'rc=%s\n' "$rc" >"$VERDICT"
+    exit "$rc"
+}
+
+main() {
+    local ended=no argv=("$@") verdict=""
+    while [ "$#" -gt 0 ]; do
+        case $1 in
+            --selftest)
+                selftest
+                return $?
+                ;;
+            --verdict)
+                shift
+                verdict=${1-}
+                ;;
+            --end-drivers) ended=yes ;;
+            *)
+                printf 'promote-loop-daemon: unknown argument %s\n' "$1" >&2
+                return 2
+                ;;
+        esac
+        shift
+    done
+    if [ -z "$verdict" ]; then
+        printf 'promote-loop-daemon: --verdict /abs/path/promote.rc is required -- a promotion that outlives its caller has nowhere else to report\n' >&2
+        return 2
+    fi
+    if [ -n "${PROMOTE_DETACHED:-}" ]; then
+        VERDICT=$verdict
+        trap on_exit EXIT
+        phase_promote "$ended"
+        return $?
+    fi
+    # ⚠ The caller writes no verdict: the file belongs to the detached copy, and a
+    # second writer is how a waiter comes to read *launched* as *promoted*. `VERDICT`
+    # is left empty here for exactly that reason.
+    phase_caller "$verdict" "${argv[@]}"
+}
+
+main "$@"

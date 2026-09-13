@@ -48,38 +48,28 @@ fn repo_root() -> PathBuf {
     sprag_gate::sources::workspace_root()
 }
 
-/// The lines that are CODE: comments carry this repository's reasoning, and that reasoning names
-/// `--selftest` while explaining it. `.githooks/pre-push` mentions the flag in a comment and has no
-/// arm for it, so a whole-file grep would send this gate to run a hook with an argument it does not
-/// understand.
+/// Every script IN THE TREE whose CODE declares a `--selftest`, as `(name, path)`.
 ///
-/// ⚠ `#` and not a parser: a `#` inside a quoted string is cut too. That is this scan's stated
-/// limit, the same one `hooks_cannot_pass_in_silence` writes down — and it errs toward seeing LESS
-/// code, which for the companion test below is the direction that costs a red rather than a pass.
-fn code_of(text: &str) -> String {
-    text.lines()
-        .map(|line| match line.find('#') {
-            Some(at) => &line[..at],
-            None => line,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Every `.githooks/` script whose CODE declares a `--selftest`, as `(name, path)`.
+/// ⛔⛔⛔⛔⛔ **THE TREE AND NOT `.githooks/` — register item 1093, which is what a narrower
+/// population costs.** This read `.githooks/` alone until 2026-09-13, so *where the runner looks*
+/// and *where a selftest may be declared* were two different answers, and
+/// [`no_selftest_is_declared_where_the_runner_never_looks`] existed to refuse the gap rather than
+/// close it. Item 1093 put a promotion procedure under `crates/sprag-host/tools/`, declared a
+/// selftest on it, and that gate reddened with its two remedies: move the script into `.githooks/`,
+/// or widen this. A promotion tool is not a hook, so the directory would have been a lie told to
+/// satisfy a walk — and the walk was the thing that was wrong.
+///
+/// ⇒ ONE authority for *which scripts declare a selftest*, with two readers: this, which RUNS them,
+/// and [`shell_selftests_in_tree`], which the gate uses to hold the two populations equal. They
+/// were already the same question asked twice, and only one of them had the right answer.
+///
+/// ⚠ The walk and the comment rule both come through [`shell_selftests_in_tree`]; see its doc for
+/// why this file no longer keeps a second spelling of either.
 fn declared_selftests() -> Vec<(String, PathBuf)> {
-    let hooks = repo_root().join(".githooks");
-    let entries = std::fs::read_dir(&hooks)
-        .unwrap_or_else(|why| panic!("{} must be readable: {why}", hooks.display()));
-    let mut found: Vec<(String, PathBuf)> = entries
-        .map(|entry| entry.expect("a directory entry").path())
-        .filter(|path| path.is_file())
-        .filter(|path| {
-            std::fs::read_to_string(path)
-                .map(|text| code_of(&text).contains("--selftest"))
-                .unwrap_or(false)
-        })
-        .map(|path| {
+    let mut found: Vec<(String, PathBuf)> = shell_selftests_in_tree()
+        .into_iter()
+        .map(|file| {
+            let path = repo_root().join(&file);
             let name = path
                 .file_name()
                 .expect("a file has a name")
@@ -675,7 +665,7 @@ fn a_run_that_named_no_arms_is_not_a_pass() {
 /// ⚠⚠⚠ **THE POPULATION IS NOT EMPTY, AND COMMENTS ARE NOT IN IT.**
 ///
 /// The gate above passes by finding nothing wrong. So would a walk that reached no files, or a
-/// `code_of` that stripped every line away — and each of those has happened to a gate in this
+/// comment rule that stripped every line away — and each of those has happened to a gate in this
 /// repository. It would ALSO pass by finding `.githooks/pre-push`, which names the flag in a
 /// comment and has no arm for it: running that would be this suite executing a push hook.
 #[test]
@@ -703,11 +693,21 @@ fn the_walk_finds_the_declared_ones_and_not_the_ones_that_only_mention_it() {
 /// Every shell script IN THE TREE whose code declares a `--selftest`, as repo-relative paths — the
 /// whole population, not the part [`declared_selftests`] runs.
 ///
-/// ⚠⚠ **The WALK is [`sprag_gate::shell::shell_sources`] and the COMMENT RULE is this file's** —
-/// register item 1006, which needed the same walk for a different question and found the two rules
-/// pull in opposite directions. `code_cut_at_hash` is the one that belongs here, because the prose
-/// explaining `--selftest` says the word too and a scan that saw it would send this suite to run a
-/// hook with an argument it does not understand.
+/// ⚠⚠ **The WALK is [`sprag_gate::shell::shell_sources`] and the COMMENT RULE is its
+/// `code_cut_at_hash`** — register item 1006, which needed the same walk for a different question
+/// and found the two rules pull in opposite directions. That one belongs here because the prose
+/// explaining `--selftest` says the word too, and a scan that saw it would send this suite to run a
+/// hook with an argument it does not understand — `.githooks/pre-push` is exactly that file, and
+/// `the_walk_finds_the_declared_ones_and_not_the_ones_that_only_mention_it` holds it out.
+///
+/// ⚠ THIS FILE USED TO CARRY A SECOND COPY of that rule, a private `code_of`, because
+/// [`declared_selftests`] read raw files off `.githooks/` rather than coming through the walk.
+/// Item 1093 widened that population, the copy fell dead, and one rule is what is left — which is
+/// the shape it should have had: a comment rule spelled twice is two answers waiting to differ.
+///
+/// ⚠ `#` and not a parser: a `#` inside a quoted string is cut too. That is this scan's stated
+/// limit, the same one `hooks_cannot_pass_in_silence` writes down — and it errs toward seeing LESS
+/// code, which for the gate below is the direction that costs a red rather than a pass.
 fn shell_selftests_in_tree() -> Vec<String> {
     let mut found: Vec<String> = sprag_gate::shell::shell_sources()
         .into_iter()
@@ -718,17 +718,26 @@ fn shell_selftests_in_tree() -> Vec<String> {
     found
 }
 
-/// ⛔⛔⛔⛔⛔ **RULE 6 — THE RUNNER LOOKS IN `.githooks/`, SO A SELFTEST ANYWHERE ELSE IS ONE
-/// NOTHING RUNS.** The gate above fixes *nobody executes these two*; without this one it leaves the
-/// escape hatch open in the same breath, because a script that grows a `--selftest` outside that
-/// directory is not refused — it is simply never looked at, which is item 799 again in a new place.
+/// ⛔⛔⛔⛔⛔ **RULE 6 — A SELFTEST THE RUNNER DOES NOT RUN IS ONE NOTHING RUNS.** The gate above
+/// fixes *nobody executes these*; without this one it leaves the escape hatch open in the same
+/// breath, because a script that grows a `--selftest` the runner's population misses is not refused
+/// — it is simply never looked at, which is item 799 again in a new place.
 ///
 /// ⇒ The boundary is a PREDICATE, not a sentence in a doc comment. Either a declared selftest is
-/// somewhere this suite runs it, or this is red.
+/// one this suite runs, or this is red.
 ///
-/// ⚠⚠ The remedy when it reds is a choice and the message says so: move the script into
-/// `.githooks/`, or widen [`declared_selftests`] to run it where it lives. What is not available is
-/// leaving it declared and undriven.
+/// # ⚠⚠ What it asked until 2026-09-13, and why that was the wrong question
+///
+/// It asked whether the script sits under `.githooks/` — a PROXY for *is it driven*, true only for
+/// as long as the runner looked nowhere else. Item 1093 added a promotion procedure under
+/// `crates/sprag-host/tools/` and this reddened, correctly, offering two remedies. The one that was
+/// taken is the one that removes the proxy: [`declared_selftests`] now walks the tree, so *driven*
+/// and *declared* are the same population and this compares them directly.
+///
+/// ⚠ **AND IT IS STILL A LIVE CONTROL, not a tautology.** The two sides are computed by different
+/// functions: [`shell_selftests_in_tree`] is the walk, [`declared_selftests`] is what the three
+/// runners above iterate. A filter added to the second — which is exactly how the population got
+/// narrow the first time — parts them, and this is what says so.
 #[test]
 fn no_selftest_is_declared_where_the_runner_never_looks() {
     let everywhere = shell_selftests_in_tree();
@@ -740,15 +749,25 @@ fn no_selftest_is_declared_where_the_runner_never_looks() {
         "the tree-wide walk did not reach the two scripts measured as declaring a selftest on \
          2026-09-01, so its emptiness proves nothing about strays. Found: {everywhere:?}",
     );
+    let root = repo_root();
+    let driven: Vec<String> = declared_selftests()
+        .into_iter()
+        .map(|(_, path)| {
+            path.strip_prefix(&root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
     let stray: Vec<&String> = everywhere
         .iter()
-        .filter(|at| !at.starts_with(".githooks/"))
+        .filter(|at| !driven.contains(at))
         .collect();
     assert!(
         stray.is_empty(),
-        "⛔ ITEM 799: a shell script declares a `--selftest` where this suite's runner never \
-         looks, so nothing executes it — the same green the gate beside this one was written to \
-         end. Move it under `.githooks/`, or widen `declared_selftests` to reach it: {stray:?}",
+        "⛔ ITEM 799: a shell script declares a `--selftest` that this suite's runner does not \
+         run, so nothing executes it — the same green the gate beside this one was written to \
+         end. Either `declared_selftests` reaches it, or it must not declare one: {stray:?}",
     );
 }
 
