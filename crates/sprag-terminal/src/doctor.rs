@@ -1848,8 +1848,6 @@ mod tests {
         }
     }
 
-    /// The subtree, three levels down, with a sibling at each level — the shape a delegated
-    /// scope really has (`/user.slice/user-1000.slice/user@1000.service/app.slice/sprag.scope`).
     /// A pane the daemon placed successfully, for the fixtures that are not about admission.
     fn admitted(id: u64, pid: u32) -> PaneSite {
         PaneSite {
@@ -1863,6 +1861,8 @@ mod tests {
         }
     }
 
+    /// The subtree, three levels down, with a sibling at each level — the shape a delegated
+    /// scope really has (`/user.slice/user-1000.slice/user@1000.service/app.slice/sprag.scope`).
     fn machine_with_a_subtree(tag: &str) -> (FakeMachine, Subject) {
         let machine = FakeMachine::new(tag);
         machine.cgroup("", "100", 0, "");
