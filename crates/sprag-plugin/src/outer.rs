@@ -1447,36 +1447,6 @@ const REASK_MAX: &str = "reask_max";
 // reader — that is the shape, and a constant arriving without one is `CONTEXT_CEILING`'s receipt
 // two notes down: a spelling whose only writer was a test.
 
-/// **WHAT THIS PARTICULAR LOOP IS FOR** — the template's parts, supplied by whoever starts the run.
-///
-/// # ⚠⚠⚠ Why this type exists, measured
-///
-/// `ai_loop.scxml` ships `(edit me)` placeholders and says *"a GUI fills these in"*. No GUI did,
-/// and neither did anything else: the only prompt any caller could make the loop send was
-///
-/// ```text
-/// North star: (edit me) the outcome this loop exists to reach
-/// Milestone: (edit me) the next checkpoint on the way there
-/// Reference: (edit me) paths, URLs or repos to consult
-/// ```
-///
-/// — three of the five clauses a live agent reads. It could not be retro-fitted from out here
-/// either: the prompts were COMPOSED from these parts at `<datamodel>` init, so writing a part
-/// after `initialize()` left the composed prompt stale, and the session id those writes would need
-/// is not on this surface at all.
-///
-/// So the parts travel as the machine's own `brief` event and the document composes from them in
-/// `priming` — see [`OuterLoop::brief`].
-///
-/// # ⚠ What it deliberately does NOT carry
-///
-/// `model` is authored above the same line and is not here: it belongs to the session-replace
-/// lifecycle this driver does not serve yet, and a door built for a consumer that does not exist is
-/// the extension point this workspace already recorded as an anti-pattern. Registered as owed, not
-/// forgotten.
-///
-/// ⚠⚠ `screen_rules` USED TO BE IN THAT SENTENCE and is now a field, because the state it belongs
-/// to is built. `screen_permissions` is not here because it no longer exists — see the document.
 /// **A REPOSITORY'S ANSWER TO ITS PEER HAVING A BAD MINUTE** — what the failure looks like on the
 /// screen, how long to leave it alone, and what to say when the wait is over.
 ///
@@ -1519,6 +1489,36 @@ pub struct ServiceOutage {
     pub text: String,
 }
 
+/// **WHAT THIS PARTICULAR LOOP IS FOR** — the template's parts, supplied by whoever starts the run.
+///
+/// # ⚠⚠⚠ Why this type exists, measured
+///
+/// `ai_loop.scxml` ships `(edit me)` placeholders and says *"a GUI fills these in"*. No GUI did,
+/// and neither did anything else: the only prompt any caller could make the loop send was
+///
+/// ```text
+/// North star: (edit me) the outcome this loop exists to reach
+/// Milestone: (edit me) the next checkpoint on the way there
+/// Reference: (edit me) paths, URLs or repos to consult
+/// ```
+///
+/// — three of the five clauses a live agent reads. It could not be retro-fitted from out here
+/// either: the prompts were COMPOSED from these parts at `<datamodel>` init, so writing a part
+/// after `initialize()` left the composed prompt stale, and the session id those writes would need
+/// is not on this surface at all.
+///
+/// So the parts travel as the machine's own `brief` event and the document composes from them in
+/// `priming` — see [`OuterLoop::brief`].
+///
+/// # ⚠ What it deliberately does NOT carry
+///
+/// `model` is authored above the same line and is not here: it belongs to the session-replace
+/// lifecycle this driver does not serve yet, and a door built for a consumer that does not exist is
+/// the extension point this workspace already recorded as an anti-pattern. Registered as owed, not
+/// forgotten.
+///
+/// ⚠⚠ `screen_rules` USED TO BE IN THAT SENTENCE and is now a field, because the state it belongs
+/// to is built. `screen_permissions` is not here because it no longer exists — see the document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Brief {
     /// **WHAT THIS REPOSITORY ADDS TO THE CLOSING QUESTION**, or [`None`] to leave the template's
@@ -9731,19 +9731,6 @@ impl OuterLoop {
         &self.mode
     }
 
-    /// **TAKE THE APPROVAL THIS RUN JUST GAVE**, leaving every other notice where it is.
-    ///
-    /// # ⚠⚠ Why only this arm, and why taking rather than reading
-    ///
-    /// [`Noticed::Answered`] is the one notice that is not terminal: it is a decision taken on
-    /// somebody's behalf DURING a run, and a consumer publishes it. A reporter that merely LOOKED
-    /// would publish the same approval on every pump until the next prompt cleared it, and a tally
-    /// built on that would count one decision as many.
-    ///
-    /// The other three arms say why a run is ENDING and are read through
-    /// [`noticed`](Self::noticed) at that ending — so a `take` that emptied the field would
-    /// destroy the question a `blocked` outcome is supposed to publish. **This one leaves them
-    /// alone**, which is what makes the two uses safe to sit on one field.
     /// **TELL THIS RUN TO STAND DOWN** — finish the milestone it is on, then stop.
     ///
     /// # ⚠⚠⚠ The sentence that could not be said
@@ -10305,6 +10292,19 @@ impl OuterLoop {
         self.walk(AiLoopEvent::PeerRestarted);
     }
 
+    /// **TAKE THE APPROVAL THIS RUN JUST GAVE**, leaving every other notice where it is.
+    ///
+    /// # ⚠⚠ Why only this arm, and why taking rather than reading
+    ///
+    /// [`Noticed::Answered`] is the one notice that is not terminal: it is a decision taken on
+    /// somebody's behalf DURING a run, and a consumer publishes it. A reporter that merely LOOKED
+    /// would publish the same approval on every pump until the next prompt cleared it, and a tally
+    /// built on that would count one decision as many.
+    ///
+    /// The other three arms say why a run is ENDING and are read through
+    /// [`noticed`](Self::noticed) at that ending — so a `take` that emptied the field would
+    /// destroy the question a `blocked` outcome is supposed to publish. **This one leaves them
+    /// alone**, which is what makes the two uses safe to sit on one field.
     pub fn took_answer(&mut self) -> Option<crate::consent::Answered> {
         match self.noticed {
             Some(Noticed::Answered(_)) => match self.noticed.take() {
@@ -10331,27 +10331,6 @@ impl OuterLoop {
         }
     }
 
-    /// **THE AUTHOR'S STANDING INSTRUCTIONS, AS THE DATAMODEL HOLDS THEM NOW** — or [`None`] for a
-    /// loop that screens nothing.
-    ///
-    /// # ⚠⚠ Read live, for [`authored`](Self::authored)'s reason
-    ///
-    /// A snapshot taken in [`new`](Self::new) cannot see a [`brief`](Self::brief), so a caller who
-    /// supplied their own rules would have them assigned into the datamodel and then screened
-    /// against the document's. That is the exact staleness the composed prompts were carrying
-    /// before R380, met one field over.
-    ///
-    /// # ⚠⚠⚠ Why the LIST is read through the script session at all
-    ///
-    /// PR-86's third ask — SCE emits no read accessor for a lowered scalar `<data>` — is why every
-    /// string in this driver goes through the interpreter. Measured for this one: a COMPOSITE
-    /// `<data>` is not lowered into a Rust field at all, so the interpreter is not a workaround
-    /// here but the only representation there is, and the missing accessor bounds what the POLICY
-    /// can answer rather than what a driver can see.
-    ///
-    /// # Errors
-    ///
-    /// [`NotScreenable`], naming the rule or the shape.
     /// **WHAT THIS DOCUMENT SAYS ITS LOOP MAY ANSWER** — `may_answer`, read off the datamodel.
     ///
     /// [`screening`](Self::screening)'s twin, clause for rule, and it exists for the same reason:
@@ -10431,6 +10410,27 @@ impl OuterLoop {
         Ok(crate::consent::Consents::of(clauses))
     }
 
+    /// **THE AUTHOR'S STANDING INSTRUCTIONS, AS THE DATAMODEL HOLDS THEM NOW** — or [`None`] for a
+    /// loop that screens nothing.
+    ///
+    /// # ⚠⚠ Read live, for [`authored`](Self::authored)'s reason
+    ///
+    /// A snapshot taken in [`new`](Self::new) cannot see a [`brief`](Self::brief), so a caller who
+    /// supplied their own rules would have them assigned into the datamodel and then screened
+    /// against the document's. That is the exact staleness the composed prompts were carrying
+    /// before R380, met one field over.
+    ///
+    /// # ⚠⚠⚠ Why the LIST is read through the script session at all
+    ///
+    /// PR-86's third ask — SCE emits no read accessor for a lowered scalar `<data>` — is why every
+    /// string in this driver goes through the interpreter. Measured for this one: a COMPOSITE
+    /// `<data>` is not lowered into a Rust field at all, so the interpreter is not a workaround
+    /// here but the only representation there is, and the missing accessor bounds what the POLICY
+    /// can answer rather than what a driver can see.
+    ///
+    /// # Errors
+    ///
+    /// [`NotScreenable`], naming the rule or the shape.
     pub fn screening(&self) -> Result<Option<ScreenRules>, NotScreenable> {
         Self::rules_in(&self.script, &self.session)
     }
@@ -12110,6 +12110,17 @@ impl OuterLoop {
         })
     }
 
+    /// **WHAT THIS RUN IS DOING AS THE PROMPT IN FLIGHT GOES OUT** — [`FoldsByReason`]'s key, and
+    /// [`reflecting_because`](Self::reflecting_because) with its absence given a name.
+    ///
+    /// ⚠ A total function, which is the point: every delivery has exactly one occasion, so the
+    /// split's rows sum to the run's totals and a missing increment cannot hide as *outside the
+    /// population*. See [`Occasion::Ordinary`].
+    fn occasion(&self) -> Occasion {
+        self.reflecting_because()
+            .map_or(Occasion::Ordinary, ReflectReason::occasion)
+    }
+
     /// **WHY THE QUESTION NOW IN FLIGHT IS A REFLECTION** — the word `reflect_reason` holds, read
     /// back through the closed vocabulary that renders it, and [`None`] **for a prompt that is not
     /// asking the agent for a direction at all**.
@@ -12162,17 +12173,6 @@ impl OuterLoop {
     /// document gate — for a word this driver has no arm for. Not a failure in any of the cases:
     /// the cost is a journal line that says less, where `Noticed::Undrivable` would end a run that
     /// is otherwise going perfectly well over a fact nobody has yet acted on.
-    /// **WHAT THIS RUN IS DOING AS THE PROMPT IN FLIGHT GOES OUT** — [`FoldsByReason`]'s key, and
-    /// [`reflecting_because`](Self::reflecting_because) with its absence given a name.
-    ///
-    /// ⚠ A total function, which is the point: every delivery has exactly one occasion, so the
-    /// split's rows sum to the run's totals and a missing increment cannot hide as *outside the
-    /// population*. See [`Occasion::Ordinary`].
-    fn occasion(&self) -> Occasion {
-        self.reflecting_because()
-            .map_or(Occasion::Ordinary, ReflectReason::occasion)
-    }
-
     fn reflecting_because(&self) -> Option<ReflectReason> {
         // ⛔⛔⛔⛔⛔ WHAT THIS PROMPT IS, BEFORE THE WORD — register item 856(1). Read the other way
         // round it is the same expression with the defect intact, because the word is always
@@ -13283,28 +13283,6 @@ impl OuterLoop {
         Ok(raised)
     }
 
-    /// **CARRY OUT A STANDING INSTRUCTION ON THE DIALOG THAT IS UP** — `screening`'s whole effect.
-    ///
-    /// # ⚠⚠⚠ The act, and why it is in this order
-    ///
-    /// 1. **What is being screened comes from the NOTICE**, never from a fresh read of the pane.
-    ///    The barrier already parsed this question and decided about it; reading again would be a
-    ///    second authority on one fact, which R367 moved this crate away from.
-    /// 2. **A rule has to claim it.** None does — or the loop holds none — and the run stops with
-    ///    [`Refusal::NoRule`](crate::consent::Refusal::NoRule) naming the dialog, so an author
-    ///    learns what to quote.
-    /// 3. **The call is refused** with the product's own key, and the dialog must be PROVABLY GONE.
-    /// 4. **Only then is anything typed**, through [`say`](Self::say) — the same delivery, turn
-    ///    contract and cost accounting every prompt this loop sends goes through.
-    ///
-    /// ⚠⚠⚠ **STEP 4 MAY NOT BE REORDERED IN FRONT OF STEP 3, AND THAT IS MEASURED.** A live probe
-    /// pressed `Tab` at a real permission dialog, which leaves it up, then typed into what was left
-    /// — `deliver` read the text back off the screen and reported `Confirmed`, and the Enter behind
-    /// it **approved the file write the agent had asked about**. A read-back proves the pane painted
-    /// what was typed; only *the question is gone* says what an Enter will then MEAN.
-    ///
-    /// ⚠ The record is written AFTER `say`, because `say` clears the notice — a new turn is a new
-    /// question, and the three things armed per turn must not come apart.
     /// **WHICH OF THE AUTHOR'S JUDGED RULES CLAIMS THE DIALOG THE AGENT IS SHOWING**, by its name,
     /// or [`None`] when none does — what `working`'s `cond="_event.data.judged"` decides on.
     ///
@@ -13408,6 +13386,28 @@ impl OuterLoop {
         }
     }
 
+    /// **CARRY OUT A STANDING INSTRUCTION ON THE DIALOG THAT IS UP** — `screening`'s whole effect.
+    ///
+    /// # ⚠⚠⚠ The act, and why it is in this order
+    ///
+    /// 1. **What is being screened comes from the NOTICE**, never from a fresh read of the pane.
+    ///    The barrier already parsed this question and decided about it; reading again would be a
+    ///    second authority on one fact, which R367 moved this crate away from.
+    /// 2. **A rule has to claim it.** None does — or the loop holds none — and the run stops with
+    ///    [`Refusal::NoRule`](crate::consent::Refusal::NoRule) naming the dialog, so an author
+    ///    learns what to quote.
+    /// 3. **The call is refused** with the product's own key, and the dialog must be PROVABLY GONE.
+    /// 4. **Only then is anything typed**, through [`say`](Self::say) — the same delivery, turn
+    ///    contract and cost accounting every prompt this loop sends goes through.
+    ///
+    /// ⚠⚠⚠ **STEP 4 MAY NOT BE REORDERED IN FRONT OF STEP 3, AND THAT IS MEASURED.** A live probe
+    /// pressed `Tab` at a real permission dialog, which leaves it up, then typed into what was left
+    /// — `deliver` read the text back off the screen and reported `Confirmed`, and the Enter behind
+    /// it **approved the file write the agent had asked about**. A read-back proves the pane painted
+    /// what was typed; only *the question is gone* says what an Enter will then MEAN.
+    ///
+    /// ⚠ The record is written AFTER `say`, because `say` clears the notice — a new turn is a new
+    /// question, and the three things armed per turn must not come apart.
     fn screen(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Raise, PaneError> {
         // ⚠⚠ THE BARRIER'S OWN REFUSAL IS CARRIED, not just its question: it says what the
         // CONSENTS made of this dialog, and that reason has a different remedy from anything
@@ -14684,11 +14684,6 @@ impl OuterLoop {
         )?))
     }
 
-    /// A whole number of milliseconds under `name`, or [`None`] where this document holds none
-    /// that can be read that way.
-    ///
-    /// ⚠ A `<data>` spelled as a plain integer can still arrive as a double: the datamodel is
-    /// ECMAScript-shaped and its numbers are not typed by how they were written.
     /// **HOW LONG THIS DOCUMENT LETS SOMEBODY HOLD THIS RUN**, read at the moment the hold is
     /// actually being waited out — [`None`] for a document holding nothing this can read, or a zero.
     ///
@@ -14713,6 +14708,11 @@ impl OuterLoop {
             .map(Duration::from_millis)
     }
 
+    /// A whole number of milliseconds under `name`, or [`None`] where this document holds none
+    /// that can be read that way.
+    ///
+    /// ⚠ A `<data>` spelled as a plain integer can still arrive as a double: the datamodel is
+    /// ECMAScript-shaped and its numbers are not typed by how they were written.
     fn ms_at(script: &Arc<dyn IScriptEngine>, session: &str, name: &str) -> Option<u64> {
         match script.get_variable(session, name) {
             Ok(ScriptValue::Int(held)) if held >= 0 => Some(held.unsigned_abs()),
@@ -15740,66 +15740,6 @@ impl OuterLoop {
         }
     }
 
-    /// **WHAT THE INDEPENDENT CHECK IS SHOWN** — the checkpoint, and what the turn actually
-    /// produced.
-    ///
-    /// # ⚠⚠⚠⚠⚠ Its own function because the ARTIFACT is the whole of what makes a check worth
-    /// anything
-    ///
-    /// This used to be composed inline against the PANE, and register item 441 measured a pane that
-    /// cannot answer: a full-screen agent repaints, so its logical-line addresses freeze and every
-    /// read since the mark is empty. Shown that, a real checker was measured answering (2026-08-18,
-    /// `claude` 2.1.234, all three poles):
-    ///
-    /// | what it was shown | it answered |
-    /// |---|---|
-    /// | an artifact that meets a five-sentence checkpoint | **YES** |
-    /// | an artifact that misses it | **NO** |
-    /// | an EMPTY artifact | **NO** |
-    ///
-    /// So an authored check reading the frozen pane would have refused every milestone for ever, on
-    /// evidence it never saw — a run that can never converge, and a refusal indistinguishable from a
-    /// considered verdict against the work. The artifact comes through
-    /// [`turn_produced`](Self::turn_produced) now, which asks the agent first.
-    ///
-    /// ⚠⚠ **IT SAYS NOTHING ABOUT WHAT THE AGENT CLAIMED.** The marker, the word `done`, and the
-    /// agent's own account of its success are all absent by construction: what is handed over is the
-    /// checkpoint and the work. That is item 428's *"a DIFFERENT agent, in a NEW session, shown only
-    /// the artifact"*, and it is why this composes the text rather than forwarding a judgement.
-    ///
-    /// # ⚠⚠⚠⚠⚠ It used to end *"Reply with exactly one word: YES or NO. Do not explain."*
-    ///
-    /// Register item 448, and that sentence is what made a live run's refusal undiagnosable. The run
-    /// was refused **eight times running with the identical walk line**, and the round sent to find
-    /// out why could not: [`Judgement::explained`](crate::judge::Judgement) had been built to carry
-    /// the reason (item 461) and **there was never a reason to carry, because this prompt forbade
-    /// one.** A field plumbed end to end, fed by a question that asks for nothing, is a fix that
-    /// looks shipped and is not — and it took two rounds of elimination to find that out from the
-    /// outside.
-    ///
-    /// ⚠⚠⚠ **THE VERDICT RULE IS UNCHANGED AND THAT IS THE POINT.** `asked_of_another` decides on
-    /// ONE WORD and keeps the first line of the rest, which is measured behaviour: the same
-    /// model answers some questions with a bare verdict and others with a paragraph. Asking for a
-    /// sentence does not widen what counts as the verdict; it stops throwing away the half that was
-    /// already being read.
-    ///
-    /// ⚠⚠⚠⚠ **AND IT NAMES THE ONE ANSWER NOBODY COULD SEE**: *if what you were shown is empty …
-    /// say that*. A checker handed an empty artifact was measured answering a clean `NO` — correct
-    /// about what it was given, and indistinguishable from a considered verdict against the work.
-    /// That is the single most likely cause of the eight refusals, and the prompt now asks the one
-    /// party who can tell to say so out loud. ⚠ It is not a fix for the emptiness — see
-    /// [`Produced::evidence`], which says which reader was used, and which is the other half.
-    /// ⚠⚠⚠⚠ **IT TAKES THE ARTIFACT AND NOT THE PANE, AND THAT IS REGISTER ITEM 448's SECOND
-    /// HALF MADE STRUCTURAL.** While it read the pane itself, [`checked`](Self::checked) had to read
-    /// it a SECOND time to say what had been shown — two readers of one turn, free to disagree,
-    /// which is this crate's oldest class. Handed the artifact, the thing reported and the thing
-    /// shown are the same value by construction.
-    ///
-    /// ⚠⚠ **AND THERE IS NO PANE-TAKING WRAPPER, DELIBERATELY.** One was written for the gates and
-    /// clippy caught it as dead code the moment the product stopped using it — a door only fixtures
-    /// go through, which is item 428's shape exactly (*"a fixture that bypasses the product's own
-    /// door passes even when the door is nailed shut"*). The gates take the same two steps the
-    /// product takes.
     /// **THE COPY, THE DIRECTORY, AND THE QUESTION — ONE ANSWER** — registers 710, 705 and 1072.
     ///
     /// # ⛔⛔⛔⛔⛔ Why the three come back together
@@ -15974,6 +15914,66 @@ impl OuterLoop {
             .collect()
     }
 
+    /// **WHAT THE INDEPENDENT CHECK IS SHOWN** — the checkpoint, and what the turn actually
+    /// produced.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Its own function because the ARTIFACT is the whole of what makes a check worth
+    /// anything
+    ///
+    /// This used to be composed inline against the PANE, and register item 441 measured a pane that
+    /// cannot answer: a full-screen agent repaints, so its logical-line addresses freeze and every
+    /// read since the mark is empty. Shown that, a real checker was measured answering (2026-08-18,
+    /// `claude` 2.1.234, all three poles):
+    ///
+    /// | what it was shown | it answered |
+    /// |---|---|
+    /// | an artifact that meets a five-sentence checkpoint | **YES** |
+    /// | an artifact that misses it | **NO** |
+    /// | an EMPTY artifact | **NO** |
+    ///
+    /// So an authored check reading the frozen pane would have refused every milestone for ever, on
+    /// evidence it never saw — a run that can never converge, and a refusal indistinguishable from a
+    /// considered verdict against the work. The artifact comes through
+    /// [`turn_produced`](Self::turn_produced) now, which asks the agent first.
+    ///
+    /// ⚠⚠ **IT SAYS NOTHING ABOUT WHAT THE AGENT CLAIMED.** The marker, the word `done`, and the
+    /// agent's own account of its success are all absent by construction: what is handed over is the
+    /// checkpoint and the work. That is item 428's *"a DIFFERENT agent, in a NEW session, shown only
+    /// the artifact"*, and it is why this composes the text rather than forwarding a judgement.
+    ///
+    /// # ⚠⚠⚠⚠⚠ It used to end *"Reply with exactly one word: YES or NO. Do not explain."*
+    ///
+    /// Register item 448, and that sentence is what made a live run's refusal undiagnosable. The run
+    /// was refused **eight times running with the identical walk line**, and the round sent to find
+    /// out why could not: [`Judgement::explained`](crate::judge::Judgement) had been built to carry
+    /// the reason (item 461) and **there was never a reason to carry, because this prompt forbade
+    /// one.** A field plumbed end to end, fed by a question that asks for nothing, is a fix that
+    /// looks shipped and is not — and it took two rounds of elimination to find that out from the
+    /// outside.
+    ///
+    /// ⚠⚠⚠ **THE VERDICT RULE IS UNCHANGED AND THAT IS THE POINT.** `asked_of_another` decides on
+    /// ONE WORD and keeps the first line of the rest, which is measured behaviour: the same
+    /// model answers some questions with a bare verdict and others with a paragraph. Asking for a
+    /// sentence does not widen what counts as the verdict; it stops throwing away the half that was
+    /// already being read.
+    ///
+    /// ⚠⚠⚠⚠ **AND IT NAMES THE ONE ANSWER NOBODY COULD SEE**: *if what you were shown is empty …
+    /// say that*. A checker handed an empty artifact was measured answering a clean `NO` — correct
+    /// about what it was given, and indistinguishable from a considered verdict against the work.
+    /// That is the single most likely cause of the eight refusals, and the prompt now asks the one
+    /// party who can tell to say so out loud. ⚠ It is not a fix for the emptiness — see
+    /// [`Produced::evidence`], which says which reader was used, and which is the other half.
+    /// ⚠⚠⚠⚠ **IT TAKES THE ARTIFACT AND NOT THE PANE, AND THAT IS REGISTER ITEM 448's SECOND
+    /// HALF MADE STRUCTURAL.** While it read the pane itself, [`checked`](Self::checked) had to read
+    /// it a SECOND time to say what had been shown — two readers of one turn, free to disagree,
+    /// which is this crate's oldest class. Handed the artifact, the thing reported and the thing
+    /// shown are the same value by construction.
+    ///
+    /// ⚠⚠ **AND THERE IS NO PANE-TAKING WRAPPER, DELIBERATELY.** One was written for the gates and
+    /// clippy caught it as dead code the moment the product stopped using it — a door only fixtures
+    /// go through, which is item 428's shape exactly (*"a fixture that bypasses the product's own
+    /// door passes even when the door is nailed shut"*). The gates take the same two steps the
+    /// product takes.
     fn check_question(
         &self,
         produced: &Produced,
@@ -16280,38 +16280,6 @@ impl OuterLoop {
         self.said_marker(panes, DONE_MARKER)
     }
 
-    /// Whether the agent said, IN THIS TURN, the word the datamodel holds under `variable`.
-    ///
-    /// [`said_done`](Self::said_done)'s whole rule, named once because a second marker arrived and
-    /// the two must be read identically: the run's convergence and its continuation would otherwise
-    /// rest on two subtly different notions of *the agent said it*. See `said_done` for the three
-    /// pieces of evidence and what each closes.
-    ///
-    /// ⚠ The `partial` line is not a candidate AT A LIVE PANE: the peer has not finished writing
-    /// it, so a marker found there is one the agent may still be adding words to. Waiting costs a
-    /// poll; acting costs a convergence.
-    ///
-    /// ⚠⚠⚠⚠ **BUT AT A PANE WHOSE CHILD HAS EXITED IT IS THE ANSWER, AND FOR A ROUND IT WAS LOST**
-    /// (register item 289). [`sprag_vt::LinesSince::partial`] sanctions one reading — *an unfinished
-    /// line at EOF is unfinished for ever* — and this doc used to say **"nothing here can establish
-    /// the EOF"**, which was simply untrue: [`PaneAccess::pane_eof`] is on the very trait this
-    /// function takes, and is what [`DoneWhen::Exits`] is built from. The cost of the mistake was
-    /// the loud kind: a one-shot peer whose whole reply is an unterminated last line — *"a reply
-    /// need not end in a newline"* — could never be heard, so the run could never converge.
-    ///
-    /// ⚠⚠ **A HOST THAT CANNOT NUMBER ITS LINES GETS THE ROWS BACK, AND WITH THEM THE WIDTH.**
-    /// [`PaneAccess::output_lines`] is `None` by default, so `Since` falls back to the trail — named
-    /// there as a degradation rather than an equivalent, and it is a worse one here than it is for a
-    /// report. ⚠ The alternative was refusing to read a marker at all on such a host, and that is a
-    /// loop no run could ever converge: a degradation that costs a wrong answer sometimes beats one
-    /// that costs every answer. **The remedy is the capability, not a rule out here.**
-    ///
-    /// ⚠⚠ **AND AN EVICTION CAN STILL RE-OPEN THE ECHO.** [`crate::report::Produced::lost`] counts
-    /// the complete lines the retained history threw away before this read, and if the one thrown
-    /// away is the HEAD of a broken instruction, the marker becomes the first line with nothing
-    /// above it and the discount has nothing to work with. It is not read here, and the alternative
-    /// — refusing to converge any turn that outran the scrollback — would end a long run on its
-    /// most productive turn. **Registered rather than guessed at.**
     /// How many answers `pane`'s agent has stated, or `0` where nothing supervises it.
     ///
     /// ⚠ A host with no supervisor answers the same as a peer that has never spoken, and both are
@@ -16398,6 +16366,38 @@ impl OuterLoop {
         seen.said.ok_or(Unstated::Empty)
     }
 
+    /// Whether the agent said, IN THIS TURN, the word the datamodel holds under `variable`.
+    ///
+    /// [`said_done`](Self::said_done)'s whole rule, named once because a second marker arrived and
+    /// the two must be read identically: the run's convergence and its continuation would otherwise
+    /// rest on two subtly different notions of *the agent said it*. See `said_done` for the three
+    /// pieces of evidence and what each closes.
+    ///
+    /// ⚠ The `partial` line is not a candidate AT A LIVE PANE: the peer has not finished writing
+    /// it, so a marker found there is one the agent may still be adding words to. Waiting costs a
+    /// poll; acting costs a convergence.
+    ///
+    /// ⚠⚠⚠⚠ **BUT AT A PANE WHOSE CHILD HAS EXITED IT IS THE ANSWER, AND FOR A ROUND IT WAS LOST**
+    /// (register item 289). [`sprag_vt::LinesSince::partial`] sanctions one reading — *an unfinished
+    /// line at EOF is unfinished for ever* — and this doc used to say **"nothing here can establish
+    /// the EOF"**, which was simply untrue: [`PaneAccess::pane_eof`] is on the very trait this
+    /// function takes, and is what [`DoneWhen::Exits`] is built from. The cost of the mistake was
+    /// the loud kind: a one-shot peer whose whole reply is an unterminated last line — *"a reply
+    /// need not end in a newline"* — could never be heard, so the run could never converge.
+    ///
+    /// ⚠⚠ **A HOST THAT CANNOT NUMBER ITS LINES GETS THE ROWS BACK, AND WITH THEM THE WIDTH.**
+    /// [`PaneAccess::output_lines`] is `None` by default, so `Since` falls back to the trail — named
+    /// there as a degradation rather than an equivalent, and it is a worse one here than it is for a
+    /// report. ⚠ The alternative was refusing to read a marker at all on such a host, and that is a
+    /// loop no run could ever converge: a degradation that costs a wrong answer sometimes beats one
+    /// that costs every answer. **The remedy is the capability, not a rule out here.**
+    ///
+    /// ⚠⚠ **AND AN EVICTION CAN STILL RE-OPEN THE ECHO.** [`crate::report::Produced::lost`] counts
+    /// the complete lines the retained history threw away before this read, and if the one thrown
+    /// away is the HEAD of a broken instruction, the marker becomes the first line with nothing
+    /// above it and the discount has nothing to work with. It is not read here, and the alternative
+    /// — refusing to converge any turn that outran the scrollback — would end a long run on its
+    /// most productive turn. **Registered rather than guessed at.**
     fn said_marker(&self, panes: &dyn PaneAccess, variable: &str) -> Heard {
         let Some(marker) = self.text_of(variable) else {
             // ⚠⚠⚠⚠⚠ **THE FOURTH WORLD, AND IT LOOKS AT NO PANE AT ALL** — register item 441. A
@@ -16631,14 +16631,6 @@ fn once_each(standing: &str) -> String {
     once
 }
 
-/// What `row` says after `label`, when the row OPENS with it — see [`OuterLoop::proposed`].
-///
-/// ⚠ The decoration a row may carry in front of the label is deliberately a SET rather than
-/// *"anything not alphanumeric"*, which is [`stands_alone`]'s rule and the wrong one here. That rule
-/// would accept a wrapped echo beginning `"NEXT MILESTONE: …` — a quote mark is not alphanumeric —
-/// and the whole reason this reader is careful is that the prompt naming the label is on the screen
-/// too. What an agent CLI actually puts in front of its own text is a bullet, a box edge or a
-/// prompt glyph, and that is the list.
 /// ⛔⛔⛔⛔⛔ **WHETHER A ROW OPENING WITH `label` IS THIS LOOP READING ITS OWN QUESTION BACK** —
 /// and it is ORDER that decides, not mere presence.
 ///
@@ -16683,6 +16675,14 @@ fn echoes(asked: &str, label: &str, said: &str) -> bool {
         .any(|(at, _)| asked[at + label.len()..].trim_start().starts_with(said))
 }
 
+/// What `row` says after `label`, when the row OPENS with it — see [`OuterLoop::proposed`].
+///
+/// ⚠ The decoration a row may carry in front of the label is deliberately a SET rather than
+/// *"anything not alphanumeric"*, which is [`stands_alone`]'s rule and the wrong one here. That rule
+/// would accept a wrapped echo beginning `"NEXT MILESTONE: …` — a quote mark is not alphanumeric —
+/// and the whole reason this reader is careful is that the prompt naming the label is on the screen
+/// too. What an agent CLI actually puts in front of its own text is a bullet, a box edge or a
+/// prompt glyph, and that is the list.
 fn opens_with(row: &str, label: &str) -> Option<String> {
     Some(
         row.trim_matches(DECORATION)
@@ -16741,35 +16741,6 @@ fn wraps_onto(asked: &str, above: &str, marker: &str) -> bool {
             .any(|(at, _)| asked[at + above.len()..].trim_start().starts_with(marker))
 }
 
-/// **WHETHER THE AGENT SAID A MARKER — AND THE THIRD ANSWER A `bool` COULD NOT CARRY.**
-///
-/// # ⚠⚠⚠ Why two answers were not enough, measured
-///
-/// `Produced::lost` — this crate's own count, one module over — counts the complete lines a pane's
-/// retained history threw away before a read. ⚠ Named rather than linked: it is crate-private, and
-/// a public type may not point at one. It IS read where the agent's own words are reported —
-/// `Agent`'s reply
-/// says how much is missing, and so does the account — and it was NOT read by the predicate that
-/// decides whether a run ends. So *"the agent did not say it"* and *"the line that said it was
-/// thrown away"* reached `judging` as the same bit, and the second was reported as the first,
-/// silently.
-///
-/// ⚠⚠ **MEASURED ON THE OWNER'S OWN LOOP, 2026-08-16**: across two runs and about four hours,
-/// `Judging --Judge--> Working` fired on every judgement and **`reflecting` was never reached
-/// once**, while the pane held `MILESTONE REACHED`. A loop that cannot reach `reflecting` never
-/// replaces its session, which is the one thing the document says it exists to do.
-///
-/// ⚠⚠⚠ **AND A STALLED TURN MANUFACTURES THE CONDITION.** A turn that cannot end leaves an agent's
-/// TUI repainting for minutes after its reply is finished, and every repaint is output pushing the
-/// oldest lines — the marker among them — over the eviction edge. Register items 344 and 345.
-///
-/// # ⚠ What the driver does with the third answer is NOT decided here
-///
-/// It is published to the machine as `_event.data.unheard` and written into the walk, and the
-/// DOCUMENT routes on it. That is the whole rule this crate lives under: a driver reports the fact
-/// and the document decides. The shipped document keeps `said_marker`'s own doctrine — an unheard
-/// marker costs ONE MORE TURN, never a convergence nobody earned — and now it keeps it in writing
-/// instead of by accident.
 /// **WHICH EVIDENCE A JUDGEMENT WAS MADE ON** — the agent's own words, or the pane's.
 ///
 /// # ⚠⚠⚠⚠⚠ Why a reading has to say this, measured (register item 441)
@@ -16989,6 +16960,35 @@ impl Evidence {
     }
 }
 
+/// **WHETHER THE AGENT SAID A MARKER — AND THE THIRD ANSWER A `bool` COULD NOT CARRY.**
+///
+/// # ⚠⚠⚠ Why two answers were not enough, measured
+///
+/// `Produced::lost` — this crate's own count, one module over — counts the complete lines a pane's
+/// retained history threw away before a read. ⚠ Named rather than linked: it is crate-private, and
+/// a public type may not point at one. It IS read where the agent's own words are reported —
+/// `Agent`'s reply
+/// says how much is missing, and so does the account — and it was NOT read by the predicate that
+/// decides whether a run ends. So *"the agent did not say it"* and *"the line that said it was
+/// thrown away"* reached `judging` as the same bit, and the second was reported as the first,
+/// silently.
+///
+/// ⚠⚠ **MEASURED ON THE OWNER'S OWN LOOP, 2026-08-16**: across two runs and about four hours,
+/// `Judging --Judge--> Working` fired on every judgement and **`reflecting` was never reached
+/// once**, while the pane held `MILESTONE REACHED`. A loop that cannot reach `reflecting` never
+/// replaces its session, which is the one thing the document says it exists to do.
+///
+/// ⚠⚠⚠ **AND A STALLED TURN MANUFACTURES THE CONDITION.** A turn that cannot end leaves an agent's
+/// TUI repainting for minutes after its reply is finished, and every repaint is output pushing the
+/// oldest lines — the marker among them — over the eviction edge. Register items 344 and 345.
+///
+/// # ⚠ What the driver does with the third answer is NOT decided here
+///
+/// It is published to the machine as `_event.data.unheard` and written into the walk, and the
+/// DOCUMENT routes on it. That is the whole rule this crate lives under: a driver reports the fact
+/// and the document decides. The shipped document keeps `said_marker`'s own doctrine — an unheard
+/// marker costs ONE MORE TURN, never a convergence nobody earned — and now it keeps it in writing
+/// instead of by accident.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Heard {
     /// The marker is on a line this turn produced, and no echo discount claimed it.
@@ -17707,20 +17707,6 @@ mod tests {
         }
     }
 
-    /// **A LOOP OVER `pane` WHOSE DOCUMENT AUTHORS `within` AS ITS PER-TURN BOUND** — the door
-    /// every gate below builds through.
-    ///
-    /// # ⚠⚠⚠ Why a gate has to WRITE the number and can no longer pass it
-    ///
-    /// `turn_within_ms` is the document's since register item 300, and the shipped document authors
-    /// **half an hour**. These gates drive an uncancellable run against a peer that never finishes
-    /// a turn, so inheriting that number is not a slower gate, it is a gate that never returns.
-    ///
-    /// ⚠⚠ **AND INHERITING IS THE WRONG SHAPE EVEN WHERE IT WOULD TERMINATE** — item 307's lesson,
-    /// two fields over: a gate that wants a value SAYS it, because what it would inherit from is a
-    /// file that is allowed to change. Writing the `<data>` is exactly what a person editing that
-    /// file does, which is why this is authoring rather than a back door: there is still only one
-    /// place the decision lives.
     /// ⛔⛔⛔⛔⛔ **THE STATES THAT MEAN A PERSON IS NEEDED ARE THE DOCUMENT'S, AND THE SHIPPED
     /// DOCUMENT NAMES ONE** — register item 755.
     ///
@@ -17774,6 +17760,20 @@ mod tests {
         );
     }
 
+    /// **A LOOP OVER `pane` WHOSE DOCUMENT AUTHORS `within` AS ITS PER-TURN BOUND** — the door
+    /// every gate below builds through.
+    ///
+    /// # ⚠⚠⚠ Why a gate has to WRITE the number and can no longer pass it
+    ///
+    /// `turn_within_ms` is the document's since register item 300, and the shipped document authors
+    /// **half an hour**. These gates drive an uncancellable run against a peer that never finishes
+    /// a turn, so inheriting that number is not a slower gate, it is a gate that never returns.
+    ///
+    /// ⚠⚠ **AND INHERITING IS THE WRONG SHAPE EVEN WHERE IT WOULD TERMINATE** — item 307's lesson,
+    /// two fields over: a gate that wants a value SAYS it, because what it would inherit from is a
+    /// file that is allowed to change. Writing the `<data>` is exactly what a person editing that
+    /// file does, which is why this is authoring rather than a back door: there is still only one
+    /// place the decision lives.
     fn bounded_at(
         script: Arc<dyn IScriptEngine>,
         pane: PaneId,
@@ -22732,43 +22732,6 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
-    /// ⚠⚠⚠ **A BRIEF THE DATAMODEL DOES NOT HOLD EXACTLY IS REFUSED, NOT DELIVERED.**
-    ///
-    /// # Why this gate exists at all, and why it is not the one it replaced
-    ///
-    /// Its predecessor drove the same refusal through **SCE PR-87** — a non-ASCII string did not
-    /// survive arriving as event data, and [`OuterLoop::brief`]'s read-back is the only thing that
-    /// caught it. Upstream landed the fix, so that mechanism is gone, **and deleting the gate with
-    /// it would have left `Briefed::NotHeld` with no driver at all** — retiring the one piece of
-    /// this driver that turns somebody else's silent bug into a refusal.
-    ///
-    /// So the question was asked again of the engine, on the other axis a brief carries: **what
-    /// does the datamodel do with a number it cannot hold exactly?** Whatever it answers, the
-    /// product's rule is the same one — a budget that came back different is a run that would be
-    /// bounded by a number nobody chose, and `max_turns` is the ceiling that decides when the loop
-    /// stops driving a real agent.
-    ///
-    /// # ⚠⚠ What is asserted, and what is deliberately NOT
-    ///
-    /// Not that the engine is wrong to round. It is a script datamodel and `i64::MAX` is outside
-    /// what a double holds exactly; that is a fact about the engine, not a defect. What is
-    /// asserted is that **the driver notices** — names the part, carries what the machine holds,
-    /// and sends the run to `failed` rather than leaving it startable on a budget it did not get.
-    /// ⚠⚠⚠⚠ **THE FOUR NUMERIC DECISIONS CROSS VERIFIED TOO, AND A NUMBER NOBODY SENT IS NOT ONE**
-    /// — register item 316, which noted that `max_turns` and `reflect_every` were read back while
-    /// four values *"no more fragile"* were not.
-    ///
-    /// Both halves, because either alone is half a rule:
-    ///
-    /// * a number the caller DID send must survive the crossing, or the run is bounded by something
-    ///   nobody asked for — and the refusal must name WHICH, since a caller with four has no other
-    ///   way to know which one to rewrite;
-    /// * a number the caller did NOT send must be left alone. `None` means *the document's own
-    ///   default stands*, so comparing it would turn a caller's silence into an assertion about a
-    ///   value they never chose — and the defaults are the document's, which is item 300's rule.
-    ///
-    /// ⚠ The second half is the one a careless widening breaks: reading every field unconditionally
-    /// still passes the first half, and fails every caller who omitted one.
     /// ⛔⛔⛔⛔⛔ **A MILESTONE CLAIM THE LOOP COULD NOT PUT TO A CHECKER IS COUNTED, AND ONE ITS
     /// AUTHOR NEVER MEANT TO CHECK IS NOT** — register item 674's remaining half.
     ///
@@ -22884,6 +22847,21 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠ **THE FOUR NUMERIC DECISIONS CROSS VERIFIED TOO, AND A NUMBER NOBODY SENT IS NOT ONE**
+    /// — register item 316, which noted that `max_turns` and `reflect_every` were read back while
+    /// four values *"no more fragile"* were not.
+    ///
+    /// Both halves, because either alone is half a rule:
+    ///
+    /// * a number the caller DID send must survive the crossing, or the run is bounded by something
+    ///   nobody asked for — and the refusal must name WHICH, since a caller with four has no other
+    ///   way to know which one to rewrite;
+    /// * a number the caller did NOT send must be left alone. `None` means *the document's own
+    ///   default stands*, so comparing it would turn a caller's silence into an assertion about a
+    ///   value they never chose — and the defaults are the document's, which is item 300's rule.
+    ///
+    /// ⚠ The second half is the one a careless widening breaks: reading every field unconditionally
+    /// still passes the first half, and fails every caller who omitted one.
     #[test]
     fn a_number_that_did_not_survive_is_named_and_one_never_sent_is_left_alone() {
         let sent_but_mangled = Disagreeing::about("await_person_ms", ScriptValue::Int(999));
@@ -23181,6 +23159,28 @@ mod tests {
         drop(access);
     }
 
+    /// ⚠⚠⚠ **A BRIEF THE DATAMODEL DOES NOT HOLD EXACTLY IS REFUSED, NOT DELIVERED.**
+    ///
+    /// # Why this gate exists at all, and why it is not the one it replaced
+    ///
+    /// Its predecessor drove the same refusal through **SCE PR-87** — a non-ASCII string did not
+    /// survive arriving as event data, and [`OuterLoop::brief`]'s read-back is the only thing that
+    /// caught it. Upstream landed the fix, so that mechanism is gone, **and deleting the gate with
+    /// it would have left `Briefed::NotHeld` with no driver at all** — retiring the one piece of
+    /// this driver that turns somebody else's silent bug into a refusal.
+    ///
+    /// So the question was asked again of the engine, on the other axis a brief carries: **what
+    /// does the datamodel do with a number it cannot hold exactly?** Whatever it answers, the
+    /// product's rule is the same one — a budget that came back different is a run that would be
+    /// bounded by a number nobody chose, and `max_turns` is the ceiling that decides when the loop
+    /// stops driving a real agent.
+    ///
+    /// # ⚠⚠ What is asserted, and what is deliberately NOT
+    ///
+    /// Not that the engine is wrong to round. It is a script datamodel and `i64::MAX` is outside
+    /// what a double holds exactly; that is a fact about the engine, not a defect. What is
+    /// asserted is that **the driver notices** — names the part, carries what the machine holds,
+    /// and sends the run to `failed` rather than leaving it startable on a budget it did not get.
     #[test]
     fn a_brief_the_datamodel_does_not_hold_exactly_is_refused_rather_than_delivered() {
         let engine = Disagreeing::about(
@@ -27005,30 +27005,6 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
-    /// ⚠⚠⚠ **AND A PEER THAT RE-WRAPS THE QUESTION ITSELF IS NOT AN AGENT ANSWERING IT.**
-    ///
-    /// The gate above is closed by reading LINES instead of rows, because the break it stages is the
-    /// terminal's and a logical line is defined as surviving one. **This one stages a break no
-    /// reading can undo.** An agent CLI paints the prompt into its own box and re-breaks it wherever
-    /// that box ends; those breaks are the program's own, so the line store holds them as complete
-    /// lines — measured live in [`crate::report`], where a three-line prompt came back as the single
-    /// fragment `"  not number them any other way and do not add commentary."`.
-    ///
-    /// This peer does exactly that and nothing else: every line it is told, it paints back **behind
-    /// its own box edge**, and the one carrying `exactly:` it paints back **in two pieces, broken at
-    /// the marker**. The pane is eighty columns — not one of the fatal widths — so the terminal is
-    /// not the thing breaking anything. Every byte on that screen still came out of this run's own
-    /// prompt.
-    ///
-    /// ⚠⚠ **THE BOX EDGE IS NOT DRESSING.** `stands_alone` already allows decoration in front of a
-    /// marker, so an undecorated fixture would leave the discount comparing the pane's copy of a
-    /// sentence against the driver's — two strings that happen to be identical — and the day a real
-    /// composer put a glyph in front of one, nothing here would have said so.
-    ///
-    /// ⚠⚠⚠ **AND THE CONTROL IS A PEER THAT ACTUALLY ANSWERS**, because a rule that refuses
-    /// everything passes the assertion above for free. The same peer, told a word of its own and
-    /// then the marker, must converge — which is what says the discount discriminates rather than
-    /// declines. R399's own lesson, one round on: a negative control needs a peer, not an argument.
     /// ⛔⛔⛔⛔⛔ **EVERY MARKER MATCH SAYS WHICH SURFACE FED IT** — register item 866 ⑵, and the
     /// only thing that stops the read this round repaired from being written again.
     ///
@@ -27175,6 +27151,30 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠ **AND A PEER THAT RE-WRAPS THE QUESTION ITSELF IS NOT AN AGENT ANSWERING IT.**
+    ///
+    /// The gate above is closed by reading LINES instead of rows, because the break it stages is the
+    /// terminal's and a logical line is defined as surviving one. **This one stages a break no
+    /// reading can undo.** An agent CLI paints the prompt into its own box and re-breaks it wherever
+    /// that box ends; those breaks are the program's own, so the line store holds them as complete
+    /// lines — measured live in [`crate::report`], where a three-line prompt came back as the single
+    /// fragment `"  not number them any other way and do not add commentary."`.
+    ///
+    /// This peer does exactly that and nothing else: every line it is told, it paints back **behind
+    /// its own box edge**, and the one carrying `exactly:` it paints back **in two pieces, broken at
+    /// the marker**. The pane is eighty columns — not one of the fatal widths — so the terminal is
+    /// not the thing breaking anything. Every byte on that screen still came out of this run's own
+    /// prompt.
+    ///
+    /// ⚠⚠ **THE BOX EDGE IS NOT DRESSING.** `stands_alone` already allows decoration in front of a
+    /// marker, so an undecorated fixture would leave the discount comparing the pane's copy of a
+    /// sentence against the driver's — two strings that happen to be identical — and the day a real
+    /// composer put a glyph in front of one, nothing here would have said so.
+    ///
+    /// ⚠⚠⚠ **AND THE CONTROL IS A PEER THAT ACTUALLY ANSWERS**, because a rule that refuses
+    /// everything passes the assertion above for free. The same peer, told a word of its own and
+    /// then the marker, must converge — which is what says the discount discriminates rather than
+    /// declines. R399's own lesson, one round on: a negative control needs a peer, not an argument.
     #[test]
     fn a_composer_that_re_wraps_the_question_onto_the_marker_is_not_an_agent_saying_it() {
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
@@ -30414,30 +30414,6 @@ mod tests {
         );
     }
 
-    /// ⚠⚠⚠⚠⚠ **THE ECONOMIC DOOR IS PRICED IN THE POPULATION THE LOOP WILL RUN IN** — register
-    /// item 493, and it is the half a reachability gate cannot hold.
-    ///
-    /// # ⚠⚠⚠⚠ What every gate beside this one was quietly saying
-    ///
-    /// `reviewing`'s economic edge fires on `context - floor >= 20 * cold`, and every fixture that
-    /// drove it carried one borrowed trio: cold 7,000, floor 38,500, a last reading of 466,013.
-    /// That is a break-even of 178,500 with the run **three times past it**, so the gates proved
-    /// the arm REACHABLE and left a reader believing it was ORDINARY. Measured 2026-08-20 over all
-    /// 250 of this repository's transcripts that carry two billed requests, the break-even here is
-    /// 600,970 and **49 of the 250 sessions ever read that far**.
-    ///
-    /// ⚠⚠⚠⚠⚠ **AND AT 466,013 THIS POPULATION DOES NOT REACH IT AT ALL.** The very session five
-    /// gates priced as *"long past break-even"* discards 444,663 against a toll of 579,620 — it
-    /// loses, keeps its session, and goes back to work. So the fixture was not merely optimistic:
-    /// **it inverted the decision** for the only reading anybody had written down.
-    ///
-    /// # ⚠⚠⚠ Two runs, one axis, and the arithmetic done by the DOCUMENT
-    ///
-    /// Same peer, same brief, same roomy ceiling, same `cold` and `floor` — the LAST REQUEST'S
-    /// READING is the only thing that moves. Nothing here compares numbers itself: the guard in
-    /// `ai_loop.scxml` is what declines, and this gate reads which door the run left by.
-    /// [`crate::testing::Billed::pays`] is asserted first only as a PREMISE, so that a red here
-    /// separates *the fixture drifted* from *the document changed its mind*.
     /// ⛔⛔⛔⛔⛔ **THE MILESTONE CHECK'S BOUND, READ AGAINST THE LATENCIES SOMEBODY ACTUALLY
     /// TIMED** — [`CHECK_WITHIN`], [`CHECK_READINGS`] and [`check_headroom`].
     ///
@@ -30638,6 +30614,30 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠⚠ **THE ECONOMIC DOOR IS PRICED IN THE POPULATION THE LOOP WILL RUN IN** — register
+    /// item 493, and it is the half a reachability gate cannot hold.
+    ///
+    /// # ⚠⚠⚠⚠ What every gate beside this one was quietly saying
+    ///
+    /// `reviewing`'s economic edge fires on `context - floor >= 20 * cold`, and every fixture that
+    /// drove it carried one borrowed trio: cold 7,000, floor 38,500, a last reading of 466,013.
+    /// That is a break-even of 178,500 with the run **three times past it**, so the gates proved
+    /// the arm REACHABLE and left a reader believing it was ORDINARY. Measured 2026-08-20 over all
+    /// 250 of this repository's transcripts that carry two billed requests, the break-even here is
+    /// 600,970 and **49 of the 250 sessions ever read that far**.
+    ///
+    /// ⚠⚠⚠⚠⚠ **AND AT 466,013 THIS POPULATION DOES NOT REACH IT AT ALL.** The very session five
+    /// gates priced as *"long past break-even"* discards 444,663 against a toll of 579,620 — it
+    /// loses, keeps its session, and goes back to work. So the fixture was not merely optimistic:
+    /// **it inverted the decision** for the only reading anybody had written down.
+    ///
+    /// # ⚠⚠⚠ Two runs, one axis, and the arithmetic done by the DOCUMENT
+    ///
+    /// Same peer, same brief, same roomy ceiling, same `cold` and `floor` — the LAST REQUEST'S
+    /// READING is the only thing that moves. Nothing here compares numbers itself: the guard in
+    /// `ai_loop.scxml` is what declines, and this gate reads which door the run left by.
+    /// [`crate::testing::Billed::pays`] is asserted first only as a PREMISE, so that a red here
+    /// separates *the fixture drifted* from *the document changed its mind*.
     #[test]
     fn the_economic_door_is_priced_in_the_population_it_will_run_in() {
         /// Above both readings, so `capacity` can never be what moves either run — the same
@@ -34582,35 +34582,6 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
-    /// ⚠⚠⚠ **WHAT SHAPE THE AUTHORED `screen_rules` CROSS THE DATAMODEL IN** — asked of the engine
-    /// before anything is built to read them, because the whole of `screening` rests on the answer.
-    ///
-    /// The document declares them as an ECMAScript array of objects and the engine that evaluates
-    /// it is LUA — `ai_loop.scxml`'s own measured warning, with the codegen rewriting `[...]` into
-    /// `{...}` and `key:` into `key =` on the way in. A Lua table is one construct for both a list
-    /// and a map, so *"an array of three objects"* is a **prediction** about what
-    /// [`IScriptEngine::get_variable`] hands back, and this workspace has been wrong about exactly
-    /// this kind of prediction before.
-    ///
-    /// ⚠⚠ **AND IT SETTLES WHETHER PR-86's THIRD ASK BLOCKS THIS.** SCE emits no read accessor for a
-    /// lowered SCALAR `<data>`, which is why every string in this driver is read through the script
-    /// session. Measured here: a COMPOSITE `<data>` is not lowered at all, so the interpreter route
-    /// reads it whole — the missing accessor bounds what the policy can answer, not what a driver
-    /// can see.
-    ///
-    /// ⚠ The non-ASCII half is asserted too, and not for symmetry: the replies in that list are
-    /// Korean, and PR-87 was a round in which non-ASCII crossed one route into this datamodel and
-    /// not the other. This is the AUTHORED route, on a value shape nothing had read before.
-    ///
-    /// # ⚠⚠⚠ Its subject moved, and the claim did not
-    ///
-    /// This read the TEMPLATE's own rules until the template stopped shipping any — a standing
-    /// instruction there is answered on behalf of every repository that copies the file, in a
-    /// language its author may not read. The rules now live in a KIND document, and **the question
-    /// this gate asks is about the CROSSING rather than about which file authored it**: a list of
-    /// objects, initialised by `<data expr>`, read back through a script session. Pointing it at the
-    /// document that ships one keeps the measurement; deleting it would have retired PR-86's and
-    /// PR-87's evidence along with the file that happened to hold it.
     /// ⚠⚠⚠⚠⚠ **THE UNATTENDED LOOP DOES NOT CERTIFY ITS OWN WORK** — register item 428's second
     /// half, and a ratchet rather than a description.
     ///
@@ -34787,46 +34758,6 @@ mod tests {
         );
     }
 
-    /// ⚠⚠⚠⚠⚠ **THE PEER IS ASKED BEFORE THE PIXELS, AND A PEER THAT SAYS NOTHING STILL GETS
-    /// READ** — register item 452(3)'s demotion, both halves in one staging.
-    ///
-    /// # ⚠⚠⚠⚠ Why the screen must be EMPTY here, and its neighbour's screen must not
-    ///
-    /// The gate above proves the screen path works. This one proves it is no longer the ONLY path,
-    /// and the only way to prove that is to take the screen away: the pane shows nothing of the
-    /// needle, so a build that still read pixels alone answers `false` and this gate is red. That
-    /// is the whole defect item 452 named — the fix had been put on the nearest arm, `screening`
-    /// already read the screen, while the peer's hook had fired at the exact moment and the product
-    /// reduced the payload to one enum value.
-    ///
-    /// ⚠⚠⚠ **AND THE DEMOTION IS NOT A DELETION**, which is the clause's own word. The second arm
-    /// puts the needle back on the SCREEN with the peer stating nothing — a `codex`-shaped peer,
-    /// which raises no notice at all — and the answer must still be yes. A change that moved the
-    /// read to the hook instead of ahead of it passes the first arm and fails this one.
-    ///
-    /// ⛔⛔⛔⛔⛔ **A REFUSED TURN WAITS THE OUTAGE OUT INSTEAD OF SPENDING THE RUN'S TURNS** —
-    /// register item 991, and the door item 988's repair left missing.
-    ///
-    /// # ⛔⛔⛔⛔⛔ What the missing door cost, measured
-    ///
-    /// Item 988 made a refused turn say so ([`Made::Refused`]) instead of accusing the agent of
-    /// silence, and `judging`'s streak correctly neither counts it nor clears it. But nothing then
-    /// ACTED on it: the run fell through to `working` and re-prompted a service that had just
-    /// refused it. Run 270 was refused once per prompt at a sixty second cadence, so the shipped
-    /// `max_turns` of forty is forty minutes of that, ending `stopping` with `stop_reason`
-    /// `'turns'` — a ceiling naming itself about an outage nobody waited out.
-    ///
-    /// ⚠⚠⚠ **THE ASSERTION IS ON `state()` AND ON NOTHING ELSE**, because that is the only thing
-    /// that tells the door FIRING from the door being unreachable. Item 988's own gate asserts on
-    /// `made`, `held` and `streak` — all written by `judging`'s `onentry`, BEFORE any `judge`
-    /// transition is evaluated — so it is green whether this edge exists or not. Measured: it
-    /// passed 8/8 with the door and without it. A gate that cannot go red for the thing it is named
-    /// after is the defect this workspace's rule 7 is about, and this file paid for that lesson one
-    /// item ago.
-    ///
-    /// ⚠⚠ **AND THE CONTROL ARM IS THE SAME RUN ANSWERED**, not a different fixture: a build that
-    /// routed EVERY judged turn to `service_down` would pass the first arm alone, and a run that
-    /// waits out its agent's ordinary work is worse than one that re-prompts.
     /// ⛔⛔⛔⛔⛔ **A REPLACED SESSION IS NOT RESUMED, AND THIS DOCUMENT AUTHORS NO `<history>`** —
     /// register item 80, whose done-when asks for a DECISION to be recorded rather than for a
     /// feature to be built.
@@ -34937,6 +34868,46 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠⚠ **THE PEER IS ASKED BEFORE THE PIXELS, AND A PEER THAT SAYS NOTHING STILL GETS
+    /// READ** — register item 452(3)'s demotion, both halves in one staging.
+    ///
+    /// # ⚠⚠⚠⚠ Why the screen must be EMPTY here, and its neighbour's screen must not
+    ///
+    /// The gate above proves the screen path works. This one proves it is no longer the ONLY path,
+    /// and the only way to prove that is to take the screen away: the pane shows nothing of the
+    /// needle, so a build that still read pixels alone answers `false` and this gate is red. That
+    /// is the whole defect item 452 named — the fix had been put on the nearest arm, `screening`
+    /// already read the screen, while the peer's hook had fired at the exact moment and the product
+    /// reduced the payload to one enum value.
+    ///
+    /// ⚠⚠⚠ **AND THE DEMOTION IS NOT A DELETION**, which is the clause's own word. The second arm
+    /// puts the needle back on the SCREEN with the peer stating nothing — a `codex`-shaped peer,
+    /// which raises no notice at all — and the answer must still be yes. A change that moved the
+    /// read to the hook instead of ahead of it passes the first arm and fails this one.
+    ///
+    /// ⛔⛔⛔⛔⛔ **A REFUSED TURN WAITS THE OUTAGE OUT INSTEAD OF SPENDING THE RUN'S TURNS** —
+    /// register item 991, and the door item 988's repair left missing.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What the missing door cost, measured
+    ///
+    /// Item 988 made a refused turn say so ([`Made::Refused`]) instead of accusing the agent of
+    /// silence, and `judging`'s streak correctly neither counts it nor clears it. But nothing then
+    /// ACTED on it: the run fell through to `working` and re-prompted a service that had just
+    /// refused it. Run 270 was refused once per prompt at a sixty second cadence, so the shipped
+    /// `max_turns` of forty is forty minutes of that, ending `stopping` with `stop_reason`
+    /// `'turns'` — a ceiling naming itself about an outage nobody waited out.
+    ///
+    /// ⚠⚠⚠ **THE ASSERTION IS ON `state()` AND ON NOTHING ELSE**, because that is the only thing
+    /// that tells the door FIRING from the door being unreachable. Item 988's own gate asserts on
+    /// `made`, `held` and `streak` — all written by `judging`'s `onentry`, BEFORE any `judge`
+    /// transition is evaluated — so it is green whether this edge exists or not. Measured: it
+    /// passed 8/8 with the door and without it. A gate that cannot go red for the thing it is named
+    /// after is the defect this workspace's rule 7 is about, and this file paid for that lesson one
+    /// item ago.
+    ///
+    /// ⚠⚠ **AND THE CONTROL ARM IS THE SAME RUN ANSWERED**, not a different fixture: a build that
+    /// routed EVERY judged turn to `service_down` would pass the first arm alone, and a run that
+    /// waits out its agent's ordinary work is worse than one that re-prompts.
     #[test]
     fn a_refused_turn_waits_the_service_out_and_an_answered_one_goes_back_to_work() {
         /// Drive a fresh loop to the end of one turn whose record said `produced`, and say where
@@ -35624,6 +35595,35 @@ mod tests {
         drop(access);
     }
 
+    /// ⚠⚠⚠ **WHAT SHAPE THE AUTHORED `screen_rules` CROSS THE DATAMODEL IN** — asked of the engine
+    /// before anything is built to read them, because the whole of `screening` rests on the answer.
+    ///
+    /// The document declares them as an ECMAScript array of objects and the engine that evaluates
+    /// it is LUA — `ai_loop.scxml`'s own measured warning, with the codegen rewriting `[...]` into
+    /// `{...}` and `key:` into `key =` on the way in. A Lua table is one construct for both a list
+    /// and a map, so *"an array of three objects"* is a **prediction** about what
+    /// [`IScriptEngine::get_variable`] hands back, and this workspace has been wrong about exactly
+    /// this kind of prediction before.
+    ///
+    /// ⚠⚠ **AND IT SETTLES WHETHER PR-86's THIRD ASK BLOCKS THIS.** SCE emits no read accessor for a
+    /// lowered SCALAR `<data>`, which is why every string in this driver is read through the script
+    /// session. Measured here: a COMPOSITE `<data>` is not lowered at all, so the interpreter route
+    /// reads it whole — the missing accessor bounds what the policy can answer, not what a driver
+    /// can see.
+    ///
+    /// ⚠ The non-ASCII half is asserted too, and not for symmetry: the replies in that list are
+    /// Korean, and PR-87 was a round in which non-ASCII crossed one route into this datamodel and
+    /// not the other. This is the AUTHORED route, on a value shape nothing had read before.
+    ///
+    /// # ⚠⚠⚠ Its subject moved, and the claim did not
+    ///
+    /// This read the TEMPLATE's own rules until the template stopped shipping any — a standing
+    /// instruction there is answered on behalf of every repository that copies the file, in a
+    /// language its author may not read. The rules now live in a KIND document, and **the question
+    /// this gate asks is about the CROSSING rather than about which file authored it**: a list of
+    /// objects, initialised by `<data expr>`, read back through a script session. Pointing it at the
+    /// document that ships one keeps the measurement; deleting it would have retired PR-86's and
+    /// PR-87's evidence along with the file that happened to hold it.
     #[test]
     fn the_authored_screen_rules_cross_the_datamodel_as_a_readable_list() {
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
@@ -37692,8 +37692,6 @@ mod tests {
         );
     }
 
-    /// A brief a gate can hand a loop twice and get the same datamodel both times — which is the
-    /// property a resume rests on and the reason this is a function rather than two literals.
     /// ⛔⛔⛔⛔⛔ **A RUN SAYS WHETHER ITS KIND EVER AUTHORED ANYTHING THAT COULD SCORE IT** —
     /// register item 968, and the fact the row's hedge is composed from.
     ///
@@ -37956,6 +37954,8 @@ mod tests {
         );
     }
 
+    /// A brief a gate can hand a loop twice and get the same datamodel both times — which is the
+    /// property a resume rests on and the reason this is a function rather than two literals.
     fn a_brief() -> Brief {
         Brief {
             north_star: "carry what a walk wrote across a run log".to_string(),
