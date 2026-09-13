@@ -540,13 +540,8 @@ pub fn verdict_of(compiled_in: PathBuf, running_in: Result<PathBuf, String>) -> 
     }
 }
 
-/// The sentence a reader is owed when the two trees are not one — register item 809.
-///
-/// ⚠ It names BOTH, because *your gate read the wrong tree* without saying which two leaves the
-/// reader with nothing to act on; and it names the repair, because the repair is not obvious
-/// (nothing in the source changed, so the ordinary instinct is to look for a source bug).
 /// ⛔⛔⛔⛔ **THE REPAIR, SPELLED ONCE** — register item 1064, and the reason it is a constant is
-/// this function's own doc one line up: *it names the repair, because the repair is not obvious*.
+/// [`tree_skew_sentence`]'s own doc: *it names the repair, because the repair is not obvious*.
 /// Two arms owe the same instruction, and two copies of it are two things that can come to
 /// disagree the day the crate moves or the command changes.
 ///
@@ -556,6 +551,11 @@ pub fn verdict_of(compiled_in: PathBuf, running_in: Result<PathBuf, String>) -> 
 const RECOMPILE: &str = "Recompile this crate from here -- \
                          `find crates/sprag-gate/src -name '*.rs' -exec touch {} +` then re-run";
 
+/// The sentence a reader is owed when the two trees are not one — register item 809.
+///
+/// ⚠ It names BOTH, because *your gate read the wrong tree* without saying which two leaves the
+/// reader with nothing to act on; and it names the repair, because the repair is not obvious
+/// (nothing in the source changed, so the ordinary instinct is to look for a source bug).
 #[must_use]
 pub fn tree_skew_sentence(verdict: &TreeUnderTest) -> String {
     match verdict {
