@@ -2131,6 +2131,15 @@ enum OnScreen {
     Stopped,
 }
 
+/// `text` with every run of whitespace flattened to one space, and the ends trimmed.
+///
+/// **The one place a needle and a screen are made comparable** — see the hazard at its only call
+/// site. A peer that re-wraps what it was typed produces the same words with different breaks, and
+/// a comparison that reads a newline as content asks the peer not to have a text box.
+fn squeezed(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// Wait, bounded by `timeout` AND by the run's own deadline, for `needle` to appear on a pane whose
 /// screen is **no longer the one `before` recorded**.
 ///
@@ -2147,15 +2156,6 @@ enum OnScreen {
 /// hole the deadline was added to close. So EVERY wait in this crate asks
 /// [`RunContext::stopped`](crate::run::RunContext::stopped) — this one, `poll_until`, and the
 /// submit's own ([`Submission::await_landing`]) — which is the one definition of *the run is over*.
-/// `text` with every run of whitespace flattened to one space, and the ends trimmed.
-///
-/// **The one place a needle and a screen are made comparable** — see the hazard at its only call
-/// site. A peer that re-wraps what it was typed produces the same words with different breaks, and
-/// a comparison that reads a newline as content asks the peer not to have a text box.
-fn squeezed(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 fn await_text(
     panes: &dyn PaneAccess,
     run: &RunContext,
