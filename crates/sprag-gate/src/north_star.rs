@@ -1735,7 +1735,6 @@ pub enum Fault {
         /// The item the walk started from.
         number: u32,
     },
-    /// More items with no [`PARENT`] than the ledger declares.
     /// More paid items name no commit than [`PAID_DECLARATION`] declares. Register item 902.
     PaidRatchetGrew {
         /// What this pass counted — the items themselves, register item 934.
@@ -1874,6 +1873,7 @@ pub enum Fault {
         /// The line as written.
         line: String,
     },
+    /// More items with no [`PARENT`] than the ledger declares.
     ParentRatchetGrew {
         /// What this reading counted — the items themselves, register item 934.
         counted: Vec<u32>,
@@ -2433,22 +2433,6 @@ impl Reading {
         self.backlogs().unclassified.items
     }
 
-    /// 🎯🎯🎯🎯🎯 **THE FOUR BACKLOGS A FLOOR HOLDS, EACH CARRYING ITS ITEMS** — register item
-    /// 934, and the ONE place their four predicates are written.
-    ///
-    /// # ⛔⛔⛔⛔⛔ There had been eight predicates for these four questions
-    ///
-    /// [`read`] ratcheted each backlog off its own `items.iter().filter(…).count()` while the four
-    /// accessors on this type re-derived the same sets for the report — so the number that RED and
-    /// the number that PRINTED were two authors agreeing by inspection. They agreed; that is not
-    /// the point. Register item 445 is the file this repository keeps re-learning it from, and
-    /// register item 926 had already found one of these four floors drifted while the other
-    /// direction went unwatched.
-    ///
-    /// ⚠ Recomputed per call rather than stored: [`read`] must ratchet these before this type
-    /// exists, and a cached copy would be a fifth thing that can disagree. The walk is one pass
-    /// over section A.
-    #[must_use]
     /// ⛔⛔⛔⛔⛔ **THE ONE `paid` MARK THAT MAY NAME NO COMMIT, AND WHY IT IS NOT AN EXCUSE** —
     /// register item 938, met the moment that item tried to close itself.
     ///
@@ -2489,6 +2473,22 @@ impl Reading {
         uncommitted
     }
 
+    /// 🎯🎯🎯🎯🎯 **THE FOUR BACKLOGS A FLOOR HOLDS, EACH CARRYING ITS ITEMS** — register item
+    /// 934, and the ONE place their four predicates are written.
+    ///
+    /// # ⛔⛔⛔⛔⛔ There had been eight predicates for these four questions
+    ///
+    /// [`read`] ratcheted each backlog off its own `items.iter().filter(…).count()` while the four
+    /// accessors on this type re-derived the same sets for the report — so the number that RED and
+    /// the number that PRINTED were two authors agreeing by inspection. They agreed; that is not
+    /// the point. Register item 445 is the file this repository keeps re-learning it from, and
+    /// register item 926 had already found one of these four floors drifted while the other
+    /// direction went unwatched.
+    ///
+    /// ⚠ Recomputed per call rather than stored: [`read`] must ratchet these before this type
+    /// exists, and a cached copy would be a fifth thing that can disagree. The walk is one pass
+    /// over section A.
+    #[must_use]
     pub fn backlogs(&self) -> Backlogs {
         let of = |keep: fn(&Item) -> bool| -> Vec<u32> {
             self.items
@@ -6908,8 +6908,6 @@ mod tests {
         assert_eq!(reading.depth(895), Some(1), "created by 900's payment");
     }
 
-    /// An item added without parentage raises the standing count and reds — the same ratchet the
-    /// other two marks hold.
     #[test]
     fn a_reason_that_says_revealed_is_not_a_reason_that_says_made() {
         // ⛔⛔⛔⛔⛔ ── THE SUBSTRING COLLISION, WHICH IS THE WHOLE OF THIS TEST ──────────────────
@@ -6984,6 +6982,8 @@ mod tests {
         );
     }
 
+    /// An item added without parentage raises the standing count and reds — the same ratchet the
+    /// other two marks hold.
     #[test]
     fn an_item_added_without_a_parent_grows_the_backlog_and_reds() {
         let ledger = LEDGER.replace(
