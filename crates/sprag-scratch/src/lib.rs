@@ -496,22 +496,11 @@ pub fn may_address(path: &std::path::Path) -> PathBuf {
     path.to_path_buf()
 }
 
-/// Whether `path` may be bound as a unix socket on **every** platform this project runs on.
-///
 /// ⚠⚠⚠ **THE CEILING IS NOT ABOUT BINDING** — register item 959. This delegates whole to
 /// [`may_address`], which is where the constraint is stated: `sun_path` bounds the socket ADDRESS,
 /// so `connect` meets it too. This name survives because it is the right word at a bind site and
 /// twenty-two of them read better for it; a caller that never binds should say [`may_address`].
 ///
-/// The part of `path` below [`scratch_root`] is measured against
-/// [`LONGEST_SCRATCH_ROOT`] + [`TIGHTEST_SUN_PATH`], so the answer does not depend on the machine
-/// asking. A path outside the scratch root is measured whole — there is no budget to reason about.
-///
-/// # ⚠⚠ What it does NOT do, said plainly
-///
-/// It does not create anything and it does not bind. A caller that wants a path this answers `true`
-/// for shortens its own names — the technique its neighbour in `cli.rs` already uses: a short
-/// prefix plus a per-call counter, never an embedded file name.
 /// `path` back, or a panic naming why no platform-portable socket can live there — register item
 /// 955.
 ///
@@ -580,6 +569,17 @@ pub fn bind_socket(path: &std::path::Path) -> std::io::Result<std::os::unix::net
     std::os::unix::net::UnixListener::bind(may_address(path))
 }
 
+/// Whether `path` may be bound as a unix socket on **every** platform this project runs on.
+///
+/// The part of `path` below [`scratch_root`] is measured against
+/// [`LONGEST_SCRATCH_ROOT`] + [`TIGHTEST_SUN_PATH`], so the answer does not depend on the machine
+/// asking. A path outside the scratch root is measured whole — there is no budget to reason about.
+///
+/// # ⚠⚠ What it does NOT do, said plainly
+///
+/// It does not create anything and it does not bind. A caller that wants a path this answers `true`
+/// for shortens its own names — the technique its neighbour in `cli.rs` already uses: a short
+/// prefix plus a per-call counter, never an embedded file name.
 #[must_use]
 pub fn socket_fits(path: &std::path::Path) -> bool {
     let shown = path.as_os_str().as_encoded_bytes().len();
