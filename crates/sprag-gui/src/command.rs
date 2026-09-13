@@ -2327,18 +2327,6 @@ mod tests {
         assert_eq!(sessions_offered, MAX_SESSION_ROWS);
     }
 
-    /// **A palette row answers what it did, in its paired binding's words** (R316).
-    ///
-    /// The palette is a THIRD dispatcher — beside the keymap's and the confirmation's — and its
-    /// arms dropped exactly the three answers the keyboard's arms read, which the round's own audit
-    /// found after the frontends were fixed. The rows are built from MIRRORS, so a window named by
-    /// a row can close between the list being drawn and the row being activated.
-    ///
-    /// The two readings are made to DISAGREE: one row names a window the host has and one names a
-    /// window it does not, on the same fixture and through the same call.
-    ///
-    /// REVERT-PROOF: drop the `select_window` answer in `run` and the second assertion fails while
-    /// the first still passes — which is the whole shape of the defect.
     /// **A join with no pane to move SAYS SO** — the arm read its answer, and the answer is a
     /// sentence rather than silence.
     ///
@@ -2403,6 +2391,18 @@ mod tests {
         );
     }
 
+    /// **A palette row answers what it did, in its paired binding's words** (R316).
+    ///
+    /// The palette is a THIRD dispatcher — beside the keymap's and the confirmation's — and its
+    /// arms dropped exactly the three answers the keyboard's arms read, which the round's own audit
+    /// found after the frontends were fixed. The rows are built from MIRRORS, so a window named by
+    /// a row can close between the list being drawn and the row being activated.
+    ///
+    /// The two readings are made to DISAGREE: one row names a window the host has and one names a
+    /// window it does not, on the same fixture and through the same call.
+    ///
+    /// REVERT-PROOF: drop the `select_window` answer in `run` and the second assertion fails while
+    /// the first still passes — which is the whole shape of the defect.
     #[test]
     fn a_palette_row_that_finds_nothing_says_so() {
         let (slots, _log) = slots_with(&[("main", true), ("build", false)], &["0", "work"], "0");
