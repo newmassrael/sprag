@@ -4195,10 +4195,6 @@ mod tests {
         }
     }
 
-    /// The listability rule ([`SessionInfo::is_listable`]) shows a session iff it holds a pane OR a
-    /// client is attached — so the resting empty anchor (neither) is hidden while an empty session a
-    /// client is viewing still lists. Deterministic + revert-proof: flipping the rule's `||` to `&&`
-    /// would drop the attached-empty case, and dropping the pane check would drop a working session.
     /// ⚠⚠⚠⚠⚠ **A PINNED WINDOW IS COUNTED, SO A SURFACE CAN SAY THE WINDOW FOLLOWS NOBODY** —
     /// register item 482, and the half a pure renderer's gate cannot reach.
     ///
@@ -4314,6 +4310,10 @@ mod tests {
         );
     }
 
+    /// The listability rule ([`SessionInfo::is_listable`]) shows a session iff it holds a pane OR a
+    /// client is attached — so the resting empty anchor (neither) is hidden while an empty session a
+    /// client is viewing still lists. Deterministic + revert-proof: flipping the rule's `||` to `&&`
+    /// would drop the attached-empty case, and dropping the pane check would drop a working session.
     #[test]
     fn is_listable_shows_working_or_attached_and_hides_the_resting_anchor() {
         let si = |panes: usize, attached: usize| SessionInfo {
