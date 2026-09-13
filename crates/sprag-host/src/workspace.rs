@@ -148,13 +148,6 @@ pub(crate) struct RegistryView<'a> {
 }
 
 impl RegistryView<'_> {
-    /// The answer to a query whose subject is the REGISTRY, or [`None`] for every other address —
-    /// including the addresses this daemon does serve about ONE session, which have no answer that
-    /// does not name a scope.
-    ///
-    /// `None` is what makes this total without lying: [`WorkspaceExternal::query`] falls through to
-    /// its own scoped arms, and the dead-scope door turns it back into the scope refusal the reader
-    /// had coming. Neither caller has to know which addresses are in here.
     /// **THE REGISTRY-SUBJECT PARAMETRIC FAMILIES** — `None` when `path` is not one of their
     /// prefixes, so both callers keep falling through exactly as they did.
     ///
@@ -235,6 +228,13 @@ impl RegistryView<'_> {
         None
     }
 
+    /// The answer to a query whose subject is the REGISTRY, or [`None`] for every other address —
+    /// including the addresses this daemon does serve about ONE session, which have no answer that
+    /// does not name a scope.
+    ///
+    /// `None` is what makes this total without lying: [`WorkspaceExternal::query`] falls through to
+    /// its own scoped arms, and the dead-scope door turns it back into the scope refusal the reader
+    /// had coming. Neither caller has to know which addresses are in here.
     fn query(&self, path: &str) -> Option<IntrospectValue> {
         match path {
             // What is WRONG with the machine, as opposed to what each pane is taking of it. Served
@@ -3914,19 +3914,6 @@ mod tests {
         Arc::new(Mutex::new(SessionRegistry::new((80, 24))))
     }
 
-    /// **The dead-scope surface WRITES NOTHING, and the claim is made of the type rather than of
-    /// the caller that currently guards it.**
-    ///
-    /// `rpc::registry_only` admits `scene/query` alone, so nothing reaches these two arms today —
-    /// which is exactly why they are worth a test. The guard is a policy in another module, one
-    /// edit away from changing; this is the surface's own contract, and if it ever stopped holding,
-    /// a client whose session was destroyed could ACT on a daemon through a door built to let it
-    /// READ. A branch no test builds is the third shape the debt sweep looks for, and an
-    /// unreachable branch is still the one a later refactor reaches first.
-    ///
-    /// The schema is asserted whole for the reason its own doc gives: the addresses this DAEMON
-    /// serves do not shrink because one reader's session died, and a second shorter list would be a
-    /// copy of the declaration `wire::MUX_SCHEMA` exists to be the only one of.
     /// ⚠⚠⚠ **THIS SURFACE'S EMPTY MEMBERS ARE DECLARED** — all seven of its families, against the
     /// live surface, and the one that answers NOTHING declares nothing.
     ///
@@ -4177,6 +4164,19 @@ mod tests {
             .collect()
     }
 
+    /// **The dead-scope surface WRITES NOTHING, and the claim is made of the type rather than of
+    /// the caller that currently guards it.**
+    ///
+    /// `rpc::registry_only` admits `scene/query` alone, so nothing reaches these two arms today —
+    /// which is exactly why they are worth a test. The guard is a policy in another module, one
+    /// edit away from changing; this is the surface's own contract, and if it ever stopped holding,
+    /// a client whose session was destroyed could ACT on a daemon through a door built to let it
+    /// READ. A branch no test builds is the third shape the debt sweep looks for, and an
+    /// unreachable branch is still the one a later refactor reaches first.
+    ///
+    /// The schema is asserted whole for the reason its own doc gives: the addresses this DAEMON
+    /// serves do not shrink because one reader's session died, and a second shorter list would be a
+    /// copy of the declaration `wire::MUX_SCHEMA` exists to be the only one of.
     #[test]
     fn the_dead_scope_surface_reads_the_registry_and_writes_nothing() {
         let reg = registry();
@@ -5164,11 +5164,6 @@ mod tests {
         );
     }
 
-    /// A name already in use, or one broken by its own rules, is REFUSED and nothing is born.
-    ///
-    /// The second half is the load-bearing one, for
-    /// `a_spawn_naming_a_pane_that_is_gone_is_refused_and_births_nothing`'s reason: a birth refused
-    /// after forking leaves a live pane the caller was never told about.
     /// A grant whose NUMBERS are impossible is refused, and each refusal names what was wrong.
     ///
     /// ⚠ Written by the post-push debt question: the two `u32::try_from` arms and `Share::new`'s
@@ -5279,6 +5274,11 @@ mod tests {
         );
     }
 
+    /// A name already in use, or one broken by its own rules, is REFUSED and nothing is born.
+    ///
+    /// The second half is the load-bearing one, for
+    /// `a_spawn_naming_a_pane_that_is_gone_is_refused_and_births_nothing`'s reason: a birth refused
+    /// after forking leaves a live pane the caller was never told about.
     #[test]
     fn a_birth_naming_a_pane_something_already_taken_is_refused_and_births_nothing() {
         let reg = registry();
