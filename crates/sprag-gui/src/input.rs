@@ -642,22 +642,6 @@ pub(crate) fn perform(action: BoundAction, active: usize) -> Report {
     }
 }
 
-/// Route a focused keystroke to the **focused pane's** PTY. The roving-tabindex
-/// gate maps `focused` to a pane tile ([`pane_index_of`]); a non-pane / absent
-/// focus is a no-op (falls through to the shell default). A reserved
-/// [`WindowChord`] ([`window_chord`]) acts on the window/layout and never reaches
-/// the PTY (focus-cycle / scrollback / dock-toggle); a DISCRETE chord (dock-toggle /
-/// focus-cycle) is dropped on an OS auto-repeat (`repeat`) so it acts once per press
-/// (pinion R1071 / PINION-PR27 — a held `Ctrl+Shift+Enter` no longer dock-then-undocks),
-/// while scrollback + PTY keys repeat normally. Otherwise the key + W3C modifiers
-/// are SENT to the focused pane through the host client
-/// ([`HostClient::send_key`](sprag_host::HostClient::send_key)), which encodes them
-/// to PTY bytes via the shared host SSOT ([`sprag_host::send_key`]) — the same
-/// key->PTY encoder the AI `scene/invoke` path uses (§2 #2; encoding is sprag's,
-/// R2.6). Topology B: the GUI's keyboard is a client SEND, not a mutation of its
-/// own paint scene. An unencodable key returns `false`, so it falls through rather
-/// than injecting nothing. Returning `true` for the encodable keys swallows
-/// Escape/Tab from the shell's quit/traverse defaults so a full-screen TUI receives them.
 /// Drive the ONE keyboard entry ([`crate::TerminalViewer::apply_key_press`]) from a caller that is
 /// not the runtime, dating the keystroke at `arrival`.
 ///
@@ -716,6 +700,22 @@ pub(crate) fn press_key(
     )
 }
 
+/// Route a focused keystroke to the **focused pane's** PTY. The roving-tabindex
+/// gate maps `focused` to a pane tile ([`pane_index_of`]); a non-pane / absent
+/// focus is a no-op (falls through to the shell default). A reserved
+/// [`WindowChord`] ([`window_chord`]) acts on the window/layout and never reaches
+/// the PTY (focus-cycle / scrollback / dock-toggle); a DISCRETE chord (dock-toggle /
+/// focus-cycle) is dropped on an OS auto-repeat (`repeat`) so it acts once per press
+/// (pinion R1071 / PINION-PR27 — a held `Ctrl+Shift+Enter` no longer dock-then-undocks),
+/// while scrollback + PTY keys repeat normally. Otherwise the key + W3C modifiers
+/// are SENT to the focused pane through the host client
+/// ([`HostClient::send_key`](sprag_host::HostClient::send_key)), which encodes them
+/// to PTY bytes via the shared host SSOT ([`sprag_host::send_key`]) — the same
+/// key->PTY encoder the AI `scene/invoke` path uses (§2 #2; encoding is sprag's,
+/// R2.6). Topology B: the GUI's keyboard is a client SEND, not a mutation of its
+/// own paint scene. An unencodable key returns `false`, so it falls through rather
+/// than injecting nothing. Returning `true` for the encodable keys swallows
+/// Escape/Tab from the shell's quit/traverse defaults so a full-screen TUI receives them.
 pub(crate) fn route_key(
     scene: &mut Scene,
     focused: Option<&str>,
