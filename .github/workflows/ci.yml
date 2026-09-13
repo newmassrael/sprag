@@ -147,6 +147,20 @@ jobs:
           cargo build --workspace --exclude sprag-gui
           cargo build -p sprag-gui --bins
 
+      # THE SHELL GATE'S CHECKER, AT THE ONE VERSION IT ACCEPTS — register item 1086.
+      #
+      # `sprag-gate`'s `no_shell_script_escapes_the_static_checker` runs ShellCheck over every shell
+      # script in the tree and REFUSES a machine with none or with another version, because the
+      # findings differ between versions (measured over this tree: 0.10.0 and 0.11.0 disagree on
+      # twelve). So the runner is made able rather than the gate skipped — the repair the macOS job's
+      # GNU grep step already made. From the pin, with its SHA-256 checked, and not from the image or
+      # a package manager, whose version is whatever that day's image carries.
+      # `ci_builds_what_it_drives` holds this step's place before the sweep.
+      - name: ShellCheck, at the version the shell gate pins
+        run: |
+          bash crates/sprag-gate/tools/install-shellcheck "$RUNNER_TEMP/shellcheck"
+          echo "$RUNNER_TEMP/shellcheck" >> "$GITHUB_PATH"
+
       # `--no-fail-fast` because a plain run stops at the FIRST failing binary, which reports one
       # failure and hides the rest. The exit code is the verdict; a summary read out of the log is
       # not (interleaved output drops lines).
@@ -395,6 +409,13 @@ jobs:
         run: |
           brew install grep
           echo "$(brew --prefix)/opt/grep/libexec/gnubin" >> "$GITHUB_PATH"
+
+      # See the Linux job — register item 1086. This job sweeps `sprag-gate` too, and the installer
+      # picks the pinned macOS build by `uname`.
+      - name: ShellCheck, at the version the shell gate pins
+        run: |
+          bash crates/sprag-gate/tools/install-shellcheck "$RUNNER_TEMP/shellcheck"
+          echo "$RUNNER_TEMP/shellcheck" >> "$GITHUB_PATH"
 
       # Both halves duplicated from the Linux job deliberately: the guard below is a claim about
       # what THE SUITE does, and a claim checked on one platform is a claim about that platform. A

@@ -117,6 +117,13 @@ pub mod sources;
 /// command word is shared as well, because two gates answering it apart is register item 1085.
 pub mod shell;
 
+/// ShellCheck over every script [`shell`] walks: the pinned version, what a run came to, and the
+/// directives and settings that would switch the checker off — register item 1086.
+///
+/// Beside [`shell`] because its population is that walk. The decisions are text in, verdict out; the
+/// spawning is the gate's, so the shapes a healthy machine never produces are driven directly.
+pub mod shellcheck;
+
 /// Which PACKAGE owns a binary, so a refusal can name the command that ENDS it — item 455.
 ///
 /// Here rather than inside [`Unbuilt`] because the question is about the workspace, not about one

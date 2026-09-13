@@ -1,0 +1,16 @@
+# How this tree is checked by ShellCheck -- register item 1086.
+#
+# ONE place for the options, so a person running `shellcheck <file>` by hand and
+# the gate in `crates/sprag-gate/tests/no_shell_script_escapes_the_static_checker.rs`
+# get the same answer. The gate names this file with `--rcfile`, which measured as
+# winning over a `~/.shellcheckrc`, so nobody's home directory can change a verdict.
+#
+# ONLY THE TWO KEYS BELOW MAY STAND HERE, and `sprag_gate::shellcheck::rc_refusals`
+# refuses any other. A `disable=` in this file would exempt every script in the tree
+# at once, with no line beside the code it excuses to say why.
+
+# Follow `.` and `source` into the file they name ...
+external-sources=true
+# ... resolved against the directory of the script doing the sourcing, which is how
+# every `. "$(dirname "${BASH_SOURCE[0]}")/<library>.sh"` in this tree is spelled.
+source-path=SCRIPTDIR

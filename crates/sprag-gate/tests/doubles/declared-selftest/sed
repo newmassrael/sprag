@@ -136,7 +136,7 @@ for sed_arg in "$@"; do
             sed_seen_script=1
             ;;
         -f | --file)
-            sed_expect=file
+            sed_expect="file"
             sed_seen_script=1
             ;;
         -*) ;;

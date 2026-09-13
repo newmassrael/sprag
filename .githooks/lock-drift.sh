@@ -267,7 +267,6 @@ lock_drift_gate() {
 # CALLER's positional parameters, so keying on `$1` would fire inside a hook that happened to have
 # one.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
-    # shellcheck source-path=SCRIPTDIR
     . "$(dirname "${BASH_SOURCE[0]}")/scratch-guard.sh"
     scratch_guard_cut_ambient
     case "${1:-}" in

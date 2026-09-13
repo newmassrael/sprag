@@ -124,6 +124,7 @@ out="${OUT:-$root/target/reproduce-under-load}"
 mkdir -p "$out"
 
 pids=()
+# shellcheck disable=SC2329  # the trap below runs it; 0.11.0 loses the handler past a final exit
 cleanup() {
     for p in "${pids[@]:-}"; do kill "$p" 2>/dev/null || true; done
     wait 2>/dev/null || true

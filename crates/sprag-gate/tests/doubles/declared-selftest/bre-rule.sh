@@ -1,5 +1,10 @@
+# shellcheck shell=sh
 # THE ONE RULE ABOUT A BASIC REGULAR EXPRESSION, sourced by every stand-in that
 # enforces it -- register item 1007.
+#
+# (The directive above names the dialect: this file has no shebang because it is
+# only ever sourced, by the two `#!/bin/sh` stand-ins beside it -- register item
+# 1086, whose ShellCheck gate otherwise cannot tell which shell reads it.)
 #
 # ⛔⛔⛔⛔⛔ WHY IT IS A FILE AND NOT A COPY IN EACH DOUBLE. `sed` and `grep` hand
 # the SAME text to the SAME `regcomp`, so *what BSD reads differently* is one

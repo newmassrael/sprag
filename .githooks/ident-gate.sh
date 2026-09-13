@@ -304,7 +304,6 @@ ident_gate_selftest() {
 # restores: they ANSWER a bare invocation (a gap report, an owed list). A file with nothing to say
 # says so with a status, which is `scratch-guard.sh`'s shape.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
-    # shellcheck source-path=SCRIPTDIR
     . "$(dirname "${BASH_SOURCE[0]}")/scratch-guard.sh"
     # ⛔⛔⛔⛔⛔ THE CALLER'S GIT ENVIRONMENT IS CUT BEFORE ANY ARM RUNS — register
     # item 965. The fixture below does `cd "$tmp" && git init -q . && git add a`,

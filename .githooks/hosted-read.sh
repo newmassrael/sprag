@@ -36,7 +36,6 @@
 # it, drives the cases no harness here can produce, and is sourced so this file
 # still runs standalone. See register item 792 for what it costs to get wrong and
 # `scratch-guard.sh`'s own header for the macOS fold that cost a platform.
-# shellcheck source-path=SCRIPTDIR
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scratch-guard.sh"
 
 # WHERE THE RECORD LIVES, and why it is not tracked.

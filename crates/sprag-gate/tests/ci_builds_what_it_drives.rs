@@ -290,3 +290,53 @@ fn every_job_that_runs_the_suite_builds_each_image_a_promotion_moves() {
          one — the parse has stopped seeing the file",
     );
 }
+
+/// **AND EVERY JOB THAT SWEEPS THIS CRATE PUTS THE PINNED SHELLCHECK ON PATH FIRST** — register item
+/// 1086.
+///
+/// `no_shell_script_escapes_the_static_checker` refuses a machine with no ShellCheck, or with any
+/// version but the pinned one, rather than passing it — register item 403's answer. So a job that
+/// runs this crate's suite without the installer does not run a weaker suite: it reds on that gate,
+/// for a reason that is the workflow's, on every push. The claim is three lines in order: the
+/// installer runs, its directory reaches `$GITHUB_PATH`, and only then `cargo test`.
+#[test]
+fn every_job_that_sweeps_the_gates_puts_the_pinned_shellcheck_on_path_first() {
+    let text = workflow();
+    let installer = sprag_gate::shellcheck::INSTALLER;
+    let mut wrong = Vec::new();
+    let mut checked = 0_usize;
+    for (job, lines) in jobs(&text) {
+        let sweeps_the_gates = |line: &String| {
+            line.contains("cargo test")
+                && ((line.contains("--workspace") && !line.contains("--exclude sprag-gate"))
+                    || line.contains("-p sprag-gate"))
+        };
+        let Some(tests_at) = lines.iter().position(sweeps_the_gates) else {
+            continue;
+        };
+        checked += 1;
+        let installs_at = lines.iter().position(|line| line.contains(installer));
+        let path_at = lines
+            .iter()
+            .position(|line| line.contains("GITHUB_PATH") && line.contains("shellcheck"));
+        match (installs_at, path_at) {
+            (Some(install), Some(path)) if install < path && path < tests_at => {}
+            _ => wrong.push(format!(
+                "  the {job:?} job: `{installer}` at line {installs_at:?}, its directory onto \
+                 GITHUB_PATH at {path_at:?}, `cargo test` at {tests_at}"
+            )),
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "ITEM 1086: a job sweeps `sprag-gate` without first putting the pinned ShellCheck on PATH, \
+         so the shell gate refuses there on every push for a reason that is not about any script:\n{}",
+        wrong.join("\n"),
+    );
+    // THE CONTROL, as above: every assertion here is satisfied by a scan that found no such job.
+    assert!(
+        checked >= 2,
+        "this scan found only {checked} job(s) sweeping the gates, and both headless jobs do — the \
+         parse has stopped seeing the file",
+    );
+}

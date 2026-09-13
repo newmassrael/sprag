@@ -494,6 +494,7 @@ GIT_INDEX_FILE GIT_WORK_TREE')"
     # ⛔⛔ AND THE LIVE PAIR, which is what makes the cut a measurement rather
     # than a claim: a subshell that exports the variable is seen, and the same
     # subshell after `scratch_guard_cut_ambient` is not.
+    # shellcheck disable=SC2030  # the export is meant to end with this subshell
     said="$( export GIT_INDEX_FILE=/nowhere/index
              scratch_guard_ambient_names | tr '\n' ' ' )"
     case "$said" in
@@ -503,6 +504,7 @@ GIT_INDEX_FILE GIT_WORK_TREE')"
         *)  echo "  FAIL  an exported git variable was invisible: '$said'"
             fail=$((fail + 1)) ;;
     esac
+    # shellcheck disable=SC2031  # set afresh in this subshell; the one above is not read here
     said="$( export GIT_INDEX_FILE=/nowhere/index GIT_DIR=/nowhere/.git
              scratch_guard_cut_ambient
              scratch_guard_ambient_names | tr '\n' ' ' )"

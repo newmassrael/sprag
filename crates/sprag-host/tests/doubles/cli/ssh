@@ -22,4 +22,5 @@
 # without the suite substituting an absolute path into these bytes.
 here=$(dirname "$0")
 printf '%s\n' "$@" > "$here/argv.txt"
+# shellcheck source=/dev/null  # each case writes tail.sh at run time; the tree has none to follow
 . "$here/tail.sh"

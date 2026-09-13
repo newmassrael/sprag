@@ -40,17 +40,11 @@ fi
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-# shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/doc-gate.sh"
-# shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/content-gate.sh"
-# shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/ident-gate.sh"
-# shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/hosted-read.sh"
-# shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/loop-read.sh"
-# shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/tree-drift.sh"
 
 # ⛔⛔⛔⛔ FINGERPRINT THE TREE BEFORE ANY GATE READS IT — register item 925, and THIS is
@@ -335,11 +329,13 @@ push_gate_cleared_every_pushed_tip() {
     [ "$saw_ref" -eq 1 ]
 }
 
+# shellcheck disable=SC2086  # a deliberate word-split pathspec, as at the two callers above
 pixel_smoke_cleared_every_pushed_tip() {
     push_gate_cleared_every_pushed_tip "$(git rev-parse --git-dir)/sprag-pixel-smoke-passed" \
         $PIXEL_PATHS
 }
 
+# shellcheck disable=SC2086  # a deliberate word-split pathspec, as at the two callers above
 hook_suite_cleared_every_pushed_tip() {
     push_gate_cleared_every_pushed_tip "$(git rev-parse --git-dir)/sprag-hook-suite-passed" \
         $HOOK_PATHS

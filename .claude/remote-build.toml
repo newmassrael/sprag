@@ -20,7 +20,13 @@ exclude = ["/target", "/sweep.timestamp"]
 
 # The executables the commands below actually invoke. `mnemosyne-cli` is deliberately NOT here: it
 # is a COMMIT-time gate (`.githooks/pre-commit`), and committing is local by rule.
-needs = ["cargo", "cargo-clippy", "rustdoc"]
+#
+# `shellcheck` IS HERE because `[routed] ratchets` runs `cargo test -p sprag-gate`, whose
+# `no_shell_script_escapes_the_static_checker` runs it over every shell script — register item 1086.
+# bx asks each host whether it RUNS every name below before sending anything, so a host without it is
+# refused by name instead of reddening the lane. This list cannot say WHICH version: the gate itself
+# refuses any but `crates/sprag-gate/tools/shellcheck.pin`'s, and its refusal names the installer.
+needs = ["cargo", "cargo-clippy", "rustdoc", "shellcheck"]
 
 # Measured against `.github/workflows/ci.yml`'s own `System packages` step for the headless Linux
 # job. macOS needs none of it — `fontique` uses Core Text there and links no fontconfig at all.

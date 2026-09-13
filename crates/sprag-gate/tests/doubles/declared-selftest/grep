@@ -81,7 +81,7 @@ for grep_arg in "$@"; do
             grep_seen_pattern=1
             ;;
         -f | --file)
-            grep_expect=file
+            grep_expect="file"
             grep_seen_pattern=1
             ;;
         --file=*)

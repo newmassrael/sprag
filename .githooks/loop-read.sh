@@ -27,7 +27,6 @@ set -uo pipefail
 
 # ⛔ THE SCRATCH-SAFETY DECISION IS NOT WRITTEN TWICE -- `scratch-guard.sh` holds
 # it and drives the cases this harness cannot produce (register items 792, 799).
-# shellcheck source-path=SCRIPTDIR
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scratch-guard.sh"
 
 # ⛔⛔⛔⛔⛔ WHAT AN UNREADABLE LOG COSTS -- and why it is not reported as zero.

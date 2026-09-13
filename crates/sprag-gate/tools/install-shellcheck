@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Install the ShellCheck this tree is checked against, verified -- register item 1086.
+#
+#   bash crates/sprag-gate/tools/install-shellcheck <directory>
+#
+# and then put <directory> on PATH. The shell gate refuses any other version and
+# refuses a machine with none -- register item 403's settled answer for a tool a
+# rule has no substitute for -- so this is the one route by which CI and a person
+# get the same checker.
+#
+# WHAT IT REFUSES, each with a non-zero status and a sentence: a pin with no
+# version, a platform the pin names no digest for, a download whose SHA-256 is not
+# the pinned one, a machine with no tool to compute that digest, and an unpacked
+# binary that does not report the pinned version. None of them is skipped: an
+# unverified download is exactly what the pin exists to keep off PATH.
+set -euo pipefail
+
+if [ "$#" -ne 1 ]; then
+    echo "install-shellcheck: give the directory to install into, for example \"\$RUNNER_TEMP/shellcheck\"" >&2
+    exit 2
+fi
+dest="$1"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+pin="$here/shellcheck.pin"
+
+version="$(sed -n 's/^version = "\([0-9.]*\)"$/\1/p' "$pin")"
+if [ -z "$version" ]; then
+    echo "install-shellcheck: $pin names no version" >&2
+    exit 1
+fi
+
+case "$(uname -s).$(uname -m)" in
+    Linux.x86_64) platform=linux_x86_64 ;;
+    Linux.aarch64 | Linux.arm64) platform=linux_aarch64 ;;
+    Darwin.x86_64) platform=darwin_x86_64 ;;
+    Darwin.arm64 | Darwin.aarch64) platform=darwin_aarch64 ;;
+    *)
+        echo "install-shellcheck: $pin pins no build for $(uname -s) $(uname -m) -- add that asset's digest there" >&2
+        exit 1
+        ;;
+esac
+digest="$(sed -n "s/^$platform = \"\\([0-9a-f]*\\)\"\$/\\1/p" "$pin")"
+if [ "${#digest}" -ne 64 ]; then
+    echo "install-shellcheck: $pin names no SHA-256 for $platform" >&2
+    exit 1
+fi
+
+# The asset names the platform with a dot where the pin's key has the first underscore.
+asset="shellcheck-v$version.${platform/_/.}.tar.gz"
+url="https://github.com/koalaman/shellcheck/releases/download/v$version/$asset"
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+curl -fsSL --retry 3 -o "$work/$asset" "$url"
+
+if command -v sha256sum >/dev/null 2>&1; then
+    got="$(sha256sum "$work/$asset" | cut -d ' ' -f 1)"
+elif command -v shasum >/dev/null 2>&1; then
+    got="$(shasum -a 256 "$work/$asset" | cut -d ' ' -f 1)"
+else
+    echo "install-shellcheck: neither sha256sum nor shasum is on PATH, and a download nobody verified is not installed" >&2
+    exit 1
+fi
+if [ "$got" != "$digest" ]; then
+    echo "install-shellcheck: $asset has SHA-256 $got and $pin pins $digest -- not installed" >&2
+    exit 1
+fi
+
+tar -xzf "$work/$asset" -C "$work"
+mkdir -p "$dest"
+cp "$work/shellcheck-v$version/shellcheck" "$dest/shellcheck"
+chmod 0755 "$dest/shellcheck"
+
+said="$("$dest/shellcheck" --version | sed -n 's/^version: //p')"
+if [ "$said" != "$version" ]; then
+    echo "install-shellcheck: the unpacked binary reports version '$said' and $pin pins $version" >&2
+    exit 1
+fi
+echo "install-shellcheck: ShellCheck $version for $platform, SHA-256 verified, is at $dest/shellcheck" >&2

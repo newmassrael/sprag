@@ -64,23 +64,18 @@ fi
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-# shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/doc-gate.sh"
 # ⛔ The Rust gates and the stamp that records which tree they cleared — register items 443 and 480.
 # Their one home: `pre-push` must not RUN them (it would spend an open GitHub connection on a
 # multi-minute gate), so it reads the stamp and names this file when the stamp does not cover the
 # push. See `.githooks/rust-gates.sh`.
 . "$repo_root/.githooks/rust-gates.sh"
-# shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/content-gate.sh"
-# shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/ident-gate.sh"
-# shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/tree-drift.sh"
 # ⛔ Register item 1036: whether a member's manifest has moved past `Cargo.lock`. A SHELL gate
 # because the tool that would run a test repairs the thing the test measures — its own file says
 # how that was measured.
-# shellcheck source-path=SCRIPTDIR
 . "$repo_root/.githooks/lock-drift.sh"
 
 # ⛔⛔⛔⛔ FINGERPRINT THE TREE BEFORE ANY GATE READS IT — register item 925.

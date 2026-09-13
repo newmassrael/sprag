@@ -546,7 +546,6 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
             # has already sourced it; run by a person this file has not, and a `--clear` that fell
             # over an undefined function would be a refusal whose remedy is the command that just
             # failed.
-            # shellcheck source-path=SCRIPTDIR
             . "$(dirname "${BASH_SOURCE[0]}")/content-gate.sh"
             rust_gates_run || exit 1
             rust_gates_stamp || exit 1
@@ -557,7 +556,6 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
         # gate it belongs to, which is this workspace's rule 6.
         --clear-pixel)
             cd "$(git rev-parse --show-toplevel)" || exit 1
-            # shellcheck source-path=SCRIPTDIR
             . "$(dirname "${BASH_SOURCE[0]}")/content-gate.sh"
             PIXEL_CLEARED="$(paths_tree_of HEAD crates/sprag-gui crates/sprag-grid)" || exit 1
             pixel_smoke_run || exit 1
@@ -566,7 +564,6 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
             ;;
         --clear-hooks)
             cd "$(git rev-parse --show-toplevel)" || exit 1
-            # shellcheck source-path=SCRIPTDIR
             . "$(dirname "${BASH_SOURCE[0]}")/content-gate.sh"
             HOOK_CLEARED="$(paths_tree_of HEAD .githooks)" || exit 1
             echo "rust-gates: cargo test -p sprag-gate ..." >&2

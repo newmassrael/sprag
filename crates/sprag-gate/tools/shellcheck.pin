@@ -1,0 +1,20 @@
+# The ShellCheck this tree is checked against -- register item 1086.
+#
+# Read by `install-shellcheck` beside this file, which fetches the release asset and
+# refuses one whose SHA-256 is not named here, and by
+# `sprag_gate::shellcheck::pinned_version`, which refuses any other version on PATH.
+# One file for both, so a version bump cannot leave its digests behind: the old
+# digests stop matching the new download and the installer says so.
+#
+# WHY PINNED, MEASURED 2026-09-13 over this tree's 42 shell scripts with the same
+# options: 0.10.0 reports eleven findings 0.11.0 does not (SC2015 x3, SC2002,
+# SC2317 x7) and 0.11.0 reports one 0.10.0 does not (SC2329). An unpinned gate is
+# green on one machine and red on the next about the same bytes.
+#
+# The digests are the ones GitHub publishes for the `.tar.gz` release assets:
+#   gh api repos/koalaman/shellcheck/releases/tags/v0.11.0 --jq '.assets[]'
+version = "0.11.0"
+linux_x86_64 = "b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6"
+linux_aarch64 = "68a8133197a50beb8803f8d42f9908d1af1c5540d4bb05fdfca8c1fa47decefc"
+darwin_x86_64 = "c2c15e08df0e8fbc374c335b230a7ee958c313fa5714817a59aa59f1aa594f51"
+darwin_aarch64 = "339b930feb1ea764467013cc1f72d09cd6b869ebf1013296ba9055ab2ffbd26f"

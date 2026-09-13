@@ -502,6 +502,7 @@ tree_drift_selftest() {
     before_dirs="$(find "$sig_tmp" -maxdepth 1 -name 'sprag-tree-drift.*' -type d 2>/dev/null | wc -l | tr -d ' ')"
     sig_out="$tmp/signalled"
     (
+        # shellcheck disable=SC2030  # the private TMPDIR is meant to end with this subshell
         export TMPDIR="$sig_tmp"
         tree_drift_begin "interrupted" "$repo"
         printf 'ready\n' >"$tmp/ready"
@@ -550,7 +551,6 @@ tree_drift_selftest() {
 # is worse than a gate that fails to check something: the tooling answers *success* to a
 # question it never heard.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
-    # shellcheck source-path=SCRIPTDIR
     . "$(dirname "${BASH_SOURCE[0]}")/scratch-guard.sh"
     # ⛔⛔⛔⛔⛔ AND THE CALLER'S GIT ENVIRONMENT IS CUT BEFORE ANY ARM RUNS —
     # register item 965. `git commit -- <pathspec>` hands its hooks an ABSOLUTE
