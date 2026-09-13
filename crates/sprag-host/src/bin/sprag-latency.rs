@@ -464,7 +464,6 @@ fn paired(
     subject
 }
 
-/// A screen of `COLS` x `ROWS` filled with `fill`, built outside every measured window.
 /// A screen showing what a BLOCKED agent shows: a question and a numbered run under it, in the
 /// bottom rows where [`sprag_detect::DIALOG_WINDOW`] looks.
 ///
@@ -493,6 +492,7 @@ fn dialog_screen() -> Screen {
     VtPort::screen(&emulator).clone()
 }
 
+/// A screen of `COLS` x `ROWS` filled with `fill`, built outside every measured window.
 fn filled(fill: &str) -> Screen {
     let mut emulator = Emulator::new(COLS, ROWS);
     let mut line = String::new();
@@ -879,11 +879,6 @@ fn read_every_foreground_pgid(host: &HostState) -> usize {
     read
 }
 
-/// One sweep pass over `host`'s registry, at `now`, with discovery on — the daemon's own call.
-///
-/// `jobs` is the host's OWN foreground-job watch and must be the same one across calls: a watch
-/// handed a fresh map each pass would re-establish every pane every time and so would never report
-/// a change, which is the condition this instrument would then be measuring instead of the daemon's.
 /// Where this instrument looks for mute breadcrumbs — a directory IT owns, never the ambient state
 /// home (register item 700's ruling, which is why [`sweep_once`] takes the reader).
 ///
@@ -906,6 +901,11 @@ fn mute_reader() -> sprag_host::MuteReader<'static> {
     )
 }
 
+/// One sweep pass over `host`'s registry, at `now`, with discovery on — the daemon's own call.
+///
+/// `jobs` is the host's OWN foreground-job watch and must be the same one across calls: a watch
+/// handed a fresh map each pass would re-establish every pane every time and so would never report
+/// a change, which is the condition this instrument would then be measuring instead of the daemon's.
 fn pass(host: &HostState, clock: &Arc<AgentClock>, jobs: &JobWatch) {
     let report = sweep_once(
         host.registry(),
