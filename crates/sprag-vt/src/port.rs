@@ -500,11 +500,6 @@ impl Cell {
     }
 }
 
-/// A cell row's text: clusters concatenated, trailing blanks trimmed. The ONE
-/// row-to-text mapping shared by [`Screen::row_text`] (visible rows) and
-/// [`Screen::scrollback_rows`] (scrolled-off rows), so the capture path and the
-/// scrollback never drift. Wide trailers contribute `""`, blank cells `" "`.
-#[must_use]
 /// Collect `needle`'s matches in ONE line's `cells` into `out` — the per-line half of
 /// [`Screen::find`]. `needle` must already be ASCII-lowercased; `text` / `starts` are the caller's
 /// scratch buffers (cleared here, reused across lines). Returns `false` when [`FIND_MATCH_CAP`] was
@@ -732,6 +727,11 @@ fn grid_span(shares: &[RowShare<'_>], line: usize, first: usize, last: usize) ->
     })
 }
 
+/// A cell row's text: clusters concatenated, trailing blanks trimmed. The ONE
+/// row-to-text mapping shared by [`Screen::row_text`] (visible rows) and
+/// [`Screen::scrollback_rows`] (scrolled-off rows), so the capture path and the
+/// scrollback never drift. Wide trailers contribute `""`, blank cells `" "`.
+#[must_use]
 fn cells_text(cells: &[Cell]) -> String {
     let mut line = String::new();
     for cell in cells {
@@ -1538,12 +1538,6 @@ impl ScrollRegion {
     }
 }
 
-/// A queryable terminal screen: a `cols x rows` grid of cells plus the
-/// cursor, screen kind, and per-row damage generations.
-///
-/// This is the authoritative terminal state sprag owns (DESIGN.md §3:
-/// the producer owns state; pinion is a projection). A VT backend fills
-/// it; the projection reads it.
 /// What a reader learned from [`Screen::lines_since`]: the lines, where to resume, and how many it
 /// was too late for.
 ///
@@ -1602,6 +1596,12 @@ pub struct LinesSince {
     pub restarted: bool,
 }
 
+/// A queryable terminal screen: a `cols x rows` grid of cells plus the
+/// cursor, screen kind, and per-row damage generations.
+///
+/// This is the authoritative terminal state sprag owns (DESIGN.md §3:
+/// the producer owns state; pinion is a projection). A VT backend fills
+/// it; the projection reads it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Screen {
     cols: u16,
@@ -4856,11 +4856,6 @@ mod tests {
         );
     }
 
-    /// Columns are CELLS, not bytes or chars. A wide cluster before a match shifts it by TWO
-    /// columns, and a match ON one is two columns wide (its trailer is part of the highlight).
-    /// REVERT-PROOF for the `starts` map + the trailer absorption: a byte-offset column would report
-    /// `col: 3` for the ASCII match below, and dropping the trailer walk would report `cols: 1` for
-    /// the wide one.
     /// The DISPLAY view: every matching line ONCE, with its text — what a grep-like consumer prints.
     /// Deduping is the point: the row below carries two matches and must still be one line.
     #[test]
@@ -4888,6 +4883,11 @@ mod tests {
         );
     }
 
+    /// Columns are CELLS, not bytes or chars. A wide cluster before a match shifts it by TWO
+    /// columns, and a match ON one is two columns wide (its trailer is part of the highlight).
+    /// REVERT-PROOF for the `starts` map + the trailer absorption: a byte-offset column would report
+    /// `col: 3` for the ASCII match below, and dropping the trailer walk would report `cols: 1` for
+    /// the wide one.
     #[test]
     fn find_columns_are_cells_not_bytes_for_a_wide_cluster() {
         let e = em(16, 2, "x\u{ac00}y err");
