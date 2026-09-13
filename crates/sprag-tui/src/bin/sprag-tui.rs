@@ -2041,13 +2041,6 @@ fn paste(host: &WireHost, focus: Option<PaneId>, text: &str) {
 /// `ws_xpixel` / `ws_ypixel` reports even while a TUI is the one resizing it.
 const CELL_PX_UNKNOWN: (u16, u16) = (0, 0);
 
-/// The rectangle the arrangement is laid out over: the session's ARBITRATED window if the host has
-/// one, else this terminal's own screen.
-///
-/// The fallback is not a default, it is the honest answer to a different question. A host with no
-/// window (an older daemon, or one no client has reported an area to) is saying nothing about what
-/// the panes should be, and this client's own screen is then the only fact available — which is
-/// exactly what it used before `window-size` existed.
 /// Where the person is typing, in the WINDOW's coordinates — the cell this client's view follows.
 ///
 /// The focused pane's cursor when it has one that is inside the pane, and the pane's top-left
@@ -2154,6 +2147,13 @@ fn rewrapped_token(token: &ProjectionToken, cells: &GridBuffer) -> ProjectionTok
     }
 }
 
+/// The rectangle the arrangement is laid out over: the session's ARBITRATED window if the host has
+/// one, else this terminal's own screen.
+///
+/// The fallback is not a default, it is the honest answer to a different question. A host with no
+/// window (an older daemon, or one no client has reported an area to) is saying nothing about what
+/// the panes should be, and this client's own screen is then the only fact available — which is
+/// exactly what it used before `window-size` existed.
 fn window_area(host: &WireHost, screen: Rect) -> Rect {
     match host.window_size() {
         Some((cols, rows)) => Rect::screen(cols, rows),
@@ -2161,11 +2161,6 @@ fn window_area(host: &WireHost, screen: Rect) -> Rect {
     }
 }
 
-/// Tell the host how big this terminal is — the input its `window-size` policy arbitrates over.
-///
-/// Called at boot and on every window change, which are exactly the moments the answer can move.
-/// The daemon ignores a repeat of the same numbers, so a resize that ends where it started costs
-/// one call and wakes nobody.
 /// The status row's content for THIS instant: the message while one is live, and nothing once its
 /// deadline has passed.
 ///
@@ -2204,6 +2199,11 @@ fn paint_status(
     Ok(())
 }
 
+/// Tell the host how big this terminal is — the input its `window-size` policy arbitrates over.
+///
+/// Called at boot and on every window change, which are exactly the moments the answer can move.
+/// The daemon ignores a repeat of the same numbers, so a resize that ends where it started costs
+/// one call and wakes nobody.
 fn report_size(host: &WireHost, screen: Rect) {
     host.report_client_size(screen.cols, screen.rows);
 }
