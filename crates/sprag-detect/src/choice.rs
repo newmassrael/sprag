@@ -278,14 +278,14 @@ mod tests {
     use super::*;
     use sprag_vt::{Emulator, VtPort};
 
-    /// The MECHANISM's tests. What the mechanism is a mechanism FOR — six captured dialogs from two
-    /// real agents — is asserted beside those fixtures, in the crate root's tests.
     fn asked_screen(lines: &[&str]) -> Emulator {
         let mut em = Emulator::new(80, 24);
         em.advance(lines.join("\r\n").as_bytes());
         em
     }
 
+    /// The MECHANISM's tests. What the mechanism is a mechanism FOR — six captured dialogs from two
+    /// real agents — is asserted beside those fixtures, in the crate root's tests.
     fn asked(lines: &[&str]) -> Option<Question> {
         question(asked_screen(lines).screen(), 12)
     }
