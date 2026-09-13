@@ -4754,26 +4754,6 @@ impl PaneResourcesWire {
     }
 }
 
-/// Read until the answer has a rate in it — ONE definition, for every client that asks once and
-/// leaves.
-///
-/// # Why a one-shot caller cannot just read
-///
-/// A rate needs two samples. A daemon nobody has asked yet has one sample of each pane the moment it
-/// is asked, so the first answer to `sprag resources` on a quiet daemon is all
-/// [`Settling`](sprag_terminal::Cpu::Settling) — which is honest and is not a number. A client that
-/// polls (a display) simply gets rates from its second wake onwards and needs none of this; a client
-/// that asks once and prints has to wait out one window, and
-/// [`SETTLE`](sprag_terminal::SETTLE) is that window by definition.
-///
-/// It is HERE rather than in either client because the `sprag` CLI and `sprag-mcp` both ask once —
-/// two copies would be two answers to "how long is long enough", which is the drift this crate's
-/// whole vocabulary half exists to prevent.
-///
-/// # Errors
-///
-/// Whatever `read` returns. It is attempted at most twice, so a caller sees at most one extra
-/// round trip and never a loop.
 /// The mux control external query slot: WHAT IS WRONG with the machine the panes run on.
 ///
 /// # Why the terminal is the one that answers a question that is mostly not about it
@@ -4838,6 +4818,26 @@ pub fn doctor_over(window_ms: u64) -> String {
 /// waiting on the command does not think it hung.
 pub const DOCTOR_WINDOW: Duration = sprag_terminal::SETTLE;
 
+/// Read until the answer has a rate in it — ONE definition, for every client that asks once and
+/// leaves.
+///
+/// # Why a one-shot caller cannot just read
+///
+/// A rate needs two samples. A daemon nobody has asked yet has one sample of each pane the moment it
+/// is asked, so the first answer to `sprag resources` on a quiet daemon is all
+/// [`Settling`](sprag_terminal::Cpu::Settling) — which is honest and is not a number. A client that
+/// polls (a display) simply gets rates from its second wake onwards and needs none of this; a client
+/// that asks once and prints has to wait out one window, and
+/// [`SETTLE`](sprag_terminal::SETTLE) is that window by definition.
+///
+/// It is HERE rather than in either client because the `sprag` CLI and `sprag-mcp` both ask once —
+/// two copies would be two answers to "how long is long enough", which is the drift this crate's
+/// whole vocabulary half exists to prevent.
+///
+/// # Errors
+///
+/// Whatever `read` returns. It is attempted at most twice, so a caller sees at most one extra
+/// round trip and never a loop.
 pub fn settled<E>(
     mut read: impl FnMut() -> Result<PaneResourcesWire, E>,
 ) -> Result<PaneResourcesWire, E> {
@@ -7993,28 +7993,6 @@ mod tests {
         );
     }
 
-    /// The declaration says the exact words the wire uses — a TRIPWIRE on the one spelling
-    /// everything else derives from.
-    ///
-    /// **This test's first draft claimed far more and proved less, and R155's review proved
-    /// the gap by experiment.** It asserted "the family answers exactly the paths it
-    /// advertises — checked with pinion's OWN matcher, the same predicate its dispatch
-    /// uses". Three lies in one sentence: `SchemaField::addresses` runs in NO dispatch path
-    /// (pinion's `scene/query` calls `intro.query(path).ok_or(UnknownIntrospectPath)`; the
-    /// matcher is reachable only through `read_only_or_unknown`, on `intervene`); the test
-    /// calls no `query`, so it cannot observe what the family ANSWERS; and the `addresses`
-    /// assertions were TAUTOLOGIES — a reviewer re-ran all four against a field renamed to
-    /// `frames.<offset>` and every one still passed, because `cells_slot_at` builds its
-    /// probe FROM `literal_prefix()`, so both sides move together. It was the R154 scar
-    /// ("the test builds its tag from the very const under test") repeated one round later,
-    /// wearing a doc that congratulated itself for avoiding it.
-    ///
-    /// So the tautologies are gone and what remains is the hardcoded spelling the old doc
-    /// apologized for ("rather than sprag's spelling of it"). That line is the whole value:
-    /// it is the only assertion a rename cannot satisfy, and a rename is the only drift
-    /// worth catching here. `the_cells_family_answers_the_paths_it_declares` in `rpc.rs`
-    /// owns the other half — what the surface actually answers — because that needs a live
-    /// pane, which is exactly why this test could never have proved it.
     /// **THE HANDS OBJECT SURVIVES ITS OWN ROUND TRIP, AND AN UNREADABLE ONE IS NOT ZERO** —
     /// register item 653.
     ///
@@ -8149,6 +8127,28 @@ mod tests {
         );
     }
 
+    /// The declaration says the exact words the wire uses — a TRIPWIRE on the one spelling
+    /// everything else derives from.
+    ///
+    /// **This test's first draft claimed far more and proved less, and R155's review proved
+    /// the gap by experiment.** It asserted "the family answers exactly the paths it
+    /// advertises — checked with pinion's OWN matcher, the same predicate its dispatch
+    /// uses". Three lies in one sentence: `SchemaField::addresses` runs in NO dispatch path
+    /// (pinion's `scene/query` calls `intro.query(path).ok_or(UnknownIntrospectPath)`; the
+    /// matcher is reachable only through `read_only_or_unknown`, on `intervene`); the test
+    /// calls no `query`, so it cannot observe what the family ANSWERS; and the `addresses`
+    /// assertions were TAUTOLOGIES — a reviewer re-ran all four against a field renamed to
+    /// `frames.<offset>` and every one still passed, because `cells_slot_at` builds its
+    /// probe FROM `literal_prefix()`, so both sides move together. It was the R154 scar
+    /// ("the test builds its tag from the very const under test") repeated one round later,
+    /// wearing a doc that congratulated itself for avoiding it.
+    ///
+    /// So the tautologies are gone and what remains is the hardcoded spelling the old doc
+    /// apologized for ("rather than sprag's spelling of it"). That line is the whole value:
+    /// it is the only assertion a rename cannot satisfy, and a rename is the only drift
+    /// worth catching here. `the_cells_family_answers_the_paths_it_declares` in `rpc.rs`
+    /// owns the other half — what the surface actually answers — because that needs a live
+    /// pane, which is exactly why this test could never have proved it.
     #[test]
     fn the_cells_family_declares_the_wire_words_it_uses() {
         // The template IS the definition; pin it verbatim.
@@ -9568,47 +9568,6 @@ mod tests {
         }
     }
 
-    /// ⚠⚠ THE VALUE-SPACE PIN — the half of the wire the surface pin above is BLIND to.
-    ///
-    /// [`PINNED_SURFACE`] compares the ADDRESSES the daemon serves, and the shape pin renders one
-    /// canonical value of each type a client decodes. Neither can see an enum GAINING AN ARM: no
-    /// address moves, and every canonical value it already rendered still renders byte-identically.
-    /// R342 added `Unmeasured::Refused` and `Check::PaneAdmission`, ran the entire suite, and it
-    /// went green — while a `sprag` built the day before could no longer parse either answer.
-    ///
-    /// # Why an added arm is a BREAK where an added key is not
-    ///
-    /// An added answer KEY is absent-not-wrong to an old reader: it reads the keys it knows and
-    /// ignores the rest. An added VARIANT is not, because serde has nowhere to put it — a decoder
-    /// meeting `"pane-admission"` for a three-armed enum fails the whole document, so one refused
-    /// pane on one host turns `sprag doctor` into a parse error rather than a row nobody reads.
-    ///
-    /// # What this asserts
-    ///
-    /// Every closed set a peer DECODES out of an answer, pinned by its serialised words. Each list
-    /// is derived from the type's own `ALL` — a hand-typed list is the one a new arm is left out
-    /// of, which is the defect this pin exists for and would be an absurd way to build it.
-    ///
-    /// ⚠ This said *"the two closed sets"* until register item 545, by which round it walked nine.
-    /// The count aged because the sentence counted what the pin held the day it was written instead
-    /// of naming the rule for joining it, which is the line above.
-    ///
-    /// # ⚠⚠⚠⚠ Why `ceiling` is walked here although NOTHING decodes it WHOLE
-    ///
-    /// The paragraph above describes a LOUD break: serde has nowhere to put an unknown word, so the
-    /// document fails. `ceiling` is not that. Both renderers print it as a string, and
-    /// `sprag_plugin::Ceiling` publishes no `WIRE_WORDS` — its own doc records why, and that
-    /// decision stands. The break this key has instead is QUIETER and worse: `outcome_from_words`
-    /// reads it back through `Ceiling::from_wire` and answers `Ceiling::Iterations` for a word it
-    /// does not know, so a run restored by an older reader comes back saying *"you ran out of
-    /// steps"* about a guardrail it never met. **A word that fails a document is found the first
-    /// time anybody looks; a word that becomes a false sentence is never found at all.**
-    ///
-    /// ⚠⚠ So membership here is *what a peer decodes*, not *what serde would reject* — and this set
-    /// joins through `ALL` rather than through a published list, which is the second of the two
-    /// routes register item 545 named and the only one `Ceiling`'s own doc leaves open. Its words
-    /// had been outside every pin since the type existed, and the pin had twice written that fact
-    /// into itself in a comment rather than closing it.
     /// ⚠⚠ **AT MODULE SCOPE, so a SIBLING GATE can read it** — register item 816. It lived inside
     /// [`an_answers_value_space_cannot_widen_under_the_protocol_number`] and was therefore
     /// unreadable from any other test, which is why *what this pin walks that `sprag words` does
@@ -10141,6 +10100,47 @@ mod tests {
         }
     }
 
+    /// ⚠⚠ THE VALUE-SPACE PIN — the half of the wire the surface pin above is BLIND to.
+    ///
+    /// [`PINNED_SURFACE`] compares the ADDRESSES the daemon serves, and the shape pin renders one
+    /// canonical value of each type a client decodes. Neither can see an enum GAINING AN ARM: no
+    /// address moves, and every canonical value it already rendered still renders byte-identically.
+    /// R342 added `Unmeasured::Refused` and `Check::PaneAdmission`, ran the entire suite, and it
+    /// went green — while a `sprag` built the day before could no longer parse either answer.
+    ///
+    /// # Why an added arm is a BREAK where an added key is not
+    ///
+    /// An added answer KEY is absent-not-wrong to an old reader: it reads the keys it knows and
+    /// ignores the rest. An added VARIANT is not, because serde has nowhere to put it — a decoder
+    /// meeting `"pane-admission"` for a three-armed enum fails the whole document, so one refused
+    /// pane on one host turns `sprag doctor` into a parse error rather than a row nobody reads.
+    ///
+    /// # What this asserts
+    ///
+    /// Every closed set a peer DECODES out of an answer, pinned by its serialised words. Each list
+    /// is derived from the type's own `ALL` — a hand-typed list is the one a new arm is left out
+    /// of, which is the defect this pin exists for and would be an absurd way to build it.
+    ///
+    /// ⚠ This said *"the two closed sets"* until register item 545, by which round it walked nine.
+    /// The count aged because the sentence counted what the pin held the day it was written instead
+    /// of naming the rule for joining it, which is the line above.
+    ///
+    /// # ⚠⚠⚠⚠ Why `ceiling` is walked here although NOTHING decodes it WHOLE
+    ///
+    /// The paragraph above describes a LOUD break: serde has nowhere to put an unknown word, so the
+    /// document fails. `ceiling` is not that. Both renderers print it as a string, and
+    /// `sprag_plugin::Ceiling` publishes no `WIRE_WORDS` — its own doc records why, and that
+    /// decision stands. The break this key has instead is QUIETER and worse: `outcome_from_words`
+    /// reads it back through `Ceiling::from_wire` and answers `Ceiling::Iterations` for a word it
+    /// does not know, so a run restored by an older reader comes back saying *"you ran out of
+    /// steps"* about a guardrail it never met. **A word that fails a document is found the first
+    /// time anybody looks; a word that becomes a false sentence is never found at all.**
+    ///
+    /// ⚠⚠ So membership here is *what a peer decodes*, not *what serde would reject* — and this set
+    /// joins through `ALL` rather than through a published list, which is the second of the two
+    /// routes register item 545 named and the only one `Ceiling`'s own doc leaves open. Its words
+    /// had been outside every pin since the type existed, and the pin had twice written that fact
+    /// into itself in a comment rather than closing it.
     #[test]
     fn an_answers_value_space_cannot_widen_under_the_protocol_number() {
         // The serialised WORD of each arm. A unit variant renders as its string; a carrying one
