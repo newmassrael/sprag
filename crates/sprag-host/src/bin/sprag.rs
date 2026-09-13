@@ -4056,13 +4056,6 @@ fn one_pane_at_most<'a>(rest: &'a [String], command: &str) -> io::Result<Option<
     Ok(rest.first().map(String::as_str))
 }
 
-/// The ids of the panes THE CALLER'S OWN window holds — the one read behind every pane-id check and
-/// the `panes` listing, so a client and the daemon cannot disagree on which panes are addressable.
-///
-/// ⚠ Its window is [`here_params`]'s; see there for the answer this used to give and for the
-/// callers whose own prose it makes true. A pane of ANOTHER window is still reachable — by id or by
-/// name — through [`resolve_pane`]'s session-wide fall-through, which is register item 686's path
-/// and is what keeps this narrowing from being a re-narrowing.
 /// ⛔⛔⛔⛔⛔ **WHAT `resize-pane -x -y` SAYS, AS A PURE FUNCTION OF WHAT THE PANE TURNED OUT TO
 /// BE** — register item 899.
 ///
@@ -4142,6 +4135,13 @@ fn pane_size(conn: &mut HostConn, session: Option<&str>, pane: Option<u64>) -> O
     Some((entry["cols"].as_u64()?, entry["rows"].as_u64()?))
 }
 
+/// The ids of the panes THE CALLER'S OWN window holds — the one read behind every pane-id check and
+/// the `panes` listing, so a client and the daemon cannot disagree on which panes are addressable.
+///
+/// ⚠ Its window is [`here_params`]'s; see there for the answer this used to give and for the
+/// callers whose own prose it makes true. A pane of ANOTHER window is still reachable — by id or by
+/// name — through [`resolve_pane`]'s session-wide fall-through, which is register item 686's path
+/// and is what keeps this narrowing from being a re-narrowing.
 fn pane_ids(conn: &mut HostConn, session: Option<&str>) -> io::Result<Vec<u64>> {
     let listed: Value = query_slot(conn, here_params(session, mux_action_path(PANES_SLOT)))?;
     Ok(listed
@@ -4196,14 +4196,6 @@ struct PaneSite {
     window: Option<String>,
 }
 
-/// Resolve a pane argument — a NAME or an id — anywhere in the scoped SESSION.
-///
-/// The NAME half is the daemon's own grammar, read through
-/// [`PaneAddress`] so the CLI and the agent surface split
-/// digits from names by one rule, and refused through
-/// [`unknown_pane_name_with`] so they refuse in
-/// one sentence. The ID half stays a number because that is what `sprag panes` prints and what the
-/// daemon's logs say.
 /// ⛔⛔⛔⛔⛔ **THE PANE THIS COMMAND IS BEING TYPED IN**, when the daemon still holds it — register
 /// item 871, and the reason a run launched from a shell can have an owner at all.
 ///
@@ -4252,6 +4244,14 @@ fn asking_pane(conn: &mut HostConn, session: Option<&str>) -> Option<u64> {
     }
 }
 
+/// Resolve a pane argument — a NAME or an id — anywhere in the scoped SESSION.
+///
+/// The NAME half is the daemon's own grammar, read through
+/// [`PaneAddress`] so the CLI and the agent surface split
+/// digits from names by one rule, and refused through
+/// [`unknown_pane_name_with`] so they refuse in
+/// one sentence. The ID half stays a number because that is what `sprag panes` prints and what the
+/// daemon's logs say.
 fn resolve_pane(
     conn: &mut HostConn,
     session: Option<&str>,
@@ -7337,32 +7337,6 @@ fn usage_for(
     }
 }
 
-/// `runs [-t SESSION]`: every loop this daemon holds, and how the finished ones ended.
-///
-/// # Why the scope is PRE-FLIGHTED, and what it used to answer instead
-///
-/// These four verbs pass `-t` through as a request's out-of-band scope. A session name nobody has
-/// is refused by the daemon as *nothing is served at that path*, because that is the only thing an
-/// unresolvable scope can look like from the wire — and this client reads that fault as VERSION
-/// SKEW, which for every other cause it is. So a typo used to come back as one of two wrong
-/// answers, measured 2026-08-17 against a daemon built from HEAD that serves all four paths:
-///
-/// ```text
-///                       -t work (a session that exists)   -t nosuch
-/// orchestrate           names the plugins                 host rpc error: NoExternalAtPath
-/// runs                  no runs (start one ...)           host rpc error: NoExternalAtPath
-/// cancel-run 999        no run 999 is in flight           "... is older than this build of
-/// stand-down 999        no run 999 is in flight            sprag. Restart it: `sprag kill-server`"
-/// ```
-///
-/// ⚠⚠⚠⚠ **The second pair is worse than the leaked variant name.** A leaked variant is ugly and
-/// admits it failed; that sentence is confident and wrong — it diagnoses skew that is not there and
-/// tells the operator to end EVERY session on the machine, in answer to a mistyped word. On a host
-/// running the debt loop, following it kills live runs.
-///
-/// [`connect_scoped`] is the pre-flight every window and pane verb already made, and the one item
-/// 425 gave `processes` / `resources` for this same half of the same defect. Found by the sweep
-/// that item asked of every other verb publishing `-t`: nine readers probed, eight already clean.
 /// **HOW ONE CONVERSATION IS ATTACHED TO ONE RUN** — register item 865's ⑷.
 ///
 /// # ⛔⛔⛔⛔⛔ The two ends are different acts, so they are two words and not one
@@ -7583,6 +7557,32 @@ fn my_runs(args: Vec<String>) -> io::Result<()> {
     Ok(())
 }
 
+/// `runs [-t SESSION]`: every loop this daemon holds, and how the finished ones ended.
+///
+/// # Why the scope is PRE-FLIGHTED, and what it used to answer instead
+///
+/// These four verbs pass `-t` through as a request's out-of-band scope. A session name nobody has
+/// is refused by the daemon as *nothing is served at that path*, because that is the only thing an
+/// unresolvable scope can look like from the wire — and this client reads that fault as VERSION
+/// SKEW, which for every other cause it is. So a typo used to come back as one of two wrong
+/// answers, measured 2026-08-17 against a daemon built from HEAD that serves all four paths:
+///
+/// ```text
+///                       -t work (a session that exists)   -t nosuch
+/// orchestrate           names the plugins                 host rpc error: NoExternalAtPath
+/// runs                  no runs (start one ...)           host rpc error: NoExternalAtPath
+/// cancel-run 999        no run 999 is in flight           "... is older than this build of
+/// stand-down 999        no run 999 is in flight            sprag. Restart it: `sprag kill-server`"
+/// ```
+///
+/// ⚠⚠⚠⚠ **The second pair is worse than the leaked variant name.** A leaked variant is ugly and
+/// admits it failed; that sentence is confident and wrong — it diagnoses skew that is not there and
+/// tells the operator to end EVERY session on the machine, in answer to a mistyped word. On a host
+/// running the debt loop, following it kills live runs.
+///
+/// [`connect_scoped`] is the pre-flight every window and pane verb already made, and the one item
+/// 425 gave `processes` / `resources` for this same half of the same defect. Found by the sweep
+/// that item asked of every other verb publishing `-t`: nine readers probed, eight already clean.
 fn runs(args: Vec<String>) -> io::Result<()> {
     // ⛔⛔⛔⛔⛔ **WHAT A WATCHER MAY PARSE OFF THIS VERB, PUBLISHED** — register item 892. The
     // repayment skill's `watch.sh` reads this output by POSITION, and the source of those five
@@ -17105,9 +17105,6 @@ mod tests {
         );
     }
 
-    /// `-t` is OPTIONAL for a pane command (the module docs' rule), and everything after a bare
-    /// `--` is payload — so a command run in a new pane may contain `-t` without this parse
-    /// claiming it.
     /// ⚠⚠ **EVERY SURFACE THIS CRATE SERVES IS REACHABLE FROM `show-grammar`** — the gate that
     /// would have caught the plugin host being undiscoverable for two rounds.
     ///
@@ -17308,6 +17305,9 @@ mod tests {
         );
     }
 
+    /// `-t` is OPTIONAL for a pane command (the module docs' rule), and everything after a bare
+    /// `--` is payload — so a command run in a new pane may contain `-t` without this parse
+    /// claiming it.
     #[test]
     fn a_pane_commands_scope_is_optional_and_stops_at_a_double_dash() {
         let split = |args: &[&str]| {
