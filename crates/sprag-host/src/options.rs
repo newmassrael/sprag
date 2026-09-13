@@ -280,23 +280,6 @@ pub const DISPLAY_TIME: &str = "display-time";
 /// once. tmux accepts `0` and refuses a negative value, which is `Number { min: 0 }` exactly.
 pub const REPEAT_TIME: &str = "repeat-time";
 
-/// How long an agent-state verdict resting on an ABSENCE must hold before it is published, in
-/// milliseconds — H3's settle window.
-///
-/// A DAEMON-side option like [`WINDOW_SIZE`], and the reason is stronger here than "the daemon owns
-/// the state": the verdict is computed once per pane and put on the pane list for every client
-/// (H3's D2), so a per-client window would be several clients disagreeing about what one published
-/// fact means. Nothing about it crosses the wire — what crosses is the settled `agent` key.
-///
-/// Zero is a DECISION, the third setting to draw [`HISTORY_LIMIT`]'s distinction: `0` means publish
-/// every reading as it arrives, which is hysteresis turned off. That is a legitimate thing to want
-/// from a detector you are debugging, and it is exactly what the measurements say NOT to ship as the
-/// default — R249's M2 measured the working spinner alternating at about 1 Hz, and a window shorter
-/// than that animation publishes the flicker the window exists to absorb.
-///
-/// The default is [`sprag_detect::DEFAULT_SETTLE`] rather than a number spelled here, held to it by
-/// `the_agent_settle_default_is_the_detectors_own` — the treatment [`HISTORY_LIMIT`] gets against the
-/// emulator and [`REPEAT_TIME`] against the keymap.
 /// Whether a client TOO NARROW for a pane re-wraps that pane's lines into the width it can show,
 /// instead of showing a slice of them — `on` / `off`.
 ///
@@ -324,6 +307,23 @@ pub const REPEAT_TIME: &str = "repeat-time";
 /// anybody can turn off.
 pub const REWRAP: &str = "rewrap";
 
+/// How long an agent-state verdict resting on an ABSENCE must hold before it is published, in
+/// milliseconds — H3's settle window.
+///
+/// A DAEMON-side option like [`WINDOW_SIZE`], and the reason is stronger here than "the daemon owns
+/// the state": the verdict is computed once per pane and put on the pane list for every client
+/// (H3's D2), so a per-client window would be several clients disagreeing about what one published
+/// fact means. Nothing about it crosses the wire — what crosses is the settled `agent` key.
+///
+/// Zero is a DECISION, the third setting to draw [`HISTORY_LIMIT`]'s distinction: `0` means publish
+/// every reading as it arrives, which is hysteresis turned off. That is a legitimate thing to want
+/// from a detector you are debugging, and it is exactly what the measurements say NOT to ship as the
+/// default — R249's M2 measured the working spinner alternating at about 1 Hz, and a window shorter
+/// than that animation publishes the flicker the window exists to absorb.
+///
+/// The default is [`sprag_detect::DEFAULT_SETTLE`] rather than a number spelled here, held to it by
+/// `the_agent_settle_default_is_the_detectors_own` — the treatment [`HISTORY_LIMIT`] gets against the
+/// emulator and [`REPEAT_TIME`] against the keymap.
 pub const AGENT_SETTLE_TIME: &str = "agent-settle-time";
 
 /// **WHETHER A RUN IS DRIVEN BY A PROCESS OF ITS OWN** rather than by a thread of this daemon —
