@@ -258,11 +258,6 @@ fn spawn_daemon_with(
     (Daemon(child, sock.clone()), sock)
 }
 
-/// Add a pane running `program` to the daemon at `sock`, returning its host id.
-///
-/// Over the mux spawn action rather than through the `sprag` CLI: that binary belongs to a third
-/// package, and the point here is a second pane, not a second way of asking for one.
-/// The pane ids the daemon's UNSCOPED `panes` slot lists — the current window's, in its order.
 /// The panes of ONE named window, whichever window the session is currently on — R311's
 /// `WINDOW_PARAM`, used here to reach into a window an agent opened DETACHED (so it is by
 /// construction not the current one).
@@ -317,33 +312,6 @@ fn mux_pane_text(sock: &Path, window: &str, pane: u64) -> String {
 
 // ----- the relay: a socket the harness owns, so round trips can be counted -----
 
-/// A Unix socket **the server under test is given instead of the daemon's**, forwarding every byte
-/// to the real daemon and COUNTING the connections that pass through it.
-///
-/// # ⛔⛔⛔⛔⛔ Why a claim about ROUND TRIPS cannot be measured inside the product — item 770
-///
-/// `our_window`'s doc claims *"a message costs at most ONE tree read however many times it consults
-/// this"*. Nothing measured it: deleting the stamp and asking the daemon every time leaves every
-/// gate in this file green, because the only thing that moves is COST. And a counter added to
-/// `sprag-mcp` for a test to read would be a product surface built for a test — the shape the
-/// register forbids by name.
-///
-/// What a harness may own instead is the SOCKET. `HostConn::connect_until_it_answers` opens a FRESH connection per
-/// request — `host_call_unscoped_answered` resolves the socket and connects on every single call —
-/// so on this wire **one connection is one round trip**, and counting them needs no product change
-/// at all. That equivalence is the whole reason this works, and it is asserted rather than assumed:
-/// the gate below pins an EXACT figure, so the day `sprag-mcp` starts pooling connections the number
-/// moves and this file says so instead of quietly measuring something else.
-///
-/// # ⚠⚠⚠⚠ It has to be the server's ONLY door, and an undercount is the dangerous direction
-///
-/// A relay that saw half the traffic would report half the round trips — and half passes an upper
-/// bound. That is register item 770's own warning (`host_sock` has TWO layers: this process's
-/// `SPRAG_HOST_RPC_SOCK`, else the first `/proc` ancestor carrying one), and it is why the gate
-/// asserts `==` rather than `<=`. The child is handed THIS path in its own environment, which wins
-/// over the ancestor walk — the precedence `the_child_env_socket_wins_over_an_ancestors` holds — so
-/// there is no second address for it to reach, and a bypass would show up as a count that is too
-/// LOW rather than as a silent pass.
 /// ⛔⛔⛔⛔⛔ **AN ACCEPTED CONNECTION WITH THE LISTENER'S FLAGS TAKEN OFF IT** — register item 776,
 /// and this workspace's answer to the same divergence for the second time.
 ///
@@ -386,6 +354,33 @@ impl Relayed {
     }
 }
 
+/// A Unix socket **the server under test is given instead of the daemon's**, forwarding every byte
+/// to the real daemon and COUNTING the connections that pass through it.
+///
+/// # ⛔⛔⛔⛔⛔ Why a claim about ROUND TRIPS cannot be measured inside the product — item 770
+///
+/// `our_window`'s doc claims *"a message costs at most ONE tree read however many times it consults
+/// this"*. Nothing measured it: deleting the stamp and asking the daemon every time leaves every
+/// gate in this file green, because the only thing that moves is COST. And a counter added to
+/// `sprag-mcp` for a test to read would be a product surface built for a test — the shape the
+/// register forbids by name.
+///
+/// What a harness may own instead is the SOCKET. `HostConn::connect_until_it_answers` opens a FRESH connection per
+/// request — `host_call_unscoped_answered` resolves the socket and connects on every single call —
+/// so on this wire **one connection is one round trip**, and counting them needs no product change
+/// at all. That equivalence is the whole reason this works, and it is asserted rather than assumed:
+/// the gate below pins an EXACT figure, so the day `sprag-mcp` starts pooling connections the number
+/// moves and this file says so instead of quietly measuring something else.
+///
+/// # ⚠⚠⚠⚠ It has to be the server's ONLY door, and an undercount is the dangerous direction
+///
+/// A relay that saw half the traffic would report half the round trips — and half passes an upper
+/// bound. That is register item 770's own warning (`host_sock` has TWO layers: this process's
+/// `SPRAG_HOST_RPC_SOCK`, else the first `/proc` ancestor carrying one), and it is why the gate
+/// asserts `==` rather than `<=`. The child is handed THIS path in its own environment, which wins
+/// over the ancestor walk — the precedence `the_child_env_socket_wins_over_an_ancestors` holds — so
+/// there is no second address for it to reach, and a bypass would show up as a count that is too
+/// LOW rather than as a silent pass.
 struct DaemonRelay {
     /// The address handed to the server — the path it will connect to for every request.
     path: PathBuf,
@@ -520,6 +515,7 @@ fn mux_current_window(sock: &Path) -> String {
     .to_owned()
 }
 
+/// The pane ids the daemon's UNSCOPED `panes` slot lists — the current window's, in its order.
 fn mux_query_panes(sock: &Path) -> Vec<u64> {
     let mut conn =
         HostConn::connect_until_it_answers(sock, DEADLINE).expect("connect to the daemon");
@@ -538,6 +534,10 @@ fn mux_query_panes(sock: &Path) -> Vec<u64> {
     .unwrap_or_default()
 }
 
+/// Add a pane running `program` to the daemon at `sock`, returning its host id.
+///
+/// Over the mux spawn action rather than through the `sprag` CLI: that binary belongs to a third
+/// package, and the point here is a second pane, not a second way of asking for one.
 fn add_pane(sock: &Path, program: &[&str]) -> u64 {
     let mut conn =
         HostConn::connect_until_it_answers(sock, DEADLINE).expect("connect to the daemon");
@@ -1101,7 +1101,6 @@ impl McpServer {
     }
 }
 
-/// The text of a `tools/call` result's first content block.
 /// Every whitespace character removed — the only sound reading of a pane's RENDERED text for a
 /// needle that may be WRAPPED.
 ///
@@ -1210,6 +1209,7 @@ fn a_marker_a_row_boundary_cut_in_half_is_still_a_marker() {
     }
 }
 
+/// The text of a `tools/call` result's first content block.
 fn tool_text(result: &Value) -> String {
     result["content"][0]["text"]
         .as_str()
