@@ -673,11 +673,6 @@ fn filter_batch(batch: &Batch, filter: &EventFilter) -> Batch {
     }
 }
 
-/// The JSON-RPC success response a satisfied filtered wait returns: the batch, exactly as the
-/// `events.<since>` slot serves it ([`Batch::to_wire`]).
-///
-/// `None` for an id-less request: a NOTIFICATION has nobody to answer, and inventing a reply for one
-/// would break JSON-RPC. pinion's own waiter makes the identical choice at the identical point.
 /// The JSON-RPC NOTIFICATION one delivery is written as — no `id`, so a client tells it apart from
 /// an answer to something it asked ([`crate::wire::EVENTS_CHANGED_METHOD`] argues why).
 ///
@@ -700,6 +695,11 @@ fn notification(subscription: u64, batch: &Batch) -> String {
     .to_string()
 }
 
+/// The JSON-RPC success response a satisfied filtered wait returns: the batch, exactly as the
+/// `events.<since>` slot serves it ([`Batch::to_wire`]).
+///
+/// `None` for an id-less request: a NOTIFICATION has nobody to answer, and inventing a reply for one
+/// would break JSON-RPC. pinion's own waiter makes the identical choice at the identical point.
 fn send(reply: RpcReply, id: Option<&RequestId>, batch: &Batch) {
     if let Some(id) = id {
         reply.send(
