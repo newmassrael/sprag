@@ -2196,37 +2196,6 @@ fn check_the_mirror_reshapes_nothing_it_has_shaped(smoke: &mut Smoke, report: &m
     );
 }
 
-/// Novel terminal OUTPUT reaches a user's pixels without costing pinion's shaper a single run.
-///
-/// This is the per-frame half of the shaping instrument and the question R215 left open. The
-/// cumulative counter next door demonstrably prices sprag's CHROME — its detector writes a text
-/// FIELD, and a field is chrome — while "a terminal's biggest text surface is its cells" stayed an
-/// assumption nothing had tested. `last.shape_misses` is the field that can answer it, because the
-/// grid is the one surface that repaints with no scene RPC of ours in front of it.
-///
-/// That ordering is why this check is shaped the way it is, and it was MEASURED before a line of it
-/// was written: a mutating scene RPC stores its mirror synchronously in the dispatch, and that store
-/// walks the same text and warms the same `LayoutCache` — so text written over RPC is already shaped
-/// by the time a frame paints it, and the frame reports zero. Driving this from the scene socket
-/// would have produced a green tick that priced the mirror rather than the paint. The driver has to
-/// reach the DAEMON and let the client find out on its own poll, which is why the CLI and a second
-/// connection appear in this check and nowhere else in this file.
-///
-/// The detector is asserted before the claim, and proves three things at once: a window renamed over
-/// the CLI paints a novel tab, the frame that paints it reports misses where the steady state
-/// reports none — so the field is live, chrome text DOES reach the shaper, and nothing on this path
-/// pre-warmed it. Without it a green claim would be indistinguishable from a counter that never
-/// moves, which is the failure mode this project keeps re-learning.
-///
-/// What the claim does NOT say is that the cells are free. sprag paints its grid from the rows the
-/// host serialises rather than from text nodes pinion lays out, so this instrument cannot see
-/// whatever that path costs. It says that terminal output does not scale PINION's shaper — the cost
-/// pinion R1454 measured at 18.5us a miss against a 118ns hit, which is the reason the question was
-/// worth answering at all.
-///
-/// The frames are SAMPLED, because `last` is the last frame and no cumulative per-paint counter
-/// exists. `contiguous` is what keeps that honest: a frame number that jumps means one slipped
-/// between two samples, and "not one frame shaped" would then be a claim about a frame never read.
 /// **H3 slice 5's gate**: a pane whose screen says an agent is waiting for an answer turns into TEXT
 /// this client PAINTS — the state beside the pane's own title, where a person looking at the window
 /// finds it.
@@ -2636,6 +2605,37 @@ fn check_a_daemon_side_split_reaches_the_attached_client(smoke: &mut Smoke, repo
     );
 }
 
+/// Novel terminal OUTPUT reaches a user's pixels without costing pinion's shaper a single run.
+///
+/// This is the per-frame half of the shaping instrument and the question R215 left open. The
+/// cumulative counter next door demonstrably prices sprag's CHROME — its detector writes a text
+/// FIELD, and a field is chrome — while "a terminal's biggest text surface is its cells" stayed an
+/// assumption nothing had tested. `last.shape_misses` is the field that can answer it, because the
+/// grid is the one surface that repaints with no scene RPC of ours in front of it.
+///
+/// That ordering is why this check is shaped the way it is, and it was MEASURED before a line of it
+/// was written: a mutating scene RPC stores its mirror synchronously in the dispatch, and that store
+/// walks the same text and warms the same `LayoutCache` — so text written over RPC is already shaped
+/// by the time a frame paints it, and the frame reports zero. Driving this from the scene socket
+/// would have produced a green tick that priced the mirror rather than the paint. The driver has to
+/// reach the DAEMON and let the client find out on its own poll, which is why the CLI and a second
+/// connection appear in this check and nowhere else in this file.
+///
+/// The detector is asserted before the claim, and proves three things at once: a window renamed over
+/// the CLI paints a novel tab, the frame that paints it reports misses where the steady state
+/// reports none — so the field is live, chrome text DOES reach the shaper, and nothing on this path
+/// pre-warmed it. Without it a green claim would be indistinguishable from a counter that never
+/// moves, which is the failure mode this project keeps re-learning.
+///
+/// What the claim does NOT say is that the cells are free. sprag paints its grid from the rows the
+/// host serialises rather than from text nodes pinion lays out, so this instrument cannot see
+/// whatever that path costs. It says that terminal output does not scale PINION's shaper — the cost
+/// pinion R1454 measured at 18.5us a miss against a 118ns hit, which is the reason the question was
+/// worth answering at all.
+///
+/// The frames are SAMPLED, because `last` is the last frame and no cumulative per-paint counter
+/// exists. `contiguous` is what keeps that honest: a frame number that jumps means one slipped
+/// between two samples, and "not one frame shaped" would then be a claim about a frame never read.
 fn check_terminal_output_never_reaches_the_shaper(smoke: &mut Smoke, report: &mut Report) {
     /// A window name no shaper on this machine has seen, in three scripts so it cannot collide with
     /// anything the UI already paints.
@@ -6179,11 +6179,6 @@ fn grid_shows(rows: &[String], needle: &str) -> bool {
         .contains(needle)
 }
 
-/// Which panes the DAEMON says `session`'s current window holds, by id.
-///
-/// Asked of the daemon's own scene rather than derived from the client's tile indices: the ids are
-/// minted host-side and the client never paints them, so any mapping computed out here would be a
-/// guess dressed as an address.
 /// Whether the DAEMON's own view of pane `pane` contains `needle` — the read that tells a client's
 /// silence apart from a shell's.
 ///
@@ -6216,6 +6211,11 @@ fn pane_holds(
     (ask("full_text".to_owned()), ask("cells.0".to_owned()))
 }
 
+/// Which panes the DAEMON says `session`'s current window holds, by id.
+///
+/// Asked of the daemon's own scene rather than derived from the client's tile indices: the ids are
+/// minted host-side and the client never paints them, so any mapping computed out here would be a
+/// guess dressed as an address.
 fn daemon_panes(daemon: &mut HostConn, session: &str) -> Vec<u32> {
     let Ok(tree) = daemon.call("scene/snapshot", json!({ "path": "", "session": session })) else {
         return Vec::new();
@@ -6242,24 +6242,6 @@ fn collect_tags(node: &Value, out: &mut Vec<String>) {
     }
 }
 
-/// Every frame this client painted reached a FIXED POINT before it was presented.
-///
-/// pinion R1458 re-runs `view` + layout until a pass moves nothing, because a layout pass writes
-/// state the view reads back — a scroll bound, a pane's measured rect — so the scene a pass just
-/// laid out can already be stale, and the honest one to present is the scene a pass no longer
-/// changes. A binding whose two sides disagree about a value each derives from the other converges
-/// never; the shell then paints the last pass it has, requests another frame, and WARNS.
-///
-/// sprag is exactly the binding that could do that: the pane-viewport publish drives a PTY resize
-/// whose reflow changes the grid the next pass lays out, and `reconcile_frame` grows each pane's
-/// scroll bound from an off-thread producer. So "sprag's frames settle" is a claim about SPRAG, and
-/// nothing else in this repo makes it.
-///
-/// It is read from the client's LOG, and that is still the right channel for this claim even though
-/// pinion R1459 has since put the verdict on the wire as well. The wire answers for the last frame
-/// only ([`check_the_frames_report_their_settle_work`] asks it); the diagnostic is the only witness
-/// to every OTHER frame, including the ones painted while nothing was polling. A run's worth of
-/// frames and the most recent frame are different claims, so both are made.
 /// **This client addresses pinion's methods the way pinion says they may be addressed.**
 ///
 /// `rpc/methods` publishes, per method, how a window can be named TO IT: `"scope"` is only
@@ -6321,6 +6303,24 @@ fn check_this_client_addresses_methods_as_published(smoke: &mut Smoke, report: &
     );
 }
 
+/// Every frame this client painted reached a FIXED POINT before it was presented.
+///
+/// pinion R1458 re-runs `view` + layout until a pass moves nothing, because a layout pass writes
+/// state the view reads back — a scroll bound, a pane's measured rect — so the scene a pass just
+/// laid out can already be stale, and the honest one to present is the scene a pass no longer
+/// changes. A binding whose two sides disagree about a value each derives from the other converges
+/// never; the shell then paints the last pass it has, requests another frame, and WARNS.
+///
+/// sprag is exactly the binding that could do that: the pane-viewport publish drives a PTY resize
+/// whose reflow changes the grid the next pass lays out, and `reconcile_frame` grows each pane's
+/// scroll bound from an off-thread producer. So "sprag's frames settle" is a claim about SPRAG, and
+/// nothing else in this repo makes it.
+///
+/// It is read from the client's LOG, and that is still the right channel for this claim even though
+/// pinion R1459 has since put the verdict on the wire as well. The wire answers for the last frame
+/// only ([`check_the_frames_report_their_settle_work`] asks it); the diagnostic is the only witness
+/// to every OTHER frame, including the ones painted while nothing was polling. A run's worth of
+/// frames and the most recent frame are different claims, so both are made.
 fn check_every_painted_frame_settled(smoke: &Smoke, report: &mut Report) {
     let log = smoke.gui_log();
     // Non-vacuity, and it comes FIRST: an absent warning is evidence only if a present one would
@@ -6827,11 +6827,6 @@ impl Smoke {
             .as_bool()
     }
 
-    /// The window names the tab strip is PAINTING, in tab order.
-    ///
-    /// Read off the tabs' own text rather than asked of the host: the claim under test is that the
-    /// client's mirror reaches its pixels, and querying the host would answer with the very fact the
-    /// mirror might have failed to adopt.
     /// **WHICH WINDOW THE CHROME SAYS THIS CLIENT IS ON**, or [`None`] where the strip does not say.
     ///
     /// # ⚠⚠⚠⚠⚠ Why this could not be written until register item 582's first half shipped
@@ -6853,6 +6848,11 @@ impl Smoke {
             .and_then(|(_, node)| node["name"].as_str().map(ToOwned::to_owned))
     }
 
+    /// The window names the tab strip is PAINTING, in tab order.
+    ///
+    /// Read off the tabs' own text rather than asked of the host: the claim under test is that the
+    /// client's mirror reaches its pixels, and querying the host would answer with the very fact the
+    /// mirror might have failed to adopt.
     fn tabs(&mut self) -> Result<Vec<String>, String> {
         let painted = self.tags()?;
         Ok((0..)
@@ -7384,7 +7384,6 @@ fn notify_calls_by(state: &Path, pid: u32) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// Wait for `path` to exist — the socket bind race between spawning a server and connecting to it.
 /// WHAT THE MACHINE WAS SHORT OF, read at the moment a wait gave up.
 ///
 /// # ⚠⚠ Three smoke checks fail only under load, and `timed out` could not say why
@@ -7428,6 +7427,7 @@ fn machine_pressure() -> String {
     }
 }
 
+/// Wait for `path` to exist — the socket bind race between spawning a server and connecting to it.
 fn wait_for_path(path: &Path) -> io::Result<()> {
     let deadline = Instant::now() + PATIENCE;
     while !path.exists() {
