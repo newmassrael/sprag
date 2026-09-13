@@ -1231,24 +1231,6 @@ fn list_neighbour(
         .map(str::to_owned)
 }
 
-/// The first session in list order that is NOT `killed` and that no client is viewing
-/// ([`SessionInfo::attached`] `== 0`) — tmux `no-detached`'s fallback when this client has viewed
-/// nothing else that survives, and `None` when every other session is occupied (which is a DETACH:
-/// `no-detached` leaves rather than pile a second client onto a colleague's session).
-///
-/// ## The counts must come from a list read AT THE DECISION, and until R327 they could not
-///
-/// R326 measured this walking into an occupied session. The reason is not in this function: an
-/// attach bumps only the channel of the session ATTACHED TO, so a client parked on its own session
-/// is never woken to re-read the counts its policy depends on, and nothing bounds how stale the
-/// mirror's are. The re-read that would fix it was itself refused — scope resolution gated every
-/// method, including a read whose subject is the whole registry, so at the one moment this decision
-/// is made the list could not be fetched at all.
-///
-/// R327 opened that door daemon-side ([`sprag_host::registry_scene`]), and
-/// [`destroy_successor`] now hands this the list as of NOW rather than the mirror. The MRU-preferred
-/// half of the policy never had the problem: it is answered inside the daemon, off the attachment
-/// map itself.
 /// **THE SESSION A LAUNCH SHOULD ADOPT**, or [`None`] when there is nothing to adopt and one must be
 /// created — register item 284.
 ///
@@ -1273,6 +1255,24 @@ fn adoptable(list: &[SessionInfo]) -> Option<String> {
         .map(|session| session.name.clone())
 }
 
+/// The first session in list order that is NOT `killed` and that no client is viewing
+/// ([`SessionInfo::attached`] `== 0`) — tmux `no-detached`'s fallback when this client has viewed
+/// nothing else that survives, and `None` when every other session is occupied (which is a DETACH:
+/// `no-detached` leaves rather than pile a second client onto a colleague's session).
+///
+/// ## The counts must come from a list read AT THE DECISION, and until R327 they could not
+///
+/// R326 measured this walking into an occupied session. The reason is not in this function: an
+/// attach bumps only the channel of the session ATTACHED TO, so a client parked on its own session
+/// is never woken to re-read the counts its policy depends on, and nothing bounds how stale the
+/// mirror's are. The re-read that would fix it was itself refused — scope resolution gated every
+/// method, including a read whose subject is the whole registry, so at the one moment this decision
+/// is made the list could not be fetched at all.
+///
+/// R327 opened that door daemon-side ([`sprag_host::registry_scene`]), and
+/// [`destroy_successor`] now hands this the list as of NOW rather than the mirror. The MRU-preferred
+/// half of the policy never had the problem: it is answered inside the daemon, off the attachment
+/// map itself.
 fn first_free_other(list: &[SessionInfo], killed: &str) -> Option<String> {
     list.iter()
         .find(|session| session.name != killed && session.attached == 0)
@@ -2754,12 +2754,6 @@ impl WireHost {
         }
     }
 
-    /// Re-read every session on the UI-thread connection and store it — the immediate-feedback
-    /// follow-up to this client's OWN kill of ANOTHER session, so the killed row leaves the sidebar
-    /// without waiting a poll wake. Registry-wide (like the poll thread's own sessions re-read), so
-    /// it does NOT detach on a scope refusal the way the scoped window/pane reads do — a transient
-    /// failure just keeps the last-known list, which the poll thread's revision-bump re-read heals.
-    /// Not used for the own-session kill: that detaches, so the sidebar it would refresh is going.
     /// Plan where this client goes when `killed` is destroyed.
     ///
     /// # One door, because three sites spelled the same two steps
@@ -2832,6 +2826,12 @@ impl WireHost {
         }
     }
 
+    /// Re-read every session on the UI-thread connection and store it — the immediate-feedback
+    /// follow-up to this client's OWN kill of ANOTHER session, so the killed row leaves the sidebar
+    /// without waiting a poll wake. Registry-wide (like the poll thread's own sessions re-read), so
+    /// it does NOT detach on a scope refusal the way the scoped window/pane reads do — a transient
+    /// failure just keeps the last-known list, which the poll thread's revision-bump re-read heals.
+    /// Not used for the own-session kill: that detaches, so the sidebar it would refresh is going.
     fn refresh_sessions(&self) {
         let mut conn = self.conn.borrow_mut();
         let viewing = lock_session(&self.session).clone();
@@ -4681,21 +4681,6 @@ fn boot_panes(
     Ok(panes)
 }
 
-/// Fetch each seeded pane's live cell frame off the connection, in host order — the shared
-/// fetch loop behind BOTH boot ([`build_cache`]) and each poll wake ([`refresh_to_set`]). A
-/// pane whose fetch fails (it closed between the pane-list query and here — a real attach
-/// race, since the host set is operator-controlled) is SKIPPED + logged rather than
-/// aborting; the caller's [`merge_panes`] then drops a frameless NEWCOMER (retried next
-/// wake) or keeps a SURVIVOR's last frame, so the client never mirrors a frameless pane and
-/// [`pane_ids`](HostClient::pane_ids) omits it until it has one.
-///
-/// A frame the host answered but this client could not READ is reported at a different level,
-/// because it is a different fact. The tolerated case is transient and self-correcting: the pane
-/// closed, the next wake will not ask about it. A payload that does not deserialize means the two
-/// ends disagree about the frame's wire shape — which sprag has no protocol version handshake to
-/// catch — and it is neither transient nor self-correcting: every wake will fail the same way and
-/// the window will show nothing at all. Logging both at `debug` made the second one look like the
-/// first, so the shape change in R222 that made the skew reachable is the reason for the split.
 /// Pane `id`'s live frame — cells, row shares and token — read out of ONE borrow of the mirror,
 /// which is the body of [`HostClient::pane_frame`], split out so the pairing can be asserted
 /// without a daemon.
@@ -4718,6 +4703,21 @@ fn live_frame(cache: &PaneCache, id: PaneId) -> PaneFrame {
     )
 }
 
+/// Fetch each seeded pane's live cell frame off the connection, in host order — the shared
+/// fetch loop behind BOTH boot ([`build_cache`]) and each poll wake ([`refresh_to_set`]). A
+/// pane whose fetch fails (it closed between the pane-list query and here — a real attach
+/// race, since the host set is operator-controlled) is SKIPPED + logged rather than
+/// aborting; the caller's [`merge_panes`] then drops a frameless NEWCOMER (retried next
+/// wake) or keeps a SURVIVOR's last frame, so the client never mirrors a frameless pane and
+/// [`pane_ids`](HostClient::pane_ids) omits it until it has one.
+///
+/// A frame the host answered but this client could not READ is reported at a different level,
+/// because it is a different fact. The tolerated case is transient and self-correcting: the pane
+/// closed, the next wake will not ask about it. A payload that does not deserialize means the two
+/// ends disagree about the frame's wire shape — which sprag has no protocol version handshake to
+/// catch — and it is neither transient nor self-correcting: every wake will fail the same way and
+/// the window will show nothing at all. Logging both at `debug` made the second one look like the
+/// first, so the shape change in R222 that made the skew reachable is the reason for the split.
 fn fetch_frames(conn: &mut HostConn, ids: &[PaneId]) -> Vec<(PaneId, CellFrame)> {
     let mut fetched = Vec::with_capacity(ids.len());
     for &id in ids {
@@ -5465,8 +5465,6 @@ mod tests {
         destroy_successor(policy, list, None, list, killed)
     }
 
-    /// A structural session list in creation order, the shape [`destroy_successor`] reads — only the
-    /// name matters to the neighbour pick, so the live fields are empty.
     /// ⚠⚠⚠⚠ **A LAUNCH ADOPTS WHAT IS THERE AND CREATES ONLY WHEN NOTHING IS** — register item 284.
     ///
     /// # What this replaces, measured rather than argued
@@ -5524,6 +5522,8 @@ mod tests {
         );
     }
 
+    /// A structural session list in creation order, the shape [`destroy_successor`] reads — only the
+    /// name matters to the neighbour pick, so the live fields are empty.
     fn session_list(names: &[&str]) -> Vec<SessionInfo> {
         names
             .iter()
