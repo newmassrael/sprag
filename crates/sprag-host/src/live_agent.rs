@@ -999,38 +999,6 @@ fn the_outer_loop_does_not_converge_on_the_prompt_a_live_agent_paints_back() {
     );
 }
 
-/// ⚠⚠⚠ **A BRIEFED LOOP IS DRIVEN TO CONVERGENCE BY A LIVE AGENT** — the thing that had never
-/// happened, and the gate debt A-1 was blocking.
-///
-/// # What could not be asked before
-///
-/// Two separate things had to be true for a live loop to converge, and until R379 neither was.
-/// R379 made the document ASK the agent for the word the loop stops on. This round made it
-/// possible to tell the agent what the run is FOR: the shipped template says `(edit me)`, the
-/// prompts were composed from it at `<datamodel>` init, and nothing could reach them. So every
-/// live run to date could only spend its budget and report `exhausted`.
-///
-/// # ⚠⚠ What this asserts that no stand-in can
-///
-/// * **that a real model, reading `done_instruction`, ends a reply with the marker on a row of its
-///   own.** Every unit gate in the tree has a stand-in *written* to print it — R358's rule, which
-///   R379 paid for — so the instruction being followable by an actual reader has never been tested
-///   by anything. This is the first time the sentence is read by something that could ignore it.
-/// * **that `stands_alone` recognises what that model actually paints.** The predicate requires
-///   the row to END with the marker and carry no other alphanumerics; a model that writes
-///   `**MILESTONE REACHED**` or `MILESTONE REACHED.` is not recognised and the loop fails SAFE —
-///   one more turn. Registered debt says nobody had ever watched a real agent try. This watches,
-///   and PRINTS the row either way, so the answer is on the record whichever it is.
-/// * **that convergence is the machine's, not the clock's** — `Converged` is a distinct final
-///   state from `Exhausted`, and the budget below is small enough that a run which merely ran out
-///   would say so rather than look like success.
-///
-/// # ⚠ Why the milestone is arithmetic
-///
-/// It needs NO TOOL. A milestone that writes a file raises a permission dialog, which sends the
-/// machine to `screening` — an unbuilt state — and the gate would be measuring debt 60 instead of
-/// this. Arithmetic is answerable in one turn from the model alone, which keeps the claim on the
-/// LOOP rather than on what an agent is allowed to do.
 /// ⚠⚠⚠⚠⚠ **THE MILESTONE'S WORDING IS NOT WHY A LIVE JUDGE WENT DEAF** — register item 441's first
 /// control, and it RULES A CAUSE OUT rather than reproducing one.
 ///
@@ -1634,6 +1602,38 @@ fn a_turn_that_outran_its_bound_is_looked_at_again_and_never_judged() {
     );
 }
 
+/// ⚠⚠⚠ **A BRIEFED LOOP IS DRIVEN TO CONVERGENCE BY A LIVE AGENT** — the thing that had never
+/// happened, and the gate debt A-1 was blocking.
+///
+/// # What could not be asked before
+///
+/// Two separate things had to be true for a live loop to converge, and until R379 neither was.
+/// R379 made the document ASK the agent for the word the loop stops on. This round made it
+/// possible to tell the agent what the run is FOR: the shipped template says `(edit me)`, the
+/// prompts were composed from it at `<datamodel>` init, and nothing could reach them. So every
+/// live run to date could only spend its budget and report `exhausted`.
+///
+/// # ⚠⚠ What this asserts that no stand-in can
+///
+/// * **that a real model, reading `done_instruction`, ends a reply with the marker on a row of its
+///   own.** Every unit gate in the tree has a stand-in *written* to print it — R358's rule, which
+///   R379 paid for — so the instruction being followable by an actual reader has never been tested
+///   by anything. This is the first time the sentence is read by something that could ignore it.
+/// * **that `stands_alone` recognises what that model actually paints.** The predicate requires
+///   the row to END with the marker and carry no other alphanumerics; a model that writes
+///   `**MILESTONE REACHED**` or `MILESTONE REACHED.` is not recognised and the loop fails SAFE —
+///   one more turn. Registered debt says nobody had ever watched a real agent try. This watches,
+///   and PRINTS the row either way, so the answer is on the record whichever it is.
+/// * **that convergence is the machine's, not the clock's** — `Converged` is a distinct final
+///   state from `Exhausted`, and the budget below is small enough that a run which merely ran out
+///   would say so rather than look like success.
+///
+/// # ⚠ Why the milestone is arithmetic
+///
+/// It needs NO TOOL. A milestone that writes a file raises a permission dialog, which sends the
+/// machine to `screening` — an unbuilt state — and the gate would be measuring debt 60 instead of
+/// this. Arithmetic is answerable in one turn from the model alone, which keeps the claim on the
+/// LOOP rather than on what an agent is allowed to do.
 #[test]
 #[ignore = "drives a LIVE agent CLI: needs credentials, costs real turns, takes minutes"]
 fn a_briefed_loop_converges_against_a_live_agent() {
@@ -4391,13 +4391,6 @@ fn what_a_live_agent_asks_when_the_decision_is_a_design_one() {
     const ASKS_WITHIN: Duration = Duration::from_secs(120);
     const CAPTURE_ROWS: usize = 16;
 
-    /// One probe: a label, what to seed the directory with, the ask, and whether a dialog is a
-    /// CONTROL (must appear) or a measurement (may or may not).
-    ///
-    /// ⚠⚠⚠ NOT ONE OF THESE ASKS THE AGENT TO ASK. A prompt containing *"ask me"* would
-    /// manufacture the dialog this gate exists to find out about — R379's fixture lesson, met at
-    /// the prompt rather than at the assertion. Each is a genuine fork with the preference left
-    /// out, which is the situation a loop's milestone puts an agent in.
     ///
     /// ⚠ NAMED, because a four-place tuple of borrowed slices is what `clippy::type_complexity`
     /// refuses — and the alternative it offers, an `allow`, would hide the next one too.
@@ -4407,6 +4400,13 @@ fn what_a_live_agent_asks_when_the_decision_is_a_design_one() {
         &'static str,
         bool,
     );
+    /// One probe: a label, what to seed the directory with, the ask, and whether a dialog is a
+    /// CONTROL (must appear) or a measurement (may or may not).
+    ///
+    /// ⚠⚠⚠ NOT ONE OF THESE ASKS THE AGENT TO ASK. A prompt containing *"ask me"* would
+    /// manufacture the dialog this gate exists to find out about — R379's fixture lesson, met at
+    /// the prompt rather than at the assertion. Each is a genuine fork with the preference left
+    /// out, which is the situation a loop's milestone puts an agent in.
     const PROBES: &[Probe] = &[
         (
             "control-permission",
@@ -4988,7 +4988,6 @@ fn does_an_agent_ask_the_person_about_an_architecture_decision() {
     const ASKS_WITHIN: Duration = Duration::from_secs(150);
     const CAPTURE_ROWS: usize = 18;
 
-    /// A label, the files the task is about, and the task.
     ///
     /// ⚠ NAMED for `PROBES`' reason, one gate above: `clippy::type_complexity` refuses the tuple
     /// inline, and an `allow` would silence the next one too.
@@ -4997,6 +4996,7 @@ fn does_an_agent_ask_the_person_about_an_architecture_decision() {
         &'static [(&'static str, &'static str)],
         &'static str,
     );
+    /// A label, the files the task is about, and the task.
     const TASKS: &[Task] = &[
         (
             "caching",
