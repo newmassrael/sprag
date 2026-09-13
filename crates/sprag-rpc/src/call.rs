@@ -1373,13 +1373,6 @@ mod tests {
         );
     }
 
-    /// **FORMS THIS BUILD CANNOT TELL APART ARE SAID TO BE AMBIGUOUS, NOT PICKED BETWEEN.**
-    ///
-    /// Unreachable against any surface in this workspace — every alternation sprag publishes is
-    /// told apart by a one-word vocabulary — and reachable against a daemon of another build, which
-    /// is the whole reason a client reads its grammar off a socket instead of compiling it in.
-    /// Guessing there would send a call the daemon refuses and report the refusal as if the
-    /// caller's arguments were wrong.
     /// ⚠⚠ **A FIELD OF AN OPTIONAL PARENT IS REQUIRED WITH IT, NOT WITHOUT IT.**
     ///
     /// Flattening a nested argument gives every field its own flag, and the first version of that
@@ -1429,6 +1422,13 @@ mod tests {
         assert_eq!(whole["ready_when"]["marker"], json!("UP"));
     }
 
+    /// **FORMS THIS BUILD CANNOT TELL APART ARE SAID TO BE AMBIGUOUS, NOT PICKED BETWEEN.**
+    ///
+    /// Unreachable against any surface in this workspace — every alternation sprag publishes is
+    /// told apart by a one-word vocabulary — and reachable against a daemon of another build, which
+    /// is the whole reason a client reads its grammar off a socket instead of compiling it in.
+    /// Guessing there would send a call the daemon refuses and report the refusal as if the
+    /// caller's arguments were wrong.
     #[test]
     fn forms_that_cannot_be_told_apart_are_reported_rather_than_guessed_between() {
         const ONE: &[ArgGrammar] = &[ArgGrammar::open("pane", "int")];
