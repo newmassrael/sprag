@@ -368,19 +368,6 @@ mod tests {
         .expect("a non-empty list")
     }
 
-    /// ⚠⚠⚠ **THE ANSWER IS GIVEN ONCE, AND THE SECOND STEP DOES NOT LOOK AGAIN.**
-    ///
-    /// The latch is the difference between *"answer this question"* and *"stand watch over this
-    /// pane"*, and only the first is what a caller asked for. Without it, a peer that shows a
-    /// SECOND dialog after taking the first answer would be answered again — on a consent written
-    /// for a question the caller has already seen, against one they have not.
-    ///
-    /// Driven through a real pty peer whose marker is already on option 1, so the answer is an
-    /// Enter and nothing else, and the fixture reports which byte moved it.
-    ///
-    /// ⚠ REVERT-PROOF: drop the `given` latch and the second step reads the pane again, which
-    /// against this fixture (whose `took` screen is not a menu) converges with the WRONG note —
-    /// `is not asking anything` — for a run that plainly answered something.
     /// ⚠⚠⚠⚠ **A QUESTION WHOSE PROGRAM HAS ALREADY LEFT IS `peer_gone`, NOT A FAILED RUN** —
     /// register item 336(c), which gave the word to `Orchestrator` and `AiLoop` and left this
     /// plugin propagating.
@@ -441,6 +428,19 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠ **THE ANSWER IS GIVEN ONCE, AND THE SECOND STEP DOES NOT LOOK AGAIN.**
+    ///
+    /// The latch is the difference between *"answer this question"* and *"stand watch over this
+    /// pane"*, and only the first is what a caller asked for. Without it, a peer that shows a
+    /// SECOND dialog after taking the first answer would be answered again — on a consent written
+    /// for a question the caller has already seen, against one they have not.
+    ///
+    /// Driven through a real pty peer whose marker is already on option 1, so the answer is an
+    /// Enter and nothing else, and the fixture reports which byte moved it.
+    ///
+    /// ⚠ REVERT-PROOF: drop the `given` latch and the second step reads the pane again, which
+    /// against this fixture (whose `took` screen is not a menu) converges with the WRONG note —
+    /// `is not asking anything` — for a run that plainly answered something.
     #[test]
     fn an_answer_is_given_once_and_the_run_then_converges() {
         let (access, pane) = asking_peer("either");
