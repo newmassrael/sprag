@@ -1813,12 +1813,6 @@ impl Workspace {
     }
 }
 
-/// The argv of a [`CommandBuilder`] as owned strings (`[program, args…]`) — read at spawn so a
-/// pane remembers what to re-run on restore. `to_string_lossy`, so a non-UTF-8 ARGUMENT (a
-/// filename in a legacy encoding, say) is mojibake'd and an exact restore would open the wrong
-/// path; the program name and ASCII flags — the common case — are exact. A faithful `OsString`
-/// argv does not round-trip cleanly through the JSON snapshot, so the lossy `String` is the
-/// deliberate trade-off.
 /// Append `extra` to `command`'s argv — the whole of what a [`PaneArgsSource`] is allowed to do.
 ///
 /// It is a function rather than two inline loops so the two birth doors cannot come to differ about
@@ -1832,6 +1826,12 @@ fn instrument(command: &mut CommandBuilder, extra: &[String]) {
     }
 }
 
+/// The argv of a [`CommandBuilder`] as owned strings (`[program, args…]`) — read at spawn so a
+/// pane remembers what to re-run on restore. `to_string_lossy`, so a non-UTF-8 ARGUMENT (a
+/// filename in a legacy encoding, say) is mojibake'd and an exact restore would open the wrong
+/// path; the program name and ASCII flags — the common case — are exact. A faithful `OsString`
+/// argv does not round-trip cleanly through the JSON snapshot, so the lossy `String` is the
+/// deliberate trade-off.
 fn argv_of(command: &CommandBuilder) -> Vec<String> {
     command
         .get_argv()
