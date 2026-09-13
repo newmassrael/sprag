@@ -3224,16 +3224,6 @@ mod tests {
         );
     }
 
-    /// **The vocabulary a user is shown is the vocabulary the parser has.**
-    ///
-    /// Two surfaces print [`BoundAction::vocabulary`] and neither re-spells it — the CLI's own copy
-    /// was stale for eight rounds before it became one const, and a second list is checked by
-    /// nothing. This is what checks the one that is left, in both directions: every listed form
-    /// names a verb `parse` accepts, and every action `parse` can PRODUCE prints back under a
-    /// listed verb.
-    ///
-    /// REVERT-PROOF: drop any entry from the const and the second loop fails on that variant; add
-    /// one for a verb nothing implements and the first loop fails on it.
     /// How many arms [`BoundAction`] has. Bumped by hand, and [`arm_of`] is what makes that safe:
     /// a variant added without touching this fails to compile there.
     const ARMS: usize = 27;
@@ -3418,6 +3408,16 @@ mod tests {
         assert_eq!(keymap.chord_of(&BoundAction::ZoomPane { on: None }), None);
     }
 
+    /// **The vocabulary a user is shown is the vocabulary the parser has.**
+    ///
+    /// Two surfaces print [`BoundAction::vocabulary`] and neither re-spells it — the CLI's own copy
+    /// was stale for eight rounds before it became one const, and a second list is checked by
+    /// nothing. This is what checks the one that is left, in both directions: every listed form
+    /// names a verb `parse` accepts, and every action `parse` can PRODUCE prints back under a
+    /// listed verb.
+    ///
+    /// REVERT-PROOF: drop any entry from the const and the second loop fails on that variant; add
+    /// one for a verb nothing implements and the first loop fails on it.
     #[test]
     fn the_vocabulary_lists_every_verb_a_binding_takes() {
         for form in BoundAction::vocabulary() {
