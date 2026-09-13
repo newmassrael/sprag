@@ -1565,18 +1565,6 @@ mod tests {
         }
     }
 
-    /// The cache describes a SCREEN, so a changed arrangement discards it — even for a pane whose
-    /// own rectangle and stamps are untouched.
-    ///
-    /// **Read off the surface, because that is the only place the defect is visible.** A split and
-    /// its undo return a pane to a rectangle it held before, with the same content and therefore
-    /// the same stamps — while the pane that sat beside it in between has written over half of it.
-    /// A cache comparing only that pane's own token would skip the rebuild and leave the neighbour's
-    /// text on screen, and every count in the frame would still look plausible: the assertion has
-    /// to be what the terminal SHOWS.
-    ///
-    /// The first version of this test asserted the frame was non-empty and passed with the
-    /// arrangement check deleted, because the joining pane's own changes were in the same list.
     /// **A VIEW THAT SCROLLS OVER UNCHANGED CONTENT IS STILL A NEW FRAME.**
     ///
     /// The case the arrangement key exists for, and the one no end-to-end gate can reach: a pane
@@ -1637,6 +1625,18 @@ mod tests {
         );
     }
 
+    /// The cache describes a SCREEN, so a changed arrangement discards it — even for a pane whose
+    /// own rectangle and stamps are untouched.
+    ///
+    /// **Read off the surface, because that is the only place the defect is visible.** A split and
+    /// its undo return a pane to a rectangle it held before, with the same content and therefore
+    /// the same stamps — while the pane that sat beside it in between has written over half of it.
+    /// A cache comparing only that pane's own token would skip the rebuild and leave the neighbour's
+    /// text on screen, and every count in the frame would still look plausible: the assertion has
+    /// to be what the terminal SHOWS.
+    ///
+    /// The first version of this test asserted the frame was non-empty and passed with the
+    /// arrangement check deleted, because the joining pane's own changes were in the same list.
     #[test]
     fn a_changed_arrangement_discards_the_cache() {
         let alone = grid_of(4, &["aaaa", "aaaa"]);
