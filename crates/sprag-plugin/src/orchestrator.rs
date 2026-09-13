@@ -947,23 +947,6 @@ mod tests {
         );
     }
 
-    /// ⚠⚠⚠ **A PEER THAT BLOCKS MID-RUN IS TYPED INTO ANYWAY, AND WHAT IT IS SHOWING IS A MENU.**
-    ///
-    /// The readiness barrier is LATCHED — `reached` returns early on `seen` — and that is right for
-    /// the question it asks: *has the program started?* is answered once and stays answered. But it
-    /// is the only thing standing between this loop and the pane, so nothing re-asks a DIFFERENT
-    /// question whose answer changes under the run: **is the peer waiting for me, or waiting on
-    /// something it asked?**
-    ///
-    /// An agent that stops to ask — a tool-permission dialog, a trust prompt — shows a BOTTOM-
-    /// ANCHORED NUMBERED CHOICE LIST, and a numbered list consumes keystrokes. This loop's every
-    /// injection is a stimulus followed by ENTER, and `Question::selected` is documented as *"where
-    /// a bare Enter would land, and so the answer a caller gets by doing nothing"*. So the next
-    /// iteration does not deliver text to a peer: **it picks whatever option is highlighted.**
-    ///
-    /// The pane here is `claude`, `Idle` when the run starts and `Blocked` from the first step on —
-    /// the shape of an agent that pops a permission dialog while working. The claim is what the run
-    /// does with its remaining iterations.
     /// A pane that echoes, supervised by a source that reports the agent BLOCKED once the pane has
     /// been given something — which is what a real one does, since the dialog is a REACTION to the
     /// work — or working forever when `ever_asks` is false.
@@ -1176,6 +1159,23 @@ mod tests {
         access.lifecycle().expect("lifecycle").close(pane);
     }
 
+    /// ⚠⚠⚠ **A PEER THAT BLOCKS MID-RUN IS TYPED INTO ANYWAY, AND WHAT IT IS SHOWING IS A MENU.**
+    ///
+    /// The readiness barrier is LATCHED — `reached` returns early on `seen` — and that is right for
+    /// the question it asks: *has the program started?* is answered once and stays answered. But it
+    /// is the only thing standing between this loop and the pane, so nothing re-asks a DIFFERENT
+    /// question whose answer changes under the run: **is the peer waiting for me, or waiting on
+    /// something it asked?**
+    ///
+    /// An agent that stops to ask — a tool-permission dialog, a trust prompt — shows a BOTTOM-
+    /// ANCHORED NUMBERED CHOICE LIST, and a numbered list consumes keystrokes. This loop's every
+    /// injection is a stimulus followed by ENTER, and `Question::selected` is documented as *"where
+    /// a bare Enter would land, and so the answer a caller gets by doing nothing"*. So the next
+    /// iteration does not deliver text to a peer: **it picks whatever option is highlighted.**
+    ///
+    /// The pane here is `claude`, `Idle` when the run starts and `Blocked` from the first step on —
+    /// the shape of an agent that pops a permission dialog while working. The claim is what the run
+    /// does with its remaining iterations.
     #[test]
     fn a_loop_keeps_typing_into_a_peer_that_stopped_to_ask() {
         // Echoes what it is given, so what the pane RECEIVED is readable afterwards.
