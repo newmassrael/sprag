@@ -320,13 +320,6 @@ fn with_prompt(
     Scene::Container(root)
 }
 
-/// Overlay the destructive-command prompt on `scene` when one is armed (a no-op otherwise), pushed
-/// after the palette — above EVERYTHING, including the surface that armed it.
-///
-/// Innermost is what this modal means: it is the last question before something irreversible happens,
-/// so nothing may be clicked or typed while it is up, and least of all the palette row that armed it.
-/// (The palette closes before arming, so the two are never up together; the layering is the guarantee
-/// rather than the mechanism.)
 /// Overlay the KEY TABLE on `scene` when it is up (a no-op otherwise), pushed after the palette and
 /// before the two questions.
 ///
@@ -378,6 +371,13 @@ fn with_message(scene: Scene, theme: &Theme) -> Scene {
     Scene::Container(root)
 }
 
+/// Overlay the destructive-command prompt on `scene` when one is armed (a no-op otherwise), pushed
+/// after the palette — above EVERYTHING, including the surface that armed it.
+///
+/// Innermost is what this modal means: it is the last question before something irreversible happens,
+/// so nothing may be clicked or typed while it is up, and least of all the palette row that armed it.
+/// (The palette closes before arming, so the two are never up together; the layering is the guarantee
+/// rather than the mechanism.)
 fn with_confirm(scene: Scene, theme: &Theme) -> Scene {
     let Some(panel) = crate::confirm::view_confirm(theme, (WINDOW_W, WINDOW_H)) else {
         return scene;
@@ -574,21 +574,6 @@ fn view_main(tv: &TerminalView, theme: &Theme) -> Scene {
     compose(sidebar, strip, content, theme)
 }
 
-/// Build ONE pane's scene from its live screen + per-pane `ScrollState` + IME
-/// preedit — the single per-pane builder shared by the docked tiling
-/// ([`view_main`]) and an undock window ([`view_for_window`]). Reading the pane's
-/// scroll offset / preedit subscribes the paint to them (the R705.1 reactive
-/// bridge), so a per-pane scroll (keyboard OR drag) or composition `set` repaints
-/// live. The scroll authority is the row-unit `ScrollState`
-/// ([`crate::scrollbar::use_pane_scroll`]); `offset_y == max` is the live screen and
-/// a smaller `offset_y` windows into history (styled cells, R58). The preedit overlays
-/// only the live view (the host seam self-gates on the cursor). On child EOF the
-/// pane paints its frozen final screen.
-///
-/// PURE read: the scroll bound + tail-follow are reconciled OUT of this view by
-/// [`TerminalViewer::reconcile_frame`](crate::TerminalViewer) (pinion R1047's
-/// pre-view hook), which runs first, so `offset_y` is already current here — the
-/// view fn never writes a `Signal` (the pinion §6.3 `dry_run` purity guarantee).
 /// The `memory://` store key + `Scene::Image` tag suffix for pane `i`'s image `id`.
 fn image_store_key(i: usize, id: u32) -> String {
     format!("pane{i}.img{id}")
@@ -698,6 +683,21 @@ fn compose_pane_images(grid: Scene, tv: &TerminalView, i: usize) -> Scene {
     Scene::Container(container)
 }
 
+/// Build ONE pane's scene from its live screen + per-pane `ScrollState` + IME
+/// preedit — the single per-pane builder shared by the docked tiling
+/// ([`view_main`]) and an undock window ([`view_for_window`]). Reading the pane's
+/// scroll offset / preedit subscribes the paint to them (the R705.1 reactive
+/// bridge), so a per-pane scroll (keyboard OR drag) or composition `set` repaints
+/// live. The scroll authority is the row-unit `ScrollState`
+/// ([`crate::scrollbar::use_pane_scroll`]); `offset_y == max` is the live screen and
+/// a smaller `offset_y` windows into history (styled cells, R58). The preedit overlays
+/// only the live view (the host seam self-gates on the cursor). On child EOF the
+/// pane paints its frozen final screen.
+///
+/// PURE read: the scroll bound + tail-follow are reconciled OUT of this view by
+/// [`TerminalViewer::reconcile_frame`](crate::TerminalViewer) (pinion R1047's
+/// pre-view hook), which runs first, so `offset_y` is already current here — the
+/// view fn never writes a `Signal` (the pinion §6.3 `dry_run` purity guarantee).
 fn build_pane_scene(tv: &TerminalView, i: usize, theme: &Theme) -> Scene {
     let scroll = crate::scrollbar::use_pane_scroll(i);
     let preedit = use_preedit(i).get();
@@ -1388,12 +1388,6 @@ mod tests {
         );
     }
 
-    /// The cmux ATTENTION RING: [`attention_ring`] frames a pane with a BORDER-only overlay — a
-    /// `pane_attention`-tagged child appended LAST (paints over the pane content + dim scrim),
-    /// carrying a [`Border`] and NO visible fill, full-cover so the frame sits at the pane's edges,
-    /// and pointer-transparent so it never blocks click-to-focus / drag-select (like the dim
-    /// scrim). REVERT-PROOF: drop the `with_border` and the border assertion FAILs; drop the append
-    /// and the last-child tag assertion FAILs.
     /// The two rings are DISTINCT overlays: same primitive, different tag and different colour, so a
     /// pane wearing both is still readable and a snapshot consumer can tell which is which.
     ///
@@ -1437,6 +1431,12 @@ mod tests {
         );
     }
 
+    /// The cmux ATTENTION RING: [`attention_ring`] frames a pane with a BORDER-only overlay — a
+    /// `pane_attention`-tagged child appended LAST (paints over the pane content + dim scrim),
+    /// carrying a [`Border`] and NO visible fill, full-cover so the frame sits at the pane's edges,
+    /// and pointer-transparent so it never blocks click-to-focus / drag-select (like the dim
+    /// scrim). REVERT-PROOF: drop the `with_border` and the border assertion FAILs; drop the append
+    /// and the last-child tag assertion FAILs.
     #[test]
     fn attention_ring_frames_the_pane_with_a_pointer_transparent_border() {
         let owner = Owner::new();
