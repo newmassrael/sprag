@@ -450,13 +450,6 @@ fn handle_initialize(message: &Value) -> Value {
     })
 }
 
-/// The self-describing tool roster. Descriptions are written for an agent so a request like "type
-/// xxx into pane 2" maps directly onto the `write_pane` tool, and "is the agent in pane 2 done?"
-/// onto `agent_state`.
-///
-/// The count is deliberately not stated here: it was wrong (it said seven while there were nine),
-/// which is what a number maintained in prose does. The roster itself is below and the crate-root doc
-/// names the tools rather than counting them.
 /// THE PANE ARGUMENT every tool that names one advertises.
 ///
 /// A NUMBER or a NAME, and the JSON type is what tells them apart — see `pane_target`. The
@@ -479,6 +472,13 @@ fn pane_arg() -> Value {
     })
 }
 
+/// The self-describing tool roster. Descriptions are written for an agent so a request like "type
+/// xxx into pane 2" maps directly onto the `write_pane` tool, and "is the agent in pane 2 done?"
+/// onto `agent_state`.
+///
+/// The count is deliberately not stated here: it was wrong (it said seven while there were nine),
+/// which is what a number maintained in prose does. The roster itself is below and the crate-root doc
+/// names the tools rather than counting them.
 fn tools_list() -> Value {
     let pane_arg = pane_arg();
     let mut roster = json!({
@@ -4331,7 +4331,6 @@ fn tool_close_window(args: &Value) -> Result<String, String> {
     ))
 }
 
-/// `rename_window` — rename a window the agent opened, refusing a person's.
 /// `display_message` — say something to the PERSON at this terminal.
 ///
 /// # Why an agent needs this at all, measured rather than assumed
@@ -4416,6 +4415,7 @@ fn tool_display_message(args: &Value) -> Result<String, String> {
     ))
 }
 
+/// `rename_window` — rename a window the agent opened, refusing a person's.
 fn tool_rename_window(args: &Value) -> Result<String, String> {
     let window = resolve_window(args, WindowRef::WINDOW_KEY)?;
     let new = match args.get("name") {
@@ -5613,6 +5613,19 @@ fn short_name(pane: PaneId, number_of: &impl Fn(PaneId) -> Option<usize>) -> Str
     number_of(pane).map_or_else(|| format!("pane id {pane}"), |n| format!("pane {n}"))
 }
 
+/// The pane this server runs in, RESOLVED — so an origin that means "here" is the same kind of
+/// thing as an origin the caller named, and the two arms of [`select_origin`] answer one type.
+fn own_pane_ref() -> Option<PaneRef> {
+    let id = own_pane()?;
+    let panes = query_panes().ok()?;
+    let index = panes.iter().position(|pane| pane.id == id)?;
+    Some(PaneRef {
+        number: Some(numbered(index)),
+        window: None,
+        info: panes[index].clone(),
+    })
+}
+
 /// The pane this server is RUNNING IN, or `None` when it is not inside one.
 ///
 /// The anchor the whole layout read needs: "the pane to my right" is unanswerable without it, and no
@@ -5634,19 +5647,6 @@ fn short_name(pane: PaneId, number_of: &impl Fn(PaneId) -> Option<usize>) -> Str
 /// `None` is a fine answer, and several ordinary situations produce it: an agent not inside a pane
 /// at all, and a process that has OUTLIVED its pane (its id names a pane the pool no longer holds,
 /// so the mark lands nowhere — see [`render_arrangement_answer`]).
-/// The pane this server runs in, RESOLVED — so an origin that means "here" is the same kind of
-/// thing as an origin the caller named, and the two arms of [`select_origin`] answer one type.
-fn own_pane_ref() -> Option<PaneRef> {
-    let id = own_pane()?;
-    let panes = query_panes().ok()?;
-    let index = panes.iter().position(|pane| pane.id == id)?;
-    Some(PaneRef {
-        number: Some(numbered(index)),
-        window: None,
-        info: panes[index].clone(),
-    })
-}
-
 fn own_pane() -> Option<u64> {
     let sock = host_sock()?;
     // The address half, compared as a PATH rather than as text, so the two spellings of one socket
@@ -6234,26 +6234,6 @@ fn opened_answer(
     format!("Opened pane {number}{where_it_is}, running a shell. {answerable}{called}\n\n{listing}")
 }
 
-/// `close_pane` — end a pane THIS pane opened, refusing every other one.
-///
-/// # The gate is ergonomic, not a security boundary, and says so
-///
-/// There is no boundary to build here: the daemon's socket is local and its peers are all one
-/// user's own clients, and an agent that can `write_pane` into a shell can run `sprag kill-pane`
-/// itself. What the gate removes is the agent's own MISTAKE — a mis-resolved pane number ending a
-/// person's editor and taking its scrollback with it, which
-/// [`kill_pane`](sprag_host::HostClient::kill_pane) is explicit about being unconditional. That is
-/// the failure that actually happens, and the fact it reads
-/// ([`Pane::opened_by`](sprag_terminal::Pane::opened_by)) is fixed at birth, so the gate cannot be
-/// acting on something that moved under it.
-///
-/// # One read, not two
-///
-/// The number is resolved and the gate is evaluated from the SAME pane listing. Reading the
-/// provenance in a second query would mean the number named one pane at the first instant and the
-/// gate answered about another at the second — the torn read this surface's other joins are
-/// written to avoid. What can still change afterwards is whether the pane is there at all, and the
-/// daemon answers that.
 /// Refuse a pane this agent did not open — R294's authorship gate, in the ONE place that applies it.
 ///
 /// # Why it is a function and not four copies
@@ -6297,6 +6277,26 @@ fn opener_subject(opener: u64) -> String {
     })
 }
 
+/// `close_pane` — end a pane THIS pane opened, refusing every other one.
+///
+/// # The gate is ergonomic, not a security boundary, and says so
+///
+/// There is no boundary to build here: the daemon's socket is local and its peers are all one
+/// user's own clients, and an agent that can `write_pane` into a shell can run `sprag kill-pane`
+/// itself. What the gate removes is the agent's own MISTAKE — a mis-resolved pane number ending a
+/// person's editor and taking its scrollback with it, which
+/// [`kill_pane`](sprag_host::HostClient::kill_pane) is explicit about being unconditional. That is
+/// the failure that actually happens, and the fact it reads
+/// ([`Pane::opened_by`](sprag_terminal::Pane::opened_by)) is fixed at birth, so the gate cannot be
+/// acting on something that moved under it.
+///
+/// # One read, not two
+///
+/// The number is resolved and the gate is evaluated from the SAME pane listing. Reading the
+/// provenance in a second query would mean the number named one pane at the first instant and the
+/// gate answered about another at the second — the torn read this surface's other joins are
+/// written to avoid. What can still change afterwards is whether the pane is there at all, and the
+/// daemon answers that.
 fn tool_close_pane(args: &Value) -> Result<String, String> {
     // Through the ONE resolver, so a pane this agent opened in another window is closable by the
     // name it was opened with — and so the gate below reads the provenance of the pane the caller
@@ -6361,25 +6361,6 @@ fn tool_close_pane(args: &Value) -> Result<String, String> {
     ))
 }
 
-/// `rename_pane` — name a pane THIS pane opened, refusing every other one.
-///
-/// # The same gate as [`tool_close_pane`], on the same argument
-///
-/// A pane's name is what a PERSON reads on it (`sprag panes`, and every display surface that
-/// prefers it over the child's title), so renaming somebody's pane changes what they see — which is
-/// R294's own reason for gating the close, applied unchanged. No new policy is derived here, and
-/// the gate is ergonomic rather than a boundary for that same entry's reason: an agent that can
-/// `write_pane` into a shell can run `sprag rename-pane` itself.
-///
-/// It is deliberately NOT gated on the daemon side. `rename_pane` on the wire renames any pane,
-/// because the CLI is an operator's and an operator means it — the daemon publishes the fact, this
-/// surface applies the policy, which is the split R294 established.
-///
-/// # One read, not two
-///
-/// [`tool_close_pane`]'s rule, for its reason: the target is resolved and the gate evaluated from
-/// ONE listing, so the pane the caller named and the pane the gate answered about are the same pane
-/// at the same instant.
 /// `stop_job` — end what a pane YOU opened is RUNNING, and leave the pane standing.
 ///
 /// # ⚠⚠⚠ Why this exists beside `send_keys`
@@ -6469,6 +6450,25 @@ fn tool_stop_job(args: &Value) -> Result<String, String> {
     ))
 }
 
+/// `rename_pane` — name a pane THIS pane opened, refusing every other one.
+///
+/// # The same gate as [`tool_close_pane`], on the same argument
+///
+/// A pane's name is what a PERSON reads on it (`sprag panes`, and every display surface that
+/// prefers it over the child's title), so renaming somebody's pane changes what they see — which is
+/// R294's own reason for gating the close, applied unchanged. No new policy is derived here, and
+/// the gate is ergonomic rather than a boundary for that same entry's reason: an agent that can
+/// `write_pane` into a shell can run `sprag rename-pane` itself.
+///
+/// It is deliberately NOT gated on the daemon side. `rename_pane` on the wire renames any pane,
+/// because the CLI is an operator's and an operator means it — the daemon publishes the fact, this
+/// surface applies the policy, which is the split R294 established.
+///
+/// # One read, not two
+///
+/// [`tool_close_pane`]'s rule, for its reason: the target is resolved and the gate evaluated from
+/// ONE listing, so the pane the caller named and the pane the gate answered about are the same pane
+/// at the same instant.
 fn tool_rename_pane(args: &Value) -> Result<String, String> {
     let new = match args.get("name") {
         Some(Value::String(name)) => Some(name.clone()),
@@ -6845,18 +6845,6 @@ fn tool_swap_pane(args: &Value) -> Result<String, String> {
     Ok(render_swap(how, toward, &subject, partner.as_deref()))
 }
 
-/// What `swap_pane` tells the agent, as a pure function of the outcome — [`render_selection`]'s rule,
-/// so all four sentences are pinned by unit tests and not only the ones a live daemon can be driven
-/// into.
-///
-/// `subject` is the pane the caller asked to move, in this surface's own vocabulary, and it is the
-/// subject of every sentence including the two where nothing happened — unlike the select, where a
-/// step that goes nowhere leaves the user on a pane that may not be the origin. Here there is no
-/// third pane to confuse: a swap that traded nothing left the named pane exactly where it was.
-///
-/// The two nothing-happened outcomes get distinct sentences with distinct remedies, which is the
-/// whole point of the daemon naming them: an edge means "look the other way", a floating pane means
-/// "there is no way to look at all".
 /// `resize_pane` — move the boundary beside a pane THIS SERVER OPENED, in cells.
 ///
 /// [`tool_swap_pane`]'s ownership gate, unchanged and for its reason: a resize necessarily takes
@@ -7333,6 +7321,18 @@ fn tool_move_pane(args: &Value) -> Result<String, String> {
     ))
 }
 
+/// What `swap_pane` tells the agent, as a pure function of the outcome — [`render_selection`]'s rule,
+/// so all four sentences are pinned by unit tests and not only the ones a live daemon can be driven
+/// into.
+///
+/// `subject` is the pane the caller asked to move, in this surface's own vocabulary, and it is the
+/// subject of every sentence including the two where nothing happened — unlike the select, where a
+/// step that goes nowhere leaves the user on a pane that may not be the origin. Here there is no
+/// third pane to confuse: a swap that traded nothing left the named pane exactly where it was.
+///
+/// The two nothing-happened outcomes get distinct sentences with distinct remedies, which is the
+/// whole point of the daemon naming them: an edge means "look the other way", a floating pane means
+/// "there is no way to look at all".
 fn render_swap(
     how: SwapHow,
     asked: Option<PaneDir>,
@@ -8773,8 +8773,6 @@ fn notification_line(note: &Value) -> String {
     }
 }
 
-/// One request to the host over a fresh connection, mapping every failure to a
-/// human-readable tool error (including "not inside a sprag terminal").
 /// Replace a daemon REFUSAL with a sentence this tool can write, and pass anything else through.
 ///
 /// **Decided by the fault's KIND, never by its rendering** — the discipline R292 established after
@@ -8804,6 +8802,8 @@ fn host_call_kinded(method: &str, params: Value) -> Result<Value, (String, io::E
     host_call_unscoped(method, in_our_session(params))
 }
 
+/// One request to the host over a fresh connection, mapping every failure to a
+/// human-readable tool error (including "not inside a sprag terminal").
 fn host_call(method: &str, params: Value) -> Result<Value, String> {
     host_call_kinded(method, params).map_err(|(sentence, _)| sentence)
 }
@@ -8969,19 +8969,6 @@ fn older_daemon(method: &str, path: &str, fault: &sprag_rpc::RpcFault) -> Option
     }
 }
 
-/// Stamp the session this server's PANE is in onto a request that names none.
-///
-/// # What an agent was being told before this
-///
-/// Every request here went out unscoped, so the daemon answered about ITS default session. An agent
-/// working in a pane of `work` asked `list_panes` and was listed the panes of session `0` —
-/// measured, with the boot pane of a session it is not in coming back as *"1 pane(s) in this
-/// window"*. It is the same defect the `sprag` CLI had, and it is worse here: a person at a shell
-/// can see which session they are in, and an agent's pane is the only thing it knows about its own
-/// position.
-///
-/// A caller that already named a session keeps it — nothing here does today, and a stamp that
-/// overwrote one would be a scope this server invented.
 /// A connection of this server's OWN, for the two verbs that PARK — register item 753.
 ///
 /// # ⚠⚠⚠⚠⚠ Why they cannot go through [`host_call_kinded`], and what that cost
@@ -9035,6 +9022,19 @@ fn parking_conn(timeout: Duration) -> Result<HostConn, String> {
     Ok(conn)
 }
 
+/// Stamp the session this server's PANE is in onto a request that names none.
+///
+/// # What an agent was being told before this
+///
+/// Every request here went out unscoped, so the daemon answered about ITS default session. An agent
+/// working in a pane of `work` asked `list_panes` and was listed the panes of session `0` —
+/// measured, with the boot pane of a session it is not in coming back as *"1 pane(s) in this
+/// window"*. It is the same defect the `sprag` CLI had, and it is worse here: a person at a shell
+/// can see which session they are in, and an agent's pane is the only thing it knows about its own
+/// position.
+///
+/// A caller that already named a session keeps it — nothing here does today, and a stamp that
+/// overwrote one would be a scope this server invented.
 fn in_our_session(mut params: Value) -> Value {
     if let (Some(session), Some(map)) = (our_session(), params.as_object_mut())
         && !map.contains_key(sprag_host::wire::SESSION_PARAM)
