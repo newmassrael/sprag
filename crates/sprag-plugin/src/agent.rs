@@ -327,7 +327,6 @@ impl Prompted {
     }
 }
 
-/// A one-shot AI-tool adapter over one pane.
 /// What a turn did about its end-of-input, decided BEFORE the prompt is submitted.
 ///
 /// Three, because two of them are *no Ctrl-D was sent* for opposite reasons and a caller acts on
@@ -346,6 +345,7 @@ enum EndOfInput {
     CannotArrive,
 }
 
+/// A one-shot AI-tool adapter over one pane.
 pub struct Agent {
     pane: PaneId,
     spec: AgentSpec,
@@ -716,11 +716,6 @@ impl Agent {
         }
     }
 
-    /// Where a turn's reply begins.
-    ///
-    /// Two shapes because the precise one is a CAPABILITY: a host that can number its lines gives
-    /// an address that survives a resize and a scroll, and one that cannot is read by comparing its
-    /// rendering. See [`Agent::capture`].
     /// **PUT THIS TURN'S PROMPT IN THE PANE**, and hand back everything its reply's capture will
     /// need — or the [`Step`] the attempt ended on.
     ///
@@ -853,6 +848,11 @@ impl Agent {
         }))
     }
 
+    /// Where a turn's reply begins.
+    ///
+    /// Two shapes because the precise one is a CAPABILITY: a host that can number its lines gives
+    /// an address that survives a resize and a scroll, and one that cannot is read by comparing its
+    /// rendering. See [`Agent::capture`].
     fn mark(&self, panes: &dyn PaneAccess) -> Since {
         Since::mark(panes, self.pane)
     }
