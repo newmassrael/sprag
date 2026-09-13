@@ -2435,7 +2435,6 @@ mod tests {
         );
     }
 
-    /// Poll `question` until it holds or `within` runs out.
     /// ⚠⚠⚠⚠ **AN AUTOMATED REPLY IS DROPPED AT ONCE AT A FULL BACKLOG, WHERE A PERSON'S INPUT
     /// WAITS FOR ROOM** — the two doors, measured against each other on one device.
     ///
@@ -2539,6 +2538,7 @@ mod tests {
         wake.notify_all();
     }
 
+    /// Poll `question` until it holds or `within` runs out.
     fn until(within: Duration, mut question: impl FnMut() -> bool) -> bool {
         let began = Instant::now();
         while began.elapsed() < within {
@@ -3328,10 +3328,6 @@ mod tests {
         assert!(pty.is_eof(), "and EOF was published before it fired");
     }
 
-    /// The raw capture is byte-faithful even when the output is a single
-    /// logical line far longer than the grid width — exactly the case the
-    /// rendered screen mangles (wrap `\n` injection + trailing-trim). This is
-    /// why structured output is read from the source stream, not the grid.
     /// ⚠⚠ **A PANE'S ECHO TRAIL IS THE SAME TRAIL THROUGH THE OWNER AND THROUGH A HANDLE.**
     ///
     /// The two are one `Arc`, and the gate is here because forgetting to clone it into
@@ -3375,6 +3371,10 @@ mod tests {
         );
     }
 
+    /// The raw capture is byte-faithful even when the output is a single
+    /// logical line far longer than the grid width — exactly the case the
+    /// rendered screen mangles (wrap `\n` injection + trailing-trim). This is
+    /// why structured output is read from the source stream, not the grid.
     #[test]
     fn raw_output_captures_a_wrapping_line_byte_for_byte() {
         // A 300-char single line with no trailing newline, on a 20-col pane:
@@ -3398,9 +3398,6 @@ mod tests {
         assert_eq!(pty.handle().raw_output().bytes, bytes);
     }
 
-    /// A child that emits more than the cap latches `truncated` and keeps the
-    /// head it already captured — the bounded-degradation path a structured
-    /// reader treats as unparseable.
     /// The device-response path end-to-end: a child enables the Kitty disambiguate flag and
     /// queries it; the emulator replies `CSI ? 1 u`, which the READER THREAD writes back to the
     /// child's PTY. A raw (`stty raw`) `cat` echoes that reply to its output, so the reply bytes
@@ -3433,6 +3430,9 @@ mod tests {
         );
     }
 
+    /// A child that emits more than the cap latches `truncated` and keeps the
+    /// head it already captured — the bounded-degradation path a structured
+    /// reader treats as unparseable.
     #[test]
     fn raw_output_truncates_past_the_cap() {
         // Emit one more KiB than the cap. `head -c … /dev/zero` (NUL bytes) is DELIBERATE: this
