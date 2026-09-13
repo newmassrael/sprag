@@ -531,15 +531,6 @@ pub enum PaneError {
 }
 }
 
-/// What a pane was doing when a readiness barrier gave up — the diagnostic half of
-/// [`PaneError::NeverReady`].
-///
-/// # ⚠⚠ Three states, because an `Option<String>` spelled two of them the same
-///
-/// *"This build cannot see the process table"* and *"this pane's child has exited"* are opposite
-/// things to tell a caller: the first is about their DEPLOYMENT and the second about their PANE.
-/// Carried as one `None`, a pane that died mid-wait reported the first — a false statement about a
-/// build that was working perfectly.
 /// The names a foreground job's LEADER answers to, and the one place that decides whether it
 /// answers to a given one.
 ///
@@ -643,6 +634,15 @@ impl std::fmt::Display for JobLeader {
 }
 
 sprag_vt::closed_set! {
+/// What a pane was doing when a readiness barrier gave up — the diagnostic half of
+/// [`PaneError::NeverReady`].
+///
+/// # ⚠⚠ Three states, because an `Option<String>` spelled two of them the same
+///
+/// *"This build cannot see the process table"* and *"this pane's child has exited"* are opposite
+/// things to tell a caller: the first is about their DEPLOYMENT and the second about their PANE.
+/// Carried as one `None`, a pane that died mid-wait reported the first — a false statement about a
+/// build that was working perfectly.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaneDoing {
     /// A job owns the pane's terminal; this is the leader it is led by.
