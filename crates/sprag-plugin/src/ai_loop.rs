@@ -1475,15 +1475,6 @@ pub fn the_axis_this_product_retracted() -> [String; 3] {
     ]
 }
 
-/// **THE SENTENCE A REFUSED QUESTION GETS**, one arm per [`crate::outer::Retyped`].
-///
-/// ⚠⚠ ONE FUNCTION over the whole type rather than two arms inside the notice `match`, for register
-/// item 762's stated reason and now for a second: these sentences are what a caller acts on, so
-/// they need a gate, and a gate cannot reach a `format!` buried in a `match` over a private slot
-/// without a fixture that would be product surface built for it. Over this, the population is the
-/// TYPE — `a_refused_questions_sentence_names_the_axis_and_prescribes_no_edit` walks
-/// [`crate::outer::Retyped::EVERY_SHAPE`] and a third variant cannot be added in silence, because
-/// this match is exhaustive and [`crate::outer::Retyped::wire_str`] is too.
 /// ⛔⛔⛔⛔⛔ **WHAT A MODE NOBODY NAMED COSTS THE PERSON WHO FINDS THIS RUN** — register item 995,
 /// as a clause the dialog sentence one function up appends.
 ///
@@ -1521,6 +1512,15 @@ fn what_a_mode_nobody_named_costs(mode: &crate::outer::ModeNamed) -> String {
     }
 }
 
+/// **THE SENTENCE A REFUSED QUESTION GETS**, one arm per [`crate::outer::Retyped`].
+///
+/// ⚠⚠ ONE FUNCTION over the whole type rather than two arms inside the notice `match`, for register
+/// item 762's stated reason and now for a second: these sentences are what a caller acts on, so
+/// they need a gate, and a gate cannot reach a `format!` buried in a `match` over a private slot
+/// without a fixture that would be product surface built for it. Over this, the population is the
+/// TYPE — `a_refused_questions_sentence_names_the_axis_and_prescribes_no_edit` walks
+/// [`crate::outer::Retyped::EVERY_SHAPE`] and a third variant cannot be added in silence, because
+/// this match is exhaustive and [`crate::outer::Retyped::wire_str`] is too.
 fn what_a_refused_question_says(
     retyped: crate::outer::Retyped,
     written: u64,
@@ -1798,13 +1798,6 @@ impl Plugin for AiLoop {
         }
     }
 
-    /// ONE PUMP of the machine, reported in the substrate's own terms.
-    ///
-    /// ⚠⚠ A MOVE INTO A FINAL STATE IS JUDGED IN THE SAME STEP THAT MADE IT, never on the pump
-    /// after. The Driver checks its ceilings after every unconverged step, so a loop that reported
-    /// `Continue` on the step that reached `converged` would be told it had run out of iterations
-    /// on the very step that finished the work — *"a step that saw the goal SAW IT"*, which is the
-    /// Driver's own rule read from this side.
     /// **EVERY TRANSITION THE LAST PASS TOOK** — see [`crate::plugin::Plugin::walked`].
     ///
     /// ⚠⚠ Read straight off the loop rather than threaded through `Pumped::Moved`. `pump` empties
@@ -1871,6 +1864,13 @@ impl Plugin for AiLoop {
         self.inner.closing_because().map(DoneReason::word)
     }
 
+    /// ONE PUMP of the machine, reported in the substrate's own terms.
+    ///
+    /// ⚠⚠ A MOVE INTO A FINAL STATE IS JUDGED IN THE SAME STEP THAT MADE IT, never on the pump
+    /// after. The Driver checks its ceilings after every unconverged step, so a loop that reported
+    /// `Continue` on the step that reached `converged` would be told it had run out of iterations
+    /// on the very step that finished the work — *"a step that saw the goal SAW IT"*, which is the
+    /// Driver's own rule read from this side.
     fn step(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Step, PaneError> {
         match self.inner.pump(panes, run)? {
             Pumped::Moved {
@@ -2623,12 +2623,12 @@ mod tests {
         .expect("a non-empty consent list")
     }
 
-    /// A brief that reaches a milestone in `max_turns` and never reflects.
     /// 🎯 **THE CHECKPOINT EVERY FIXTURE HERE IS BRIEFED WITH**, spelled once — register item 840.
     /// It is what the driver appends to a `successor_check`'s argv ahead of the proposal, so a gate
     /// that wants to see that argument arrive compares against THIS rather than retyping it.
     pub(super) const MILESTONE_IN_HAND: &str = "reach it";
 
+    /// A brief that reaches a milestone in `max_turns` and never reflects.
     fn brief_for(max_turns: i64) -> Brief {
         Brief {
             north_star: "the stand-in answers prompts and then says the marker".to_string(),
@@ -13528,45 +13528,6 @@ mod tests {
         );
     }
 
-    /// ⚠⚠⚠ **THE WALK SAYS WHY THE RUN STOPPED TO REFLECT** — register item 261, which is item
-    /// 240's class one state over and which `ai_loop.scxml` had been confessing to in prose.
-    ///
-    /// # ⚠⚠⚠ What was measured, and where the fact already was
-    ///
-    /// `judging` has three edges into `reflecting` and they are three different runs:
-    ///
-    /// | what happened | what a reader should do |
-    /// |---|---|
-    /// | the agent said the milestone was reached | look at the checkpoint it chose next |
-    /// | a standing instruction fired | look at the instruction, and at the dialog behind it |
-    /// | the reflection budget came round | nothing — this is the loop's own housekeeping |
-    ///
-    /// All three rendered `Judging --Judge--> Reflecting`, byte for byte. And the reason was
-    /// already computed: each of those transitions carries an `<assign location="reflect_reason">`
-    /// whose value NOTHING read but a livelock guard — **debt item 49's shape, a value stored and
-    /// never used**, with the document's own comment saying so: *"which one fired is not published
-    /// anywhere."*
-    ///
-    /// # ⚠⚠ Why three runs and not three calls to the renderer
-    ///
-    /// The renderer will say whatever it is handed. What has to be true is that a run which
-    /// reflects for one reason PRODUCES that word — so each arm arranges its cause and nothing
-    /// else, and the controls below are what stop three runs reflecting for the same reason and
-    /// this gate passing on it:
-    ///
-    /// * the **milestone** arm's peer says the marker after one prompt, with the budget off;
-    /// * the **instruction** arm's peer raises a dialog a `screen_rule` claims, with the budget
-    ///   off — and `Screening --ScreenMatched--> Working` must be in its walk, because a run that
-    ///   never screened cannot have reflected for an instruction and an arm asserting otherwise
-    ///   would be measuring nothing;
-    /// * the **budget** arm's peer needs nine prompts and never asks anything, with
-    ///   `reflect_every: 2` — so nothing but the count can have sent it there, and the other two
-    ///   arms' walks must contain no `Screening` at all.
-    ///
-    /// ⚠⚠⚠ AND THE THREE COVER THE WHOLE VOCABULARY, asserted rather than assumed: a
-    /// `ReflectReason` arm no run here reaches would be a word rendered by nobody, and
-    /// `every_edge_into_reflecting_says_why_in_a_word_this_driver_knows` holds the other end of
-    /// that against the document itself.
     /// ⛔⛔⛔⛔⛔ **A WALK SAYS WHAT THIS RUN TYPED AT — ON A DELIVERY THAT LANDED, AND ONCE** —
     /// register item 745(C), driven through the product's own door.
     ///
@@ -13664,6 +13625,45 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠ **THE WALK SAYS WHY THE RUN STOPPED TO REFLECT** — register item 261, which is item
+    /// 240's class one state over and which `ai_loop.scxml` had been confessing to in prose.
+    ///
+    /// # ⚠⚠⚠ What was measured, and where the fact already was
+    ///
+    /// `judging` has three edges into `reflecting` and they are three different runs:
+    ///
+    /// | what happened | what a reader should do |
+    /// |---|---|
+    /// | the agent said the milestone was reached | look at the checkpoint it chose next |
+    /// | a standing instruction fired | look at the instruction, and at the dialog behind it |
+    /// | the reflection budget came round | nothing — this is the loop's own housekeeping |
+    ///
+    /// All three rendered `Judging --Judge--> Reflecting`, byte for byte. And the reason was
+    /// already computed: each of those transitions carries an `<assign location="reflect_reason">`
+    /// whose value NOTHING read but a livelock guard — **debt item 49's shape, a value stored and
+    /// never used**, with the document's own comment saying so: *"which one fired is not published
+    /// anywhere."*
+    ///
+    /// # ⚠⚠ Why three runs and not three calls to the renderer
+    ///
+    /// The renderer will say whatever it is handed. What has to be true is that a run which
+    /// reflects for one reason PRODUCES that word — so each arm arranges its cause and nothing
+    /// else, and the controls below are what stop three runs reflecting for the same reason and
+    /// this gate passing on it:
+    ///
+    /// * the **milestone** arm's peer says the marker after one prompt, with the budget off;
+    /// * the **instruction** arm's peer raises a dialog a `screen_rule` claims, with the budget
+    ///   off — and `Screening --ScreenMatched--> Working` must be in its walk, because a run that
+    ///   never screened cannot have reflected for an instruction and an arm asserting otherwise
+    ///   would be measuring nothing;
+    /// * the **budget** arm's peer needs nine prompts and never asks anything, with
+    ///   `reflect_every: 2` — so nothing but the count can have sent it there, and the other two
+    ///   arms' walks must contain no `Screening` at all.
+    ///
+    /// ⚠⚠⚠ AND THE THREE COVER THE WHOLE VOCABULARY, asserted rather than assumed: a
+    /// `ReflectReason` arm no run here reaches would be a word rendered by nobody, and
+    /// `every_edge_into_reflecting_says_why_in_a_word_this_driver_knows` holds the other end of
+    /// that against the document itself.
     #[test]
     fn the_walk_says_why_a_run_stopped_to_reflect() {
         use crate::outer::ReflectReason;
@@ -16617,18 +16617,6 @@ mod tests {
         }
     }
 
-    /// ⚠⚠⚠ **THE OUTER LOOP IS A MACHINE NOW, AND THIS IS WHAT THAT BUYS.**
-    ///
-    /// The topology the document draws is the topology the compiler enforces. This
-    /// drives the two edges the last two rounds spent themselves on — R372's *a
-    /// person took the pane* and R373's *they gave it back* — through the OUTER
-    /// machine rather than through prose about it.
-    ///
-    /// The point is not that the transitions work; SCE's own W3C suite covers that.
-    /// It is that these transitions EXIST TO BE DRIVEN AT ALL. Before this round
-    /// `working --turn.interrupted--> awaiting_human` was a sentence in an XML
-    /// comment, and the Rust that implements the same idea was gated against its own
-    /// hand-written vocabulary with nothing joining the two.
     /// ⚠⚠⚠ **AN ORDER REACHES THE ORDERS REGION AND LEAVES THE WORK WHERE IT WAS** — the smallest
     /// claim the stand-down handle rests on, and the one that tells a broken HANDLE apart from a
     /// broken GUARD.
@@ -16753,6 +16741,18 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠ **THE OUTER LOOP IS A MACHINE NOW, AND THIS IS WHAT THAT BUYS.**
+    ///
+    /// The topology the document draws is the topology the compiler enforces. This
+    /// drives the two edges the last two rounds spent themselves on — R372's *a
+    /// person took the pane* and R373's *they gave it back* — through the OUTER
+    /// machine rather than through prose about it.
+    ///
+    /// The point is not that the transitions work; SCE's own W3C suite covers that.
+    /// It is that these transitions EXIST TO BE DRIVEN AT ALL. Before this round
+    /// `working --turn.interrupted--> awaiting_human` was a sentence in an XML
+    /// comment, and the Rust that implements the same idea was gated against its own
+    /// hand-written vocabulary with nothing joining the two.
     #[test]
     fn the_outer_loop_runs_the_edges_the_last_two_rounds_built() {
         let (mut engine, host, _lua, _session) = started();
@@ -18247,23 +18247,6 @@ mod tests {
         );
     }
 
-    /// ⚠⚠⚠⚠ **AND THE SENTENCE A PERSON READS SAYS WHICH OUTAGE THE COUNT IS AGAINST** — register
-    /// item 724's own residue, paid in the same round rather than registered.
-    ///
-    /// # ⚠⚠⚠⚠⚠ The defect this exists to stop was CREATED by the repair above it
-    ///
-    /// Before 724 both doors were counted by one ceiling of six, so *waited it out N time(s)*
-    /// carried its own scale: a reader who knew the ceiling knew what N meant. The split gives the
-    /// self-resuming door thirty-six, and the two now differ by a factor of six — so **twelve** is
-    /// twice past the budget at one door and a third of the way through it at the other, printed
-    /// into the same slot of the same sentence. That is register item 718's shape exactly (*two
-    /// quantities wearing one slot, and both watchers read it wrong*), and it would have been minted
-    /// by the item that fixed the budget.
-    ///
-    /// ⚠⚠ **`assert_ne` IS THE LOAD-BEARING ONE.** A branch that named the door in a comment, or
-    /// that produced the same words for both, would satisfy a `contains` for either half; what a
-    /// reader needs is that the two situations do not read alike. The `contains` arms then say
-    /// which is which, so a build that merely made them differ cannot pass by swapping them.
     /// ⛔⛔⛔⛔⛔ **A DIALOG SAYS WHETHER ITS LAUNCHER NAMED A MODE, AND A NAMED ONE SAYS NOTHING**
     /// — register item 995, whose done-when ⑵ is *if it cannot be assured, the run SAYS SO*.
     ///
@@ -18437,6 +18420,23 @@ mod tests {
         );
     }
 
+    /// ⚠⚠⚠⚠ **AND THE SENTENCE A PERSON READS SAYS WHICH OUTAGE THE COUNT IS AGAINST** — register
+    /// item 724's own residue, paid in the same round rather than registered.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The defect this exists to stop was CREATED by the repair above it
+    ///
+    /// Before 724 both doors were counted by one ceiling of six, so *waited it out N time(s)*
+    /// carried its own scale: a reader who knew the ceiling knew what N meant. The split gives the
+    /// self-resuming door thirty-six, and the two now differ by a factor of six — so **twelve** is
+    /// twice past the budget at one door and a third of the way through it at the other, printed
+    /// into the same slot of the same sentence. That is register item 718's shape exactly (*two
+    /// quantities wearing one slot, and both watchers read it wrong*), and it would have been minted
+    /// by the item that fixed the budget.
+    ///
+    /// ⚠⚠ **`assert_ne` IS THE LOAD-BEARING ONE.** A branch that named the door in a comment, or
+    /// that produced the same words for both, would satisfy a `contains` for either half; what a
+    /// reader needs is that the two situations do not read alike. The `contains` arms then say
+    /// which is which, so a build that merely made them differ cannot pass by swapping them.
     #[test]
     fn the_account_of_an_outage_says_which_of_the_two_it_was() {
         /// The sentence this build leaves behind for an outage that arrived at one of the doors.
