@@ -601,7 +601,10 @@ pub fn key_of(code: &str) -> String {
 /// 1. **The whole block survives, as a run inside one block of `after`.** A block that was edited
 ///    or deleted is not a block that moved.
 /// 2. **No block of `after` holding it documents the same item.** A block that moved WITH its item,
-///    or that another item also carries word for word, is still where it was written.
+///    or that another item also carries word for word, is still where it was written. And of the
+///    items holding it, only one that did not already carry it in `before` is where it went: the
+///    same prose written twice leaves a copy that was there all along, and a block only such copies
+///    still hold was deleted.
 /// 3. **The item it documented is still in `after`, with no doc.** An item that was renamed or
 ///    removed took its name with it, and its doc going to the new name is the edit, not a theft.
 ///
@@ -632,32 +635,47 @@ pub fn displaced(before: &str, after: &str) -> Result<Vec<Displacement>, String>
             .filter(|(block, at)| now[*block].doc[*at..].starts_with(old.doc.as_slice()))
             .map(|(block, _)| &now[*block])
             .collect();
-        let Some(holder) = holders.first() else {
-            continue;
-        };
         if holders.iter().any(|held| held.key == old.key) || !bare.contains_key(&old.key) {
             continue;
         }
         let last_doc = old.doc_lines.last().copied().unwrap_or_default();
-        let moved = Displacement {
-            was: old.key.clone(),
-            now: holder.key.clone(),
-            line: holder.line,
-            doc: old.doc.clone(),
-            // ⚠ Only those AFTER the block: an attribute above a doc is not between the doc and its
-            // item, and no declaration put there could take it.
-            attributes: old
-                .attributes
-                .iter()
-                .filter(|attribute| attribute.lines.0 > last_doc)
-                .map(|attribute| attribute.text.clone())
-                .collect(),
-        };
-        if !found.contains(&moved) {
-            found.push(moved);
+        // ⛔⛔⛔ Only a holder that did NOT already carry the block went anywhere — register item
+        // 1091, off `crates/sprag-gui/src/view.rs`: `with_prompt` and `with_confirm` were written
+        // word for word the same, `6d7c406e` put `with_keyhelp` between the second copy and its
+        // item, and the FIRST holder is `with_prompt`, which had its copy all along. Named as where
+        // the block went, the repair took `with_prompt`'s own doc off it and left the copy on
+        // `with_keyhelp`. A block only the old carriers still hold was deleted, not moved.
+        let landed = holders.iter().filter(|held| {
+            !was.iter()
+                .any(|kept| kept.key == held.key && carries(&kept.doc, &old.doc))
+        });
+        for holder in landed {
+            let moved = Displacement {
+                was: old.key.clone(),
+                now: holder.key.clone(),
+                line: holder.line,
+                doc: old.doc.clone(),
+                // ⚠ Only those AFTER the block: an attribute above a doc is not between the doc and
+                // its item, and no declaration put there could take it.
+                attributes: old
+                    .attributes
+                    .iter()
+                    .filter(|attribute| attribute.lines.0 > last_doc)
+                    .map(|attribute| attribute.text.clone())
+                    .collect(),
+            };
+            if !found.contains(&moved) {
+                found.push(moved);
+            }
         }
     }
     Ok(found)
+}
+
+/// Whether `doc` holds `run` as consecutive lines — the same reading [`displaced`] gives a block
+/// that survives inside a larger one.
+fn carries(doc: &[String], run: &[String]) -> bool {
+    !run.is_empty() && doc.windows(run.len()).any(|window| window == run)
 }
 
 /// Where a move still stands in one version of a file — [`Docs::standing`]'s answer.
@@ -1688,6 +1706,73 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
             }],
             "⛔ THE CONTROL FOR BOTH: the same `before`, and an undocumented item put between the \
              doc and `add` — which is the displacement with no doc of its own to glue on",
+        );
+    }
+
+    /// ⛔⛔⛔⛔ **PROSE WRITTEN TWICE WENT TO THE ITEM THAT GAINED IT, NOT TO THE ONE THAT HAD IT** —
+    /// register item 1091, the shape of `crates/sprag-gui/src/view.rs` from `876576f2` (the same
+    /// doc on `with_prompt` and `with_confirm`) through `6d7c406e` (`with_keyhelp` between the
+    /// second copy and its item) to the repair that took the wrong copy.
+    #[test]
+    fn a_doc_written_twice_moved_to_the_item_that_gained_it_and_goes_back_from_there() {
+        let twice = "/// Overlay the prompt.\nfn with_prompt() {}\n\n/// Overlay the prompt.\nfn \
+                     with_confirm() {}\n";
+        let keyhelp_between = "/// Overlay the prompt.\nfn with_prompt() {}\n\n/// Overlay the \
+                               prompt.\n/// Overlay the key table.\nfn with_keyhelp() {}\n\nfn \
+                               with_confirm() {}\n";
+        let moved = Displacement {
+            was: "fn with_confirm".to_owned(),
+            now: "fn with_keyhelp".to_owned(),
+            line: 6,
+            doc: vec!["Overlay the prompt.".to_owned()],
+            attributes: Vec::new(),
+        };
+        assert_eq!(
+            displaced(twice, keyhelp_between).expect("both read"),
+            vec![moved.clone()],
+            "⛔⛔⛔ `with_prompt` carried its copy before the change — the block went to \
+             `with_keyhelp`, the one holder that did not",
+        );
+        assert_eq!(
+            repaired(keyhelp_between, &moved).expect("the repair is decidable"),
+            "/// Overlay the prompt.\nfn with_prompt() {}\n\n/// Overlay the key table.\nfn \
+             with_keyhelp() {}\n\n/// Overlay the prompt.\nfn with_confirm() {}\n",
+            "⛔⛔ the copy comes off `with_keyhelp` and `with_prompt` keeps its own",
+        );
+        let wrong_copy_taken = "fn with_prompt() {}\n\n/// Overlay the prompt.\n/// Overlay the key \
+                                table.\nfn with_keyhelp() {}\n\n/// Overlay the prompt.\nfn \
+                                with_confirm() {}\n";
+        assert_eq!(
+            displaced(keyhelp_between, wrong_copy_taken).expect("both read"),
+            vec![Displacement {
+                was: "fn with_prompt".to_owned(),
+                now: "fn with_confirm".to_owned(),
+                line: 8,
+                doc: vec!["Overlay the prompt.".to_owned()],
+                attributes: Vec::new(),
+            }],
+            "⛔⛔ the repair that took `with_prompt`'s own copy is a move onto `with_confirm` — \
+             `with_keyhelp` held that prose before it and still does",
+        );
+        let inside = "/// Overlay a name.\n/// Overlay the prompt.\nfn with_prompt() {}\n\n/// Overlay \
+                      the prompt.\nfn with_confirm() {}\n";
+        let inside_then_keyhelp = "/// Overlay a name.\n/// Overlay the prompt.\nfn with_prompt() \
+                                   {}\n\n/// Overlay the prompt.\n/// Overlay the key table.\nfn \
+                                   with_keyhelp() {}\n\nfn with_confirm() {}\n";
+        assert_eq!(
+            displaced(inside, inside_then_keyhelp).expect("both read"),
+            vec![Displacement {
+                line: 7,
+                ..moved.clone()
+            }],
+            "⛔⛔ a copy held INSIDE a larger block was there all along too — carrying is a run \
+             anywhere in the block, as a holder's is, not its opening",
+        );
+        let copy_deleted = "/// Overlay the prompt.\nfn with_prompt() {}\n\nfn with_confirm() {}\n";
+        assert_eq!(
+            displaced(twice, copy_deleted).expect("both read"),
+            Vec::new(),
+            "⚠⚠ THE CONTROL: one copy deleted and the other where it always was — nothing moved",
         );
     }
 
