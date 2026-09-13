@@ -27,7 +27,9 @@
 //! so a displacement the amended commit already carried is not judged again. It was judged when it
 //! was first committed.
 
-use sprag_gate::doc_attachment::{ChangeReading, Displacement, judge_between, judge_commit};
+use sprag_gate::doc_attachment::{
+    Bare, ChangeReading, Displacement, Standing, TreeAt, judge_between, judge_commit,
+};
 use sprag_gate::sources::workspace_root;
 use std::path::{Path, PathBuf};
 
@@ -68,7 +70,10 @@ fn the_commit_under_test_leaves_every_doc_on_the_item_it_was_written_for() {
         .map(|(path, moved)| {
             format!(
                 "{path}:{} — the doc written for `{}` now documents `{}`: \"{}\"",
-                moved.line, moved.was, moved.now, moved.opening,
+                moved.line,
+                moved.was,
+                moved.now,
+                moved.opening(),
             )
         })
         .collect();
@@ -132,8 +137,23 @@ impl Repository {
 
     /// Write `lib.rs` and commit it, answering the commit's id.
     fn commit(&self, text: &str, message: &str) -> String {
-        std::fs::write(self.dir.join("lib.rs"), text).expect("write lib.rs");
-        self.git(&["add", "lib.rs"]);
+        self.commit_files(&[("lib.rs", Some(text))], message)
+    }
+
+    /// Write each named file — or remove it, for [`None`] — and commit them together, answering
+    /// the commit's id.
+    fn commit_files(&self, files: &[(&str, Option<&str>)], message: &str) -> String {
+        for (name, text) in files {
+            match text {
+                Some(text) => {
+                    std::fs::write(self.dir.join(name), text).expect("write a fixture file");
+                    self.git(&["add", name]);
+                }
+                None => {
+                    self.git(&["rm", "-q", name]);
+                }
+            }
+        }
         self.git(&["commit", "-q", "-m", message]);
         self.git(&["rev-parse", "HEAD"])
     }
@@ -167,7 +187,7 @@ fn a_real_commit_that_declares_between_a_doc_and_its_item_is_named() {
         was: "fn add".to_owned(),
         now: "fn mul".to_owned(),
         line: 2,
-        opening: "Adds.".to_owned(),
+        doc: vec!["Adds.".to_owned()],
     };
     assert_eq!(
         (judged.base.as_deref(), judged.found.clone()),
@@ -196,6 +216,83 @@ fn a_real_commit_that_declares_between_a_doc_and_its_item_is_named() {
         (vec!["lib.rs".to_owned()], Vec::new()),
         "⚠⚠⚠ THE CONTROL: the same parent, the new function declared ABOVE the doc — compared, and \
          nothing moved",
+    );
+}
+
+/// ⛔⛔⛔⛔ **A MOVE IS ASKED OF THE WHOLE TREE, SO CODE THAT LEFT ITS FILE STILL ANSWERS FOR IT** —
+/// register item 1091, through git.
+///
+/// ⚠⚠ The shape was measured here before this was written: `809ae70c` moved a doc in
+/// `crates/sprag-gui/src/wire.rs`, and `068f5774` deleted that file and carried its code into
+/// `crates/sprag-client/src/wire.rs` — a delete and an add, which git does not call a rename. Asked
+/// by its path, that move could only ever answer *could not ask*. The control is the same move put
+/// back in the file it went to.
+#[test]
+fn a_move_is_asked_of_the_whole_tree_so_code_that_left_its_file_still_answers_for_it() {
+    let repository = Repository::empty("tree");
+    repository.commit_files(
+        &[("a.rs", Some("/// Adds.\npub fn add() {}\n"))],
+        "a documented function",
+    );
+    let moving = repository.commit_files(
+        &[(
+            "a.rs",
+            Some("/// Adds.\npub fn mul() {}\npub fn add() {}\n"),
+        )],
+        "a displacement",
+    );
+    let (path, moved) = judge_commit(repository.path(), &moving)
+        .expect("the commit is readable")
+        .found
+        .remove(0);
+    assert_eq!(path, "a.rs", "⚠ the move is made in `a.rs`");
+    // ⚠ Enough beside the moved code that git would not call `b.rs` a rename of `a.rs`.
+    let beside = "pub fn unrelated() {}\n".repeat(40);
+    repository.commit_files(
+        &[
+            ("a.rs", None),
+            (
+                "b.rs",
+                Some(&format!(
+                    "{beside}/// Adds.\npub fn mul() {{}}\npub fn add() {{}}\n"
+                )),
+            ),
+        ],
+        "the code leaves its file",
+    );
+    assert_eq!(
+        TreeAt::read(repository.path(), "HEAD")
+            .expect("the tree is readable")
+            .standing(&moved)
+            .expect("the move is asked"),
+        vec![(
+            "b.rs",
+            Standing {
+                carried_by: vec![42],
+                written_for: vec![Bare {
+                    line: 43,
+                    landing: 43
+                }],
+            }
+        )],
+        "⛔⛔⛔⛔ REGISTER ITEM 1091: `a.rs` is gone, and the move stands in the file its code went to",
+    );
+    repository.commit_files(
+        &[(
+            "b.rs",
+            Some(&format!(
+                "{beside}pub fn mul() {{}}\n/// Adds.\npub fn add() {{}}\n"
+            )),
+        )],
+        "the move put back",
+    );
+    assert_eq!(
+        TreeAt::read(repository.path(), "HEAD")
+            .expect("the tree is readable")
+            .standing(&moved)
+            .expect("the move is asked"),
+        Vec::new(),
+        "⚠⚠ THE CONTROL: put back in `b.rs`, the move stands nowhere",
     );
 }
 

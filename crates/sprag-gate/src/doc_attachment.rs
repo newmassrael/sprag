@@ -32,6 +32,19 @@
 //! its first parent. ⚠ Spelled through the crate, as `rust_source`'s header spells its own: this
 //! header is read together with the one on `pub mod doc_attachment` and resolved from the crate root.
 //!
+//! # ⚠⚠⚠ What still stands, and putting it back — register item 1091
+//!
+//! A gate at the commit stops the next move and says nothing about the ones already made. Asked of
+//! this repository's whole history on 2026-09-13, the census found **153** moves in **2175** commits,
+//! **120** of them still standing at `97f7c9a6`, in **51** files. Two readers answer for those:
+//!
+//! * [`crate::doc_attachment::TreeAt`] asks whether a move stands in EVERY Rust file of a commit, not
+//!   in the path it was made in — code leaves its file, and a question tied to the path cannot follow
+//!   it (the census's one *could not ask* was exactly that).
+//! * [`crate::doc_attachment::repaired`] takes a standing block out of the doc that carries it and puts
+//!   it back above the item it was written for — or refuses, saying why, where the text does not say
+//!   which item that is.
+//!
 //! # ⚠⚠ THE RESIDUE, STATED RATHER THAN HIDDEN
 //!
 //! * **An item is keyed by what its first line names** — `fn name`, `struct Name`, `field name` —
@@ -41,11 +54,13 @@
 //! * **A block the same change also rewrote is not followed.** The moved block is looked for whole;
 //!   a displacement that edits the text it moved is not seen.
 //! * **Lines inside a multi-line string literal are read as code.** They can name an item that is
-//!   not there, which only matters to the rename case above.
+//!   not there, which matters to the rename case above — and to a repair, whose landing could be such
+//!   a line. [`crate::doc_attachment::repaired`] reads its own answer back for that reason, and
+//!   refuses one that does not document the item.
 
 use crate::ambient::git_in;
 use crate::rust_source::{Shape, scan};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// One outer doc block, and the item it documents.
@@ -54,10 +69,24 @@ pub struct Attachment {
     /// The block's lines with `///` and the whitespace around each removed, in order. A bare `///`
     /// is an empty line here, because a paragraph break is part of what was written.
     pub doc: Vec<String>,
+    /// The one-indexed line each entry of [`Attachment::doc`] stands on, in the same order — so a
+    /// run of the block can be found in the source and not only in the prose.
+    pub doc_lines: Vec<usize>,
     /// What the block documents, as [`key_of`] names it.
     pub key: String,
     /// The one-indexed line the documented item begins on.
     pub line: usize,
+}
+
+/// An item line that carries no doc, and where a doc written for it would stand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bare {
+    /// The one-indexed line the item begins on.
+    pub line: usize,
+    /// The one-indexed line its outer attributes begin on, or [`Bare::line`] when it has none. A doc
+    /// block goes directly above this line: put between an attribute and its item it would still
+    /// attach, but `#[test]` above a doc is not how anybody here writes one.
+    pub landing: usize,
 }
 
 /// A block that documented one item before a change and documents another after it, while the
@@ -70,8 +99,20 @@ pub struct Displacement {
     pub now: String,
     /// The one-indexed line, in the changed file, of the item that carries it now.
     pub line: usize,
+    /// The whole block that moved, as [`Attachment::doc`] holds it — never empty, since a block with
+    /// no lines documents nothing and cannot move.
+    ///
+    /// ⚠ The WHOLE block and not its first line: where the moved prose ends inside the doc that took
+    /// it is not in any later version of the file, and a repair has to know.
+    pub doc: Vec<String>,
+}
+
+impl Displacement {
     /// The block's first line, so a reader can find the prose that moved.
-    pub opening: String,
+    #[must_use]
+    pub fn opening(&self) -> &str {
+        self.doc.first().map_or("", String::as_str)
+    }
 }
 
 /// What one line of a source is, for the question of which item a doc block reaches.
@@ -173,41 +214,96 @@ fn brackets_open_after(mut depth: usize, code: &str) -> usize {
     depth
 }
 
-/// Every doc block of `text` with the item it documents, and the key of every item line that
-/// carries no doc.
-fn walk(text: &str) -> Result<(Vec<Attachment>, BTreeSet<String>), String> {
-    let mut attached = Vec::new();
-    let mut bare = BTreeSet::new();
-    let mut pending: Vec<String> = Vec::new();
-    let mut open_attribute = 0;
-    for (index, line) in lines_of(text)?.into_iter().enumerate() {
-        if open_attribute > 0 {
-            if let Line::Code(code) | Line::Attribute(code) = line {
-                open_attribute = brackets_open_after(open_attribute, code);
+/// One version of a file, read once for its doc blocks and its undocumented items.
+///
+/// ⚠ Read once and asked many times: the census asks every move it found of the files that still
+/// hold that move's prose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Docs {
+    /// Every doc block, with the item it documents, in source order.
+    pub attached: Vec<Attachment>,
+    /// Every item line that carries no doc, by its [`key_of`] key, in source order.
+    pub bare: BTreeMap<String, Vec<Bare>>,
+}
+
+impl Docs {
+    /// Every doc block of `text` with the item it documents, and every item line that carries none.
+    ///
+    /// # Errors
+    ///
+    /// When the source cannot be read for its comments — see the reader's own refusal.
+    pub fn read(text: &str) -> Result<Docs, String> {
+        let mut attached = Vec::new();
+        let mut bare: BTreeMap<String, Vec<Bare>> = BTreeMap::new();
+        let mut pending: Vec<String> = Vec::new();
+        let mut pending_lines: Vec<usize> = Vec::new();
+        // The line the attributes above the next item began on, while no doc and no code has come
+        // since. Blank lines and plain comments leave it standing, as they leave a doc's wait.
+        let mut attributes_from: Option<usize> = None;
+        let mut open_attribute = 0;
+        for (index, line) in lines_of(text)?.into_iter().enumerate() {
+            if open_attribute > 0 {
+                if let Line::Code(code) | Line::Attribute(code) = line {
+                    open_attribute = brackets_open_after(open_attribute, code);
+                }
+                continue;
             }
-            continue;
-        }
-        match line {
-            Line::Doc(doc) => pending.push(doc.to_owned()),
-            Line::Quiet => {}
-            Line::Attribute(code) => open_attribute = brackets_open_after(0, code),
-            Line::Code(code) => {
-                let key = key_of(code);
-                if pending.is_empty() {
-                    if names_an_item(&key) {
-                        bare.insert(key);
+            match line {
+                Line::Doc(doc) => {
+                    pending.push(doc.to_owned());
+                    pending_lines.push(index + 1);
+                    attributes_from = None;
+                }
+                Line::Quiet => {}
+                Line::Attribute(code) => {
+                    attributes_from.get_or_insert(index + 1);
+                    open_attribute = brackets_open_after(0, code);
+                }
+                Line::Code(code) => {
+                    let key = key_of(code);
+                    let landing = attributes_from.take().unwrap_or(index + 1);
+                    if pending.is_empty() {
+                        if names_an_item(&key) {
+                            bare.entry(key).or_default().push(Bare {
+                                line: index + 1,
+                                landing,
+                            });
+                        }
+                    } else {
+                        attached.push(Attachment {
+                            doc: std::mem::take(&mut pending),
+                            doc_lines: std::mem::take(&mut pending_lines),
+                            key,
+                            line: index + 1,
+                        });
                     }
-                } else {
-                    attached.push(Attachment {
-                        doc: std::mem::take(&mut pending),
-                        key,
-                        line: index + 1,
-                    });
                 }
             }
         }
+        Ok(Docs { attached, bare })
     }
-    Ok((attached, bare))
+
+    /// Where `moved` still stands in this version, or [`None`] where it does not: the block's
+    /// opening still sits in a doc of an item keyed as the one that took it, and an item keyed as the
+    /// one it was written for is still here with no doc — register item 1088's census question.
+    ///
+    /// ⚠⚠ THE SAME READER AS [`displaced`], so *this commit moved a doc* and *that move is still in
+    /// the tree* are one author's two answers rather than a second parser over the first one's
+    /// printout.
+    #[must_use]
+    pub fn standing(&self, moved: &Displacement) -> Option<Standing> {
+        let written_for = self.bare.get(&moved.was).cloned().unwrap_or_default();
+        let carried_by: Vec<usize> = self
+            .attached
+            .iter()
+            .filter(|held| held.key == moved.now && held.doc.iter().any(|l| l == moved.opening()))
+            .map(|held| held.line)
+            .collect();
+        (!written_for.is_empty() && !carried_by.is_empty()).then_some(Standing {
+            carried_by,
+            written_for,
+        })
+    }
 }
 
 /// Every doc block of `text`, and the item each one documents.
@@ -216,7 +312,7 @@ fn walk(text: &str) -> Result<(Vec<Attachment>, BTreeSet<String>), String> {
 ///
 /// When the source cannot be read for its comments — see the reader's own refusal.
 pub fn attachments(text: &str) -> Result<Vec<Attachment>, String> {
-    Ok(walk(text)?.0)
+    Ok(Docs::read(text)?.attached)
 }
 
 /// The item keywords [`key_of`] names an item by, in the order it tries them.
@@ -351,8 +447,11 @@ pub fn key_of(code: &str) -> String {
 ///
 /// When either version cannot be read for its comments.
 pub fn displaced(before: &str, after: &str) -> Result<Vec<Displacement>, String> {
-    let (was, _) = walk(before)?;
-    let (now, bare) = walk(after)?;
+    let was = Docs::read(before)?.attached;
+    let Docs {
+        attached: now,
+        bare,
+    } = Docs::read(after)?;
     let mut opens: BTreeMap<&str, Vec<(usize, usize)>> = BTreeMap::new();
     for (block, attachment) in now.iter().enumerate() {
         for (at, line) in attachment.doc.iter().enumerate() {
@@ -374,14 +473,14 @@ pub fn displaced(before: &str, after: &str) -> Result<Vec<Displacement>, String>
         let Some(holder) = holders.first() else {
             continue;
         };
-        if holders.iter().any(|held| held.key == old.key) || !bare.contains(&old.key) {
+        if holders.iter().any(|held| held.key == old.key) || !bare.contains_key(&old.key) {
             continue;
         }
         let moved = Displacement {
             was: old.key.clone(),
             now: holder.key.clone(),
             line: holder.line,
-            opening: first.clone(),
+            doc: old.doc.clone(),
         };
         if !found.contains(&moved) {
             found.push(moved);
@@ -390,34 +489,176 @@ pub fn displaced(before: &str, after: &str) -> Result<Vec<Displacement>, String>
     Ok(found)
 }
 
-/// Whether a displacement found in some change still stands in `text`, a later version of the same
-/// file: the moved text still sits in a block documenting the item that took it, and the item it was
-/// written for is still there with no doc — register item 1088's census question.
-///
-/// ⚠⚠ THE SAME READER AS [`displaced`], so *this commit moved a doc* and *that move is still in the
-/// tree* are one author's two answers rather than a second parser over the first one's printout.
-///
-/// # Errors
-///
-/// When `text` cannot be read for its comments.
-pub fn still_stands(text: &str, moved: &Displacement) -> Result<bool, String> {
-    let (attached, bare) = walk(text)?;
-    Ok(bare.contains(&moved.was)
-        && attached
-            .iter()
-            .any(|held| held.key == moved.now && held.doc.contains(&moved.opening)))
+/// Where a move still stands in one version of a file — [`Docs::standing`]'s answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Standing {
+    /// The line of every item keyed as the one that took the block, whose doc still carries the
+    /// block's opening.
+    pub carried_by: Vec<usize>,
+    /// Every undocumented item keyed as the one the block was written for.
+    pub written_for: Vec<Bare>,
 }
 
-/// [`still_stands`], asked of `path` as it is at `rev` in `repo`.
+/// Every Rust file of one commit, to be asked where a move stands — register item 1091.
+///
+/// # ⛔⛔⛔ THE WHOLE TREE, AND NOT THE PATH THE MOVE WAS MADE IN
+///
+/// Measured before this was written: `809ae70c` moved a doc in `crates/sprag-gui/src/wire.rs`, and
+/// `068f5774` deleted that file and carried its code into `crates/sprag-client/src/wire.rs` — a
+/// delete and an add, which git does not call a rename. Asked by its path, that move could only ever
+/// answer *could not ask*; and a file that kept its path while the code left it would answer *gone*
+/// for a move standing one file over. A move is a fact about prose and two items, and the prose is
+/// what is looked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeAt {
+    /// The commit, as git spells it in full.
+    pub rev: String,
+    /// Every Rust file of the commit, as `(path, text)`, in git's order.
+    files: Vec<(String, String)>,
+}
+
+impl TreeAt {
+    /// Every Rust file of `rev` in `repo`.
+    ///
+    /// # Errors
+    ///
+    /// When `rev` names no commit, or its tree or a Rust file in it cannot be read as UTF-8 text.
+    pub fn read(repo: &Path, rev: &str) -> Result<TreeAt, String> {
+        let rev = resolved(repo, rev)?;
+        let listing = git(repo, &["ls-tree", "-r", "-z", "--name-only", &rev])?
+            .ok_or_else(|| format!("git could not list the files of {rev}"))?;
+        let mut files = Vec::new();
+        for path in listing.split('\0').filter(|path| path.ends_with(".rs")) {
+            let text = git(repo, &["cat-file", "blob", &format!("{rev}:{path}")])?
+                .ok_or_else(|| format!("git could not read {path} at {rev}"))?;
+            files.push((path.to_owned(), text));
+        }
+        Ok(TreeAt { rev, files })
+    }
+
+    /// Every file in which `moved` still stands, with where — empty when it stands nowhere.
+    ///
+    /// ⚠ Only a file holding the block's opening is read for its docs: no other can carry it.
+    ///
+    /// # Errors
+    ///
+    /// When a file that holds the opening cannot be read for its comments. ⛔ Never skipped: that
+    /// file is exactly the one that could answer *stands*.
+    pub fn standing(&self, moved: &Displacement) -> Result<Vec<(&str, Standing)>, String> {
+        let mut out = Vec::new();
+        for (path, text) in &self.files {
+            if !text.contains(moved.opening()) {
+                continue;
+            }
+            let docs = Docs::read(text).map_err(|why| format!("{path} at {}: {why}", self.rev))?;
+            if let Some(standing) = docs.standing(moved) {
+                out.push((path.as_str(), standing));
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// `text` with `moved` undone: the block taken out of the doc that carries it and put back directly
+/// above the item it was written for — above that item's attributes, at that item's indentation —
+/// register item 1091.
+///
+/// # ⛔⛔⛔ Refused rather than guessed
+///
+/// * **The block is not carried WHOLE, by exactly one doc of an item keyed as the one that took it.**
+///   Prose edited since the move is somebody's to reread, and a block carried twice has no one place
+///   to be taken from.
+/// * **The item it was written for is undocumented in more than one place, or in none.** Two `fn new`
+///   in two impls, or a struct literal's `id:` line keyed like the field it fills: which of them the
+///   prose describes is not in the text, so it is not this function's to pick.
+/// * ⛔ **The answer does not read as repaired to the same reader** — the block must document the
+///   item it was written for, and the move must stand no more. A landing inside a multi-line string
+///   literal reads as an undocumented item here (this module's residue), and a block put there would
+///   be data in a fixture; this is the check that refuses it.
 ///
 /// # Errors
 ///
-/// When `path` is not in `rev` — a file renamed or deleted since cannot say whether a move in it
-/// stands, and *gone* would be a guess — or when that version cannot be read.
-pub fn stands_at(repo: &Path, rev: &str, path: &str, moved: &Displacement) -> Result<bool, String> {
-    let text = git(repo, &["cat-file", "blob", &format!("{rev}:{path}")])?
-        .ok_or_else(|| format!("{path} is not in {rev}"))?;
-    still_stands(&text, moved).map_err(|why| format!("{path} at {rev}: {why}"))
+/// A sentence naming which of those it was, or that `text` could not be read.
+pub fn repaired(text: &str, moved: &Displacement) -> Result<String, String> {
+    let docs = Docs::read(text)?;
+    let carriers: Vec<(&Attachment, usize)> = docs
+        .attached
+        .iter()
+        .filter(|held| held.key == moved.now)
+        .flat_map(|held| {
+            (0..held.doc.len())
+                .filter(|at| held.doc[*at..].starts_with(&moved.doc))
+                .map(move |at| (held, at))
+        })
+        .collect();
+    let [(carrier, at)] = carriers.as_slice() else {
+        return Err(format!(
+            "the block written for `{}` is carried whole by {} doc(s) of `{}` rather than by exactly \
+             one, so where to take it from is not in the text: \"{}\"",
+            moved.was,
+            carriers.len(),
+            moved.now,
+            moved.opening(),
+        ));
+    };
+    let landings = docs.bare.get(&moved.was).map_or(&[][..], Vec::as_slice);
+    let [target] = landings else {
+        return Err(format!(
+            "`{}` is undocumented on {} line(s) {:?} rather than on exactly one, so which of them the \
+             block was written for is not in the text: \"{}\"",
+            moved.was,
+            landings.len(),
+            landings.iter().map(|bare| bare.line).collect::<Vec<_>>(),
+            moved.opening(),
+        ));
+    };
+    let first = carrier.doc_lines[*at];
+    let last = carrier.doc_lines[*at + moved.doc.len() - 1];
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let to = indentation(lines[target.landing - 1]);
+    // ⚠ Whitespace before `///` or `//` says nothing, so each line takes the item's indentation in
+    // place of its own; a blank line inside the block stays blank rather than gaining trailing spaces.
+    let block: Vec<String> = lines[first - 1..last]
+        .iter()
+        .map(|line| match line.trim_start() {
+            "" => "\n".to_owned(),
+            rest => format!("{to}{rest}"),
+        })
+        .collect();
+    let mut out = String::with_capacity(text.len() + block.len() * to.len());
+    for (index, line) in lines.iter().enumerate() {
+        let number = index + 1;
+        if number == target.landing {
+            out.extend(block.iter().map(String::as_str));
+        }
+        if !(first..=last).contains(&number) {
+            out.push_str(line);
+        }
+    }
+    let read_back = Docs::read(&out)?;
+    let lands = read_back.attached.iter().any(|held| {
+        held.key == moved.was
+            && held
+                .doc
+                .windows(moved.doc.len())
+                .any(|run| run == moved.doc.as_slice())
+    });
+    if !lands || read_back.standing(moved).is_some() {
+        return Err(format!(
+            "the block written for `{}`, put above line {}, does not read back as documenting it — \
+             that line is not where an item's doc goes (a line inside a string literal reads as an \
+             item here): \"{}\"",
+            moved.was,
+            target.landing,
+            moved.opening(),
+        ));
+    }
+    Ok(out)
+}
+
+/// The whitespace `line` begins with.
+fn indentation(line: &str) -> &str {
+    &line[..line.len() - line.trim_start().len()]
 }
 
 /// What a change did to the doc blocks of the Rust files it touched — one commit against its first
@@ -760,8 +1001,19 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
                 was: "struct Item".to_owned(),
                 now: "struct Placed".to_owned(),
                 line: 23,
-                opening: "One numbered item of section A, after its blocks have been grouped."
-                    .to_owned(),
+                doc: vec![
+                    "One numbered item of section A, after its blocks have been grouped.".to_owned(),
+                    String::new(),
+                    "⚠ A number can own several blocks: this ledger closes an item by laying a new \
+                     block ON TOP of"
+                        .to_owned(),
+                    "the original rather than editing it. So the blocks are grouped by number and \
+                     the TOPMOST mark"
+                        .to_owned(),
+                    "wins, which is the same rule a reader uses — the newest block is the current \
+                     one."
+                        .to_owned(),
+                ],
             }],
             "⛔⛔⛔⛔⛔ REGISTER ITEM 1088: `706c4019` put `Placed` between `Item` and its doc, and \
              every gate this repository has stayed green about it",
@@ -772,9 +1024,20 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
                 was: "fn folds_by_reason_json".to_owned(),
                 now: "fn silent_by_kind_json".to_owned(),
                 line: 20,
-                opening: "**THE SPLIT AS IT CROSSES THE WIRE** — one entry per reflect reason \
-                          word, `{delivered, folded}`."
-                    .to_owned(),
+                doc: vec![
+                    "**THE SPLIT AS IT CROSSES THE WIRE** — one entry per reflect reason word, \
+                     `{delivered, folded}`."
+                        .to_owned(),
+                    String::new(),
+                    "⚠ Composed from `rows()` rather than from a list here, so \
+                     [`sprag_plugin::ReflectReason::ALL`]"
+                        .to_owned(),
+                    "stays the only authority on which reasons there are — register item 856(1) \
+                     and this workspace's"
+                        .to_owned(),
+                    "rule 6: a reason nobody classified must not quietly leave the table."
+                        .to_owned(),
+                ],
             }],
             "⛔⛔⛔⛔⛔ REGISTER ITEM 1088: `5a242872` put two functions between \
              `folds_by_reason_json` and its doc, and the doc stood on the wrong one for four days",
@@ -788,8 +1051,14 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
         let displacement = displaced(ITEM_BEFORE, ITEM_AFTER)
             .expect("both versions read")
             .remove(0);
+        let stands = |text: &str| {
+            Docs::read(text)
+                .expect("reads")
+                .standing(&displacement)
+                .is_some()
+        };
         assert!(
-            still_stands(ITEM_AFTER, &displacement).expect("reads"),
+            stands(ITEM_AFTER),
             "⛔⛔ at the commit that made it, the move stands: {displacement:?}",
         );
         let repaired = moved(
@@ -799,7 +1068,7 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
             "/// One numbered item of section A",
         );
         assert!(
-            !still_stands(&repaired, &displacement).expect("reads"),
+            !stands(&repaired),
             "⚠⚠ THE CONTROL: once `Placed` is declared above the block, the same move no longer \
              stands — or every finding would read as standing for ever",
         );
@@ -820,9 +1089,198 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
             "⚠ the fixture must really have lost the moved text, or the arm below is about nothing",
         );
         assert!(
-            !still_stands(&deleted, &displacement).expect("reads"),
+            !stands(&deleted),
             "⚠⚠ nothing carries the prose that was taken from `Item` any more, so no move stands — \
              `Item` having no doc is a different finding",
+        );
+    }
+
+    /// ⚠⚠ **A STANDING MOVE NAMES WHERE IT STANDS** — register item 1091, off the real `Item` and
+    /// `folds_by_reason_json` bytes: the item carrying the block, and the undocumented item it was
+    /// written for with the line a doc for it goes above.
+    #[test]
+    fn a_standing_move_names_the_item_carrying_it_and_where_its_own_items_doc_goes() {
+        let item = displaced(ITEM_BEFORE, ITEM_AFTER)
+            .expect("both versions read")
+            .remove(0);
+        assert_eq!(
+            Docs::read(ITEM_AFTER).expect("reads").standing(&item),
+            Some(Standing {
+                carried_by: vec![23],
+                written_for: vec![Bare {
+                    line: 35,
+                    landing: 34
+                }],
+            }),
+            "⚠⚠ `Placed` on line 23 carries `Item`'s block, and `Item` begins on 35 under its derive \
+             on 34 — the line its doc goes above",
+        );
+        // ⚠⚠ THE CONTROL FOR THE OTHER HALF: the block still sits on `Placed`, and `Item` has a doc of
+        // its own again. What the block was written for is not bare, so no move stands — and without
+        // this case, no case here decides the undocumented-item half of the question.
+        let documented_again = ITEM_AFTER.replacen(
+            "#[derive(Debug, Clone, PartialEq, Eq)]\npub struct Item {",
+            "/// A doc of its own.\n#[derive(Debug, Clone, PartialEq, Eq)]\npub struct Item {",
+            1,
+        );
+        assert_ne!(
+            documented_again, ITEM_AFTER,
+            "⚠ the fixture must really have gained the doc, or the arm below is about nothing",
+        );
+        assert_eq!(
+            Docs::read(&documented_again)
+                .expect("reads")
+                .standing(&item),
+            None,
+            "⚠⚠ `Item` is documented again, so the block left on `Placed` is not a move that stands",
+        );
+        let folds = displaced(FOLDS_BEFORE, FOLDS_AFTER)
+            .expect("both versions read")
+            .remove(0);
+        assert_eq!(
+            Docs::read(FOLDS_AFTER).expect("reads").standing(&folds),
+            Some(Standing {
+                carried_by: vec![20],
+                written_for: vec![Bare {
+                    line: 50,
+                    landing: 50
+                }],
+            }),
+            "⚠ with no attribute above it, an item's doc goes above the item's own line",
+        );
+    }
+
+    /// ⛔⛔⛔⛔ **EACH STANDING BLOCK GOES BACK ABOVE ITS OWN ITEM, AND NOTHING ELSE MOVES** — register
+    /// item 1091, off the two displacements that landed here.
+    ///
+    /// ⚠⚠ The expected bytes are the fixture with the block cut out and pasted above its item, spelled
+    /// by string surgery rather than by the function under test. The answer is then put to
+    /// [`displaced`] against the version from BEFORE the move, which must find nothing.
+    #[test]
+    fn each_standing_block_goes_back_above_its_own_item_and_nothing_else_moves() {
+        for (before, after, from, to, above) in [
+            (
+                ITEM_BEFORE,
+                ITEM_AFTER,
+                "/// One numbered item",
+                "/// One item in the derived",
+                "#[derive(Debug, Clone, PartialEq, Eq)]\npub struct Item {",
+            ),
+            (
+                FOLDS_BEFORE,
+                FOLDS_AFTER,
+                "/// **THE SPLIT",
+                "/// **EVERY KIND",
+                "fn folds_by_reason_json",
+            ),
+        ] {
+            let moved = displaced(before, after)
+                .expect("both versions read")
+                .remove(0);
+            let block =
+                &after[after.find(from).expect("the block")..after.find(to).expect("its end")];
+            let cut = after.replacen(block, "", 1);
+            let at = cut.find(above).expect("the item");
+            let expected = format!("{}{block}{}", &cut[..at], &cut[at..]);
+            let put_back = repaired(after, &moved)
+                .expect("⛔⛔⛔ a block with one carrier and one undocumented item is put back");
+            assert_eq!(
+                put_back, expected,
+                "⛔⛔⛔⛔ REGISTER ITEM 1091: the block goes back above `{}` and nothing else changes",
+                moved.was,
+            );
+            assert_eq!(
+                displaced(before, &put_back).expect("both read"),
+                Vec::new(),
+                "⚠⚠ against the version before the move, nothing has moved",
+            );
+            assert_eq!(
+                Docs::read(&put_back).expect("reads").standing(&moved),
+                None,
+                "⚠ and the move stands no more",
+            );
+        }
+    }
+
+    /// ⚠⚠⚠ **THE BLOCK LANDS ABOVE ITS ITEM'S ATTRIBUTES, HOWEVER MANY LINES THEY TAKE, AT ITS ITEM'S
+    /// INDENTATION** — register item 1091, and the shape most standing moves have: a test declared
+    /// under the doc of the test below it.
+    #[test]
+    fn a_block_lands_above_its_items_attributes_at_its_items_indentation() {
+        let before = "mod tests {\n    /// Checks the sum.\n    ///\n    /// Twice.\n    #[test]\n    \
+                      #[cfg_attr(\n        miri,\n        ignore\n    )]\n    fn adds() {}\n}\n";
+        let after = "mod tests {\n    /// Checks the sum.\n    ///\n    /// Twice.\n    #[test]\n    fn \
+                     subtracts() {}\n\n    #[test]\n    #[cfg_attr(\n        miri,\n        ignore\n    \
+                     )]\n    fn adds() {}\n}\n";
+        let moved = displaced(before, after).expect("both read").remove(0);
+        assert_eq!(
+            repaired(after, &moved).expect("put back"),
+            "mod tests {\n    #[test]\n    fn subtracts() {}\n\n    /// Checks the sum.\n    ///\n    \
+             /// Twice.\n    #[test]\n    #[cfg_attr(\n        miri,\n        ignore\n    )]\n    fn \
+             adds() {}\n}\n",
+            "⚠⚠⚠ above `#[test]` and the four-line `cfg_attr`, never between them and `adds`",
+        );
+        let nested = "impl Alpha {\n    /// Makes one.\n    fn other() {}\n}\n\nfn make() {}\n";
+        let carried = Displacement {
+            was: "fn make".to_owned(),
+            now: "fn other".to_owned(),
+            line: 3,
+            doc: vec!["Makes one.".to_owned()],
+        };
+        assert_eq!(
+            repaired(nested, &carried).expect("put back"),
+            "impl Alpha {\n    fn other() {}\n}\n\n/// Makes one.\nfn make() {}\n",
+            "⚠⚠ at `make`'s indentation, not at the one the block was carried at",
+        );
+    }
+
+    /// ⛔⛔⛔ **WHAT THE TEXT DOES NOT SAY IS REFUSED, NEVER PICKED** — register item 1091, each refusal
+    /// beside the input it differs from, which is a repair.
+    #[test]
+    fn a_repair_the_text_cannot_decide_is_refused_and_says_why() {
+        let makes = Displacement {
+            was: "fn new".to_owned(),
+            now: "fn other".to_owned(),
+            line: 3,
+            doc: vec!["Makes.".to_owned()],
+        };
+        let one = "impl Alpha {\n    /// Makes.\n    fn other() {}\n    fn new() {}\n}\n";
+        assert_eq!(
+            repaired(one, &makes).expect("⚠ THE CONTROL: one carrier and one undocumented `new`"),
+            "impl Alpha {\n    fn other() {}\n    /// Makes.\n    fn new() {}\n}\n",
+        );
+
+        let two = format!("{one}\nimpl Beta {{\n    fn new() {{}}\n}}\n");
+        let refused = repaired(&two, &makes).expect_err(
+            "⛔⛔⛔ two undocumented `new`, and which one the block is for is not in the text",
+        );
+        assert!(
+            refused.contains("[4, 8]"),
+            "⛔ and the refusal names both lines: {refused}",
+        );
+
+        // ⚠ The carrier holds TWO lines, so a reader that matched the opening alone would go on to
+        // move them rather than index past a one-line doc — and be caught by this arm's own sentence.
+        let longer = "impl Alpha {\n    /// Makes.\n    /// Differently.\n    fn other() {}\n    fn new() {}\n}\n";
+        let edited = Displacement {
+            doc: vec!["Makes.".to_owned(), "And more.".to_owned()],
+            ..makes.clone()
+        };
+        let refused = repaired(longer, &edited)
+            .expect_err("⛔⛔ the carrier holds the opening, but not the whole block that moved");
+        assert!(
+            refused.contains("by 0 doc(s)"),
+            "⛔⛔ and the refusal says the block is not carried whole: {refused}",
+        );
+
+        let in_a_string =
+            "const FIXTURE: &str = r#\"\nfn new() {}\n\"#;\n\n/// Makes.\nfn other() {}\n";
+        let refused = repaired(in_a_string, &makes).expect_err(
+            "⛔⛔⛔ the only undocumented `new` is a line of a string literal, and a block put there is data",
+        );
+        assert!(
+            refused.contains("does not read back"),
+            "⛔ and the refusal says the landing is not where an item's doc goes: {refused}",
         );
     }
 
@@ -910,7 +1368,11 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
                 was: "fn add".to_owned(),
                 now: "fn mul".to_owned(),
                 line: 4,
-                opening: "Adds.".to_owned(),
+                doc: vec![
+                    "Adds.".to_owned(),
+                    String::new(),
+                    "Second paragraph.".to_owned()
+                ],
             }],
             "⛔ THE CONTROL FOR BOTH: the same `before`, and an undocumented item put between the \
              doc and `add` — which is the displacement with no doc of its own to glue on",
@@ -963,11 +1425,13 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
             vec![
                 Attachment {
                     doc: vec!["Doc.".to_owned()],
+                    doc_lines: vec![1],
                     key: "struct Held".to_owned(),
                     line: 8,
                 },
                 Attachment {
                     doc: vec!["Its field.".to_owned()],
+                    doc_lines: vec![9],
                     key: "field inner".to_owned(),
                     line: 10,
                 },
