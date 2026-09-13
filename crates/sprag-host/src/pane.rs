@@ -1082,10 +1082,6 @@ fn parse_clipboard_answer_args(
     Ok((seq, target, text))
 }
 
-/// Parse the `text` action's args into the literal string to write. Accepts a
-/// bare string (`"한"`) or an object `{text: "한"}` (the AI/JSON wire). A
-/// missing/non-string `text`, or a non-string/non-object arg, is an
-/// [`InvokeError::TypeMismatch`]. Empty is allowed (the caller no-ops it).
 /// Read the optional `hand` — **WHOSE KEYSTROKES THESE ARE**. Absent (or a scalar form, which has
 /// nowhere to carry it) is [`Hand::AProgram`]: what this surface did before the argument existed,
 /// and the conservative half.
@@ -1113,6 +1109,10 @@ fn parse_hand(args: &IntrospectValue) -> Result<Hand, InvokeError> {
     }
 }
 
+/// Parse the `text` action's args into the literal string to write. Accepts a
+/// bare string (`"한"`) or an object `{text: "한"}` (the AI/JSON wire). A
+/// missing/non-string `text`, or a non-string/non-object arg, is an
+/// [`InvokeError::TypeMismatch`]. Empty is allowed (the caller no-ops it).
 fn parse_text_args(args: &IntrospectValue) -> Result<String, InvokeError> {
     match args {
         IntrospectValue::Text(text) => Ok(text.clone()),
@@ -1943,13 +1943,6 @@ mod tests {
         );
     }
 
-    /// ⚠⚠ **A DECLARED ARGUMENT IS ONE THE PANE ACTUALLY READS** — and it found four coercions the
-    /// first time it ran.
-    ///
-    /// `ctrl`, `alt`, `shift` and `super` were read with `and_then(Value::as_bool).unwrap_or(false)`,
-    /// so `{"key": "a", "ctrl": 1}` injected an UNMODIFIED `a` and answered success — while `col` and
-    /// `row`, two lines away in the same file, refused a malformed value. R330's odd-one-out rule and
-    /// R352b's `report_agent` defect, in the parser a keystroke goes through.
     /// ⚠⚠ **AN OPTIONAL ARGUMENT OF THE INPUT SURFACE MAY BE DECLINED AS `null`** — the third
     /// surface asked, because the defect was never about one verb: a client whose language
     /// serialises an absent optional as `null` calls EVERY verb that way.
@@ -1971,6 +1964,13 @@ mod tests {
         );
     }
 
+    /// ⚠⚠ **A DECLARED ARGUMENT IS ONE THE PANE ACTUALLY READS** — and it found four coercions the
+    /// first time it ran.
+    ///
+    /// `ctrl`, `alt`, `shift` and `super` were read with `and_then(Value::as_bool).unwrap_or(false)`,
+    /// so `{"key": "a", "ctrl": 1}` injected an UNMODIFIED `a` and answered success — while `col` and
+    /// `row`, two lines away in the same file, refused a malformed value. R330's odd-one-out rule and
+    /// R352b's `report_agent` defect, in the parser a keystroke goes through.
     #[test]
     fn a_declared_argument_is_one_the_pane_reads() {
         let (_workspace, mut external) = surface();
