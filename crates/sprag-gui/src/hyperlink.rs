@@ -1324,9 +1324,6 @@ mod tests {
         });
     }
 
-    /// Feed a plain 8x3 grid to a pane oracle at a given tracking level, returning the oracle over
-    /// its shared state (helper for the drag / motion tests).
-    #[cfg(test)]
     /// ⚠⚠ **THE AI-FIRST CLICK, DRIVEN** — `activate` had no test at all until R352, which is
     /// half of why nobody noticed it was undeclared.
     ///
@@ -1439,6 +1436,9 @@ mod tests {
         });
     }
 
+    /// Feed a plain 8x3 grid to a pane oracle at a given tracking level, returning the oracle over
+    /// its shared state (helper for the drag / motion tests).
+    #[cfg(test)]
     fn oracle_at(slot: usize, proto: MouseProtocol) -> HyperlinkOracle {
         let mut screen = sprag_vt::Emulator::new(8, 3);
         sprag_vt::VtPort::advance(&mut screen, b"........");
