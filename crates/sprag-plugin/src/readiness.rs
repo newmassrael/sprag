@@ -1245,23 +1245,6 @@ impl Readiness {
         self.within = within;
     }
 
-    /// **HAS A PERSON TAKEN THIS PANE SINCE THIS RUN STARTED WATCHING IT?**
-    ///
-    /// Arms on the first look and compares on every one after — the watermark discipline
-    /// [`PaneHands`] is built for, so the pane holds no state on this run's behalf.
-    ///
-    /// # ⚠⚠ Why the first look can never report an interruption
-    ///
-    /// A pane a run is handed has usually been typed into already: somebody launched the program in
-    /// it. Reading the count as a delta from the first look is what separates *"a person is typing
-    /// at this run"* from *"a person once typed here"*, and it is why a watermark exists at all
-    /// rather than a flag.
-    ///
-    /// ⚠ A host with no [`PaneHands`] answers `None` and this returns `None` — *carry on*. An
-    /// absence of the capability is not evidence that somebody is present, and reading it as one
-    /// would stop every run on every host that has not implemented it.
-    ///
-    /// [`PaneHands`]: crate::access::PaneHands
     /// **THE WATERMARK THIS BARRIER LAST CLEARED THE PANE AT** — [`None`] until it has armed one,
     /// and on a host that cannot count hands at all.
     ///
@@ -1304,6 +1287,23 @@ impl Readiness {
         Some(Interruption { writes })
     }
 
+    /// **HAS A PERSON TAKEN THIS PANE SINCE THIS RUN STARTED WATCHING IT?**
+    ///
+    /// Arms on the first look and compares on every one after — the watermark discipline
+    /// [`PaneHands`] is built for, so the pane holds no state on this run's behalf.
+    ///
+    /// # ⚠⚠ Why the first look can never report an interruption
+    ///
+    /// A pane a run is handed has usually been typed into already: somebody launched the program in
+    /// it. Reading the count as a delta from the first look is what separates *"a person is typing
+    /// at this run"* from *"a person once typed here"*, and it is why a watermark exists at all
+    /// rather than a flag.
+    ///
+    /// ⚠ A host with no [`PaneHands`] answers `None` and this returns `None` — *carry on*. An
+    /// absence of the capability is not evidence that somebody is present, and reading it as one
+    /// would stop every run on every host that has not implemented it.
+    ///
+    /// [`PaneHands`]: crate::access::PaneHands
     fn interrupted(&mut self, panes: &dyn PaneAccess, pane: PaneId) -> Option<Interruption> {
         let now = panes.hands()?.pane_hands(pane)?.by_a_person();
         let Some(armed) = self.hands_at else {
