@@ -341,13 +341,6 @@ fn stale_host() -> sprag_peer::OldDaemon {
     sprag_peer::OldDaemon::serving_nothing(&socket_path())
 }
 
-/// A daemon that serves every READ a live one serves and knows NO ACTION — a real `sprag-term`
-/// behind a proxy that refuses `scene/invoke`.
-///
-/// Answers the peer, the daemon behind it, and that daemon's own socket: a test PREPARES state (a
-/// second pane, a second window) through the daemon directly and then drives the swept verbs
-/// through the aged front. The daemon is handed back so its lifetime is the test's — dropping it
-/// ends the process.
 /// A daemon that HAS every verb and refuses one WITHOUT SAYING WHY — every pinion before
 /// PINION-PR82, and the degradation R325's deleted guesses used to cover.
 ///
@@ -361,6 +354,13 @@ fn refusing_peer(upstream: &Path) -> sprag_peer::OldDaemon {
     )
 }
 
+/// A daemon that serves every READ a live one serves and knows NO ACTION — a real `sprag-term`
+/// behind a proxy that refuses `scene/invoke`.
+///
+/// Answers the peer, the daemon behind it, and that daemon's own socket: a test PREPARES state (a
+/// second pane, a second window) through the daemon directly and then drives the swept verbs
+/// through the aged front. The daemon is handed back so its lifetime is the test's — dropping it
+/// ends the process.
 fn aged_host() -> (sprag_peer::OldDaemon, HostChild, PathBuf) {
     let (daemon, upstream) = spawn_host();
     let peer =
@@ -2796,26 +2796,6 @@ fn the_cli_waits_for_output_a_pane_has_not_printed_yet() {
 // their scrollback.
 // ---------------------------------------------------------------------------
 
-/// Ends everything this file put on `sock` and removes everything it wrote there — including on a
-/// panicked assertion, so a failed run leaks neither a process nor a temp tree.
-///
-/// # ⛔⛔⛔⛔⛔ IT USED TO END ONE PROCESS OF SEVERAL — register item 802, second address
-///
-/// This guard killed [`daemon_pid`] and stopped. A run's driver is a process of its own
-/// (`run-driver-process` defaults to `on`), spawned by the daemon and holding the same endpoint in
-/// its environment — so SIGKILLing its parent does not end it, it ORPHANS it: the driver is adopted
-/// by init, keeps its socket in `environ`, and never exits.
-///
-/// ⚠⚠ MEASURED 2026-09-01, as a delta across one `cargo test -p sprag-host -p sprag-tui`: twelve
-/// processes survived the run, and **every one of them was a driver** (`--drive N -t … -w 0`) —
-/// not one was a daemon, because the daemons were being ended correctly the whole time. Cumulative
-/// on this machine: **165 leaked test processes holding 1006 MB of RSS** while the box was 15 GB
-/// into swap, i.e. this suite was making its own build machine slower every time it ran.
-///
-/// ⭐ The walk that answers *everything on this socket* was ALREADY HERE — [`sprag_term_pids`],
-/// written for a different gate — and `daemon_pid` computed it, took one pid and dropped the rest.
-/// The fact existed and the teardown had no sentence that asked for it, which is the shape item 802
-/// is about at every one of its addresses.
 /// A scratch home for a promotion case, having first collected the ones DEAD runs left behind.
 ///
 /// # ⛔⛔⛔⛔⛔ Why the `remove_dir_all` this replaces could never work — register item 927
@@ -2848,6 +2828,26 @@ fn promoted_scratch(prefix: &str) -> PathBuf {
     state
 }
 
+/// Ends everything this file put on `sock` and removes everything it wrote there — including on a
+/// panicked assertion, so a failed run leaks neither a process nor a temp tree.
+///
+/// # ⛔⛔⛔⛔⛔ IT USED TO END ONE PROCESS OF SEVERAL — register item 802, second address
+///
+/// This guard killed [`daemon_pid`] and stopped. A run's driver is a process of its own
+/// (`run-driver-process` defaults to `on`), spawned by the daemon and holding the same endpoint in
+/// its environment — so SIGKILLing its parent does not end it, it ORPHANS it: the driver is adopted
+/// by init, keeps its socket in `environ`, and never exits.
+///
+/// ⚠⚠ MEASURED 2026-09-01, as a delta across one `cargo test -p sprag-host -p sprag-tui`: twelve
+/// processes survived the run, and **every one of them was a driver** (`--drive N -t … -w 0`) —
+/// not one was a daemon, because the daemons were being ended correctly the whole time. Cumulative
+/// on this machine: **165 leaked test processes holding 1006 MB of RSS** while the box was 15 GB
+/// into swap, i.e. this suite was making its own build machine slower every time it ran.
+///
+/// ⭐ The walk that answers *everything on this socket* was ALREADY HERE — [`sprag_term_pids`],
+/// written for a different gate — and `daemon_pid` computed it, took one pid and dropped the rest.
+/// The fact existed and the teardown had no sentence that asked for it, which is the shape item 802
+/// is about at every one of its addresses.
 struct DaemonGuard {
     sock: PathBuf,
     state: PathBuf,
@@ -11211,14 +11211,6 @@ fn the_cli_refuses_a_half_window_a_zero_and_a_contradiction() {
     );
 }
 
-/// The strongest chain the CLI can prove without a display: `send-keys` reaches the pane's CHILD
-/// through the real PTY, and `capture-pane` reads back what the child did with it.
-///
-/// The fixture is `cat`, which makes the two languages distinguishable. Literal text is ECHOED by
-/// the terminal once, and stays one copy while the line is unfinished; the `Enter` KEY completes
-/// `cat`'s line-buffered read, so it writes the line back and a SECOND copy appears. One assertion
-/// therefore separates "the text arrived" from "the keystroke arrived", which a single combined
-/// send could not. (The same mechanism `sprag run`'s test relies on, read in the other direction.)
 /// ⚠⚠⚠ **BOTH MOUTHS OFFER THE SAME CHOICE, FROM THE SAME VOCABULARY.**
 ///
 /// `capture-pane`'s doc promised the shell and the `read_pane` tool see *"one definition of what a
@@ -11271,6 +11263,14 @@ fn capture_pane_offers_the_screens_line_breaks_or_the_programs() {
     );
 }
 
+/// The strongest chain the CLI can prove without a display: `send-keys` reaches the pane's CHILD
+/// through the real PTY, and `capture-pane` reads back what the child did with it.
+///
+/// The fixture is `cat`, which makes the two languages distinguishable. Literal text is ECHOED by
+/// the terminal once, and stays one copy while the line is unfinished; the `Enter` KEY completes
+/// `cat`'s line-buffered read, so it writes the line back and a SECOND copy appears. One assertion
+/// therefore separates "the text arrived" from "the keystroke arrived", which a single combined
+/// send could not. (The same mechanism `sprag run`'s test relies on, read in the other direction.)
 #[test]
 fn send_keys_reaches_the_child_and_capture_pane_reads_it_back() {
     let (_host, sock) = spawn_host();
@@ -16328,20 +16328,6 @@ fn daemon_with_one_pane_told(label: &str, options: &[(&str, &str)]) -> (DaemonGu
     (guard, sock, pane)
 }
 
-/// ⚠⚠ **A PERSON CAN START A BOUNDED LOOP FROM A SHELL, AND THE BOUND IS THE ONE THEY ASKED FOR.**
-///
-/// The README's first line names the AI↔AI orchestration loop as what sprag is FOR, and until R355
-/// there was no way to start one that did not involve hand-writing a `scene/invoke` body. This is
-/// that verb, driven as a person drives it: the shipped binary, a real daemon, a real pane.
-///
-/// The number is the claim. `--max-iterations 2` against a daemon whose own default is 100 must
-/// come back `exhausted (iterations) after 2 iterations` — a run that ignored the guardrail would
-/// report a different number and fail here with it.
-///
-/// ⚠ And the WORD IN THE BRACKET is a second claim, on the daemon's other two ceilings: this run
-/// was stopped by the one the person named, not by the wall-clock deadline or the cost ceiling it
-/// silently inherited. Before the outcome carried which ceiling, those three endings were one
-/// word and a person could not tell them apart.
 /// ⚠⚠⚠ **THE SHELL CAN SAY A PERSON IS WATCHING** — the argument reaches the CLI's flag surface,
 /// and a misspelling of it is refused.
 ///
@@ -16429,6 +16415,20 @@ fn the_shell_offers_the_argument_that_says_somebody_is_watching() {
     );
 }
 
+/// ⚠⚠ **A PERSON CAN START A BOUNDED LOOP FROM A SHELL, AND THE BOUND IS THE ONE THEY ASKED FOR.**
+///
+/// The README's first line names the AI↔AI orchestration loop as what sprag is FOR, and until R355
+/// there was no way to start one that did not involve hand-writing a `scene/invoke` body. This is
+/// that verb, driven as a person drives it: the shipped binary, a real daemon, a real pane.
+///
+/// The number is the claim. `--max-iterations 2` against a daemon whose own default is 100 must
+/// come back `exhausted (iterations) after 2 iterations` — a run that ignored the guardrail would
+/// report a different number and fail here with it.
+///
+/// ⚠ And the WORD IN THE BRACKET is a second claim, on the daemon's other two ceilings: this run
+/// was stopped by the one the person named, not by the wall-clock deadline or the cost ceiling it
+/// silently inherited. Before the outcome carried which ceiling, those three endings were one
+/// word and a person could not tell them apart.
 #[test]
 fn a_person_starts_a_bounded_loop_and_waits_for_how_it_ended() {
     let (_guard, sock, pane) = daemon_with_one_pane("orchestrate");
@@ -16986,49 +16986,6 @@ fn a_launcher_is_told_this_daemon_cannot_take_its_call_before_any_run_exists() {
     );
 }
 
-/// ⛔⛔⛔⛔⛔ **`--dry-run` REFUSES EXACTLY WHAT A LAUNCH REFUSES, IN THE SAME WORDS** — register
-/// item 873.
-///
-/// # ⛔⛔⛔⛔⛔ The check that was green while the launch was red
-///
-/// `a_launcher_is_told_this_daemon_cannot_take_its_call_before_any_run_exists` above pays item 855
-/// and every arm of it is about a call the CLIENT can judge — a key the published form does not
-/// carry. **It stayed green through this defect and could not have caught it**, because the dry run
-/// was answered without a request being sent: it ran the fill and nothing else. Measured by wz
-/// `f8` on 2026-09-03, one call, two answers:
-///
-/// ```text
-/// launch: the daemon takes this call; no run started by the check.   <- the dry run
-/// sprag: this run named neither `agent` nor `ready_when`, and this repository's
-///        loop-kind document authors no barrier either ...            <- the launch
-/// ```
-///
-/// ⇒ **A green check followed by a red launch is worse than no check**, because a launcher branches
-/// on it — which is why item 873 is critical rather than a wording bug.
-///
-/// # ⚠⚠⚠⚠ WHAT THIS HOLDS, AND WHY IT IS NOT *THE DRY RUN PASSES*
-///
-/// The item's own done-when ⑶ names the trap and item 864 is the round that fell into it: a gate
-/// that asserts *the check goes green* is satisfied by a check that judges nothing at all. So every
-/// arm here compares **the two roads against each other** — same command line, one word apart —
-/// and the refusal arms compare the daemon's SENTENCE and not merely the exit status. Two roads
-/// that both refuse for different reasons are still two roads.
-///
-/// # ⚠⚠⚠ Why the cases are refusals only the DAEMON can reach, and how that is enforced
-///
-/// A case the fill already refuses proves nothing: the old dry run refused those too, which is the
-/// whole of why it looked correct. So each case below must be **well-formed by the published
-/// grammar and refused by the daemon anyway**, and the control arm asserts exactly that — a
-/// refusal naming this binary's usage would mean the case never reached the seam and the arm is
-/// vacuous.
-///
-/// ⚠ **The MEASURED case is not the one driven here, and that is deliberate.** `f8` hit the barrier
-/// arm, and this repository cannot: its own kind document always authors a barrier, which is the
-/// fact `ai_loop_reference` records and the reason that arm has never been reachable from a gate in
-/// this tree. What is driven instead is `opened_by` naming a pane no daemon holds — a different
-/// sentence from the same side of the wire. The property is *the two roads agree*, and any
-/// daemon-only refusal exercises it; a case chosen because it reproduces one bug would stop
-/// covering the next one.
 /// 🎯🎯🎯🎯🎯 **A REPOSITORY THAT IS NOT THIS ONE CAN LAUNCH A RUN UNDER ITS OWN KIND DOCUMENT** —
 /// register item 1034's done-when ⑴ and ⑵, driven through the daemon rather than the library.
 ///
@@ -17225,6 +17182,49 @@ fn a_tree_that_owns_its_kind_can_launch_under_it_and_a_missing_document_is_refus
     );
 }
 
+/// ⛔⛔⛔⛔⛔ **`--dry-run` REFUSES EXACTLY WHAT A LAUNCH REFUSES, IN THE SAME WORDS** — register
+/// item 873.
+///
+/// # ⛔⛔⛔⛔⛔ The check that was green while the launch was red
+///
+/// `a_launcher_is_told_this_daemon_cannot_take_its_call_before_any_run_exists` above pays item 855
+/// and every arm of it is about a call the CLIENT can judge — a key the published form does not
+/// carry. **It stayed green through this defect and could not have caught it**, because the dry run
+/// was answered without a request being sent: it ran the fill and nothing else. Measured by wz
+/// `f8` on 2026-09-03, one call, two answers:
+///
+/// ```text
+/// launch: the daemon takes this call; no run started by the check.   <- the dry run
+/// sprag: this run named neither `agent` nor `ready_when`, and this repository's
+///        loop-kind document authors no barrier either ...            <- the launch
+/// ```
+///
+/// ⇒ **A green check followed by a red launch is worse than no check**, because a launcher branches
+/// on it — which is why item 873 is critical rather than a wording bug.
+///
+/// # ⚠⚠⚠⚠ WHAT THIS HOLDS, AND WHY IT IS NOT *THE DRY RUN PASSES*
+///
+/// The item's own done-when ⑶ names the trap and item 864 is the round that fell into it: a gate
+/// that asserts *the check goes green* is satisfied by a check that judges nothing at all. So every
+/// arm here compares **the two roads against each other** — same command line, one word apart —
+/// and the refusal arms compare the daemon's SENTENCE and not merely the exit status. Two roads
+/// that both refuse for different reasons are still two roads.
+///
+/// # ⚠⚠⚠ Why the cases are refusals only the DAEMON can reach, and how that is enforced
+///
+/// A case the fill already refuses proves nothing: the old dry run refused those too, which is the
+/// whole of why it looked correct. So each case below must be **well-formed by the published
+/// grammar and refused by the daemon anyway**, and the control arm asserts exactly that — a
+/// refusal naming this binary's usage would mean the case never reached the seam and the arm is
+/// vacuous.
+///
+/// ⚠ **The MEASURED case is not the one driven here, and that is deliberate.** `f8` hit the barrier
+/// arm, and this repository cannot: its own kind document always authors a barrier, which is the
+/// fact `ai_loop_reference` records and the reason that arm has never been reachable from a gate in
+/// this tree. What is driven instead is `opened_by` naming a pane no daemon holds — a different
+/// sentence from the same side of the wire. The property is *the two roads agree*, and any
+/// daemon-only refusal exercises it; a case chosen because it reproduces one bug would stop
+/// covering the next one.
 #[test]
 fn a_dry_run_refuses_everything_a_launch_does() {
     let (_guard, sock, pane) = daemon_with_one_pane("seam");
