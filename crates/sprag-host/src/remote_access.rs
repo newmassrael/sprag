@@ -1059,12 +1059,6 @@ impl PaneAccess for RemotePaneAccess {
         serde_json::from_value(self.read_pane(id, FULL_LINES_SLOT)?).ok()
     }
 
-    /// Type `keys` into the pane as ONE write, through the door the daemon publishes for a driver.
-    ///
-    /// ⚠⚠⚠⚠ **The refusal for a pane whose child has left is the DAEMON's, not this client's**, and
-    /// that is deliberate: asking [`PANE_EOF_SLOT`] here first would decide on a fact read a round
-    /// trip ago about a child that can exit in between. The party holding the atomic answers it at
-    /// the write; this maps the word back to [`PaneError::PeerGone`].
     /// **OPENING, REPLACING AND CLOSING PANES ON THE OTHER END** — register item 557.
     ///
     /// ⚠ Always `Some`, and that is a statement rather than a shortcut: a `None` here means *this
@@ -1274,6 +1268,12 @@ impl PaneAccess for RemotePaneAccess {
             .then_some(self as &dyn sprag_plugin::PaneChanges)
     }
 
+    /// Type `keys` into the pane as ONE write, through the door the daemon publishes for a driver.
+    ///
+    /// ⚠⚠⚠⚠ **The refusal for a pane whose child has left is the DAEMON's, not this client's**, and
+    /// that is deliberate: asking [`PANE_EOF_SLOT`] here first would decide on a fact read a round
+    /// trip ago about a child that can exit in between. The party holding the atomic answers it at
+    /// the write; this maps the word back to [`PaneError::PeerGone`].
     fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<Written, PaneError> {
         let path = pane_input_path(id.0, INJECT_ACTION);
         let strokes: Vec<Value> = keys.iter().map(stroke_form).collect();
@@ -1714,18 +1714,6 @@ impl PaneHands for RemotePaneAccess {
     }
 }
 
-/// **WHERE A PANE WAS BORN, READ OVER THE SOCKET** — register item 722, and the reading door
-/// register item 710 built in process and could not build here.
-///
-/// # ⚠⚠⚠⚠⚠ `None` is *this daemon cannot say*, and a caller must never fill it in
-///
-/// Register item 709's discipline, at the newest place to need it. The one consumer is
-/// `OuterLoop::checked`, which spawns the independent checker: handed a directory it says *the work
-/// is HERE, open the files*, and handed `None` it says nothing at all and the checker judges the
-/// account alone. Those are the two honest answers. A third — defaulting to the caller's `$HOME`,
-/// or to the daemon's cwd — would put a sentence in the checker's mouth about a tree nobody
-/// vouched for, which is the exact failure item 710 measured and item 722 exists to stop repeating
-/// one layer out.
 /// **CUTTING THE COPY** — register item 705, done in the driver's own process for
 /// [`PaneAccess::checkout`]'s stated reason.
 ///
@@ -1755,6 +1743,18 @@ impl CutCheckout for crate::checkout::IsolatedCheckout {
     }
 }
 
+/// **WHERE A PANE WAS BORN, READ OVER THE SOCKET** — register item 722, and the reading door
+/// register item 710 built in process and could not build here.
+///
+/// # ⚠⚠⚠⚠⚠ `None` is *this daemon cannot say*, and a caller must never fill it in
+///
+/// Register item 709's discipline, at the newest place to need it. The one consumer is
+/// `OuterLoop::checked`, which spawns the independent checker: handed a directory it says *the work
+/// is HERE, open the files*, and handed `None` it says nothing at all and the checker judges the
+/// account alone. Those are the two honest answers. A third — defaulting to the caller's `$HOME`,
+/// or to the daemon's cwd — would put a sentence in the checker's mouth about a tree nobody
+/// vouched for, which is the exact failure item 710 measured and item 722 exists to stop repeating
+/// one layer out.
 impl PaneOrigin for RemotePaneAccess {
     /// ⚠ A pane this daemon does not hold has no surface at this path at all, which is the `None`
     /// [`PaneOrigin::pane_start_dir`] documents — never an empty path, which would read as *the
