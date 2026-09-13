@@ -72,13 +72,13 @@ pub mod host;
 pub mod job;
 pub mod keyhelp;
 pub mod keymap;
-/// **Debt 64c's measurement**: the ai-loop path driven against a LIVE agent CLI, through this
-/// crate's own detector. Opt-in and test-only — it costs an agent's real turns to run.
 // What a dead daemon left in the state directory, and whether it may go — register item 905. The
 // unit is the socket STEM and not the run log: a daemon keys three artefacts on it, and the one
 // row that separates *no runs* from *nothing to lose* is a stem with an empty log and a pane in
 // its snapshot.
 pub mod leftovers;
+/// **Debt 64c's measurement**: the ai-loop path driven against a LIVE agent CLI, through this
+/// crate's own detector. Opt-in and test-only — it costs an agent's real turns to run.
 #[cfg(test)]
 mod live_agent;
 // When a live store was READ, in the words the register quotes numbers in. Its own module because
@@ -595,62 +595,6 @@ fn pane_container(
     )
 }
 
-/// Assemble the window of the session `scope` names as a `Scene::Container` of its panes
-/// plus the pane-management [`WorkspaceExternal`] (Round 7 multiplex control core).
-///
-/// Each pane child is refreshed from its PTY's current screen; the
-/// engines and the control surface hold shared handles (a `PanePtyHandle`
-/// per pane, an `Arc<Mutex<SessionRegistry>>` for mux control and an
-/// `Arc<Mutex<Workspace>>` for the plugin host), so the per-request
-/// scene stays a throwaway projection (R969) while input and pane lifecycle
-/// reach live state. The workspace lock is released before returning so a
-/// dispatched `scene/invoke` (spawn/close/resize) can re-acquire it without
-/// deadlock.
-///
-/// ## The scope is the whole assembly, not a filter on it
-///
-/// Everything here is built from [`scope`](SessionScope)'s pool, so a request sees exactly
-/// the one session it named: its panes are the only `pane_<id>` nodes in the tree, and a
-/// pane belonging to another session is not addressable — `scene/invoke` on it answers
-/// unknown-path, because the node genuinely is not there. Scoping is therefore structural
-/// rather than a check each surface has to remember to make.
-///
-/// The control external is handed the scope too, and that is load-bearing rather than
-/// tidy: it is the one child that reaches PAST the pool to the registry (sessions, windows
-/// and layout are mux concerns), so without the scope it would assemble under `work` and
-/// write to the default session — pinion's R889 "wrong target for writes", exactly. The
-/// plugin host and the pane children need no such care: they are built from the resolved
-/// pool and cannot address anything else. That the tightest surface needs the most
-/// threading, and the narrow ones none, is the Interface Segregation split paying off.
-///
-/// `revision` is the shared scene-version token ([`HostState`]'s): the control
-/// surface wires each pane it SPAWNS with a `bump_on_dirty(&revision)` hook (so a
-/// mux-spawned pane's output wakes parked `scene/waitFor`, exactly as the boot
-/// pane's does) and bumps it directly on a spawn / close (so a pane-set change
-/// wakes a waiter before the new pane's first output). Without it a client that
-/// long-polls change-notification would never learn about mux-spawned panes.
-///
-/// **v1 bound:** that token is ONE for the whole registry, so a change in any session wakes
-/// every attached client, which then re-reads its own scene and finds it unchanged. That is
-/// waste, not error — a shared revision can only over-report (`park_if_current` answers a
-/// stale baseline and parks a current one; nothing consults it as a write precondition), so
-/// no session's request is ever refused or mis-answered because another was busy.
-///
-/// ## The daemon's own state travels as ONE value
-///
-/// [`DaemonShared`] carries the three things a DAEMON has and an in-process host does not. They are
-/// grouped rather than passed positionally because they share one property that is easy to get wrong
-/// separately: each is `None` off a daemon, and a caller that supplies some and not others gets a
-/// half-wired surface rather than an error. One value makes "this host is a daemon" a single
-/// statement at the call site.
-///
-/// ## `cells` is the assembly's whole cost
-///
-/// Everything else here is `Arc` clones and handles; the panes' [`PaneCells`] are the one
-/// term that scales with the screen. A caller that cannot read a `TextGrid` passes
-/// [`Omitted`](PaneCells::Omitted) and the assembly stops being proportional to the pane set
-/// at all — see `rpc::pane_cells_for` for which callers those are and why the answer is
-/// decidable from the method alone.
 /// **A CALL THAT ANNOUNCES SOMETHING ABOUT ONE RUN**, as the plugin surface takes it.
 ///
 /// A named type rather than the shape spelled at each site, for the reason clippy states as
@@ -718,6 +662,62 @@ pub fn run_announcers(
     (on_end, on_ordered, on_stepped)
 }
 
+/// Assemble the window of the session `scope` names as a `Scene::Container` of its panes
+/// plus the pane-management [`WorkspaceExternal`] (Round 7 multiplex control core).
+///
+/// Each pane child is refreshed from its PTY's current screen; the
+/// engines and the control surface hold shared handles (a `PanePtyHandle`
+/// per pane, an `Arc<Mutex<SessionRegistry>>` for mux control and an
+/// `Arc<Mutex<Workspace>>` for the plugin host), so the per-request
+/// scene stays a throwaway projection (R969) while input and pane lifecycle
+/// reach live state. The workspace lock is released before returning so a
+/// dispatched `scene/invoke` (spawn/close/resize) can re-acquire it without
+/// deadlock.
+///
+/// ## The scope is the whole assembly, not a filter on it
+///
+/// Everything here is built from [`scope`](SessionScope)'s pool, so a request sees exactly
+/// the one session it named: its panes are the only `pane_<id>` nodes in the tree, and a
+/// pane belonging to another session is not addressable — `scene/invoke` on it answers
+/// unknown-path, because the node genuinely is not there. Scoping is therefore structural
+/// rather than a check each surface has to remember to make.
+///
+/// The control external is handed the scope too, and that is load-bearing rather than
+/// tidy: it is the one child that reaches PAST the pool to the registry (sessions, windows
+/// and layout are mux concerns), so without the scope it would assemble under `work` and
+/// write to the default session — pinion's R889 "wrong target for writes", exactly. The
+/// plugin host and the pane children need no such care: they are built from the resolved
+/// pool and cannot address anything else. That the tightest surface needs the most
+/// threading, and the narrow ones none, is the Interface Segregation split paying off.
+///
+/// `revision` is the shared scene-version token ([`HostState`]'s): the control
+/// surface wires each pane it SPAWNS with a `bump_on_dirty(&revision)` hook (so a
+/// mux-spawned pane's output wakes parked `scene/waitFor`, exactly as the boot
+/// pane's does) and bumps it directly on a spawn / close (so a pane-set change
+/// wakes a waiter before the new pane's first output). Without it a client that
+/// long-polls change-notification would never learn about mux-spawned panes.
+///
+/// **v1 bound:** that token is ONE for the whole registry, so a change in any session wakes
+/// every attached client, which then re-reads its own scene and finds it unchanged. That is
+/// waste, not error — a shared revision can only over-report (`park_if_current` answers a
+/// stale baseline and parks a current one; nothing consults it as a write precondition), so
+/// no session's request is ever refused or mis-answered because another was busy.
+///
+/// ## The daemon's own state travels as ONE value
+///
+/// [`DaemonShared`] carries the three things a DAEMON has and an in-process host does not. They are
+/// grouped rather than passed positionally because they share one property that is easy to get wrong
+/// separately: each is `None` off a daemon, and a caller that supplies some and not others gets a
+/// half-wired surface rather than an error. One value makes "this host is a daemon" a single
+/// statement at the call site.
+///
+/// ## `cells` is the assembly's whole cost
+///
+/// Everything else here is `Arc` clones and handles; the panes' [`PaneCells`] are the one
+/// term that scales with the screen. A caller that cannot read a `TextGrid` passes
+/// [`Omitted`](PaneCells::Omitted) and the assembly stops being proportional to the pane set
+/// at all — see `rpc::pane_cells_for` for which callers those are and why the answer is
+/// decidable from the method alone.
 #[must_use]
 pub fn workspace_scene(
     scope: &SessionScope,
