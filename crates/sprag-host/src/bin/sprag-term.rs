@@ -677,44 +677,6 @@ fn take_share_subtree() -> Option<Arc<sprag_terminal::Tree>> {
 /// does no disk I/O.
 const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Spawn the durability save loop (daemon only): every [`SNAPSHOT_INTERVAL`], persist the
-/// workspace's SHAPE (the [`Snapshot`]) and its CONTENT (each pane's scrollback) — each written
-/// ATOMICALLY, and only when it differs from what was last saved, so an idle daemon rewrites
-/// nothing. This is the cmux-parity ring: a reboot ends the daemon and every PTY, but what is on
-/// disk lets the NEXT daemon rebuild the sessions, windows, layout, working directories and
-/// scrollback a live PTY could never carry across.
-///
-/// One thread drives both halves so they are written from the same tick rather than drifting
-/// apart on two timers. Both projections take the registry then each workspace lock SEQUENTIALLY
-/// (never nested), so this background thread never contends with dispatch beyond a brief
-/// membership read.
-///
-/// A transient save error is logged and retried next tick (the last-saved state is left
-/// unchanged), so a full disk or a momentary permission glitch does not silently stop persistence.
-/// The two halves fail INDEPENDENTLY: an unwritable history must not cost the workspace its shape.
-/// ⚠⚠⚠⚠⚠ **PUT EVERY RUN THIS DAEMON INHERITED BACK ON A DRIVER, WHERE ITS OWN LOG SAYS IT WAS** —
-/// register item 543's sixth brick, and the point of the five before it.
-///
-/// # ⚠⚠⚠⚠⚠ What this ends
-///
-/// *"A run's machine is never persisted, so every restart kills every run."* That sentence was prose
-/// inside a closed register entry for three days before it got a number, and it is what makes
-/// promoting this daemon's own build a destructive act — four supervisors share one daemon (item
-/// 196), so a promotion killed three other repositories' loops and the cheap way round it was to
-/// split daemons and pay for a second GUI (items 526 / 285). A restart that resumes runs is a
-/// promotion nobody has to schedule around.
-///
-/// # ⚠⚠⚠ Each run is answered on its own, and a refusal is not a boot failure
-///
-/// One inherited run whose pane did not come back must not cost the others theirs, and none of them
-/// may cost the daemon its boot: everything here degrades to the honest `interrupted` such a run
-/// already reports. What each refusal costs a person is one log line saying which run and why —
-/// which is the whole difference from the silence this replaces.
-///
-/// ⚠⚠ **THE POOL IS FOUND FROM THE PANE, NOT FROM A SESSION NAME**, because a run log records
-/// neither: `pool_holding` answers which window's pool a pane is sitting in, and that is the pool a
-/// pane access must speak. A pane the restore did not bring back has no pool, and that is the
-/// honest reason not to resume the run that drove it.
 /// Whether `pid` is a `sprag-term` DRIVER left over from a predecessor daemon on `endpoint` —
 /// register item 526.
 ///
@@ -784,6 +746,29 @@ fn end_leftover_driver(pid: u32, endpoint: &std::path::Path) -> bool {
     true
 }
 
+/// ⚠⚠⚠⚠⚠ **PUT EVERY RUN THIS DAEMON INHERITED BACK ON A DRIVER, WHERE ITS OWN LOG SAYS IT WAS** —
+/// register item 543's sixth brick, and the point of the five before it.
+///
+/// # ⚠⚠⚠⚠⚠ What this ends
+///
+/// *"A run's machine is never persisted, so every restart kills every run."* That sentence was prose
+/// inside a closed register entry for three days before it got a number, and it is what makes
+/// promoting this daemon's own build a destructive act — four supervisors share one daemon (item
+/// 196), so a promotion killed three other repositories' loops and the cheap way round it was to
+/// split daemons and pay for a second GUI (items 526 / 285). A restart that resumes runs is a
+/// promotion nobody has to schedule around.
+///
+/// # ⚠⚠⚠ Each run is answered on its own, and a refusal is not a boot failure
+///
+/// One inherited run whose pane did not come back must not cost the others theirs, and none of them
+/// may cost the daemon its boot: everything here degrades to the honest `interrupted` such a run
+/// already reports. What each refusal costs a person is one log line saying which run and why —
+/// which is the whole difference from the silence this replaces.
+///
+/// ⚠⚠ **THE POOL IS FOUND FROM THE PANE, NOT FROM A SESSION NAME**, because a run log records
+/// neither: `pool_holding` answers which window's pool a pane is sitting in, and that is the pool a
+/// pane access must speak. A pane the restore did not bring back has no pool, and that is the
+/// honest reason not to resume the run that drove it.
 fn put_back_inherited_runs(
     host: &Host,
     runs: &Arc<Mutex<RunRegistry>>,
@@ -1036,6 +1021,21 @@ fn not_resumed(
     );
 }
 
+/// Spawn the durability save loop (daemon only): every [`SNAPSHOT_INTERVAL`], persist the
+/// workspace's SHAPE (the [`Snapshot`]) and its CONTENT (each pane's scrollback) — each written
+/// ATOMICALLY, and only when it differs from what was last saved, so an idle daemon rewrites
+/// nothing. This is the cmux-parity ring: a reboot ends the daemon and every PTY, but what is on
+/// disk lets the NEXT daemon rebuild the sessions, windows, layout, working directories and
+/// scrollback a live PTY could never carry across.
+///
+/// One thread drives both halves so they are written from the same tick rather than drifting
+/// apart on two timers. Both projections take the registry then each workspace lock SEQUENTIALLY
+/// (never nested), so this background thread never contends with dispatch beyond a brief
+/// membership read.
+///
+/// A transient save error is logged and retried next tick (the last-saved state is left
+/// unchanged), so a full disk or a momentary permission glitch does not silently stop persistence.
+/// The two halves fail INDEPENDENTLY: an unwritable history must not cost the workspace its shape.
 fn spawn_durability_saver(
     registry: Arc<Mutex<SessionRegistry>>,
     path: PathBuf,
