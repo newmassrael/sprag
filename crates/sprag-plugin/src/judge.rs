@@ -63,24 +63,50 @@ pub struct JudgeSpec {
 }
 
 impl JudgeSpec {
-    /// # ⚠⚠⚠⚠ NEITHER OF THESE IS A WIRE KEY TODAY, AND BOTH SAID THEY WERE
+    /// # ⚠⚠⚠⚠ BOTH OF THESE ARE WIRE KEYS NOW — register item 994, and the door is taken
     ///
-    /// They are the names a judge WOULD take if a caller could declare one — and no caller can.
-    /// The daemon's `ai_loop` form publishes seventeen arguments and neither of these is among
-    /// them (`crate::wire`'s own pinned shape lists every one), nothing outside this file reads
-    /// either constant, and the only [`AiLoopSpec::judge`](crate::ai_loop) a run ever carries is
-    /// `None`. **The judging capability exists and is reachable only from in-process gates.**
+    /// They used to be the names a judge WOULD take if a caller could declare one, and no caller
+    /// could: the `ai_loop` form published neither, nothing outside this file read either constant,
+    /// and the only [`AiLoopSpec::judge`](crate::ai_loop) a run ever carried was `None`. The
+    /// capability existed and was reachable only from in-process gates, so every `judged_rules` a
+    /// document declared was asked of nobody.
     ///
-    /// Register item 314 read the bound below as item 300's next duration — *a duration is a
-    /// judgement the document should make, not a caller argument* — but that rule bites on
-    /// arguments a caller can PASS, and there is no such argument here. What is true is smaller and
-    /// different: two constants that named a surface they are not on. Corrected rather than
-    /// deleted, because the names are the ones a door would use and the door is a decision.
+    /// ⚠⚠ **WHAT THAT COST, MEASURED 2026-09-14 AND FROM OUTSIDE THIS REPOSITORY.** A
+    /// `watching-zenoh` run stood `blocked` at 02:53 on a dialog whose criterion its owner had
+    /// already written down, and a person restarted it at 06:47 — four hours with the axis it was
+    /// moving at zero. ⭐ The loop did not misjudge: it read the owner's rule off its own screen,
+    /// reasoned correctly that the choice was not its to make, and stopped BECAUSE the rule was
+    /// prose with nobody to ask. Prose written harder does not close that; a judge does.
     ///
-    /// The datamodel key of the judge's argv, and the name a wire argument would take.
+    /// ⇒ `sprag_host::wire`'s `ai_loop` form now publishes both, `sprag_host::plugins`' `ai_loop` arm
+    /// reads both, and the words come from HERE so the list a client is shown and the list the door
+    /// accepts cannot drift.
+    ///
+    /// ⚠⚠⚠ **AND THE BOUND IS NOW EXACTLY THE ARGUMENT ITEM 314 SAID IT WAS NOT.** That note read
+    /// the bound as item 300's next duration — *a duration is a judgement the document should make,
+    /// not a caller argument* — and answered that the rule bites on arguments a caller can PASS and
+    /// there was no such argument. There is one now, so the rule bites: see
+    /// [`WITHIN_DEFAULT`](Self::WITHIN_DEFAULT) for what a caller who says nothing gets, and why a
+    /// number is not invented here.
+    ///
+    /// The datamodel key of the judge's argv, and the wire argument's name.
     pub const ARGV_KEY: &'static str = "judge";
-    /// The name a wire argument for the bound would take — see [`ARGV_KEY`](Self::ARGV_KEY).
+    /// The wire argument's name for the bound — see [`ARGV_KEY`](Self::ARGV_KEY).
     pub const WITHIN_KEY: &'static str = "judge_timeout_ms";
+
+    /// What a caller who named a judge but no bound gets.
+    ///
+    /// ⚠⚠⚠⚠⚠ **NOT A TUNED NUMBER AND NOT AN INVENTED ONE — it is the sentence on
+    /// [`within`](Self::within) turned into a value.** That field records the measurement (*4-6 s
+    /// against a cheap model, so a bound of tens of seconds is patience and not generosity*), and
+    /// before this constant existed every site that needed a bound picked its own from that
+    /// sentence by hand — 20 s, 30 s and 600 s all appear in this file's own gates. A default that
+    /// is READ OFF the measurement is the one thing that cannot drift away from it.
+    ///
+    /// ⚠ It is deliberately the patient end of *tens of seconds*: this sits in the critical path of
+    /// a BLOCKED turn, and the failure being closed here is a turn that waited FOUR HOURS for a
+    /// person. Thirty seconds spent asking is not the expensive half of that trade.
+    pub const WITHIN_DEFAULT: Duration = Duration::from_secs(30);
 
     /// The size of the pane a judgement runs in.
     ///

@@ -411,7 +411,13 @@ pub(crate) mod grammar {
         // is the multiplexer's answer, not a pane surface's — so this pin moves for a fourteenth
         // cause it takes no part in. Fourteen for fourteen, and the eighth is still the only one
         // this surface authors.
-        46,
+        // ⚠⚠⚠⚠ THE FIFTEENTH, and it names a SECOND AGENT this window never spawns: register item
+        // 994 put `judge` and `judge_timeout_ms` on the `ai_loop` form, so a caller can finally say
+        // WHO answers the kind document's `judged_rules` — which were declarable and asked of
+        // nobody. **A window starts no runs and asks nobody anything** — it renders panes and types
+        // into them — so this pin moves for a fifteenth cause it takes no part in. Fifteen for
+        // fifteen, and the eighth is still the only one this surface authors.
+        47,
         &[
             (
                 "the command palette",

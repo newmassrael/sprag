@@ -50,7 +50,7 @@ use sprag_plugin::{
     Agent, AgentSpec, Attended, Brief, Ceiling, Consent, Consents, Cost, Counted, Dialogue,
     DialogueSpec, DoneWhen, Driver, Guardrails, Handback, OrchestrationSpec, Orchestrator, Outcome,
     OutcomeState, Pipe, PipeSpec, Plugin, Readiness, ReadyWhen, ReplyFormat, RunContext,
-    ScreenRule, ScreenRules, Turn, WorkspacePaneAccess,
+    ScreenRule, ScreenRules, Turn, WorkspacePaneAccess, judge::JudgeSpec,
 };
 use sprag_terminal::{PaneId, Workspace};
 
@@ -3036,6 +3036,16 @@ fn plugin_from_request(
                     .as_bool()
                     .ok_or(InvokeError::TypeMismatch)?;
             }
+            // ⛔⛔⛔⛔⛔ **WHO ANSWERS THE DOCUMENT'S `judged_rules` — register item 994.** The
+            // rules are the kind document's; this is the caller's half, and a run that names
+            // nobody keeps the old behaviour exactly. See [`opt_judge`] for what an empty argv
+            // costs and why it is refused here rather than at the first blocked turn.
+            //
+            // ⚠⚠ READ WITH THE GRAMMAR AND BEFORE ANY REFUSAL ABOUT THE WORLD, on the note four
+            // blocks down: a refusal about the WORLD that pre-empts a read of the REQUEST makes
+            // every argument behind it look unread, and
+            // `a_declared_argument_is_one_the_plugin_host_reads` reports exactly that.
+            spec.judge = opt_judge(map)?;
             // ⚠⚠⚠ THE ANSWERING CONTRACT, read through the SAME two parsers every other
             // injecting form uses. A loop is the form that needs it most and was the only one
             // without it: every kind of real work its agent does raises a permission dialog,
@@ -4940,6 +4950,75 @@ fn opt_may_answer(map: &Map<String, Value>) -> Result<Option<Consents>, InvokeEr
     Consents::of(clauses)
         .ok_or(InvokeError::TypeMismatch)
         .map(Some)
+}
+
+/// Read the optional `judge` and its bound — **WHO ANSWERS THIS DOCUMENT'S `judged_rules`**.
+///
+/// # ⛔⛔⛔⛔⛔ Register item 994 — the CALLER's half of a two-half contract
+///
+/// The AUTHOR writes `judged_rules` into the kind document: what makes a dialog theirs to turn
+/// down. This is the other half — which agent is asked them, and at what price. Until this parser
+/// the daemon published neither key, so a document could declare rules that were asked of nobody
+/// and a launch had no way to say otherwise.
+///
+/// ⚠⚠ **MEASURED FROM OUTSIDE THIS REPOSITORY, 2026-09-14.** A `watching-zenoh` run stood `blocked`
+/// at 02:53 on a dialog whose criterion its owner had already written down, and a person restarted
+/// it at 06:47 — four hours, axis unmoved. ⭐ The loop reasoned correctly and stopped *because the
+/// rule was prose with nobody to ask*, which is why writing the prose harder was never the repair.
+///
+/// ⚠ [`None`] when the key is absent or `null`, and that costs exactly nothing: no pane spawned, no
+/// model asked, every blocked turn to `screening` as before — [`opt_may_answer`]'s contract.
+///
+/// ⛔⛔ **AN EMPTY ARGV IS A TYPE MISMATCH AND NOT AN EMPTY JUDGE**, which is rule 6's shape at this
+/// door. `[]` names no program, so accepting it would arm a judge that fails at the first blocked
+/// turn: the run would have ASKED for a second agent, been told yes, and got silence — the exact
+/// failure this argument exists to end, wearing a success. A caller that means *nobody* omits the
+/// key, and that answer already exists.
+///
+/// ⚠ The bound falls back to [`JudgeSpec::WITHIN_DEFAULT`] and not to a number spelled here: two
+/// copies of one duration is the drift this workspace records the cost of, and that constant is the
+/// one read off the measurement on [`JudgeSpec::within`].
+fn opt_judge(map: &Map<String, Value>) -> Result<Option<JudgeSpec>, InvokeError> {
+    // ⛔⛔⛔⛔⛔ **THE BOUND IS READ BEFORE THE ARGV AND WHETHER OR NOT ONE WAS NAMED**, which is
+    // [`opt_turn`]'s shape and is here for the reason a gate measured rather than by symmetry. Read
+    // INSIDE the `judge`-was-named branch, a malformed `judge_timeout_ms` sent on its own was never
+    // looked at: `a_declared_argument_is_one_the_plugin_host_reads` answered
+    // *"`run` ACCEPTS A int FOR ITS DECLARED `judge_timeout_ms`"* and called it what it is — **a
+    // wire that advertises an argument nothing reads is worse than one that says nothing.**
+    let within = opt_millis(map, JudgeSpec::WITHIN_KEY)?;
+    // ⚠⚠ AND ZERO IS MALFORMED WHOEVER SENT IT, on the rule the turn contract beside this one
+    // already carries: *abandon every judgement instantly* is not a thing a caller can mean. It is
+    // worse than naming nobody — the pane is still spawned and the model call still bought, and
+    // every answer is thrown away on arrival. [`opt_millis`] admits zero because some bounds mean
+    // it, so the refusal belongs to the argument that does not.
+    if within == Some(Duration::ZERO) {
+        return Err(InvokeError::TypeMismatch);
+    }
+    if declined(map, JudgeSpec::ARGV_KEY) {
+        // ⚠⚠ HALF A PAIR IS MALFORMED, on `a_turn_contract_missing_half_of_itself_is_malformed`'s
+        // rule: a bound for a judge nobody named is a caller who believes they configured a second
+        // agent and did not. Silence here is the same promise-read-from-an-absence this whole
+        // argument was added to end, one key smaller.
+        return if within.is_some() {
+            Err(InvokeError::TypeMismatch)
+        } else {
+            Ok(None)
+        };
+    }
+    let listed = map[JudgeSpec::ARGV_KEY]
+        .as_array()
+        .ok_or(InvokeError::TypeMismatch)?;
+    let mut argv = Vec::with_capacity(listed.len());
+    for word in listed {
+        argv.push(word.as_str().ok_or(InvokeError::TypeMismatch)?.to_owned());
+    }
+    if argv.is_empty() {
+        return Err(InvokeError::TypeMismatch);
+    }
+    Ok(Some(JudgeSpec {
+        argv,
+        within: within.unwrap_or(JudgeSpec::WITHIN_DEFAULT),
+    }))
 }
 
 /// Read the optional `screen_rules` — WHAT THIS LOOP TURNS DOWN AND WHAT IT SAYS INSTEAD.
@@ -19246,6 +19325,98 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **A BOUND FOR A JUDGE NOBODY NAMED IS MALFORMED** — register item 994, and
+    /// [`a_turn_contract_missing_half_of_itself_is_malformed`]'s rule one contract over.
+    ///
+    /// # ⚠⚠ What each arm is for
+    ///
+    /// The whole of item 994 is *a promise read from an absence*: a document declared rules and
+    /// nobody was ever asked them. That shape fits inside this one argument too, so each way of
+    /// half-saying it gets an arm.
+    ///
+    /// * **The pair** — the control, and it reads the bound BACK rather than only accepting.
+    ///   Without that the refusals below would pass against a parser that refuses everything.
+    /// * **An argv alone** — a RUN and not a refusal. This wire publishes the key, so a caller that
+    ///   enumerated the vocabulary sends exactly this, and what it gets is
+    ///   [`JudgeSpec::WITHIN_DEFAULT`] — asserted as the CONSTANT, so a number spelled at the door
+    ///   would red here.
+    /// * **A bound alone** — refused. Whoever sent it believes a second agent is deciding their
+    ///   blocked turns; swallowing it makes the daemon agree in silence.
+    /// * **A zero bound** — refused, on the rule the two contracts beside this one already carry:
+    ///   *abandon every judgement instantly* is not a thing a caller can mean, and it is worse than
+    ///   naming nobody, because it still spawns the pane and buys the model call.
+    /// * **An empty argv** — refused HERE and not at the first blocked turn. `[]` names no program,
+    ///   so accepting it arms a judge that cannot be spawned: the run would have asked for a second
+    ///   agent, been told yes, and got exactly the silence item 994 exists to end.
+    #[test]
+    fn a_bound_for_a_judge_nobody_named_is_malformed() {
+        let paired = json!({
+            JudgeSpec::ARGV_KEY: ["claude", "-p"],
+            JudgeSpec::WITHIN_KEY: 12_000,
+        });
+        let read = opt_judge(paired.as_object().expect("an object"));
+        assert!(
+            matches!(&read, Ok(Some(spec)) if spec.within == Duration::from_millis(12_000)
+                && spec.argv == ["claude", "-p"]),
+            "⚠ THE CONTROL FIRST, and it reads both halves back: the pair these keys exist in is a \
+             judge, or every refusal below is about a parser that refuses everything. Got {read:?}",
+        );
+        let bare = opt_judge(
+            json!({ JudgeSpec::ARGV_KEY: ["claude", "-p"] })
+                .as_object()
+                .expect("an object"),
+        );
+        assert!(
+            matches!(&bare, Ok(Some(spec)) if spec.within == JudgeSpec::WITHIN_DEFAULT),
+            "⚠⚠⚠ AN ARGV ALONE IS A RUN, not a refusal — and the bound it gets is the CONSTANT read \
+             off the measurement, never a number spelled at this door. Got {bare:?}",
+        );
+        assert!(
+            matches!(
+                opt_judge(
+                    json!({ JudgeSpec::WITHIN_KEY: 12_000 })
+                        .as_object()
+                        .expect("an object")
+                ),
+                Err(InvokeError::TypeMismatch),
+            ),
+            "⚠⚠⚠ and a bound with no judge is REFUSED rather than swallowed — whoever sent it \
+             believes a second agent is deciding their blocked turns",
+        );
+        assert!(
+            matches!(
+                opt_judge(
+                    json!({ JudgeSpec::ARGV_KEY: ["claude"], JudgeSpec::WITHIN_KEY: 0 })
+                        .as_object()
+                        .expect("an object")
+                ),
+                Err(InvokeError::TypeMismatch),
+            ),
+            "⚠⚠ and a bound of ZERO is malformed on the rule beside it: a judge that abandons every \
+             judgement instantly still spawns the pane and buys the call",
+        );
+        assert!(
+            matches!(
+                opt_judge(
+                    json!({ JudgeSpec::ARGV_KEY: [] })
+                        .as_object()
+                        .expect("an object")
+                ),
+                Err(InvokeError::TypeMismatch),
+            ),
+            "⛔ an empty argv names no program, so it is refused at the door rather than at the \
+             first blocked turn, where it would wear the silence item 994 exists to end",
+        );
+        assert!(
+            matches!(
+                opt_judge(json!({}).as_object().expect("an object")),
+                Ok(None)
+            ),
+            "⚠⚠⚠ AND SILENCE IS STILL SILENCE: a caller who names neither gets the run they have \
+             always got — no pane, no model, every blocked turn to `screening` as before",
+        );
+    }
+
     /// ⚠⚠⚠ **THE LOOP'S BOUND MOVED INTO ITS DOCUMENT AND THE WIRE'S ANSWERS DID NOT MOVE WITH
     /// IT** — the residue register item 300's move could have left, asked directly.
     ///
@@ -21028,10 +21199,21 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            84,
+            86,
             "one probe per OPTIONAL declared argument of every form, nesting included — required \
              ones are deliberately not driven, because `null` for something the grammar demands is \
-             malformed rather than declined. ⛔⛔⛔ THE NEWEST IS `loop_kind_document` (item 1034), \
+             malformed rather than declined. ⛔⛔⛔ THE NEWEST TWO ARE `judge` AND \
+             `judge_timeout_ms` ON THE LOOP (item 994), and declining EITHER means what every run \
+             did before the keys existed: nobody is asked the kind document's `judged_rules`, no \
+             pane is spawned and no model call is bought, and every blocked turn goes to \
+             `screening`. ⚠⚠ They are the pair this sweep CANNOT see whole, which is why the two \
+             contracts above have gates of their own and so does this one \
+             (`a_bound_for_a_judge_nobody_named_is_malformed`): declining each ALONE is a run, and \
+             a BOUND sent without a judge is malformed — a caller who sent it believes a second \
+             agent is deciding their blocked turns, and no per-argument probe asks that. ⚠ It was \
+             this sweep that caught the parser reading the bound only INSIDE the judge's branch, so \
+             a malformed `judge_timeout_ms` sent alone was never looked at at all. THE PREVIOUS \
+             NEWEST IS `loop_kind_document` (item 1034), \
              and declining it means the run takes one of the kinds this build compiles in, named \
              by `loop_kind` beside it — which is what every run did before a consuming tree could \
              own its own. ⚠ An absence here is therefore a fact rather than a gap, which is the \
@@ -21166,12 +21348,21 @@ mod tests {
         assert_eq!(
             grammar_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            130,
+            132,
             "one probe per declared argument of every FORM, nesting included: TWENTY-ONE for an \
              orchestrator, EIGHTEEN for a pipe, TWENTY-TWO for an agent, seventeen for a dialogue, \
-             ELEVEN to answer a pane, THIRTY-FOUR to run an AI loop, one to cancel, TWO TO STAND \
+             ELEVEN to answer a pane, THIRTY-SIX to run an AI loop, one to cancel, TWO TO STAND \
              A RUN DOWN, and TWO TO REPORT A RUN'S PROGRESS. \
-             ⛔⛔⛔ THE NEWEST IS THE AI LOOP'S `loop_kind_document` (item 1034), and this gate is \
+             ⛔⛔⛔ THE NEWEST TWO ARE THE AI LOOP'S `judge` AND `judge_timeout_ms` (item 994), and \
+             this gate is the one that CAUGHT them being half-read rather than merely pinning them \
+             afterwards. The bound was parsed inside the judge's own branch, so a malformed \
+             `judge_timeout_ms` sent WITHOUT a judge was never looked at, and this probe answered \
+             in the words that name the defect: *a wire that advertises an argument nothing reads \
+             is worse than one that says nothing*. ⚠⚠ That is item 994's own shape arriving one \
+             layer down — the item is *a document declared rules and nobody was asked them*, and \
+             the door built to end it had a key it declared and did not read. ⚠ The repair is \
+             `opt_turn`'s: read the bound FIRST, and refuse it alone. THE PREVIOUS NEWEST IS THE \
+             AI LOOP'S `loop_kind_document` (item 1034), and this gate is \
              the one that matters most for it: the key names a document in the CALLER'S OWN TREE, \
              so a surface that declared it and did not read it would advertise that a repository \
              owns its own decisions while every run went on being bounded by this repository's \

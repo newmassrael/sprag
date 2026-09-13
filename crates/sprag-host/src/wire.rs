@@ -2456,6 +2456,32 @@ impl PluginGrammar {
         // the very next judgement and restarts, once per distinct instruction. ⚠ It happens whatever
         // `reflect_every` says: that argument is a BUDGET, and this is a correctness edge.
         Self::SCREEN_RULES,
+        // ⛔⛔⛔⛔⛔ **WHO ANSWERS THE DOCUMENT'S `judged_rules` — register item 994.**
+        // [`SCREEN_RULES`](Self::SCREEN_RULES) one line up are matched by LETTERS; a document's
+        // `judged_rules` are matched by MEANING, and meaning needs somebody to ask. The template
+        // says it itself — *"A LIST HERE IS ONLY HALF. The other half is WHO answers"* — and until
+        // this pair, no caller could supply that half:
+        // [`JudgeSpec`](sprag_plugin::judge::JudgeSpec) named both keys as the ones a wire argument
+        // WOULD take while nothing published them, so every rule a document declared was asked of
+        // nobody and changed nothing.
+        //
+        // ⚠⚠ **THE TWO HALVES ARE TWO ARGUMENTS BECAUSE EACH IS SOMEBODY ELSE'S TO GIVE.** The
+        // AUTHOR writes what makes a dialog theirs to turn down; the CALLER says which agent
+        // answers and at what price. A judge with no rules is asked nothing; rules with no judge
+        // change nothing.
+        //
+        // ⚠⚠⚠ AN ARRAY AND NOT A STRING, because an argv IS a list. Splitting one on spaces is a
+        // guess that breaks on the first argument carrying one, and this value is handed to a
+        // process — the rendered question is APPENDED as its last element.
+        //
+        // ⚠ OPTIONAL, and absence costs exactly nothing: no pane spawned, no model asked, every
+        // blocked turn to `screening` as before. A run that did not ask for a second agent must not
+        // acquire one, which is why no model is named here or anywhere below this door.
+        ArgGrammar::open(sprag_plugin::judge::JudgeSpec::ARGV_KEY, "array").optional(),
+        // ⚠ The bound, which is the caller's for the reason the argv is: it sits in the critical
+        // path of a BLOCKED turn, so whoever names a slow judge has to be able to say so. Absent,
+        // `JudgeSpec::WITHIN_DEFAULT` stands — a value read off the measurement rather than picked.
+        ArgGrammar::open(sprag_plugin::judge::JudgeSpec::WITHIN_KEY, "int").optional(),
         Self::AWAIT_PERSON,
         Self::HANDBACK_STILL,
         // ⚠⚠ ON THIS FORM ALONE — register item 534. The ceiling belongs to `ai_loop.scxml`, which
@@ -9781,7 +9807,12 @@ mod tests {
         // about which PLUGIN a client may select; this word is written into the DURABLE run log and
         // read back by the daemon itself, so the peer that meets it is a future build of this
         // daemon rather than somebody's client.
-        46,
+        //
+        // ⚠ 47 — REGISTER ITEM 994: re-stamped with every DECODED word unchanged. The `ai_loop`
+        // form gained `judge` and `judge_timeout_ms`, which are arguments a caller SENDS, not words
+        // a peer reads back out of an answer or a run log. The argument-shape pin is the one that
+        // saw them, and it is the one that moved.
+        47,
         &[
             "check:pane-isolation",
             "check:pane-admission",
@@ -10425,7 +10456,12 @@ mod tests {
             // `never` and delete the only ceiling that measures progress, which is `reaim_max`'s
             // own argument. So nothing a caller may SAY moved, and the value-space pin above is the
             // one that saw this.
-            46,
+            //
+            // ⚠ 47 — REGISTER ITEM 994: re-stamped with every PUBLISHED vocabulary unchanged. Both
+            // keys the `ai_loop` form gained take the caller's OWN value — an argv and a number —
+            // so neither has a closed vocabulary, which this pin's own doc says makes an argument
+            // invisible to it. The shape pin is where two new keys are visible.
+            47,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -10795,7 +10831,21 @@ mod tests {
             // ⚠ 46: re-stamped with every published EVENT unchanged. Register item 942 moved the
             // number for an ANSWER vocabulary (`ceiling:stall`); no event gained, lost or re-typed
             // a key, which is what this says.
-            46,
+            //
+            // ⛔ 47 — REGISTER ITEM 994: **THE SHAPE MOVED, AND THIS IS THE PIN THAT SAYS SO.** The
+            // `ai_loop` run form gained `judge:array?` and `judge_timeout_ms:int?` — who answers the
+            // kind document's `judged_rules`, and the bound on one judgement. Both are OPTIONAL, so
+            // no existing caller's call changes shape and this pin's own warning about breaking
+            // callers in both directions does not apply.
+            //
+            // ⚠⚠ THE NUMBER MOVED FOR THE OTHER HALF OF THAT WARNING — *an optionality that changed
+            // breaks one of them SILENTLY*, here in its sharpest form. An older daemon has no
+            // reader for either key, so it SWALLOWS them and answers with a run id: the caller has
+            // said *a second agent decides the turns this document reserved*, and is told yes by a
+            // build that will ask nobody. That is items 492 and 494's exemption meeting its stated
+            // limit — an added key is free only while nobody reads its absence as a promise — and it
+            // is 45's `dry_run` reasoning exactly, one form over.
+            47,
             &[
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer[object]:seq:int sel:string text:string",
                 "sprag_workspace/pane_<id>/sprag_input/focus[object]:focused:bool",
@@ -10928,7 +10978,7 @@ mod tests {
                 // that reads a hold at all — so publishing it on the other forms would advertise an
                 // argument they swallow, which is what `a_declared_argument_is_one_the_plugin_host_
                 // reads` exists to refuse.
-                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int loop_kind:string loop_kind_document:string? north_star:string milestone:string reference:string? max_turns:int? reflect_every:int? context_ceiling:int? reflect_after_refusals:int? agent:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? may_answer:array?{asked:string,answer:string} screen_rules:array?{when:string,text:string} await_person_ms:int? handback_still_ms:int? hold_within_ms:int? opened_by:int? dry_run:bool? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
+                "sprag_workspace/sprag_plugins/run[object]:plugin:string pane:int loop_kind:string loop_kind_document:string? north_star:string milestone:string reference:string? max_turns:int? reflect_every:int? context_ceiling:int? reflect_after_refusals:int? agent:string? ready_when:object?{match:string,marker:string} ready_timeout_ms:int? done_when:string? turn_within_ms:int? shows_prompt:bool? may_answer:array?{asked:string,answer:string} screen_rules:array?{when:string,text:string} judge:array? judge_timeout_ms:int? await_person_ms:int? handback_still_ms:int? hold_within_ms:int? opened_by:int? dry_run:bool? guardrails:object?{max_iterations:int?,max_seconds:int?,max_bytes:int?}",
                 // ⚠⚠⚠ AND THE PIN EARNED ITS KEEP ON THE VERY NEXT ROUND. R371 added
                 // `await_person_ms:int?` to the three forms that LOOP, and this is what went red
                 // for it — where R370's own re-typing had been noticed by nothing but two
@@ -11461,7 +11511,12 @@ mod tests {
         // is a VALUE a run's row can carry at an address that already served it, and the bound
         // behind it is not on this wire at all — it is the kind document's, deliberately. The
         // value-space pin is the one that saw this.
-        46,
+        //
+        // ⚠ 47 — REGISTER ITEM 994: re-stamped with the SURFACE unchanged. Two arguments arrived on
+        // a form that is served at an address this daemon already served, and no answer word, no
+        // action and no address moved. What DID move is an argument's shape, and the shape pin is
+        // where that is recorded.
+        47,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a

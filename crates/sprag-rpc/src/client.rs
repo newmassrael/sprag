@@ -1221,8 +1221,35 @@ impl ScopeAsk {
 ///   that never came near a step budget. R384's *only `ai_loop` can produce it* escape does not
 ///   reach this — the peer that meets the word is a build of this daemon, not a client.
 ///
+/// * **47 — A SECOND AGENT A CALLER CAN ASK FOR AND AN OLDER DAEMON WOULD SWALLOW.** Register item
+///   994. The `ai_loop` form gains an OPTIONAL `judge` (`array`) and `judge_timeout_ms` (`int`):
+///   the agent asked to answer the kind document's `judged_rules`, which are matched by MEANING and
+///   so need somebody to ask. Before this the daemon published neither key, and a document could
+///   declare rules that were asked of nobody.
+///
+///   ⚠⚠⚠⚠⚠ **AN OPTIONAL ADDED ARGUMENT THAT OWES THE NUMBER, on 45's reasoning exactly.** Items
+///   492 and 494 make an added key free **while nobody reads its absence as a promise**, and this
+///   key's absence is read as a promise by the party that matters: a client sending `judge` to a
+///   daemon predating it has said *a second agent decides the turns this document reserved*, and
+///   that daemon swallows the word and runs a loop where every judged rule silently does nothing.
+///   The caller is answered with a run id it will read as a judge being armed.
+///
+///   ⚠⚠ **AND THE COST OF EXACTLY THAT STATE IS MEASURED, FROM ANOTHER REPOSITORY.** On 2026-09-14
+///   a `watching-zenoh` run stood `blocked` at 02:53 on a dialog whose criterion its owner had
+///   written down, and a person restarted it at 06:47 — four hours. A silent downgrade here
+///   reproduces that on every launch that asked not to have it, which is what 45 called *a run that
+///   should not exist* in the other direction.
+///
+///   ⚠⚠ **`sprag orchestrate` is safe across the skew and that is not enough**, 45's note verbatim:
+///   it fills from the grammar the daemon publishes, so an older daemon refuses the key by name and
+///   nothing starts. The handshake is for the callers that do not fill from a published form.
+///
+///   ⚠ NO ANSWER WORD OR ADDRESS MOVED. Two arguments, on one form, read in one place
+///   (`sprag_host::plugins`' `ai_loop` arm), and their words are published by the type that
+///   resolves them, so the list a client is shown and the list the door accepts cannot drift.
+///
 /// [`CLIENT_BUILD_PARAM`]: crate::CLIENT_BUILD_PARAM
-pub const WIRE_PROTOCOL: u32 = 46;
+pub const WIRE_PROTOCOL: u32 = 47;
 
 /// WHICH BUILD THIS IMAGE IS — the identity [`WIRE_PROTOCOL`] above cannot carry, and the reason it
 /// is published from here is that this is where [`WIRE_PROTOCOL`] is: the two are read together,
