@@ -9392,26 +9392,6 @@ mod tests {
         parked_run(id, "healthy".to_string(), handle)
     }
 
-    /// ⚠⚠⚠⚠⚠ **A RESTORED RUN KEEPS THE BUILD THAT DROVE IT, AND A NEW ONE IS STAMPED WITH THIS
-    /// IMAGE** — the two halves of register item 438's *"a run says which build drove it"*, and
-    /// they are opposite decisions made three lines apart.
-    ///
-    /// `submit` stamps, because the worker it is about to start runs inside THIS image and no other
-    /// answer is honest. `restore` copies, because the run it is about is over and a previous image
-    /// already said what it was. Stamping in `restore` is the mutation this exists to catch: it
-    /// compiles, it reads as consistency, every other gate here stays green — and it dates a dead
-    /// daemon's work to whichever successor happens to read the log. That is the confusion the item
-    /// was filed for, reproduced by the fix meant to end it.
-    ///
-    /// # ⚠⚠⚠⚠ And the third case is why [`RUN_LOG_VERSION`] does not move
-    ///
-    /// A log written before this field must LOAD, not be refused — that constant's own rule is that
-    /// a format this build cannot read is ignored wholesale, so bumping it would throw away every
-    /// run record a running daemon holds to gain a column. The optional field with a default is
-    /// what makes the bump unnecessary, and it is only true while the JSON actually parses without
-    /// the key, which no other gate here reads.
-    ///
-    /// ⚠⚠ It loads as [`None`] and NOT as this image: the absence means nobody recorded it.
     #[test]
     fn a_restored_run_says_which_context_ceiling_it_ran_under() {
         // ⛔⛔⛔⛔⛔ REGISTER ITEM 856(1b). Item 856's remaining clause is an experiment — move
@@ -9786,6 +9766,26 @@ mod tests {
         released.store(true, Ordering::Release);
     }
 
+    /// ⚠⚠⚠⚠⚠ **A RESTORED RUN KEEPS THE BUILD THAT DROVE IT, AND A NEW ONE IS STAMPED WITH THIS
+    /// IMAGE** — the two halves of register item 438's *"a run says which build drove it"*, and
+    /// they are opposite decisions made three lines apart.
+    ///
+    /// `submit` stamps, because the worker it is about to start runs inside THIS image and no other
+    /// answer is honest. `restore` copies, because the run it is about is over and a previous image
+    /// already said what it was. Stamping in `restore` is the mutation this exists to catch: it
+    /// compiles, it reads as consistency, every other gate here stays green — and it dates a dead
+    /// daemon's work to whichever successor happens to read the log. That is the confusion the item
+    /// was filed for, reproduced by the fix meant to end it.
+    ///
+    /// # ⚠⚠⚠⚠ And the third case is why [`RUN_LOG_VERSION`] does not move
+    ///
+    /// A log written before this field must LOAD, not be refused — that constant's own rule is that
+    /// a format this build cannot read is ignored wholesale, so bumping it would throw away every
+    /// run record a running daemon holds to gain a column. The optional field with a default is
+    /// what makes the bump unnecessary, and it is only true while the JSON actually parses without
+    /// the key, which no other gate here reads.
+    ///
+    /// ⚠⚠ It loads as [`None`] and NOT as this image: the absence means nobody recorded it.
     #[test]
     fn a_restored_run_keeps_the_build_that_drove_it_and_a_new_one_is_stamped_with_this_image() {
         let mut registry = RunRegistry::default();
