@@ -424,19 +424,27 @@ impl Docs {
     }
 
     /// Where `moved` still stands in this version, or [`None`] where it does not: the block's
-    /// opening still sits in a doc of an item keyed as the one that took it, and an item keyed as the
-    /// one it was written for is still here with no doc — register item 1088's census question.
+    /// opening still sits in a doc of an item OTHER than the one it was written for, and that item is
+    /// still here with no doc — register item 1088's census question.
     ///
     /// ⚠⚠ THE SAME READER AS [`displaced`], so *this commit moved a doc* and *that move is still in
     /// the tree* are one author's two answers rather than a second parser over the first one's
     /// printout.
+    ///
+    /// # ⛔⛔⛔ ANY other item, and not the one that first took it — register item 1091
+    ///
+    /// A block that was moved can be moved again with the doc it was glued to. `786a1628` put
+    /// `spawn_durability_saver`'s doc on `put_back_inherited_runs`, and `9346eb6e` then declared
+    /// `leftover_driver` above that glued doc, taking both. Asked *is it on `put_back_inherited_runs`*,
+    /// the first move answered *gone* while `spawn_durability_saver` still had no doc: a census that
+    /// counts done by where the prose went first reads a second move as a repair.
     #[must_use]
     pub fn standing(&self, moved: &Displacement) -> Option<Standing> {
         let written_for = self.bare.get(&moved.was).cloned().unwrap_or_default();
         let carried_by: Vec<usize> = self
             .attached
             .iter()
-            .filter(|held| held.key == moved.now && held.doc.iter().any(|l| l == moved.opening()))
+            .filter(|held| held.key != moved.was && held.doc.iter().any(|l| l == moved.opening()))
             .map(|held| held.line)
             .collect();
         (!written_for.is_empty() && !carried_by.is_empty()).then_some(Standing {
@@ -728,9 +736,16 @@ impl TreeAt {
 ///
 /// # ⛔⛔⛔ Refused rather than guessed
 ///
-/// * **The block is not carried WHOLE, by exactly one doc of an item keyed as the one that took it.**
-///   Prose edited since the move is somebody's to reread, and a block carried twice has no one place
-///   to be taken from.
+/// * **The block is not carried WHOLE, by exactly one doc of the item that took it.** Prose edited
+///   since the move is somebody's to reread, and a block carried twice has no one place to be taken
+///   from.
+///
+/// ⚠⚠ **ONLY FROM [`Displacement::now`], though [`Docs::standing`] asks of any other item.** A block
+/// moved twice sits on its SECOND taker, and the move to put back first is that later one: newest
+/// first, each link returns the block to the taker before it, and the older move then finds it on its
+/// own `now`. Taking the older link first — straight off the second taker — would split the block
+/// the newer move recorded, which then stands in the census with nothing whole left to put back. So
+/// that order is refused here rather than half done.
 /// * **The item it was written for is undocumented in more than one place, or in none.** Two `fn new`
 ///   in two impls, or a struct literal's `id:` line keyed like the field it fills: which of them the
 ///   prose describes is not in the text, so it is not this function's to pick.
@@ -759,7 +774,7 @@ pub fn repaired(text: &str, moved: &Displacement) -> Result<String, String> {
     let [(carrier, at)] = carriers.as_slice() else {
         return Err(format!(
             "the block written for `{}` is carried whole by {} doc(s) of `{}` rather than by exactly \
-             one, so where to take it from is not in the text: \"{}\"",
+             one — edited since, or moved again and owed back by that later move first: \"{}\"",
             moved.was,
             carriers.len(),
             moved.now,
@@ -1424,6 +1439,57 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
             repaired(nested, &carried).expect("put back"),
             "impl Alpha {\n    fn other() {}\n}\n\n/// Makes one.\nfn make() {}\n",
             "⚠⚠ at `make`'s indentation, not at the one the block was carried at",
+        );
+    }
+
+    /// ⛔⛔⛔ **A BLOCK MOVED TWICE STILL STANDS, AND NEWEST FIRST PUTS BOTH MOVES BACK** — register
+    /// item 1091, the shape `786a1628` and `9346eb6e` left in `sprag-term.rs`: `put_back` declared
+    /// under `spawn`'s doc, then `leftover` declared under the doc the two had become.
+    #[test]
+    fn a_block_moved_twice_still_stands_and_newest_first_puts_both_back() {
+        let original = "/// Saves.\nfn spawn() {}\n";
+        let first = "/// Saves.\n/// Puts back.\nfn put_back() {}\n\nfn spawn() {}\n";
+        let second = "/// Saves.\n/// Puts back.\n/// Finds a leftover.\nfn leftover() {}\n\nfn \
+                      put_back() {}\n\nfn spawn() {}\n";
+        let older = displaced(original, first).expect("both read").remove(0);
+        let newer = displaced(first, second).expect("both read").remove(0);
+        assert_eq!(
+            (older.was.as_str(), newer.was.as_str()),
+            ("fn spawn", "fn put_back"),
+            "⚠ the two moves of the chain, each named by its own commit",
+        );
+        let docs = Docs::read(second).expect("reads");
+        assert!(
+            docs.standing(&older).is_some(),
+            "⛔⛔⛔ REGISTER ITEM 1091: `spawn` still has no doc, and its prose sits on `leftover` — the \
+             move stands although `put_back`, the item that first took it, no longer carries it",
+        );
+        assert!(
+            docs.standing(&newer).is_some(),
+            "⚠ and the second move stands too"
+        );
+        let refused = repaired(second, &older).expect_err(
+            "⛔⛔ the older move first would take `Saves.` out of the block the newer move recorded, \
+             leaving that one standing with nothing whole to put back",
+        );
+        assert!(
+            refused.contains("owed back by that later move first"),
+            "⛔ and the refusal says which move goes first: {refused}",
+        );
+        let unwound = repaired(second, &newer).expect("the newer move is put back first");
+        let unwound = repaired(&unwound, &older)
+            .expect("⛔⛔ and the older one then finds its block on `put_back`, its own taker");
+        assert_eq!(
+            unwound,
+            "/// Finds a leftover.\nfn leftover() {}\n\n/// Puts back.\nfn put_back() {}\n\n/// \
+             Saves.\nfn spawn() {}\n",
+            "⛔⛔⛔ each doc back on the item it was written for",
+        );
+        let read = Docs::read(&unwound).expect("reads");
+        assert_eq!(
+            (read.standing(&older), read.standing(&newer)),
+            (None, None),
+            "⚠ THE CONTROL: unwound, neither move stands",
         );
     }
 

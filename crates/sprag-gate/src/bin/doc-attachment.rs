@@ -20,7 +20,9 @@
 //! * **`--repair <path>`**, beside `--standing-at`: every move standing in `<path>` at `<rev>` is put
 //!   back in the WORKING-TREE file by [`sprag_gate::doc_attachment::repaired`], and the exit is 1
 //!   when any was refused. ⚠ The file as it is on disk: an edit already there is kept, and a move put
-//!   back by hand already is reported as back rather than refused.
+//!   back by hand already is reported as back rather than refused. ⚠⚠ The moves are put back in the
+//!   order their commits were NAMED, so name them newest first — `git rev-list`'s own order: a block
+//!   moved twice is taken back from its second taker before its first move can be undone.
 //!
 //! # ⚠⚠ Why a binary beside the test
 //!
