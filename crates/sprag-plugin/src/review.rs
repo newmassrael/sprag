@@ -373,25 +373,6 @@ fn ledger_path(named: &str, state: Option<&std::path::Path>) -> Option<std::path
     Some(state?.join(named))
 }
 
-/// A run of `context_review.scxml` against one run's closed sessions.
-///
-/// # ⚠⚠⚠ Why this is a TOP-LEVEL machine and not the `<invoke>` the debt register expected
-///
-/// Measured in this tree, against the generated code rather than argued: an invoked child engine is
-/// stored in a PRIVATE field of its parent's policy (`child_probe`), and `Engine::policy()` answers
-/// a shared reference. So nothing outside the parent can read an invoked child's state or raise an
-/// event on it.
-///
-/// That is fatal here and harmless for `probe_child.scxml`, which is the difference worth writing
-/// down: the probe SENDS ITSELF the event it transitions on, so it needs nobody. This document does
-/// not — `<send event="read.begin"/>` is a MARKER for a driver, exactly as `ai_loop.scxml`'s
-/// `<send event="prompt.turn"/>` is, and this workspace's rule is that **a machine instructs its
-/// driver through its STATE**. A driver that cannot see the state cannot answer it, and the review
-/// would sit in `reading` for ever — taking the loop's every session replacement down with it.
-///
-/// ⚠⚠ WHAT THE `<invoke>` WOULD HAVE GIVEN AND THIS OWES A GATE INSTEAD: the parent cancelling the
-/// child by leaving the state. Here the caller owns this value, so dropping it is that cancellation
-/// — enforced by ownership rather than by the engine, which is weaker until something holds it.
 /// **WHAT A REPLY CARRIES**, read the way the document says to read it — the text after `marker` on
 /// the line that holds it, or [`None`] when no line does.
 ///
@@ -456,6 +437,25 @@ impl Asked for NobodyAsked {
     }
 }
 
+/// A run of `context_review.scxml` against one run's closed sessions.
+///
+/// # ⚠⚠⚠ Why this is a TOP-LEVEL machine and not the `<invoke>` the debt register expected
+///
+/// Measured in this tree, against the generated code rather than argued: an invoked child engine is
+/// stored in a PRIVATE field of its parent's policy (`child_probe`), and `Engine::policy()` answers
+/// a shared reference. So nothing outside the parent can read an invoked child's state or raise an
+/// event on it.
+///
+/// That is fatal here and harmless for `probe_child.scxml`, which is the difference worth writing
+/// down: the probe SENDS ITSELF the event it transitions on, so it needs nobody. This document does
+/// not — `<send event="read.begin"/>` is a MARKER for a driver, exactly as `ai_loop.scxml`'s
+/// `<send event="prompt.turn"/>` is, and this workspace's rule is that **a machine instructs its
+/// driver through its STATE**. A driver that cannot see the state cannot answer it, and the review
+/// would sit in `reading` for ever — taking the loop's every session replacement down with it.
+///
+/// ⚠⚠ WHAT THE `<invoke>` WOULD HAVE GIVEN AND THIS OWES A GATE INSTEAD: the parent cancelling the
+/// child by leaving the state. Here the caller owns this value, so dropping it is that cancellation
+/// — enforced by ownership rather than by the engine, which is weaker until something holds it.
 pub struct ContextReview {
     machine: Engine<ContextReviewPolicy>,
     script: Arc<dyn IScriptEngine>,
