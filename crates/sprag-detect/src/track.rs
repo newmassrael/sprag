@@ -1916,11 +1916,6 @@ mod tests {
         assert_eq!(tracker.seq(), 2, "one transition, one publication");
     }
 
-    /// The window is measured from when a candidate was FIRST seen, not from the last time it was
-    /// seen again. A pane that keeps repainting — an agent printing its transcript — re-reaches the
-    /// same candidate on every tick, and a window restarted by each of those never expires at all:
-    /// the pane would be stuck in its previous state for as long as it stayed busy, which is the
-    /// same freeze the pending exception exists to prevent, arriving by the other door.
     /// ⚠⚠⚠⚠⚠ **A QUESTION IS COUNTED EVEN WHEN THE VERDICT DOES NOT MOVE** — register item 441,
     /// and the arm the whole counter exists for.
     ///
@@ -2936,6 +2931,11 @@ mod tests {
         );
     }
 
+    /// The window is measured from when a candidate was FIRST seen, not from the last time it was
+    /// seen again. A pane that keeps repainting — an agent printing its transcript — re-reaches the
+    /// same candidate on every tick, and a window restarted by each of those never expires at all:
+    /// the pane would be stuck in its previous state for as long as it stayed busy, which is the
+    /// same freeze the pending exception exists to prevent, arriving by the other door.
     #[test]
     fn a_pane_that_keeps_repainting_settles_when_the_candidate_has_held_long_enough() {
         let rules = Ruleset::new(vec![claude()]);
