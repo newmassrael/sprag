@@ -2387,17 +2387,6 @@ mod clock_tests {
         );
     }
 
-    /// THE CASE THAT DECIDES WHAT THE EDGE IS COMPARED ON, and the reason `observe` reads a deadline
-    /// rather than a presence.
-    ///
-    /// A candidate is already waiting when the user shortens `agent-settle-time`. Nothing appears —
-    /// the pane was pending before and is pending after — but the deadline moves EARLIER, because
-    /// `Tracker::pending_deadline` is derived from `since + settle` rather than stored, exactly so
-    /// that a shortened window moves the wait it is already serving. A waker parked on the old
-    /// deadline would otherwise sleep straight through the new one.
-    ///
-    /// This is what a `None` -> `Some` edge would miss, and it is the whole difference between the
-    /// cheap question being sound and being a regression.
     /// A RELEASE wakes a parked waker, because the pane it released needs a screen and only the
     /// waker's pass reads one.
     ///
@@ -2449,6 +2438,17 @@ mod clock_tests {
         );
     }
 
+    /// THE CASE THAT DECIDES WHAT THE EDGE IS COMPARED ON, and the reason `observe` reads a deadline
+    /// rather than a presence.
+    ///
+    /// A candidate is already waiting when the user shortens `agent-settle-time`. Nothing appears —
+    /// the pane was pending before and is pending after — but the deadline moves EARLIER, because
+    /// `Tracker::pending_deadline` is derived from `since + settle` rather than stored, exactly so
+    /// that a shortened window moves the wait it is already serving. A waker parked on the old
+    /// deadline would otherwise sleep straight through the new one.
+    ///
+    /// This is what a `None` -> `Some` edge would miss, and it is the whole difference between the
+    /// cheap question being sound and being a regression.
     #[test]
     fn a_shortened_window_wakes_a_waker_parked_on_the_old_one() {
         let clock = Arc::new(AgentClock::default());
