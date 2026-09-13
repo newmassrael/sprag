@@ -4873,15 +4873,6 @@ impl PluginKind {
     }
 }
 
-/// A required argv array (`["program", "args"…]`) of strings, non-empty.
-/// A missing/non-array value is a [`InvokeError::TypeMismatch`]; an empty array
-/// is a [`InvokeError::Rejected`] (an endpoint needs at least its program).
-/// Read an optional millisecond duration argument.
-///
-/// One spelling for the three `*_ms` arguments a run form takes, so a bound named on the wire is
-/// converted the same way wherever it is named. A present-but-not-a-number value is a MALFORMED
-/// request rather than a silently ignored one — the class R358 closed for argument NAMES, held
-/// here for their values.
 /// Read the optional `ready_when` barrier — an object naming WHICH QUESTION its marker asks.
 ///
 /// # ⚠⚠ A bare string is REFUSED, deliberately
@@ -5006,14 +4997,6 @@ fn opt_attended(map: &Map<String, Value>) -> Result<Attended, InvokeError> {
     Attended::of(patience, handback).ok_or(InvokeError::TypeMismatch)
 }
 
-/// Read the optional `handback_still_ms` — WHEN A PANE THIS RUN'S PERSON TAKES BECOMES THIS RUN'S
-/// AGAIN. Absent (or `null`) is [`Handback::Never`]: the run ends when somebody takes the pane,
-/// which is what every run did before the key existed and is the conservative half.
-///
-/// ⚠⚠ **ZERO IS MALFORMED**, [`opt_attended`]'s rule and [`Handback::of`]'s predicate: *"the pane is
-/// mine again the instant they pause"* is not something a caller can mean, since every person pauses
-/// between keystrokes, and one who reached zero by arithmetic would get a run that typed into the
-/// gap between their words.
 /// Read the optional `hold_within_ms` — HOW LONG SOMEBODY MAY HOLD THIS RUN before it ends as
 /// abandoned. Absent (or `null`) is [`None`]: the loop document's own ceiling stands, which is what
 /// *"omitting a duration key means the document decides"* means everywhere else on this form.
@@ -5039,6 +5022,14 @@ fn opt_hold_within(map: &Map<String, Value>) -> Result<Option<Duration>, InvokeE
     Ok(Some(within))
 }
 
+/// Read the optional `handback_still_ms` — WHEN A PANE THIS RUN'S PERSON TAKES BECOMES THIS RUN'S
+/// AGAIN. Absent (or `null`) is [`Handback::Never`]: the run ends when somebody takes the pane,
+/// which is what every run did before the key existed and is the conservative half.
+///
+/// ⚠⚠ **ZERO IS MALFORMED**, [`opt_attended`]'s rule and [`Handback::of`]'s predicate: *"the pane is
+/// mine again the instant they pause"* is not something a caller can mean, since every person pauses
+/// between keystrokes, and one who reached zero by arithmetic would get a run that typed into the
+/// gap between their words.
 fn opt_handback(map: &Map<String, Value>) -> Result<Handback, InvokeError> {
     let Some(still) = opt_millis(map, Handback::WIRE_KEY)? else {
         return Ok(Handback::Never);
@@ -5145,65 +5136,6 @@ fn opt_count(map: &Map<String, Value>, key: &str) -> Result<Option<i64>, InvokeE
     require_count(map, key).map(Some)
 }
 
-/// **WHAT A LOOP RUN IS FOR, RESOLVED FROM THE CALLER'S REQUEST AND THIS REPOSITORY'S KIND** —
-/// every judgement a `Brief` carries, in the one place both roads to it meet.
-///
-/// # ⚠⚠⚠⚠⚠ Why this is a function and not the inline block it was until register item 492
-///
-/// Eight of a brief's fields fall back to the kind document, and **not one of those fall-throughs
-/// was held by anything.** The residue was registered rather than hidden — `sprag_plugin`'s
-/// `a_declined_budget_crosses_as_a_word_and_the_run_is_not_refused` says it in its own doc:
-/// *"deleting `.or_else(|| kind.turn_budget())` from `plugins.rs` leaves the entire workspace
-/// GREEN. What would catch it is an observable of the RESOLVED budget on a run started through the
-/// wire, and `turn_budget` is crate-private"* — and it was measured again on item 492's round, for
-/// the ceiling, with the same answer.
-///
-/// A `Brief` is that observable. It is `pub` in `sprag_plugin`, it is exactly what the door
-/// resolves, and handing it back instead of consuming it in place is the whole difference between a
-/// wiring nothing checks and one a gate can read. ⚠⚠ **It is not a gate re-implementing the line it
-/// checks**: this IS the line, and the test asks the real function what a real request plus the
-/// real kind document resolve to.
-///
-/// ⚠ The engine and the pane stay with the caller: this resolves JUDGEMENTS, and which pane a run
-/// drives is a binding.
-///
-/// # Errors
-///
-/// [`InvokeError::TypeMismatch`] for a malformed argument, and [`refused`]'s sentence when this
-/// repository's own kind document holds a list this driver cannot read.
-/// **WHAT MAKES THIS RUN'S PANE READY, RESOLVED IN THREE STEPS** — register item 738, layer 3, and
-/// the ORDER is the whole of it.
-///
-/// A loop's first prompt goes into a pane whose program may still be starting, and R379 measured
-/// what no barrier costs: a prompt typed into a pane whose agent had existed for ten milliseconds,
-/// the pseudoterminal's own echo confirming the delivery, and the run then sitting in `working` for
-/// as long as anybody let it. **So there must always be one** — the question is only who says it.
-///
-/// 1. **What the caller SPELLED** (`ready_when`) wins over everything. It is the most specific
-///    thing anybody said about this pane.
-/// 2. **What the caller IMPLIED by naming a program** (`agent`), derived exactly as
-///    [`AiLoopSpec::driving`](sprag_plugin::AiLoopSpec::driving) always derived it. Item 300's line
-///    is untouched — the barrier is still READ OFF WHICH PROGRAM IS IN THE PANE — so a run driving
-///    `codex` still gets `codex`.
-/// 3. **What this repository's KIND document authors**, for a launch that named neither. That is
-///    the layer this item added, and it is why `agent` could stop being required: the key's own
-///    grammar note said it was mandatory *because there is no honest default*, and a document that
-///    names its peer is one.
-///
-/// # ⚠⚠⚠⚠⚠ Why this hands the barrier BACK instead of setting it in place
-///
-/// [`ai_loop_brief`]'s reason exactly, and it is this workspace's own recorded finding: a
-/// resolution consumed where it is computed is a wiring nothing can check, and **deleting a
-/// fall-through left the whole workspace green** (measured twice, items 312 and 492). The resolved
-/// value is the observable. ⚠ It is not a gate re-implementing the line it checks — this IS the
-/// line, and a gate asks it what a real request plus the real kind document resolve to.
-///
-/// # Errors
-///
-/// [`InvokeError::TypeMismatch`] for a malformed `ready_when` or an empty `agent`, and [`refused`]'s
-/// sentence when nothing at all names a barrier — which is a refusal rather than a `None`, because
-/// [`AiLoopSpec::ready_when`](sprag_plugin::AiLoopSpec::ready_when) CAN hold nothing and nothing
-/// means *go ahead immediately*, which is R379's failure bought back in silence.
 /// **THE GUARDRAILS THIS REPOSITORY'S KIND DOCUMENT NAMES** — register item 738, layer 1.
 ///
 /// # ⚠⚠⚠⚠⚠ The keys are the WIRE's, checked against the publication rather than a list here
@@ -5353,6 +5285,39 @@ fn kind_guardrails(
     })
 }
 
+/// **WHAT MAKES THIS RUN'S PANE READY, RESOLVED IN THREE STEPS** — register item 738, layer 3, and
+/// the ORDER is the whole of it.
+///
+/// A loop's first prompt goes into a pane whose program may still be starting, and R379 measured
+/// what no barrier costs: a prompt typed into a pane whose agent had existed for ten milliseconds,
+/// the pseudoterminal's own echo confirming the delivery, and the run then sitting in `working` for
+/// as long as anybody let it. **So there must always be one** — the question is only who says it.
+///
+/// 1. **What the caller SPELLED** (`ready_when`) wins over everything. It is the most specific
+///    thing anybody said about this pane.
+/// 2. **What the caller IMPLIED by naming a program** (`agent`), derived exactly as
+///    [`AiLoopSpec::driving`](sprag_plugin::AiLoopSpec::driving) always derived it. Item 300's line
+///    is untouched — the barrier is still READ OFF WHICH PROGRAM IS IN THE PANE — so a run driving
+///    `codex` still gets `codex`.
+/// 3. **What this repository's KIND document authors**, for a launch that named neither. That is
+///    the layer this item added, and it is why `agent` could stop being required: the key's own
+///    grammar note said it was mandatory *because there is no honest default*, and a document that
+///    names its peer is one.
+///
+/// # ⚠⚠⚠⚠⚠ Why this hands the barrier BACK instead of setting it in place
+///
+/// [`ai_loop_brief`]'s reason exactly, and it is this workspace's own recorded finding: a
+/// resolution consumed where it is computed is a wiring nothing can check, and **deleting a
+/// fall-through left the whole workspace green** (measured twice, items 312 and 492). The resolved
+/// value is the observable. ⚠ It is not a gate re-implementing the line it checks — this IS the
+/// line, and a gate asks it what a real request plus the real kind document resolve to.
+///
+/// # Errors
+///
+/// [`InvokeError::TypeMismatch`] for a malformed `ready_when` or an empty `agent`, and [`refused`]'s
+/// sentence when nothing at all names a barrier — which is a refusal rather than a `None`, because
+/// [`AiLoopSpec::ready_when`](sprag_plugin::AiLoopSpec::ready_when) CAN hold nothing and nothing
+/// means *go ahead immediately*, which is R379's failure bought back in silence.
 fn ai_loop_barrier(
     map: &Map<String, Value>,
     authored: Option<sprag_plugin::ReadyWhen>,
@@ -5758,6 +5723,32 @@ fn ai_loop_reference(
     }
 }
 
+/// **WHAT A LOOP RUN IS FOR, RESOLVED FROM THE CALLER'S REQUEST AND THIS REPOSITORY'S KIND** —
+/// every judgement a `Brief` carries, in the one place both roads to it meet.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is a function and not the inline block it was until register item 492
+///
+/// Eight of a brief's fields fall back to the kind document, and **not one of those fall-throughs
+/// was held by anything.** The residue was registered rather than hidden — `sprag_plugin`'s
+/// `a_declined_budget_crosses_as_a_word_and_the_run_is_not_refused` says it in its own doc:
+/// *"deleting `.or_else(|| kind.turn_budget())` from `plugins.rs` leaves the entire workspace
+/// GREEN. What would catch it is an observable of the RESOLVED budget on a run started through the
+/// wire, and `turn_budget` is crate-private"* — and it was measured again on item 492's round, for
+/// the ceiling, with the same answer.
+///
+/// A `Brief` is that observable. It is `pub` in `sprag_plugin`, it is exactly what the door
+/// resolves, and handing it back instead of consuming it in place is the whole difference between a
+/// wiring nothing checks and one a gate can read. ⚠⚠ **It is not a gate re-implementing the line it
+/// checks**: this IS the line, and the test asks the real function what a real request plus the
+/// real kind document resolve to.
+///
+/// ⚠ The engine and the pane stay with the caller: this resolves JUDGEMENTS, and which pane a run
+/// drives is a binding.
+///
+/// # Errors
+///
+/// [`InvokeError::TypeMismatch`] for a malformed argument, and [`refused`]'s sentence when this
+/// repository's own kind document holds a list this driver cannot read.
 fn ai_loop_brief(
     map: &Map<String, Value>,
     kind: &sprag_plugin::kind::LoopKind,
@@ -6106,6 +6097,12 @@ fn ai_loop_refusal(why: &sprag_plugin::NotStarted) -> String {
     }
 }
 
+/// Read an optional millisecond duration argument.
+///
+/// One spelling for the three `*_ms` arguments a run form takes, so a bound named on the wire is
+/// converted the same way wherever it is named. A present-but-not-a-number value is a MALFORMED
+/// request rather than a silently ignored one — the class R358 closed for argument NAMES, held
+/// here for their values.
 fn opt_millis(map: &Map<String, Value>, key: &str) -> Result<Option<Duration>, InvokeError> {
     if declined(map, key) {
         return Ok(None);
@@ -6255,6 +6252,9 @@ fn carried_json(carried: &sprag_plugin::Carried) -> Option<Value> {
     }))
 }
 
+/// A required argv array (`["program", "args"…]`) of strings, non-empty.
+/// A missing/non-array value is a [`InvokeError::TypeMismatch`]; an empty array
+/// is a [`InvokeError::Rejected`] (an endpoint needs at least its program).
 fn require_string_array(map: &Map<String, Value>, key: &str) -> Result<Vec<String>, InvokeError> {
     match map.get(key) {
         Some(Value::Array(items)) => {
@@ -9595,27 +9595,6 @@ pub fn checks_sentence(checks: &sprag_plugin::Checks) -> Option<String> {
     ))
 }
 
-/// ⛔⛔⛔⛔⛔ **WHICH KIND OF SILENCE THOSE WERE, WHERE THE KINDS DISAGREE ABOUT THE REMEDY** —
-/// register item 996, as a clause [`checks_sentence`] appends.
-///
-/// # ⛔⛔⛔⛔⛔ Why a count nobody can split is a count nobody can act on
-///
-/// `sprag_plugin::Silence` separates *nothing answered* — the ASKING failed, and a wait that ended
-/// `NotYet` is in here beside a checker that never started — from *it
-/// answered and that was not a verdict*, which is the PROMPT, from *the checker was unwell*, which
-/// is somebody's account. The sentence above reported the sum, so a reader was told how much went
-/// unverified and never which of three files to open.
-///
-/// ⚠⚠ **AND IT IS WHY FIVE REPAIRS TO ONE PROMPT COULD NOT BE TOLD APART FROM NONE.**
-/// `crate::plugins`' own closing instruction to checkers was rewritten five times between
-/// 2026-08-29 and 2026-09-09, each time on a single live sample, and the only figure a reader could
-/// consult moved for outages and usage limits too. Item 996 is open on that, and this clause is
-/// the half of it a person sees.
-///
-/// ⚠ **SILENT WHEN ONE KIND HOLDS EVERYTHING**, which is not brevity: the sentence already carries
-/// the total and `why_silent` already names the newest one, so a split that only ever restated
-/// them would be noise a reader learns to skip — taking the case that matters with it. The clause
-/// appears exactly when the kinds actually disagree, which is when it changes what somebody does.
 /// ⛔⛔⛔⛔⛔ **HOW MANY OF THE SILENCES WERE A CHECK RUNNING OUT OF TIME** — register item 1073.
 ///
 /// `why_silent` names the LAST silence and `which_silences` sums them by remedy, and neither could
@@ -9637,6 +9616,27 @@ fn outran_clause(checks: &sprag_plugin::Checks) -> String {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **WHICH KIND OF SILENCE THOSE WERE, WHERE THE KINDS DISAGREE ABOUT THE REMEDY** —
+/// register item 996, as a clause [`checks_sentence`] appends.
+///
+/// # ⛔⛔⛔⛔⛔ Why a count nobody can split is a count nobody can act on
+///
+/// `sprag_plugin::Silence` separates *nothing answered* — the ASKING failed, and a wait that ended
+/// `NotYet` is in here beside a checker that never started — from *it
+/// answered and that was not a verdict*, which is the PROMPT, from *the checker was unwell*, which
+/// is somebody's account. The sentence above reported the sum, so a reader was told how much went
+/// unverified and never which of three files to open.
+///
+/// ⚠⚠ **AND IT IS WHY FIVE REPAIRS TO ONE PROMPT COULD NOT BE TOLD APART FROM NONE.**
+/// `crate::plugins`' own closing instruction to checkers was rewritten five times between
+/// 2026-08-29 and 2026-09-09, each time on a single live sample, and the only figure a reader could
+/// consult moved for outages and usage limits too. Item 996 is open on that, and this clause is
+/// the half of it a person sees.
+///
+/// ⚠ **SILENT WHEN ONE KIND HOLDS EVERYTHING**, which is not brevity: the sentence already carries
+/// the total and `why_silent` already names the newest one, so a split that only ever restated
+/// them would be noise a reader learns to skip — taking the case that matters with it. The clause
+/// appears exactly when the kinds actually disagree, which is when it changes what somebody does.
 fn which_silences(checks: &sprag_plugin::Checks) -> String {
     let spoken: Vec<String> = checks
         .silent_by
@@ -10369,39 +10369,6 @@ mod tests {
         );
     }
 
-    /// ⛔⛔⛔⛔⛔ **THREE REFUSALS, THREE SENTENCES, AND ONLY ONE OF THEM IS ABOUT A `<data>`
-    /// BLOCK** — register item 510, arriving at the mouth a caller actually reads.
-    ///
-    /// # ⚠⚠⚠ Why the negative assertion is the load-bearing one
-    ///
-    /// `OuterLoop::new` returned `Option` until 2026-08-27, so a document the DOOR had refused and
-    /// a machine with no script session both reached [`ai_loop_refusal`] as `Undrivable` and were
-    /// told *"this build's `ai_loop.scxml` does not carry the strings a loop is driven by"*. Every
-    /// word of that is a claim about the datamodel. A reader who acted on it opened the right file
-    /// at the wrong place and found nothing wrong, on the one occasion the product had a precise
-    /// answer and could not say it.
-    ///
-    /// So the claim here is not merely *each arm says something*: it is that the phrase belonging
-    /// to the ONE cause it is true of appears in exactly ONE of the three.
-    ///
-    /// ⚠⚠ The sentences are the whole subject, so they are compared as VALUES rather than by
-    /// eye — three arms that quietly rendered the same prose would satisfy any per-arm assertion
-    /// written one at a time, which is how the collapse got in.
-    /// ⛔⛔⛔⛔⛔ **THE ROW SAYS HOW MANY CLAIMS NEVER REACHED A CHECKER, AND SAYS IT EVEN WHEN
-    /// `asked` IS ZERO** — register item 674's remaining half, at the surface a person reads.
-    ///
-    /// # The escape hatch that made the tally optimistic
-    ///
-    /// `checks_sentence` returned `None` outright for `asked == 0`, on the reading that it means
-    /// *this author declared no checker*. It has a second cause — a run whose datamodel could not
-    /// answer for `milestone_check` — and for that one the silence is the defect: the claim leaves
-    /// the denominator, so **a run that verified nothing prints the same row as a run nobody meant
-    /// to verify**. An unclassified case passing as *not applicable* is the shape this register
-    /// refuses; it has to be RED, and here that means a sentence.
-    ///
-    /// ⚠⚠ **THE THIRD ARM IS THE ONE THAT MATTERS MOST.** *Every one of them answered* is the
-    /// reassuring reading and it is true only of the claims that were PUT — so a run that could
-    /// not put some must not print it unqualified.
     /// ⛔⛔⛔⛔⛔ **THE ROW SAYS WHICH KIND OF SILENCE, WHERE THE KINDS DISAGREE ABOUT THE
     /// REMEDY** — register item 996, and the half of it a person actually sees.
     ///
@@ -10520,6 +10487,21 @@ mod tests {
         }
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE ROW SAYS HOW MANY CLAIMS NEVER REACHED A CHECKER, AND SAYS IT EVEN WHEN
+    /// `asked` IS ZERO** — register item 674's remaining half, at the surface a person reads.
+    ///
+    /// # The escape hatch that made the tally optimistic
+    ///
+    /// `checks_sentence` returned `None` outright for `asked == 0`, on the reading that it means
+    /// *this author declared no checker*. It has a second cause — a run whose datamodel could not
+    /// answer for `milestone_check` — and for that one the silence is the defect: the claim leaves
+    /// the denominator, so **a run that verified nothing prints the same row as a run nobody meant
+    /// to verify**. An unclassified case passing as *not applicable* is the shape this register
+    /// refuses; it has to be RED, and here that means a sentence.
+    ///
+    /// ⚠⚠ **THE THIRD ARM IS THE ONE THAT MATTERS MOST.** *Every one of them answered* is the
+    /// reassuring reading and it is true only of the claims that were PUT — so a run that could
+    /// not put some must not print it unqualified.
     #[test]
     fn a_row_says_how_many_milestone_claims_never_reached_a_checker() {
         let of = |asked, silent, unasked| {
@@ -10573,6 +10555,24 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **THREE REFUSALS, THREE SENTENCES, AND ONLY ONE OF THEM IS ABOUT A `<data>`
+    /// BLOCK** — register item 510, arriving at the mouth a caller actually reads.
+    ///
+    /// # ⚠⚠⚠ Why the negative assertion is the load-bearing one
+    ///
+    /// `OuterLoop::new` returned `Option` until 2026-08-27, so a document the DOOR had refused and
+    /// a machine with no script session both reached [`ai_loop_refusal`] as `Undrivable` and were
+    /// told *"this build's `ai_loop.scxml` does not carry the strings a loop is driven by"*. Every
+    /// word of that is a claim about the datamodel. A reader who acted on it opened the right file
+    /// at the wrong place and found nothing wrong, on the one occasion the product had a precise
+    /// answer and could not say it.
+    ///
+    /// So the claim here is not merely *each arm says something*: it is that the phrase belonging
+    /// to the ONE cause it is true of appears in exactly ONE of the three.
+    ///
+    /// ⚠⚠ The sentences are the whole subject, so they are compared as VALUES rather than by
+    /// eye — three arms that quietly rendered the same prose would satisfy any per-arm assertion
+    /// written one at a time, which is how the collapse got in.
     #[test]
     fn each_reason_a_loop_could_not_be_built_names_its_own_file() {
         /// The clause that is true only of a datamodel short of its authored strings.
@@ -10719,11 +10719,6 @@ mod tests {
         );
     }
 
-    /// A pane running a stand-in agent: announces itself, then echoes back every line it is given.
-    ///
-    /// ⚠ ECHO OFF, so what appears on the screen is what the PROGRAM printed rather than what the
-    /// line discipline painted — the difference between measuring a delivery and measuring the
-    /// kernel.
     /// ⚠⚠⚠⚠⚠ **THE SAME AGENT FINDS THE RUNS IT STARTED AFTER A RESTART, AND A STRANGER IN ITS
     /// SEAT DOES NOT** — [`crate::runs::RunRegistry::restore`]'s rule 1, driven end to end.
     ///
@@ -12754,6 +12749,11 @@ mod tests {
         dir
     }
 
+    /// A pane running a stand-in agent: announces itself, then echoes back every line it is given.
+    ///
+    /// ⚠ ECHO OFF, so what appears on the screen is what the PROGRAM printed rather than what the
+    /// line discipline painted — the difference between measuring a delivery and measuring the
+    /// kernel.
     fn echoing_agent_pane(workspace: &Arc<Mutex<Workspace>>) -> PaneId {
         // ⚠⚠ POINTED AT A TREE — see `a_tree_to_stand_in`. Without it every fixture pane is born in
         // the runner's `$HOME`, which is the placement item 684 measured costing a live run.
@@ -12843,61 +12843,6 @@ mod tests {
         request
     }
 
-    /// ⚠⚠⚠ **A PERSON CAN START AN AI LOOP, AND WHAT THEY BRIEFED IT WITH REACHES THE AGENT** —
-    /// register item 65, which R380 called *"the single biggest thing between this loop and a
-    /// user"*.
-    ///
-    /// Five rounds built `ai_loop.scxml`'s machine, gave its turns two endings, wrote its driver
-    /// and measured all of it against a live `claude` — and **nothing in the daemon constructed one
-    /// and no surface started one.** Every one of those measurements ran inside a test.
-    ///
-    /// This one goes through `RUN_ACTION`, the verb the MCP mouth and the CLI both call, and
-    /// asserts the thing that could not be asserted before: **the caller's own north star is on the
-    /// agent's screen.** That single string crossing is the whole chain — the request grammar
-    /// parsed it, the daemon built a real script engine for it, the brief crossed into the
-    /// document's datamodel as an event, `priming` composed a prompt out of it, and the driver
-    /// delivered that prompt into a live pseudoterminal.
-    ///
-    /// ⚠⚠⚠ **A RUN THAT NAMES NO CONSENTS GETS THIS REPOSITORY'S OWN** — the carrying, gated at the
-    /// one place it happens.
-    ///
-    /// # Why this needs a gate of its own
-    ///
-    /// The clauses used to be authored in `ai_loop.scxml`, and a run that named none got the
-    /// document's. That made this repository's standing yesses authorise every run of a file other
-    /// repositories copy, so they moved to `debt_loop.scxml` — and the template now ships an EMPTY
-    /// list. **Something has to carry them across, and a carrier nothing observes is a carrier that
-    /// can quietly drop what it carries.** What that looks like from outside is a run that comes up
-    /// perfectly configured and stops at its first permission dialog: measured once already, on a
-    /// live loop that stood there until an iteration ceiling ended it.
-    ///
-    /// ⚠ The count is asserted against what the KIND holds rather than against `2`, so an author
-    /// adding a third clause to their own document does not have to come and edit a number here —
-    /// and so this cannot pass by agreeing with a literal that drifted.
-    ///
-    /// ⚠⚠⚠⚠⚠ **A LOOP THIS DAEMON STARTS KEEPS ITS REVIEWS' COUNTS IN THIS DAEMON'S STATE
-    /// DIRECTORY** — the one line only the daemon can write, gated where dropping it would be
-    /// invisible.
-    ///
-    /// # ⚠⚠⚠ Why the library must NOT answer this and once did
-    ///
-    /// `context_review.scxml` authors a bare file name and says a driver resolves it *"against the
-    /// daemon's state directory"*. `sprag-plugin` implemented that by reading `$XDG_STATE_HOME`
-    /// itself — so under `cargo test`, where there is no daemon, *the daemon's state directory*
-    /// meant **the home of whoever ran the suite**. Measured 2026-08-19: thirty lines per
-    /// `cargo test -p sprag-plugin --lib`, and 179 standing in a shared build machine's real
-    /// `~/.local/state/sprag/context-review.jsonl`. CI's `ambient-home-guard` had been failing on
-    /// exactly that write.
-    ///
-    /// The library cannot name a home any more, which is the fix. **What that moves here is the
-    /// power to forget**: a daemon that drops the assignment builds a run which comes up looking
-    /// perfectly configured, reviews normally, and keeps counts nobody can ever compare with the
-    /// next run's — [`sprag_plugin::AiLoop::keeping_counts_in`]'s whole reason, and the same shape
-    /// as the consents gate below it.
-    ///
-    /// ⚠⚠ Compared against [`crate::durability::state_dir`] rather than against a literal, because
-    /// a literal here would be a SECOND derivation of the path — the exact duplication that
-    /// function exists to prevent — and would drift the day the state directory moves.
     /// ⛔⛔⛔⛔⛔ **A LOOP IS REFUSED AT THE DOOR WHEN THE POOL IT WOULD DRIVE THROUGH DOES NOT HOLD
     /// ITS PANE** — register item 682, and the half of it the product already had.
     ///
@@ -14733,6 +14678,61 @@ mod tests {
         ended(&registry, id, Duration::from_secs(20));
     }
 
+    /// ⚠⚠⚠ **A PERSON CAN START AN AI LOOP, AND WHAT THEY BRIEFED IT WITH REACHES THE AGENT** —
+    /// register item 65, which R380 called *"the single biggest thing between this loop and a
+    /// user"*.
+    ///
+    /// Five rounds built `ai_loop.scxml`'s machine, gave its turns two endings, wrote its driver
+    /// and measured all of it against a live `claude` — and **nothing in the daemon constructed one
+    /// and no surface started one.** Every one of those measurements ran inside a test.
+    ///
+    /// This one goes through `RUN_ACTION`, the verb the MCP mouth and the CLI both call, and
+    /// asserts the thing that could not be asserted before: **the caller's own north star is on the
+    /// agent's screen.** That single string crossing is the whole chain — the request grammar
+    /// parsed it, the daemon built a real script engine for it, the brief crossed into the
+    /// document's datamodel as an event, `priming` composed a prompt out of it, and the driver
+    /// delivered that prompt into a live pseudoterminal.
+    ///
+    /// ⚠⚠⚠ **A RUN THAT NAMES NO CONSENTS GETS THIS REPOSITORY'S OWN** — the carrying, gated at the
+    /// one place it happens.
+    ///
+    /// # Why this needs a gate of its own
+    ///
+    /// The clauses used to be authored in `ai_loop.scxml`, and a run that named none got the
+    /// document's. That made this repository's standing yesses authorise every run of a file other
+    /// repositories copy, so they moved to `debt_loop.scxml` — and the template now ships an EMPTY
+    /// list. **Something has to carry them across, and a carrier nothing observes is a carrier that
+    /// can quietly drop what it carries.** What that looks like from outside is a run that comes up
+    /// perfectly configured and stops at its first permission dialog: measured once already, on a
+    /// live loop that stood there until an iteration ceiling ended it.
+    ///
+    /// ⚠ The count is asserted against what the KIND holds rather than against `2`, so an author
+    /// adding a third clause to their own document does not have to come and edit a number here —
+    /// and so this cannot pass by agreeing with a literal that drifted.
+    ///
+    /// ⚠⚠⚠⚠⚠ **A LOOP THIS DAEMON STARTS KEEPS ITS REVIEWS' COUNTS IN THIS DAEMON'S STATE
+    /// DIRECTORY** — the one line only the daemon can write, gated where dropping it would be
+    /// invisible.
+    ///
+    /// # ⚠⚠⚠ Why the library must NOT answer this and once did
+    ///
+    /// `context_review.scxml` authors a bare file name and says a driver resolves it *"against the
+    /// daemon's state directory"*. `sprag-plugin` implemented that by reading `$XDG_STATE_HOME`
+    /// itself — so under `cargo test`, where there is no daemon, *the daemon's state directory*
+    /// meant **the home of whoever ran the suite**. Measured 2026-08-19: thirty lines per
+    /// `cargo test -p sprag-plugin --lib`, and 179 standing in a shared build machine's real
+    /// `~/.local/state/sprag/context-review.jsonl`. CI's `ambient-home-guard` had been failing on
+    /// exactly that write.
+    ///
+    /// The library cannot name a home any more, which is the fix. **What that moves here is the
+    /// power to forget**: a daemon that drops the assignment builds a run which comes up looking
+    /// perfectly configured, reviews normally, and keeps counts nobody can ever compare with the
+    /// next run's — [`sprag_plugin::AiLoop::keeping_counts_in`]'s whole reason, and the same shape
+    /// as the consents gate below it.
+    ///
+    /// ⚠⚠ Compared against [`crate::durability::state_dir`] rather than against a literal, because
+    /// a literal here would be a SECOND derivation of the path — the exact duplication that
+    /// function exists to prevent — and would drift the day the state directory moves.
     #[test]
     fn a_loop_this_daemon_starts_keeps_its_counts_in_this_daemons_state_directory() {
         let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
@@ -19871,17 +19871,6 @@ mod tests {
         }
     }
 
-    /// A plugin reads what the agent in its pane is DOING, and what it is blocked ON — through the
-    /// extension API, off a live pane, with no second detector anywhere.
-    ///
-    /// This is the whole of the supervision requirement in one assertion. Before it, a plugin's
-    /// view of a blocked agent was the pane's text: it could see the dialog and had to re-derive
-    /// what the daemon had already decided, and every plugin author would have re-derived it
-    /// differently.
-    ///
-    /// The title is the IDLE glyph, deliberately — that is what a real blocked `claude` shows
-    /// (R249's measurement, and the reason `Rule::priority` exists), so a surface that read the
-    /// title alone would report this pane at rest while it waits for a person.
     #[test]
     fn a_run_whose_agent_is_blocked_says_so_while_its_machine_is_still_working() {
         let (workspace, pane) = pane_painting(PERMISSION_SCREEN);
@@ -20249,6 +20238,17 @@ mod tests {
         }
     }
 
+    /// A plugin reads what the agent in its pane is DOING, and what it is blocked ON — through the
+    /// extension API, off a live pane, with no second detector anywhere.
+    ///
+    /// This is the whole of the supervision requirement in one assertion. Before it, a plugin's
+    /// view of a blocked agent was the pane's text: it could see the dialog and had to re-derive
+    /// what the daemon had already decided, and every plugin author would have re-derived it
+    /// differently.
+    ///
+    /// The title is the IDLE glyph, deliberately — that is what a real blocked `claude` shows
+    /// (R249's measurement, and the reason `Rule::priority` exists), so a surface that read the
+    /// title alone would report this pane at rest while it waits for a person.
     #[test]
     fn a_plugin_reads_a_blocked_agents_state_and_the_question_it_is_blocked_on() {
         let (workspace, id) = pane_painting(PERMISSION_SCREEN);
@@ -21015,14 +21015,6 @@ mod tests {
         );
     }
 
-    /// ⚠⚠ **A DECLARED ARGUMENT IS ONE THIS SURFACE ACTUALLY READS** — the gate that lets this table
-    /// be hand-written, over a verb whose forms were transcribed from a parser by eye.
-    ///
-    /// ⚠ The number moved by twelve when the loop got a door, and both halves are the point: four
-    /// `opened_by` arguments (one per form) and **eight nested `guardrails` fields the claim could
-    /// not see before it learned to walk them**. `max_iterations` and each form's cost key are now
-    /// each driven at the wrong type inside their parent, which is what turns the nested grammar
-    /// from a published claim into a held one.
     /// ⚠⚠ **EVERY OPTIONAL ARGUMENT OF THIS SURFACE MAY BE DECLINED AS `null`** — the class a
     /// hand-written check cannot close, because it is the arguments nobody thought about that are
     /// wrong.
@@ -21161,6 +21153,14 @@ mod tests {
         );
     }
 
+    /// ⚠⚠ **A DECLARED ARGUMENT IS ONE THIS SURFACE ACTUALLY READS** — the gate that lets this table
+    /// be hand-written, over a verb whose forms were transcribed from a parser by eye.
+    ///
+    /// ⚠ The number moved by twelve when the loop got a door, and both halves are the point: four
+    /// `opened_by` arguments (one per form) and **eight nested `guardrails` fields the claim could
+    /// not see before it learned to walk them**. `max_iterations` and each form's cost key are now
+    /// each driven at the wrong type inside their parent, which is what turns the nested grammar
+    /// from a published claim into a held one.
     #[test]
     fn a_declared_argument_is_one_the_plugin_host_reads() {
         assert_eq!(
@@ -21810,16 +21810,6 @@ mod tests {
         );
     }
 
-    /// ⚠⚠ **A BOUND THIS DAEMON DOES NOT KNOW IS REFUSED, WHERE EVERY OTHER UNKNOWN KEY ON THIS
-    /// WIRE IS IGNORED** — and the asymmetry is the claim, so both halves are driven here.
-    ///
-    /// Ignoring an ordinary argument makes a verb do LESS than it was asked, and the caller can see
-    /// that in the result. Ignoring a bound makes the run do MORE — without limit — and answers
-    /// success. `guardrails: {"max_secnods": 5}` was a run with no time ceiling, no way to find
-    /// out, and a typo for a cause.
-    ///
-    /// ⚠ THE CONTROL is the same call with the key spelled right: it must be ACCEPTED. Without it
-    /// this gate would also pass over a parser that refused every guardrail object there is.
     /// ⚠⚠ **EVERY DECLARED GUARDRAIL IS ONE THE PARSER ACTUALLY READS** — the direction the gate
     /// beside this one cannot see.
     ///
@@ -21871,6 +21861,16 @@ mod tests {
         }
     }
 
+    /// ⚠⚠ **A BOUND THIS DAEMON DOES NOT KNOW IS REFUSED, WHERE EVERY OTHER UNKNOWN KEY ON THIS
+    /// WIRE IS IGNORED** — and the asymmetry is the claim, so both halves are driven here.
+    ///
+    /// Ignoring an ordinary argument makes a verb do LESS than it was asked, and the caller can see
+    /// that in the result. Ignoring a bound makes the run do MORE — without limit — and answers
+    /// success. `guardrails: {"max_secnods": 5}` was a run with no time ceiling, no way to find
+    /// out, and a typo for a cause.
+    ///
+    /// ⚠ THE CONTROL is the same call with the key spelled right: it must be ACCEPTED. Without it
+    /// this gate would also pass over a parser that refused every guardrail object there is.
     #[test]
     fn a_guardrail_this_daemon_does_not_know_is_refused_rather_than_ignored() {
         let (mut external, _registry, pane) = host_with_a_pane();
