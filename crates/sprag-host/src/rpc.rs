@@ -1439,10 +1439,6 @@ fn protocol_refused(request: &Request) -> Option<String> {
     )
 }
 
-/// `client/attach` — attach (or switch — tmux `switch-client`) this connection's client to the
-/// already-validated `scope` session. A first attach or a switch moves a per-session count, so it
-/// bumps the scene to wake parked `scene/waitFor`s to re-read the badge; an idempotent re-send
-/// does not. An attach with no prior `client/hello` is a protocol error, refused `-32602`.
 /// Record the client's reported cell area ([`CLIENT_SIZE_METHOD`]) and, when it moved, announce it
 /// to the session that client is watching.
 ///
@@ -1524,6 +1520,10 @@ fn handle_messages(state: &HostState, conn: ConnId, request: &Request) -> Option
     )
 }
 
+/// `client/attach` — attach (or switch — tmux `switch-client`) this connection's client to the
+/// already-validated `scope` session. A first attach or a switch moves a per-session count, so it
+/// bumps the scene to wake parked `scene/waitFor`s to re-read the badge; an idempotent re-send
+/// does not. An attach with no prior `client/hello` is a protocol error, refused `-32602`.
 fn handle_attach(
     state: &HostState,
     conn: ConnId,
