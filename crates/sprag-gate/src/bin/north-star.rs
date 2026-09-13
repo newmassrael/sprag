@@ -1221,24 +1221,6 @@ fn elsewhere(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process
     }
 }
 
-/// 🎯🎯🎯🎯🎯 **IS THIS PROPOSAL ONE A ROUND MAY TAKE NEXT?** — register item 839, and the half of
-/// register item 833(1) that had been written as prose.
-///
-/// # ⛔⛔⛔⛔⛔ Why a `NO` and a *"cannot tell"* are the same answer here
-///
-/// Working rule 6 in one place: an unclassified thing is not a pass. A proposal this cannot place
-/// in the ledger — it names no item, the ledger will not read — is one nothing has said is
-/// admissible, and admitting it would make every failure of this instrument read as a green.
-///
-/// ⚠ The COST of that direction is real and is stated rather than hidden: a broken ledger path
-/// stops a loop re-aiming at all. It is visible where it happens — the run counts every proposal it
-/// set aside, and the sentence below travels with the verdict — which is exactly what a silent
-/// admission would not be.
-///
-/// ⚠⚠ **THE CAP IS THE DOCUMENT'S AND THIS ONLY MIRRORS IT** — [`cap`], which reads it out of the
-/// document rather than holding a number of its own. That sentence stood here while the code two
-/// screens down said `.unwrap_or(1)`; register item 833(1) and [`cap`]'s own doc carry what the
-/// disagreement cost.
 /// ⛔⛔⛔⛔⛔ **WHAT TO TAKE NEXT, ALONE ON STDOUT** — register item 659, and the mouth that makes
 /// the derivation reachable by a reader who cannot be handed a report.
 ///
@@ -1318,6 +1300,24 @@ fn next(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::Exi
     std::process::ExitCode::SUCCESS
 }
 
+/// 🎯🎯🎯🎯🎯 **IS THIS PROPOSAL ONE A ROUND MAY TAKE NEXT?** — register item 839, and the half of
+/// register item 833(1) that had been written as prose.
+///
+/// # ⛔⛔⛔⛔⛔ Why a `NO` and a *"cannot tell"* are the same answer here
+///
+/// Working rule 6 in one place: an unclassified thing is not a pass. A proposal this cannot place
+/// in the ledger — it names no item, the ledger will not read — is one nothing has said is
+/// admissible, and admitting it would make every failure of this instrument read as a green.
+///
+/// ⚠ The COST of that direction is real and is stated rather than hidden: a broken ledger path
+/// stops a loop re-aiming at all. It is visible where it happens — the run counts every proposal it
+/// set aside, and the sentence below travels with the verdict — which is exactly what a silent
+/// admission would not be.
+///
+/// ⚠⚠ **THE CAP IS THE DOCUMENT'S AND THIS ONLY MIRRORS IT** — [`cap`], which reads it out of the
+/// document rather than holding a number of its own. That sentence stood here while the code two
+/// screens down said `.unwrap_or(1)`; register item 833(1) and [`cap`]'s own doc carry what the
+/// disagreement cost.
 fn admits(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::ExitCode {
     // ⚠ NOT `println!` on the failure paths: this reply is read as a VERDICT, and a first word that
     // is not YES or NO is *the checker said nothing this run could read* — the honest answer for an
