@@ -2597,11 +2597,6 @@ mod tests {
         assert_eq!(Limits::UNCAPPED.with_processes(Some(0)).processes(), "0");
     }
 
-    /// A host with nothing to enforce touches nothing at all.
-    ///
-    /// The designed state — a GUI's in-process host, a test, a machine with no delegated subtree —
-    /// and it has to be a no-op rather than a best effort: a `PaneHomes::none()` that created
-    /// directories would put a pane's cgroup somewhere no daemon owns.
     /// A grant written onto a LIVE pane reaches all three files, and the answer is READ BACK rather
     /// than echoed — the whole argument of the feature.
     ///
@@ -2805,6 +2800,11 @@ mod tests {
         );
     }
 
+    /// A host with nothing to enforce touches nothing at all.
+    ///
+    /// The designed state — a GUI's in-process host, a test, a machine with no delegated subtree —
+    /// and it has to be a no-op rather than a best effort: a `PaneHomes::none()` that created
+    /// directories would put a pane's cgroup somewhere no daemon owns.
     #[test]
     fn a_host_with_nothing_to_enforce_places_and_moves_nothing() {
         let fs = FakeCgroupFs::new("no-homes");
