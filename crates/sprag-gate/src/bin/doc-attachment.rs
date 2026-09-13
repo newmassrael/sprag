@@ -38,9 +38,7 @@
 //! ⚠ Commits come from the arguments, or one per line on standard input when there are none — so
 //! `git rev-list` feeds it without an argument list the shell has to hold.
 
-use sprag_gate::doc_attachment::{
-    Displacement, Docs, TreeAt, judge_between, judge_commit, repaired,
-};
+use sprag_gate::doc_attachment::{Displacement, Docs, census, repaired};
 use std::io::BufRead;
 use std::path::Path;
 use std::process::ExitCode;
@@ -130,107 +128,83 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let tree = match asked
-        .standing_at
-        .as_deref()
-        .map(|rev| TreeAt::read(&repo, rev))
-    {
-        None => None,
-        Some(Ok(tree)) => Some(tree),
-        Some(Err(why)) => {
-            eprintln!("doc-attachment: the tree to ask could not be read: {why}");
+    let census = match census(&repo, &asked.commits, asked.standing_at.as_deref()) {
+        Ok(census) => census,
+        Err(why) => {
+            eprintln!("doc-attachment: {why}");
             return ExitCode::FAILURE;
         }
     };
-    let mut moved_in = 0;
-    let mut displacements = 0;
-    let mut unreadable = 0;
-    let mut files = 0;
-    let mut stands = 0;
-    let mut unasked = 0;
-    let mut to_put_back: Vec<Displacement> = Vec::new();
-    for commit in &asked.commits {
-        // ⚠ `A..B` is the NET change between two commits — see `judge_between` for the two
-        // questions only a range can put. Anything else names one commit.
-        let judged = match commit.split_once("..") {
-            Some((base, tip)) => judge_between(&repo, base, tip),
-            None => judge_commit(&repo, commit),
-        };
-        let reading = match judged {
-            Ok(reading) => reading,
-            Err(why) => {
-                unreadable += 1;
-                eprintln!("doc-attachment: {commit} could not be judged: {why}");
-                continue;
-            }
-        };
-        files += reading.compared.len();
-        if !reading.found.is_empty() {
-            moved_in += 1;
-        }
-        for (path, moved) in &reading.found {
-            displacements += 1;
-            let standing = match &tree {
-                None => String::new(),
-                Some(tree) => match tree.standing(moved) {
-                    Ok(places) if places.is_empty() => format!(" [gone at {}]", short(&tree.rev)),
-                    Ok(places) => {
-                        stands += 1;
-                        if places
-                            .iter()
-                            .any(|(at, _)| asked.repair.as_deref() == Some(*at))
-                        {
-                            to_put_back.push(moved.clone());
-                        }
-                        let told: Vec<String> = places
-                            .iter()
-                            .map(|(at, place)| {
-                                format!(
-                                    "{at}: carried by line(s) {:?}, written for line(s) {:?}",
-                                    place.carried_by,
-                                    place
-                                        .written_for
-                                        .iter()
-                                        .map(|bare| bare.line)
-                                        .collect::<Vec<_>>(),
-                                )
-                            })
-                            .collect();
-                        format!(" [STANDS at {} in {}]", short(&tree.rev), told.join("; "))
-                    }
-                    // ⛔ *COULD NOT ASK* IS COUNTED, never folded into *gone*: a file holding the
-                    // moved prose that cannot be read is exactly the one that could say *stands*.
-                    Err(why) => {
-                        unasked += 1;
-                        format!(" [could not ask at {}: {why}]", short(&tree.rev))
-                    }
-                },
-            };
-            println!(
-                "{} {path}:{} — the doc written for `{}` now documents `{}`: \"{}\"{standing}",
-                short(&reading.tip),
-                moved.line,
-                moved.was,
-                moved.now,
-                moved.opening(),
-            );
-        }
+    for (commit, why) in &census.unreadable {
+        eprintln!("doc-attachment: {commit} could not be judged: {why}");
     }
+    let at = census.at.as_deref().map(short).unwrap_or_default();
+    let mut to_put_back: Vec<Displacement> = Vec::new();
+    for found in &census.found {
+        let label = match (&found.puts_back, &found.standing) {
+            (Some(earlier), _) => format!(" [puts back {}]", short(earlier)),
+            (None, None) => String::new(),
+            (None, Some(Ok(places))) if places.is_empty() => format!(" [gone at {at}]"),
+            (None, Some(Ok(places))) => {
+                if places
+                    .iter()
+                    .any(|(path, _)| asked.repair.as_deref() == Some(path.as_str()))
+                {
+                    to_put_back.push(found.moved.clone());
+                }
+                let told: Vec<String> = places
+                    .iter()
+                    .map(|(path, place)| {
+                        format!(
+                            "{path}: carried by line(s) {:?}, written for line(s) {:?}",
+                            place.carried_by,
+                            place
+                                .written_for
+                                .iter()
+                                .map(|bare| bare.line)
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect();
+                format!(" [STANDS at {at} in {}]", told.join("; "))
+            }
+            // ⛔ *COULD NOT ASK* IS COUNTED, never folded into *gone*: a file holding the moved
+            // prose that cannot be read is exactly the one that could say *stands*.
+            (None, Some(Err(why))) => format!(" [could not ask at {at}: {why}]"),
+        };
+        println!(
+            "{} {}:{} — the doc written for `{}` now documents `{}`: \"{}\"{label}",
+            short(&found.commit),
+            found.path,
+            found.moved.line,
+            found.moved.was,
+            found.moved.now,
+            found.moved.opening(),
+        );
+    }
+    let moves = census.found.len() - census.repairs();
     println!(
-        "doc-attachment: {} commit(s) judged, {files} Rust file version pair(s) compared, \
-         {moved_in} commit(s) moved a doc ({displacements} displacement(s)), {unreadable} could \
-         not be judged",
-        asked.commits.len(),
+        "doc-attachment: {} commit(s) judged, {} Rust file version pair(s) compared, {} commit(s) \
+         moved a doc ({} displacement(s), {} of them putting an earlier one back), {} could not be \
+         judged",
+        census.judged,
+        census.compared,
+        census.moved_in(),
+        census.found.len(),
+        census.repairs(),
+        census.unreadable.len(),
     );
     let Some(rev) = &asked.standing_at else {
-        return exit(moved_in == 0 && unreadable == 0);
+        return exit(moves == 0 && census.unreadable.is_empty());
     };
     println!(
-        "doc-attachment: at {rev}, {stands} of those {displacements} displacement(s) still \
-         stand and {unasked} could not be asked"
+        "doc-attachment: at {rev}, {} of those {moves} displacement(s) still stand and {} could \
+         not be asked",
+        census.stands(),
+        census.unasked(),
     );
     let Some(path) = &asked.repair else {
-        return exit(stands == 0 && unasked == 0 && unreadable == 0);
+        return exit(census.stands() == 0 && census.unasked() == 0 && census.unreadable.is_empty());
     };
     let refused = match put_back(&repo, path, &to_put_back) {
         Ok(refused) => refused,
@@ -239,7 +213,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    exit(refused == 0 && unasked == 0 && unreadable == 0)
+    exit(refused == 0 && census.unasked() == 0 && census.unreadable.is_empty())
 }
 
 /// Every move in `moves` put back in the working-tree `path`, one after another over the text the

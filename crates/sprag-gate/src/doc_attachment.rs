@@ -1055,6 +1055,299 @@ fn compared(repo: &Path, base: String, tip: String) -> Result<ChangeReading, Str
     })
 }
 
+impl Displacement {
+    /// Whether this move puts `earlier` back: it carries the block `earlier` took, known by its
+    /// opening, onto the item that block was written for — register item 1091.
+    ///
+    /// # ⛔⛔⛔ Why a move has to be asked this at all
+    ///
+    /// A block that was the WHOLE doc of the item that took it — a test declared under the doc of the
+    /// test below it, with no doc of its own — goes back whole, and the change that puts it back reads
+    /// exactly like a move: the block leaves an item, lands on another, and the item it left has no doc.
+    /// [`displaced`] cannot tell the two apart, and no reading of one change can: measured on this
+    /// repository's own repairs, six of 112 were refused by the gate that exists to stop the move they
+    /// undo. What tells them apart is history — the block was written for the item it lands on, and an
+    /// earlier commit took it off. So a move is asked against the moves before it.
+    ///
+    /// ⚠ The block is known by its OPENING and the item by its KEY, which is [`Docs::standing`]'s own
+    /// identity for a move — not by the whole block, which may have been edited since, and not by the
+    /// item that took it, which may have been moved on again.
+    #[must_use]
+    pub fn undoes(&self, earlier: &Displacement) -> bool {
+        self.now == earlier.was && self.opening() == earlier.opening()
+    }
+}
+
+/// Whether `older` is an ancestor of `newer` in `repo` — a commit counts as its own.
+///
+/// # Errors
+///
+/// When git cannot say, which is neither answer.
+fn is_ancestor(repo: &Path, older: &str, newer: &str) -> Result<bool, String> {
+    let ran = git_in(repo)
+        .args(["merge-base", "--is-ancestor", older, newer])
+        .output()
+        .map_err(|why| {
+            format!(
+                "git could not be run in {} for merge-base: {why}",
+                repo.display()
+            )
+        })?;
+    match ran.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(format!(
+            "git could not say whether {older} is an ancestor of {newer}: {}",
+            String::from_utf8_lossy(&ran.stderr).trim()
+        )),
+    }
+}
+
+/// Every move `commit` made in `path`, against its first parent — none for a root, for a commit whose
+/// parent this clone does not have, or for a commit where `path` did not exist on both sides.
+///
+/// # Errors
+///
+/// When either version cannot be read for its comments.
+fn moves_in(repo: &Path, commit: &str, path: &str) -> Result<Vec<Displacement>, String> {
+    let Some(before) = git(repo, &["cat-file", "blob", &format!("{commit}^1:{path}")])? else {
+        return Ok(Vec::new());
+    };
+    let Some(after) = git(repo, &["cat-file", "blob", &format!("{commit}:{path}")])? else {
+        return Ok(Vec::new());
+    };
+    displaced(&before, &after).map_err(|why| format!("{path} at {commit}: {why}"))
+}
+
+/// The commit in the history behind `before` whose move in `path` the change `repair` puts back —
+/// [`Displacement::undoes`], asked of history — or [`None`] when it puts none back: the gate's
+/// question for a move it found, register item 1091.
+///
+/// # ⚠⚠ Which commits are asked, in what order
+///
+/// The commits behind `before` that touched `path`, newest first. First those that changed how often
+/// the NAME of the item the block leaves is spelled — the commit that declared it, which for a block
+/// moved by a declaration is the commit that moved it — and then, when none of those is the answer,
+/// every commit of the file. The first pass is an index into the second, never a replacement for it.
+///
+/// # ⛔⛔ A SHALLOW CLONE THAT FOUND NOTHING HAS NOT ANSWERED
+///
+/// The history that would say *put back* can be exactly the history the clone was not given. Answered
+/// as *not a repair*, the gate would refuse a repair with the wrong sentence; answered as *a repair*, it
+/// would pass a move nobody checked. So it is refused as unknown, and says why.
+///
+/// # Errors
+///
+/// When the history cannot be listed or a version in it read, or the clone is shallow and nothing was
+/// found.
+pub fn undone_in_history(
+    repo: &Path,
+    before: &str,
+    path: &str,
+    repair: &Displacement,
+) -> Result<Option<String>, String> {
+    let history = |pickaxe: Option<&str>| -> Result<Vec<String>, String> {
+        let pickaxe = pickaxe.map(|name| format!("-S{name}"));
+        let mut args = vec!["log", "--format=%H", "--no-merges"];
+        args.extend(pickaxe.as_deref());
+        args.extend([before, "--", path]);
+        Ok(git(repo, &args)?
+            .ok_or_else(|| format!("git could not list the history of {path} behind {before}"))?
+            .lines()
+            .map(str::to_owned)
+            .collect())
+    };
+    let name = repair.was.rsplit([' ', ':']).next().unwrap_or_default();
+    let mut asked = std::collections::BTreeSet::new();
+    let first = if name.is_empty() {
+        Vec::new()
+    } else {
+        history(Some(name))?
+    };
+    for commit in first {
+        if asked.insert(commit.clone())
+            && moves_in(repo, &commit, path)?
+                .iter()
+                .any(|earlier| repair.undoes(earlier))
+        {
+            return Ok(Some(commit));
+        }
+    }
+    for commit in history(None)? {
+        if asked.insert(commit.clone())
+            && moves_in(repo, &commit, path)?
+                .iter()
+                .any(|earlier| repair.undoes(earlier))
+        {
+            return Ok(Some(commit));
+        }
+    }
+    let shallow = git(repo, &["rev-parse", "--is-shallow-repository"])?.unwrap_or_default();
+    if shallow.trim() == "true" {
+        return Err(format!(
+            "this clone is SHALLOW, so the history that would say whether the doc landing on `{}` \
+             is being put back where it was written is not here — check it out with its whole history",
+            repair.now,
+        ));
+    }
+    Ok(None)
+}
+
+/// One move a [`Census`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    /// The commit that made it — for a range, its tip — as git spells it in full.
+    pub commit: String,
+    /// The file it was made in, by its path at that commit.
+    pub path: String,
+    /// The move.
+    pub moved: Displacement,
+    /// The earlier commit among those named whose move this one puts back
+    /// ([`Displacement::undoes`]), or [`None`] for a move.
+    pub puts_back: Option<String>,
+    /// Where it stands in the tree the census was asked about — the files, empty for *gone* — or why
+    /// that could not be asked. [`None`] when no tree was asked about, and for a move that puts one
+    /// back, which is not a defect to look for.
+    pub standing: Option<Result<Vec<(String, Standing)>, String>>,
+}
+
+/// What some commits did to docs, and — asked about a tree — what of it still stands there: the
+/// census register items 1088 and 1091 are measured by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Census {
+    /// How many commits or ranges were named.
+    pub judged: usize,
+    /// How many Rust file version pairs were compared.
+    pub compared: usize,
+    /// Every commit that could not be judged, with why.
+    pub unreadable: Vec<(String, String)>,
+    /// Every move found, in the order the commits were named.
+    pub found: Vec<Found>,
+    /// The tree asked about, as git spells it in full, when one was.
+    pub at: Option<String>,
+}
+
+impl Census {
+    /// How many of the commits named moved at least one doc. ⚠ A commit that only put one back
+    /// counts: it is still a change in which prose left one item for another.
+    #[must_use]
+    pub fn moved_in(&self) -> usize {
+        self.found
+            .iter()
+            .map(|found| found.commit.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    }
+
+    /// How many of the moves found put an earlier one back.
+    #[must_use]
+    pub fn repairs(&self) -> usize {
+        self.found
+            .iter()
+            .filter(|found| found.puts_back.is_some())
+            .count()
+    }
+
+    /// How many moves still stand in the tree asked about.
+    #[must_use]
+    pub fn stands(&self) -> usize {
+        self.found
+            .iter()
+            .filter(|found| matches!(&found.standing, Some(Ok(places)) if !places.is_empty()))
+            .count()
+    }
+
+    /// How many moves could not be asked about.
+    #[must_use]
+    pub fn unasked(&self) -> usize {
+        self.found
+            .iter()
+            .filter(|found| matches!(found.standing, Some(Err(_))))
+            .count()
+    }
+}
+
+/// The census of `commits` in `repo` — each judged against its first parent, or `A..B` as the net
+/// change — and, when `standing_at` names a commit, where each move that puts no earlier one back
+/// still stands in it.
+///
+/// # ⛔⛔⛔ A move that puts an earlier one back is not asked whether it stands — register item 1091
+///
+/// Otherwise the census could never reach zero: the repair of a block that was a whole doc is itself a
+/// move to a reader of one change ([`Displacement::undoes`] says why), and it would stand in the very
+/// tree it repaired. It is recognised among the commits NAMED, and only when the earlier commit is an
+/// ANCESTOR of the later — so a whole history is judged alike in whatever order it is named, and a
+/// commit is never taken for the repair of one made after it.
+///
+/// # Errors
+///
+/// When `standing_at` names no readable tree, or git cannot say whether one commit descends from
+/// another.
+pub fn census(
+    repo: &Path,
+    commits: &[String],
+    standing_at: Option<&str>,
+) -> Result<Census, String> {
+    let tree = standing_at.map(|rev| TreeAt::read(repo, rev)).transpose()?;
+    let mut pairs = 0;
+    let mut unreadable = Vec::new();
+    let mut found = Vec::new();
+    for commit in commits {
+        // ⚠ `A..B` is the NET change between two commits — see `judge_between` for the two questions
+        // only a range can put. Anything else names one commit.
+        let judged = match commit.split_once("..") {
+            Some((base, tip)) => judge_between(repo, base, tip),
+            None => judge_commit(repo, commit),
+        };
+        match judged {
+            Ok(reading) => {
+                pairs += reading.compared.len();
+                for (path, moved) in reading.found {
+                    found.push(Found {
+                        commit: reading.tip.clone(),
+                        path,
+                        moved,
+                        puts_back: None,
+                        standing: None,
+                    });
+                }
+            }
+            Err(why) => unreadable.push((commit.clone(), why)),
+        }
+    }
+    let mut puts_back = vec![None; found.len()];
+    for (at, repair) in found.iter().enumerate() {
+        for earlier in &found {
+            if earlier.commit != repair.commit
+                && earlier.path == repair.path
+                && repair.moved.undoes(&earlier.moved)
+                && is_ancestor(repo, &earlier.commit, &repair.commit)?
+            {
+                puts_back[at] = Some(earlier.commit.clone());
+                break;
+            }
+        }
+    }
+    for (found, earlier) in found.iter_mut().zip(puts_back) {
+        found.puts_back = earlier;
+        if let (Some(tree), None) = (&tree, &found.puts_back) {
+            found.standing = Some(tree.standing(&found.moved).map(|places| {
+                places
+                    .into_iter()
+                    .map(|(path, place)| (path.to_owned(), place))
+                    .collect()
+            }));
+        }
+    }
+    Ok(Census {
+        judged: commits.len(),
+        compared: pairs,
+        unreadable,
+        found,
+        at: tree.map(|tree| tree.rev),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

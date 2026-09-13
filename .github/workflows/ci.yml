@@ -80,12 +80,15 @@ jobs:
       XDG_STATE_HOME: ${{ github.workspace }}/../ambient/state
     steps:
       - uses: actions/checkout@v4
-        # ⛔ ONE COMMIT OF HISTORY BEHIND THE TIP — register item 1088. `sprag-gate`'s
+        # ⛔ THE WHOLE HISTORY BEHIND THE TIP — register items 1088 and 1091. `sprag-gate`'s
         # `no_commit_moves_a_doc_onto_another_item` judges HEAD against its first parent, and the
-        # default depth-1 checkout grafts HEAD so that it has none. The test refuses that rather
-        # than judging the tip against nothing.
+        # default depth-1 checkout grafts HEAD so that it has none. It USED to be enough to have
+        # that one parent (`fetch-depth: 2`): register item 1091 found that a commit putting a moved
+        # doc back reads, against its parent alone, exactly like the move it undoes, and only the
+        # EARLIER commit that took the doc off says which it is. So the gate asks history, and a
+        # shallow clone is refused rather than guessed at — `0` is what gives it the history.
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       # Needed by `yeslogic-fontconfig-sys`, which the wire crates pull in through `pinion-rpc`
       # (see the note at the top of this file). NOT needed on macOS, where `fontique` uses
@@ -358,9 +361,9 @@ jobs:
       XDG_STATE_HOME: ${{ github.workspace }}/../ambient/state
     steps:
       - uses: actions/checkout@v4
-        # ⛔ See the Linux job — register item 1088: this job runs `sprag-gate` too.
+        # ⛔ See the Linux job — register items 1088 and 1091: this job runs `sprag-gate` too.
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Toolchain
         run: |

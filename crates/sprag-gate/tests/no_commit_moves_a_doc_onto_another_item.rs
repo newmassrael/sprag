@@ -11,9 +11,17 @@
 //! * **In the commit hook**, the ratchet lane runs this crate inside a checkout of the INDEX, and
 //!   `index_mirror` in `.githooks/content-gate.sh` writes that checkout's commit ON the real `HEAD`.
 //!   So `HEAD` there is the commit about to land, and its parent is what it lands on.
-//! * **In CI**, `HEAD` is the pushed tip, and both jobs that run this crate check out one commit of
-//!   history behind it.
+//! * **In CI**, `HEAD` is the pushed tip, and both jobs that run this crate check out the WHOLE
+//!   history behind it — see the next section for why one commit of it is no longer enough.
 //! * **By hand**, `HEAD` is the last commit.
+//!
+//! # ⛔⛔⛔ A move that puts an earlier move back is not refused, and history says which it is
+//!
+//! Putting back a block that was the whole doc of the item that took it reads, to a reader of one
+//! change, exactly like the move it undoes — register item 1091 found six such repairs refused by this
+//! gate. So each move found is asked of history ([`sprag_gate::doc_attachment::undone_in_history`]):
+//! only a move that carries a block back onto the item an earlier commit took it off is let through.
+//! A shallow clone cannot answer that, and is refused for it rather than guessed at.
 //!
 //! # ⛔⛔⛔ A `HEAD` WITH NO PARENT IS REFUSED, NOT PASSED
 //!
@@ -28,7 +36,8 @@
 //! was first committed.
 
 use sprag_gate::doc_attachment::{
-    Bare, ChangeReading, Displacement, Standing, TreeAt, judge_between, judge_commit,
+    Bare, ChangeReading, Displacement, Standing, TreeAt, census, judge_between, judge_commit,
+    undone_in_history,
 };
 use sprag_gate::sources::workspace_root;
 use std::path::{Path, PathBuf};
@@ -51,9 +60,50 @@ fn the_change_under_test(repo: &Path, rev: &str) -> Result<ChangeReading, String
     Ok(reading)
 }
 
+/// Every move `reading` found that puts no earlier move back, as the line a refusal prints — the gate's
+/// decision, register items 1088 and 1091.
+///
+/// ⛔⛔ A separate function for [`the_change_under_test`]'s reason: inlined into the gate, the history
+/// arm could only be driven by a real repair landing, and no mutation of it could be seen to go red.
+/// A move that history cannot be asked about is told, never let through.
+fn unexplained(repo: &Path, reading: &ChangeReading) -> Vec<String> {
+    let before = reading.base.as_deref().unwrap_or_default();
+    reading
+        .found
+        .iter()
+        .filter_map(|(path, moved)| {
+            match undone_in_history(repo, before, path, moved) {
+                Ok(Some(earlier)) => {
+                    // ⚠ Printed on a green run: a move let through is a claim, and says which commit
+                    // it answers to.
+                    eprintln!(
+                        "doc attachment: {path}: `{}` gets back the doc {earlier} took from it: \"{}\"",
+                        moved.now,
+                        moved.opening(),
+                    );
+                    None
+                }
+                Ok(None) => Some(format!(
+                    "{path}:{} — the doc written for `{}` now documents `{}`: \"{}\"",
+                    moved.line,
+                    moved.was,
+                    moved.now,
+                    moved.opening(),
+                )),
+                Err(why) => Some(format!(
+                    "{path}:{} — the doc on `{}` moved to `{}`, and history could not be asked \
+                     whether that puts it back: {why}",
+                    moved.line, moved.was, moved.now,
+                )),
+            }
+        })
+        .collect()
+}
+
 #[test]
 fn the_commit_under_test_leaves_every_doc_on_the_item_it_was_written_for() {
-    let reading = the_change_under_test(&workspace_root(), "HEAD").unwrap_or_else(|why| {
+    let repo = workspace_root();
+    let reading = the_change_under_test(&repo, "HEAD").unwrap_or_else(|why| {
         panic!("⛔⛔⛔ REGISTER ITEM 1088: the commit under test could not be judged: {why}")
     });
     let parent = reading.base.as_deref().unwrap_or_default();
@@ -64,19 +114,7 @@ fn the_commit_under_test_leaves_every_doc_on_the_item_it_was_written_for() {
         reading.tip,
         reading.compared.len(),
     );
-    let told: Vec<String> = reading
-        .found
-        .iter()
-        .map(|(path, moved)| {
-            format!(
-                "{path}:{} — the doc written for `{}` now documents `{}`: \"{}\"",
-                moved.line,
-                moved.was,
-                moved.now,
-                moved.opening(),
-            )
-        })
-        .collect();
+    let told = unexplained(&repo, &reading);
     assert!(
         told.is_empty(),
         "⛔⛔⛔⛔⛔ REGISTER ITEM 1088: this commit declared an item between a `///` block and the \
@@ -344,5 +382,165 @@ fn a_shallow_clone_is_refused_and_a_clone_with_history_is_judged() {
         1,
         "⚠⚠ THE CONTROL: one commit of history is enough, and the displacement is found through it: \
          {judged:?}",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **A COMMIT THAT PUTS A MOVED DOC BACK IS LET THROUGH, AND A FRESH MOVE IS NOT** — register
+/// item 1091, through git.
+///
+/// ⚠⚠ The repair reads as a move to a reader of one change, which is asserted first: without that, the
+/// arm would pass whether or not history was asked. The two controls differ from it in one fact each —
+/// no earlier move at all, and an earlier move of a DIFFERENT block onto the same item.
+#[test]
+fn a_commit_that_puts_a_moved_doc_back_is_let_through_and_a_fresh_move_is_not() {
+    let repository = Repository::empty("undo");
+    repository.commit("/// Adds.\npub fn add() {}\n", "a documented function");
+    let moving = repository.commit(
+        "/// Adds.\npub fn mul() {}\n\npub fn add() {}\n",
+        "mul declared under add's doc",
+    );
+    let back = repository.commit(
+        "pub fn mul() {}\n\n/// Adds.\npub fn add() {}\n",
+        "the doc put back",
+    );
+    let reading = judge_commit(repository.path(), &back).expect("the repair is readable");
+    assert_eq!(
+        reading.found.len(),
+        1,
+        "⛔ to a reader of one change the repair IS a move — the reason history is asked: {reading:?}",
+    );
+    assert_eq!(
+        undone_in_history(repository.path(), &moving, "lib.rs", &reading.found[0].1)
+            .expect("the history is whole"),
+        Some(moving.clone()),
+        "⛔⛔⛔ REGISTER ITEM 1091: the move this puts back is named",
+    );
+    assert_eq!(
+        unexplained(repository.path(), &reading),
+        Vec::<String>::new(),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 1091: a repair must not be refused by the gate that exists to stop \
+         the move it undoes",
+    );
+
+    // ⚠⚠ A move made by MOVING an item that already existed, not by declaring one: the name of the
+    // item that took the block is spelled as often before that commit as after it, so the pickaxe
+    // pass cannot find it and only the walk over the whole file can.
+    let reordered = Repository::empty("reordered");
+    reordered.commit(
+        "/// Adds.\npub fn add() {}\n\npub fn mul() {}\n",
+        "mul below add",
+    );
+    let moved_up = reordered.commit(
+        "/// Adds.\npub fn mul() {}\n\npub fn add() {}\n",
+        "mul moved up under add's doc",
+    );
+    let put_back = reordered.commit(
+        "pub fn mul() {}\n\n/// Adds.\npub fn add() {}\n",
+        "the doc put back",
+    );
+    let reading = judge_commit(reordered.path(), &put_back).expect("the repair is readable");
+    assert_eq!(
+        undone_in_history(reordered.path(), &moved_up, "lib.rs", &reading.found[0].1)
+            .expect("the history is whole"),
+        Some(moved_up),
+        "⚠⚠ a move no name-count can find is still found, by the walk over every commit of the file",
+    );
+
+    let fresh = Repository::empty("fresh");
+    fresh.commit(
+        "pub fn mul() {}\n\n/// Adds.\npub fn add() {}\n",
+        "add documented below mul",
+    );
+    let moved = fresh.commit(
+        "/// Adds.\npub fn mul() {}\n\npub fn add() {}\n",
+        "the doc moved onto mul",
+    );
+    let told = unexplained(
+        fresh.path(),
+        &judge_commit(fresh.path(), &moved).expect("readable"),
+    );
+    assert_eq!(
+        told.len(),
+        1,
+        "⚠⚠ THE CONTROL: the same move with no earlier one to undo is refused: {told:?}",
+    );
+
+    let other = Repository::empty("other-block");
+    other.commit(
+        "/// Adds.\npub fn add() {}\n\n/// Other.\npub fn other() {}\n",
+        "two documented functions",
+    );
+    other.commit(
+        "/// Adds.\npub fn mul() {}\n\npub fn add() {}\n\n/// Other.\npub fn other() {}\n",
+        "mul declared under add's doc",
+    );
+    let onto = other.commit(
+        "/// Adds.\npub fn mul() {}\n\n/// Other.\npub fn add() {}\n\npub fn other() {}\n",
+        "other's doc moved onto add",
+    );
+    let told = unexplained(
+        other.path(),
+        &judge_commit(other.path(), &onto).expect("readable"),
+    );
+    assert!(
+        told.len() == 1 && told[0].contains("Other."),
+        "⚠⚠ THE CONTROL: history took a block off `add`, but not THIS block — landing on `add` is \
+         not putting it back: {told:?}",
+    );
+}
+
+/// ⛔⛔⛔⛔ **A SHALLOW CLONE CANNOT SAY A MOVE PUTS ONE BACK, AND IS REFUSED SAYING SO** — register item
+/// 1091, and the reason both CI jobs now check out the whole history.
+#[test]
+fn a_shallow_clone_cannot_let_a_repair_through() {
+    let origin = Repository::empty("undo-origin");
+    origin.commit("/// Adds.\npub fn add() {}\n", "a documented function");
+    origin.commit(
+        "/// Adds.\npub fn mul() {}\n\npub fn add() {}\n",
+        "mul declared under add's doc",
+    );
+    origin.commit(
+        "pub fn mul() {}\n\n/// Adds.\npub fn add() {}\n",
+        "the doc put back",
+    );
+    let shallow = Repository::cloned(&origin, "2", "undo-shallow");
+    let reading = judge_commit(shallow.path(), "HEAD").expect("depth 2 has the parent");
+    let told = unexplained(shallow.path(), &reading);
+    assert!(
+        told.len() == 1 && told[0].contains("SHALLOW"),
+        "⛔⛔⛔⛔ REGISTER ITEM 1091: the commit that would say *put back* is not in the clone, and the \
+         refusal must say that rather than call the repair a move: {told:?}",
+    );
+}
+
+/// ⛔⛔⛔⛔ **THE CENSUS DOES NOT COUNT A REPAIR AS STANDING, AND TAKES NO COMMIT FOR THE REPAIR OF A
+/// LATER ONE** — register item 1091: without the first the census could never reach zero, and without
+/// the second the move itself would be read as the repair of its own repair and never asked about.
+#[test]
+fn the_census_counts_no_repair_as_standing_and_no_commit_as_repairing_a_later_one() {
+    let repository = Repository::empty("census");
+    let written = repository.commit("/// Adds.\npub fn add() {}\n", "a documented function");
+    let moving = repository.commit(
+        "/// Adds.\npub fn mul() {}\n\npub fn add() {}\n",
+        "mul declared under add's doc",
+    );
+    let back = repository.commit(
+        "pub fn mul() {}\n\n/// Adds.\npub fn add() {}\n",
+        "the doc put back",
+    );
+    let named = [back.clone(), moving.clone(), written];
+    let now = census(repository.path(), &named, Some(&back)).expect("the census is taken");
+    assert_eq!(
+        (now.found.len(), now.repairs(), now.stands(), now.unasked()),
+        (2, 1, 0, 0),
+        "⛔⛔⛔⛔ REGISTER ITEM 1091: the move and its repair are both found, and at the repaired tree \
+         nothing stands: {now:?}",
+    );
+    let then = census(repository.path(), &named, Some(&moving)).expect("the census is taken");
+    assert_eq!(
+        (then.repairs(), then.stands()),
+        (1, 1),
+        "⚠⚠ THE CONTROL: asked about the tree the move made, the move stands — it is not the repair \
+         of the commit that later put it back: {then:?}",
     );
 }
