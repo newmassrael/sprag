@@ -1727,14 +1727,6 @@ mod tests {
         }
     }
 
-    /// The judge is shown the author's words, the dialog, its options, **and the distinction the
-    /// options cannot carry**.
-    ///
-    /// ⚠⚠⚠ That last clause is the assertion worth having. Measured at both poles, the options
-    /// alone recover the target case and cost false YES on permissions; the sentence about
-    /// yes-or-no menus is what separates them. A change that dropped it would pass every other
-    /// test in this module and quietly return the judge to a 2-in-3 false YES rate — see
-    /// [`render`].
     /// ⛔⛔⛔⛔⛔ **THE THREE SILENCES ARE COUNTED APART, BECAUSE THEY ARE THREE DIFFERENT
     /// REPAIRS** — register item 996.
     ///
@@ -1897,6 +1889,14 @@ mod tests {
         );
     }
 
+    /// The judge is shown the author's words, the dialog, its options, **and the distinction the
+    /// options cannot carry**.
+    ///
+    /// ⚠⚠⚠ That last clause is the assertion worth having. Measured at both poles, the options
+    /// alone recover the target case and cost false YES on permissions; the sentence about
+    /// yes-or-no menus is what separates them. A change that dropped it would pass every other
+    /// test in this module and quietly return the judge to a 2-in-3 false YES rate — see
+    /// [`render`].
     #[test]
     fn the_question_carries_the_criterion_the_dialog_its_options_and_the_distinction() {
         let put = render("going ahead would commit a design decision", &question());
