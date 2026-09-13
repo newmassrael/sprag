@@ -76,17 +76,39 @@ pub struct Attachment {
     pub key: String,
     /// The one-indexed line the documented item begins on.
     pub line: usize,
+    /// Every outer attribute read while the item waited — above the block, inside it, or between it
+    /// and the item — in source order.
+    pub attributes: Vec<Attribute>,
+}
+
+/// One outer attribute, where it stands and what it says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attribute {
+    /// The one-indexed lines it spans, first and last — more than one for `#[cfg_attr(` … `)]`.
+    pub lines: (usize, usize),
+    /// Its lines trimmed and joined with a newline, so one attribute indented two ways is one text.
+    pub text: String,
 }
 
 /// An item line that carries no doc, and where a doc written for it would stand.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bare {
     /// The one-indexed line the item begins on.
     pub line: usize,
+    /// Its outer attributes, in source order.
+    pub attributes: Vec<Attribute>,
+}
+
+impl Bare {
     /// The one-indexed line its outer attributes begin on, or [`Bare::line`] when it has none. A doc
     /// block goes directly above this line: put between an attribute and its item it would still
     /// attach, but `#[test]` above a doc is not how anybody here writes one.
-    pub landing: usize,
+    #[must_use]
+    pub fn landing(&self) -> usize {
+        self.attributes
+            .first()
+            .map_or(self.line, |attribute| attribute.lines.0)
+    }
 }
 
 /// A block that documented one item before a change and documents another after it, while the
@@ -105,6 +127,15 @@ pub struct Displacement {
     /// ⚠ The WHOLE block and not its first line: where the moved prose ends inside the doc that took
     /// it is not in any later version of the file, and a repair has to know.
     pub doc: Vec<String>,
+    /// The texts of the attributes that stood between the block and the item it was written for,
+    /// as [`Attribute::text`] spells them, in source order.
+    ///
+    /// ⛔⛔ AN ITEM DECLARED BETWEEN AN ATTRIBUTE AND ITS ITEM TAKES THE ATTRIBUTE WITH THE DOC —
+    /// register item 1091, measured three times: `dccca9c3` gave `backlogs`' `#[must_use]` to
+    /// `discharged_owner`, `865ead09` gave `cells_text`'s to `find_in_line`, and `55bfb838` gave
+    /// `oracle_at`'s `#[cfg(test)]` to a test. A repair that put back the prose alone would leave the
+    /// code meaning something else.
+    pub attributes: Vec<String>,
 }
 
 impl Displacement {
@@ -332,9 +363,9 @@ impl Docs {
         let mut bare: BTreeMap<String, Vec<Bare>> = BTreeMap::new();
         let mut pending: Vec<String> = Vec::new();
         let mut pending_lines: Vec<usize> = Vec::new();
-        // The line the attributes above the next item began on, while no doc and no code has come
-        // since. Blank lines and plain comments leave it standing, as they leave a doc's wait.
-        let mut attributes_from: Option<usize> = None;
+        // The attributes read since the last code line. Blank lines, plain comments and doc lines
+        // leave them standing, as they leave a doc's wait.
+        let mut attributes: Vec<Attribute> = Vec::new();
         let mut open_attribute = 0;
         let mut nesting = Nesting::default();
         for (index, (line, structure)) in lines_of(text)?.into_iter().enumerate() {
@@ -343,29 +374,36 @@ impl Docs {
             if open_attribute > 0 {
                 if let Line::Code(code) | Line::Attribute(code) = line {
                     open_attribute = brackets_open_after(open_attribute, code);
+                    if let Some(open) = attributes.last_mut() {
+                        open.lines.1 = index + 1;
+                        open.text.push('\n');
+                        open.text.push_str(code);
+                    }
                 }
             } else {
                 match line {
                     Line::Doc(doc) => {
                         pending.push(doc.to_owned());
                         pending_lines.push(index + 1);
-                        attributes_from = None;
                     }
                     Line::Quiet => {}
                     Line::Attribute(code) => {
-                        attributes_from.get_or_insert(index + 1);
+                        attributes.push(Attribute {
+                            lines: (index + 1, index + 1),
+                            text: code.to_owned(),
+                        });
                         open_attribute = brackets_open_after(0, code);
                     }
                     Line::Code(code) => {
                         let key = key_of(code);
                         let named = item_named(&key, nesting.within());
                         nesting.header(&key);
-                        let landing = attributes_from.take().unwrap_or(index + 1);
+                        let attributes = std::mem::take(&mut attributes);
                         if pending.is_empty() {
                             if let Some(named) = named {
                                 bare.entry(named).or_default().push(Bare {
                                     line: index + 1,
-                                    landing,
+                                    attributes,
                                 });
                             }
                         } else {
@@ -374,6 +412,7 @@ impl Docs {
                                 doc_lines: std::mem::take(&mut pending_lines),
                                 key: named.unwrap_or(key),
                                 line: index + 1,
+                                attributes,
                             });
                         }
                     }
@@ -591,11 +630,20 @@ pub fn displaced(before: &str, after: &str) -> Result<Vec<Displacement>, String>
         if holders.iter().any(|held| held.key == old.key) || !bare.contains_key(&old.key) {
             continue;
         }
+        let last_doc = old.doc_lines.last().copied().unwrap_or_default();
         let moved = Displacement {
             was: old.key.clone(),
             now: holder.key.clone(),
             line: holder.line,
             doc: old.doc.clone(),
+            // ⚠ Only those AFTER the block: an attribute above a doc is not between the doc and its
+            // item, and no declaration put there could take it.
+            attributes: old
+                .attributes
+                .iter()
+                .filter(|attribute| attribute.lines.0 > last_doc)
+                .map(|attribute| attribute.text.clone())
+                .collect(),
         };
         if !found.contains(&moved) {
             found.push(moved);
@@ -686,6 +734,10 @@ impl TreeAt {
 /// * **The item it was written for is undocumented in more than one place, or in none.** Two `fn new`
 ///   in two impls, or a struct literal's `id:` line keyed like the field it fills: which of them the
 ///   prose describes is not in the text, so it is not this function's to pick.
+/// * **An attribute that moved with the block is not right after it any more.** The attributes that
+///   stood between the block and its item ([`Displacement::attributes`]) and that the item does not
+///   carry now went with the block, and they go back with it — from directly after the moved lines,
+///   in order. Found anywhere else, or not at all, they were edited since, and are somebody's to read.
 ///
 /// ⚠ No landing is inside a string literal: [`Docs::read`] reads no item there — see `lines_of`.
 ///
@@ -726,22 +778,60 @@ pub fn repaired(text: &str, moved: &Displacement) -> Result<String, String> {
         ));
     };
     let first = carrier.doc_lines[*at];
-    let last = carrier.doc_lines[*at + moved.doc.len() - 1];
+    let last_doc = carrier.doc_lines[*at + moved.doc.len() - 1];
+    // The attributes that went with the block: those it stood above that its item no longer carries.
+    let mut went: Vec<&str> = moved.attributes.iter().map(String::as_str).collect();
+    for kept in &target.attributes {
+        if let Some(found) = went.iter().position(|text| *text == kept.text) {
+            went.remove(found);
+        }
+    }
+    let rest_of_carrier = carrier
+        .doc_lines
+        .get(*at + moved.doc.len())
+        .copied()
+        .unwrap_or(carrier.line);
+    let after_block: Vec<&Attribute> = carrier
+        .attributes
+        .iter()
+        .filter(|attribute| last_doc < attribute.lines.0 && attribute.lines.0 < rest_of_carrier)
+        .collect();
+    let carried = after_block.len() >= went.len()
+        && after_block
+            .iter()
+            .zip(&went)
+            .all(|(attribute, text)| attribute.text == *text);
+    if !carried {
+        return Err(format!(
+            "`{}` stood under {went:?} when the block was written for it and does not carry it now, \
+             but that is not what follows the block in the doc of `{}` — edited since, so where it \
+             went is not in the text: \"{}\"",
+            moved.was,
+            moved.now,
+            moved.opening(),
+        ));
+    }
+    let last = went
+        .len()
+        .checked_sub(1)
+        .map_or(last_doc, |at| after_block[at].lines.1);
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
-    let to = indentation(lines[target.landing - 1]);
-    // ⚠ Whitespace before `///` or `//` says nothing, so each line takes the item's indentation in
-    // place of its own; a blank line inside the block stays blank rather than gaining trailing spaces.
+    let from = indentation(lines[first - 1]);
+    let to = indentation(lines[target.landing() - 1]);
+    // ⚠ Each line trades the block's indentation for the item's, so a `#[cfg_attr(` that spans lines
+    // keeps the shape inside it; a blank line stays blank rather than gaining trailing spaces.
     let block: Vec<String> = lines[first - 1..last]
         .iter()
-        .map(|line| match line.trim_start() {
-            "" => "\n".to_owned(),
-            rest => format!("{to}{rest}"),
+        .map(|line| match (line.trim_start(), line.strip_prefix(from)) {
+            ("", _) => "\n".to_owned(),
+            (_, Some(rest)) => format!("{to}{rest}"),
+            (rest, None) => format!("{to}{rest}"),
         })
         .collect();
     let mut out = String::with_capacity(text.len() + block.len() * to.len());
     for (index, line) in lines.iter().enumerate() {
         let number = index + 1;
-        if number == target.landing {
+        if number == target.landing() {
             out.extend(block.iter().map(String::as_str));
         }
         if !(first..=last).contains(&number) {
@@ -1109,6 +1199,7 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
                      one."
                         .to_owned(),
                 ],
+                attributes: vec!["#[derive(Debug, Clone, PartialEq, Eq)]".to_owned()],
             }],
             "⛔⛔⛔⛔⛔ REGISTER ITEM 1088: `706c4019` put `Placed` between `Item` and its doc, and \
              every gate this repository has stayed green about it",
@@ -1132,6 +1223,9 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
                         .to_owned(),
                     "rule 6: a reason nobody classified must not quietly leave the table."
                         .to_owned(),
+                ],
+                attributes: vec![
+                    // ⚠ none: `folds_by_reason_json` has no attribute to take
                 ],
             }],
             "⛔⛔⛔⛔⛔ REGISTER ITEM 1088: `5a242872` put two functions between \
@@ -1204,7 +1298,10 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
                 carried_by: vec![23],
                 written_for: vec![Bare {
                     line: 35,
-                    landing: 34
+                    attributes: vec![Attribute {
+                        lines: (34, 34),
+                        text: "#[derive(Debug, Clone, PartialEq, Eq)]".to_owned(),
+                    }],
                 }],
             }),
             "⚠⚠ `Placed` on line 23 carries `Item`'s block, and `Item` begins on 35 under its derive \
@@ -1238,7 +1335,7 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
                 carried_by: vec![20],
                 written_for: vec![Bare {
                     line: 50,
-                    landing: 50
+                    attributes: Vec::new(),
                 }],
             }),
             "⚠ with no attribute above it, an item's doc goes above the item's own line",
@@ -1321,11 +1418,61 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
             now: "fn other".to_owned(),
             line: 3,
             doc: vec!["Makes one.".to_owned()],
+            attributes: Vec::new(),
         };
         assert_eq!(
             repaired(nested, &carried).expect("put back"),
             "impl Alpha {\n    fn other() {}\n}\n\n/// Makes one.\nfn make() {}\n",
             "⚠⚠ at `make`'s indentation, not at the one the block was carried at",
+        );
+    }
+
+    /// ⛔⛔⛔ **AN ATTRIBUTE THAT MOVED WITH THE DOC GOES BACK WITH IT, AND ONE THE ITEM KEPT DOES NOT** —
+    /// register item 1091, the shape `865ead09` has: `find_in_line` declared between `cells_text`'s
+    /// `#[must_use]` and `cells_text`, taking both. Here the attribute spans lines, so its inside
+    /// shape is on trial too, and an attribute above the doc is the one that must stay where it is.
+    #[test]
+    fn an_attribute_that_moved_with_its_doc_goes_back_with_it() {
+        let before = "#[allow(dead_code)]\n/// A cell row's text.\n#[cfg_attr(\n    unix,\n    \
+                      must_use\n)]\nfn cells_text() {}\n";
+        let after = "#[allow(dead_code)]\n/// A cell row's text.\n#[cfg_attr(\n    unix,\n    \
+                     must_use\n)]\n/// Collect matches in one line.\nfn find_in_line() {}\n\nfn \
+                     cells_text() {}\n";
+        let moved = displaced(before, after).expect("both read").remove(0);
+        assert_eq!(
+            moved.attributes,
+            vec!["#[cfg_attr(\nunix,\nmust_use\n)]".to_owned()],
+            "⛔⛔ the attribute between the doc and `cells_text` is recorded, and the one above the \
+             doc is not",
+        );
+        assert_eq!(
+            repaired(after, &moved).expect("put back"),
+            "#[allow(dead_code)]\n/// Collect matches in one line.\nfn find_in_line() {}\n\n/// A \
+             cell row's text.\n#[cfg_attr(\n    unix,\n    must_use\n)]\nfn cells_text() {}\n",
+            "⛔⛔⛔ REGISTER ITEM 1091: the doc AND the attribute it stood above go back to `cells_text`, \
+             the attribute keeping its inside shape",
+        );
+
+        let kept = "#[allow(dead_code)]\n/// A cell row's text.\n#[cfg_attr(\n    unix,\n    \
+                    must_use\n)]\n/// Collect matches in one line.\nfn find_in_line() {}\n\n\
+                    #[cfg_attr(\n    unix,\n    must_use\n)]\nfn cells_text() {}\n";
+        assert_eq!(
+            repaired(kept, &moved).expect("put back"),
+            "#[allow(dead_code)]\n#[cfg_attr(\n    unix,\n    must_use\n)]\n/// Collect matches in \
+             one line.\nfn find_in_line() {}\n\n/// A cell row's text.\n#[cfg_attr(\n    unix,\n    \
+             must_use\n)]\nfn cells_text() {}\n",
+            "⚠⚠ THE CONTROL: `cells_text` still carries its attribute, so the one after the block is \
+             `find_in_line`'s own and stays",
+        );
+
+        let replaced = "#[allow(dead_code)]\n/// A cell row's text.\n#[inline]\n/// Collect matches \
+                        in one line.\nfn find_in_line() {}\n\nfn cells_text() {}\n";
+        let refused = repaired(replaced, &moved).expect_err(
+            "⛔⛔ the attribute that went with the block is not what follows it — edited since",
+        );
+        assert!(
+            refused.contains("must_use"),
+            "⛔ and the refusal names the attribute it could not find: {refused}",
         );
     }
 
@@ -1338,6 +1485,7 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
             now: "fn other".to_owned(),
             line: 3,
             doc: vec!["Makes.".to_owned()],
+            attributes: Vec::new(),
         };
         let one = "impl Alpha {\n    /// Makes.\n    fn other() {}\n    fn new() {}\n}\n";
         assert_eq!(
@@ -1470,6 +1618,7 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
                     String::new(),
                     "Second paragraph.".to_owned()
                 ],
+                attributes: Vec::new(),
             }],
             "⛔ THE CONTROL FOR BOTH: the same `before`, and an undocumented item put between the \
              doc and `add` — which is the displacement with no doc of its own to glue on",
@@ -1525,12 +1674,17 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
                     doc_lines: vec![1],
                     key: "struct Held".to_owned(),
                     line: 8,
+                    attributes: vec![Attribute {
+                        lines: (2, 5),
+                        text: "#[cfg_attr(\nfeature = \"x\",\nderive(Debug)\n)]".to_owned(),
+                    }],
                 },
                 Attachment {
                     doc: vec!["Its field.".to_owned()],
                     doc_lines: vec![9],
                     key: "field Held::inner".to_owned(),
                     line: 10,
+                    attributes: Vec::new(),
                 },
             ],
             "⚠⚠ the doc reaches past a five-line attribute, a comment and a blank to the struct",
@@ -1599,6 +1753,7 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
                 now: "field PaneRef::info".to_owned(),
                 line: 7,
                 doc: vec!["The pane's host id.".to_owned()],
+                attributes: Vec::new(),
             }],
             "⚠⚠ THE CONTROL: `info` declared between the doc and `PaneRef`'s own `id`, which stays — \
              that is the move, and it is named through its owner",

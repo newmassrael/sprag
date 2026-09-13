@@ -188,6 +188,7 @@ fn a_real_commit_that_declares_between_a_doc_and_its_item_is_named() {
         now: "fn mul".to_owned(),
         line: 2,
         doc: vec!["Adds.".to_owned()],
+        attributes: Vec::new(),
     };
     assert_eq!(
         (judged.base.as_deref(), judged.found.clone()),
@@ -271,7 +272,7 @@ fn a_move_is_asked_of_the_whole_tree_so_code_that_left_its_file_still_answers_fo
                 carried_by: vec![42],
                 written_for: vec![Bare {
                     line: 43,
-                    landing: 43
+                    attributes: Vec::new(),
                 }],
             }
         )],
