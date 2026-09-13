@@ -3601,23 +3601,6 @@ mod tests {
         );
     }
 
-    /// The canonical reorganize surface is REGISTERED, so the dock is addressable as data
-    /// (`reorganize {source,target,zone}`, `drop_preview`, `last_outcome`, `topology`) instead
-    /// of only by pixels — pinion's §2 #2 RPC-as-primary-path contract.
-    ///
-    /// Guarded because its ABSENCE is silent and expensive: without it the only way to drive a
-    /// dock reorganize is synthesising drop-zone COORDINATES, which no test can do reliably —
-    /// R153 burned a session proving that, landing on the window resize border and tearing a
-    /// pane off on a near-miss. A surface that exists only in pixels is untestable by
-    /// construction.
-    ///
-    /// It pins REGISTRATION, and R154's review was right that the name used to promise more
-    /// ("...is_drivable..."): it exercises none of the four wire surfaces it names, and would
-    /// stay green if the external were built from a FRESH `DockReorganizer` instead of the
-    /// shared one — the "a view, not a fork" property `5af431e` headlined. Drivability itself
-    /// is proven live over RPC (R153) and by
-    /// [`a_settled_reorganize_reaches_the_host_on_the_one_frame_it_arms`], which drives the
-    /// shared reorganizer and asserts the host moved.
     /// ⚠⚠ **EVERY VERB THIS WINDOW REGISTERS PUBLISHES HOW TO CALL IT** — over the externals the shell
     /// actually reconciles, not over a list of three.
     ///
@@ -3702,6 +3685,23 @@ mod tests {
         });
     }
 
+    /// The canonical reorganize surface is REGISTERED, so the dock is addressable as data
+    /// (`reorganize {source,target,zone}`, `drop_preview`, `last_outcome`, `topology`) instead
+    /// of only by pixels — pinion's §2 #2 RPC-as-primary-path contract.
+    ///
+    /// Guarded because its ABSENCE is silent and expensive: without it the only way to drive a
+    /// dock reorganize is synthesising drop-zone COORDINATES, which no test can do reliably —
+    /// R153 burned a session proving that, landing on the window resize border and tearing a
+    /// pane off on a near-miss. A surface that exists only in pixels is untestable by
+    /// construction.
+    ///
+    /// It pins REGISTRATION, and R154's review was right that the name used to promise more
+    /// ("...is_drivable..."): it exercises none of the four wire surfaces it names, and would
+    /// stay green if the external were built from a FRESH `DockReorganizer` instead of the
+    /// shared one — the "a view, not a fork" property `5af431e` headlined. Drivability itself
+    /// is proven live over RPC (R153) and by
+    /// [`a_settled_reorganize_reaches_the_host_on_the_one_frame_it_arms`], which drives the
+    /// shared reorganizer and asserts the host moved.
     #[test]
     fn the_canonical_reorganize_surface_is_registered() {
         let core = ShellCore::<TerminalViewer>::new();
