@@ -50,13 +50,12 @@
 //! * **An item is keyed by what its first line names** — `fn name`, `struct Name`, `field name` —
 //!   and not by a nesting this does not parse. So a RENAME whose old name survives elsewhere in the
 //!   file on an undocumented line can read as a move. How often that happens is a measurement, and
-//!   it was taken over this repository's whole history before this became a gate.
+//!   it was taken over this repository's whole history before this became a gate. ⚠ Braces ARE
+//!   followed as far as fields and variants need, since register item 1091: `id:` is a field only
+//!   inside a struct's braces, so a struct literal no longer stands in for one, and a field is named
+//!   through the type that declares it, `field PaneRef::id`, so another type's `id` does not either.
 //! * **A block the same change also rewrote is not followed.** The moved block is looked for whole;
 //!   a displacement that edits the text it moved is not seen.
-//! * **Lines inside a multi-line string literal are read as code.** They can name an item that is
-//!   not there, which matters to the rename case above — and to a repair, whose landing could be such
-//!   a line. [`crate::doc_attachment::repaired`] reads its own answer back for that reason, and
-//!   refuses one that does not document the item.
 
 use crate::ambient::git_in;
 use crate::rust_source::{Shape, scan};
@@ -72,7 +71,8 @@ pub struct Attachment {
     /// The one-indexed line each entry of [`Attachment::doc`] stands on, in the same order — so a
     /// run of the block can be found in the source and not only in the prose.
     pub doc_lines: Vec<usize>,
-    /// What the block documents, as [`key_of`] names it.
+    /// What the block documents, as [`key_of`] names it — a field or a variant through the type that
+    /// declares it, `field PaneRef::id`.
     pub key: String,
     /// The one-indexed line the documented item begins on.
     pub line: usize,
@@ -128,17 +128,22 @@ enum Line<'a> {
     Code(&'a str),
 }
 
-/// Every line of `text`, classified.
+/// Every line of `text`, classified, with the punctuation on it that opens and closes bodies —
+/// `{`, `}`, `;`, `(`, `)`, `[` and `]`, in order, outside every comment and literal.
 ///
 /// ⚠⚠ THE COMMENTS ARE [`scan`]'s AND NOT A LINE PREFIX — register item 1051's rule. A fixture in a
 /// raw string holds `///` lines that are not comments at all, and a reader that trusted the prefix
 /// would find doc blocks inside a test's data.
 ///
+/// ⚠⚠ AND SO ARE THE LITERALS — register item 1091. A line that begins inside a multi-line string is
+/// the string's text: a fixture holding `fn new() {}` declares no `new`, and before this a repair
+/// could choose that line to put a doc above. A `{` in a format string opens nothing either.
+///
 /// # Errors
 ///
 /// When the scan ran out inside a literal or a comment: the rest of the file could not be told apart
 /// into code and prose, and a reading of it would be a guess.
-fn lines_of(text: &str) -> Result<Vec<Line<'_>>, String> {
+fn lines_of(text: &str) -> Result<Vec<(Line<'_>, Vec<u8>)>, String> {
     let scanned = scan(text);
     if let Some(unclosed) = scanned.unclosed {
         return Err(format!(
@@ -146,18 +151,43 @@ fn lines_of(text: &str) -> Result<Vec<Line<'_>>, String> {
              from its code"
         ));
     }
+    let mut code = text.as_bytes().to_vec();
+    for (at, end) in scanned
+        .comments
+        .iter()
+        .map(|comment| (comment.at, comment.end))
+        .chain(
+            scanned
+                .literals
+                .iter()
+                .map(|literal| (literal.at, literal.end)),
+        )
+    {
+        code[at..end].fill(b' ');
+    }
     let mut out = Vec::new();
     let mut offset = 0;
     for raw in text.split_inclusive('\n') {
+        let structure: Vec<u8> = code[offset..offset + raw.len()]
+            .iter()
+            .copied()
+            .filter(|byte| matches!(byte, b'{' | b'}' | b';' | b'(' | b')' | b'[' | b']'))
+            .collect();
         let body = raw.trim_end_matches(['\n', '\r']);
         let trimmed = body.trim_start();
         let start = offset + (body.len() - trimmed.len());
         offset += raw.len();
         let trimmed = trimmed.trim_end();
         if trimmed.is_empty() {
-            out.push(Line::Quiet);
+            out.push((Line::Quiet, structure));
             continue;
         }
+        // ⚠ Past a literal's opening, not at it: a line that begins WITH a quote is code.
+        let inside_a_literal = scanned
+            .literals
+            .partition_point(|literal| literal.at < start)
+            .checked_sub(1)
+            .is_some_and(|at| start < scanned.literals[at].end);
         // The last comment opening at or before this line's first character, if the line begins
         // inside it. ⚠ A binary search over the scan's source order and not a walk from the top:
         // walked per line, a 20,000-line file with 15,000 comments costs their product, and the
@@ -169,20 +199,85 @@ fn lines_of(text: &str) -> Result<Vec<Line<'_>>, String> {
             .checked_sub(1)
             .map(|at| &scanned.comments[at])
             .filter(|comment| start < comment.end);
-        match covering {
+        let line = match covering {
             Some(comment) if comment.shape == Shape::WholeLine && comment.at == start => {
                 match text[comment.at..comment.end].strip_prefix("///") {
                     // ⚠ `////` is an ordinary comment, which is Rust's own rule.
-                    Some(rest) if !rest.starts_with('/') => out.push(Line::Doc(rest.trim())),
-                    _ => out.push(Line::Quiet),
+                    Some(rest) if !rest.starts_with('/') => Line::Doc(rest.trim()),
+                    _ => Line::Quiet,
                 }
             }
-            Some(_) => out.push(Line::Quiet),
-            None if trimmed.starts_with("#[") => out.push(Line::Attribute(trimmed)),
-            None => out.push(Line::Code(trimmed)),
-        }
+            Some(_) => Line::Quiet,
+            None if inside_a_literal => Line::Quiet,
+            None if trimmed.starts_with("#[") => Line::Attribute(trimmed),
+            None => Line::Code(trimmed),
+        };
+        out.push((line, structure));
     }
     Ok(out)
+}
+
+/// What kind of braces a line stands inside, and whose they are, as far as *which field or variant is
+/// this line* needs — register item 1091.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Body {
+    /// The braces of the type named here — a struct, a union, or an enum's struct-like variant
+    /// spelled `Enum::Variant` — where `name: Type` declares a field.
+    Fields(String),
+    /// The braces of the enum named here, where `Name,` declares a variant.
+    Variants(String),
+    /// Any other braces — a function, an impl, a module, a struct literal — and the file itself.
+    Other,
+}
+
+/// The braces open at one point of a file, innermost last, and what the next `{` opens.
+#[derive(Debug, Default)]
+struct Nesting {
+    /// Every body open here, outermost first.
+    bodies: Vec<Body>,
+    /// The body the last struct, union, enum or struct-like variant header announced, until a `{`
+    /// opens it or a `;` outside brackets ends the header without one.
+    announced: Option<Body>,
+    /// How many `(` and `[` are open, so the `;` of `[u8; 4]` in a header's bounds ends nothing.
+    brackets: usize,
+}
+
+impl Nesting {
+    /// The innermost body open here.
+    fn within(&self) -> &Body {
+        self.bodies.last().unwrap_or(&Body::Other)
+    }
+
+    /// A line keyed `key` by [`key_of`], read here: a struct, union or enum header announces the
+    /// body it opens, and so does a variant inside an enum, whose braces hold that variant's fields.
+    fn header(&mut self, key: &str) {
+        let (kind, name) = key.split_once(' ').unwrap_or((key, ""));
+        self.announced = match (kind, self.within()) {
+            ("struct" | "union", _) => Some(Body::Fields(name.to_owned())),
+            ("enum", _) => Some(Body::Variants(name.to_owned())),
+            ("variant", Body::Variants(owner)) => Some(Body::Fields(format!("{owner}::{name}"))),
+            _ => return,
+        };
+    }
+
+    /// The punctuation of one line, applied in order.
+    fn step(&mut self, structure: &[u8]) {
+        for byte in structure {
+            match byte {
+                b'{' => {
+                    let opened = self.announced.take().unwrap_or(Body::Other);
+                    self.bodies.push(opened);
+                }
+                b'}' => {
+                    self.bodies.pop();
+                }
+                b'(' | b'[' => self.brackets += 1,
+                b')' | b']' => self.brackets = self.brackets.saturating_sub(1),
+                b';' if self.brackets == 0 => self.announced = None,
+                _ => {}
+            }
+        }
+    }
 }
 
 /// How many `[` are still open after `code`, starting from `depth`, with string contents skipped.
@@ -241,44 +336,50 @@ impl Docs {
         // since. Blank lines and plain comments leave it standing, as they leave a doc's wait.
         let mut attributes_from: Option<usize> = None;
         let mut open_attribute = 0;
-        for (index, line) in lines_of(text)?.into_iter().enumerate() {
+        let mut nesting = Nesting::default();
+        for (index, (line, structure)) in lines_of(text)?.into_iter().enumerate() {
+            // ⚠ A line stands in the body open BEFORE its own braces, and every line's braces are
+            // applied once, after it is read — an attribute's continuation lines included.
             if open_attribute > 0 {
                 if let Line::Code(code) | Line::Attribute(code) = line {
                     open_attribute = brackets_open_after(open_attribute, code);
                 }
-                continue;
-            }
-            match line {
-                Line::Doc(doc) => {
-                    pending.push(doc.to_owned());
-                    pending_lines.push(index + 1);
-                    attributes_from = None;
-                }
-                Line::Quiet => {}
-                Line::Attribute(code) => {
-                    attributes_from.get_or_insert(index + 1);
-                    open_attribute = brackets_open_after(0, code);
-                }
-                Line::Code(code) => {
-                    let key = key_of(code);
-                    let landing = attributes_from.take().unwrap_or(index + 1);
-                    if pending.is_empty() {
-                        if names_an_item(&key) {
-                            bare.entry(key).or_default().push(Bare {
+            } else {
+                match line {
+                    Line::Doc(doc) => {
+                        pending.push(doc.to_owned());
+                        pending_lines.push(index + 1);
+                        attributes_from = None;
+                    }
+                    Line::Quiet => {}
+                    Line::Attribute(code) => {
+                        attributes_from.get_or_insert(index + 1);
+                        open_attribute = brackets_open_after(0, code);
+                    }
+                    Line::Code(code) => {
+                        let key = key_of(code);
+                        let named = item_named(&key, nesting.within());
+                        nesting.header(&key);
+                        let landing = attributes_from.take().unwrap_or(index + 1);
+                        if pending.is_empty() {
+                            if let Some(named) = named {
+                                bare.entry(named).or_default().push(Bare {
+                                    line: index + 1,
+                                    landing,
+                                });
+                            }
+                        } else {
+                            attached.push(Attachment {
+                                doc: std::mem::take(&mut pending),
+                                doc_lines: std::mem::take(&mut pending_lines),
+                                key: named.unwrap_or(key),
                                 line: index + 1,
-                                landing,
                             });
                         }
-                    } else {
-                        attached.push(Attachment {
-                            doc: std::mem::take(&mut pending),
-                            doc_lines: std::mem::take(&mut pending_lines),
-                            key,
-                            line: index + 1,
-                        });
                     }
                 }
             }
+            nesting.step(&structure);
         }
         Ok(Docs { attached, bare })
     }
@@ -320,12 +421,26 @@ const ITEM_KEYWORDS: [&str; 9] = [
     "fn", "struct", "enum", "union", "trait", "type", "const", "static", "mod",
 ];
 
-/// Whether `key` names an item, a field or a variant rather than an arbitrary line.
-fn names_an_item(key: &str) -> bool {
-    ITEM_KEYWORDS
-        .iter()
-        .chain(["impl", "macro_rules", "field", "variant"].iter())
-        .any(|kind| key.starts_with(kind) && key[kind.len()..].starts_with(' '))
+/// `key` as it names an item standing `within` a body, or [`None`] for a line that names none there:
+/// a field only inside a type's braces and a variant only inside an enum's, each named through the
+/// type that declares it, and every other item kind anywhere, as [`key_of`] names it.
+///
+/// ⛔⛔⛔ THE BODY DECIDES FIELDS AND VARIANTS, AND NAMES THEIR OWNER — register item 1091, measured.
+/// `8c2c6817` gave `PaneRef`'s field `id` to an accessor `fn id` along with its doc, and twenty-five
+/// other lines of that file read as `field id` left undocumented: twenty-three struct literals and
+/// parameters, which are no fields at all, and the `id` fields of `PaneInfo` and `ImageInfo`, which
+/// are not `PaneRef`'s. A correct edit stood in the census as a move no repair could ever take down.
+fn item_named(key: &str, within: &Body) -> Option<String> {
+    let (kind, name) = key.split_once(' ').unwrap_or((key, ""));
+    match (kind, within) {
+        ("field", Body::Fields(owner)) => Some(format!("field {owner}::{name}")),
+        ("variant", Body::Variants(owner)) => Some(format!("variant {owner}::{name}")),
+        ("field" | "variant", _) => None,
+        _ if ITEM_KEYWORDS.contains(&kind) || ["impl", "macro_rules"].contains(&kind) => {
+            Some(key.to_owned())
+        }
+        _ => None,
+    }
 }
 
 /// `code` with the qualifiers that come before an item keyword removed: visibility, `default`,
@@ -571,10 +686,8 @@ impl TreeAt {
 /// * **The item it was written for is undocumented in more than one place, or in none.** Two `fn new`
 ///   in two impls, or a struct literal's `id:` line keyed like the field it fills: which of them the
 ///   prose describes is not in the text, so it is not this function's to pick.
-/// * ⛔ **The answer does not read as repaired to the same reader** — the block must document the
-///   item it was written for, and the move must stand no more. A landing inside a multi-line string
-///   literal reads as an undocumented item here (this module's residue), and a block put there would
-///   be data in a fixture; this is the check that refuses it.
+///
+/// ⚠ No landing is inside a string literal: [`Docs::read`] reads no item there — see `lines_of`.
 ///
 /// # Errors
 ///
@@ -634,24 +747,6 @@ pub fn repaired(text: &str, moved: &Displacement) -> Result<String, String> {
         if !(first..=last).contains(&number) {
             out.push_str(line);
         }
-    }
-    let read_back = Docs::read(&out)?;
-    let lands = read_back.attached.iter().any(|held| {
-        held.key == moved.was
-            && held
-                .doc
-                .windows(moved.doc.len())
-                .any(|run| run == moved.doc.as_slice())
-    });
-    if !lands || read_back.standing(moved).is_some() {
-        return Err(format!(
-            "the block written for `{}`, put above line {}, does not read back as documenting it — \
-             that line is not where an item's doc goes (a line inside a string literal reads as an \
-             item here): \"{}\"",
-            moved.was,
-            target.landing,
-            moved.opening(),
-        ));
     }
     Ok(out)
 }
@@ -1273,14 +1368,16 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
             "⛔⛔ and the refusal says the block is not carried whole: {refused}",
         );
 
+        // ⚠ A line of a string literal declares nothing, so the only `fn new` here is no item and
+        // there is nowhere for the block to go — rather than a landing inside the fixture.
         let in_a_string =
             "const FIXTURE: &str = r#\"\nfn new() {}\n\"#;\n\n/// Makes.\nfn other() {}\n";
         let refused = repaired(in_a_string, &makes).expect_err(
-            "⛔⛔⛔ the only undocumented `new` is a line of a string literal, and a block put there is data",
+            "⛔⛔⛔ the only `fn new` is a line of a string literal, and a block put there would be data",
         );
         assert!(
-            refused.contains("does not read back"),
-            "⛔ and the refusal says the landing is not where an item's doc goes: {refused}",
+            refused.contains("on 0 line(s)"),
+            "⛔ and the refusal says there is no such item to put it above: {refused}",
         );
     }
 
@@ -1432,11 +1529,79 @@ fn folds_by_reason_json(folds: sprag_plugin::FoldsByReason) -> Value {
                 Attachment {
                     doc: vec!["Its field.".to_owned()],
                     doc_lines: vec![9],
-                    key: "field inner".to_owned(),
+                    key: "field Held::inner".to_owned(),
                     line: 10,
                 },
             ],
             "⚠⚠ the doc reaches past a five-line attribute, a comment and a blank to the struct",
+        );
+    }
+
+    /// ⛔⛔⛔ **A FIELD IS DECLARED INSIDE A STRUCT'S BRACES, AND A VARIANT INSIDE AN ENUM'S** —
+    /// register item 1091. `id:` in a struct literal, `Row {` opening one and `Some(…)` in an
+    /// expression are code, not undocumented items; a `}` in an attribute's string closes nothing,
+    /// and the `;` of a bound's `[T; 4]` does not end the header it is in.
+    #[test]
+    fn a_field_or_a_variant_is_an_item_only_inside_the_braces_that_declare_it() {
+        let text = "struct PaneRef {\n    info: PaneInfo,\n}\n\nimpl PaneRef {\n    /// The pane's host \
+                    id.\n    fn id(&self) -> u64 {\n        self.info.id\n    }\n}\n\nfn row() -> Row {\n    \
+                    Row {\n        id: 3,\n        name: String::new(),\n    }\n}\n\nstruct Wrapped<T>\n\
+                    where\n    [T; 4]: Clone,\n{\n    #[serde(rename = \"}\")]\n    inner: T,\n    buf: \
+                    [u8; 4],\n}\n\nenum Heard {\n    Nothing,\n    Said { words: String },\n}\n\nfn heard() \
+                    -> Option<Heard> {\n    Some(Heard::Nothing)\n}\n";
+        assert_eq!(
+            Docs::read(text)
+                .expect("reads")
+                .bare
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec![
+                "enum Heard",
+                "field PaneRef::info",
+                "field Wrapped::buf",
+                "field Wrapped::inner",
+                "fn heard",
+                "fn row",
+                "impl PaneRef",
+                "struct PaneRef",
+                "struct Wrapped",
+                "variant Heard::Nothing",
+                "variant Heard::Said",
+            ],
+            "⛔⛔⛔ REGISTER ITEM 1091: no `field id`, `field name`, `variant Row` or `variant Some` — \
+             those lines are expressions, and every field and variant declared here is named",
+        );
+    }
+
+    /// ⛔⛔⛔ **A FIELD GIVEN TO AN ACCESSOR WITH ITS DOC IS NOT A MOVE, THOUGH ANOTHER TYPE KEEPS A
+    /// FIELD OF THAT NAME** — register item 1091, the shape `8c2c6817` has: `PaneRef`'s `id` became
+    /// `fn id`, and `PaneInfo` still declares an undocumented `id` of its own.
+    #[test]
+    fn a_field_given_to_an_accessor_is_not_a_move_while_another_type_keeps_one_of_that_name() {
+        let before = "struct PaneInfo {\n    id: u64,\n}\n\nstruct PaneRef {\n    /// The pane's host \
+                      id.\n    id: u64,\n    info: PaneInfo,\n}\n";
+        let accessor = "struct PaneInfo {\n    id: u64,\n}\n\nstruct PaneRef {\n    info: PaneInfo,\n}\n\n\
+                        impl PaneRef {\n    /// The pane's host id.\n    fn id(&self) -> u64 {\n        \
+                        self.info.id\n    }\n}\n";
+        assert_eq!(
+            displaced(before, accessor).expect("both read"),
+            Vec::new(),
+            "⛔⛔⛔ REGISTER ITEM 1091: `PaneRef::id` is gone, and `PaneInfo::id` was never what the \
+             doc described",
+        );
+        let between = "struct PaneInfo {\n    id: u64,\n}\n\nstruct PaneRef {\n    /// The pane's host \
+                       id.\n    info: PaneInfo,\n    id: u64,\n}\n";
+        assert_eq!(
+            displaced(before, between).expect("both read"),
+            vec![Displacement {
+                was: "field PaneRef::id".to_owned(),
+                now: "field PaneRef::info".to_owned(),
+                line: 7,
+                doc: vec!["The pane's host id.".to_owned()],
+            }],
+            "⚠⚠ THE CONTROL: `info` declared between the doc and `PaneRef`'s own `id`, which stays — \
+             that is the move, and it is named through its owner",
         );
     }
 

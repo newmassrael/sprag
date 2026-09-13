@@ -48,8 +48,10 @@
 //! # ⛔ What this does NOT tell apart, since the doc that hedges instead of counting is the defect
 //!
 //! - **One string literal from another.** A field name in an assertion message, a needle or a
-//!   fixture is code to this scanner, exactly as a `println!` argument is. A caller wanting *this
-//!   is PRINTED* has not got it from here.
+//!   fixture is code to [`crate::rust_source::uncommented`], exactly as a `println!` argument is. A
+//!   caller wanting *this is PRINTED* has not got it from here. ⚠ Where the literals ARE is reported
+//!   ([`crate::rust_source::Scan::literals`]) — register item 1091, whose doc reader must not take a
+//!   `{` in a format string for a body opening or a line of a fixture for an item.
 //! - **Live code from `#[cfg]`-dead code.** Nothing here evaluates an attribute.
 //! - **A macro's expansion.** What a `macro_rules!` body assembles is text this never sees.
 
@@ -93,11 +95,25 @@ pub struct Comment {
     pub shape: Shape,
 }
 
-/// One reading of a source: its comments, and whether the walk finished on solid ground.
+/// One string or character literal, as a byte range over the source it was read from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Literal {
+    /// Where it opens: its `b`, `r` or `br` prefix when it has one, else its first quote.
+    pub at: usize,
+    /// Where it ends, exclusive — past its closing quote and hashes, or the end of the source for
+    /// one that never closed.
+    pub end: usize,
+}
+
+/// One reading of a source: its comments, its literals, and whether the walk finished on solid
+/// ground.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scan {
     /// Every comment, in source order.
     pub comments: Vec<Comment>,
+    /// Every string and character literal, in source order. ⚠ A lifetime and a loop label open
+    /// none, which is the walk's own rule (`quoted_end`).
+    pub literals: Vec<Literal>,
     /// What the walk was inside at the end of the file, if anything. `None` is the only value a
     /// gate should accept — see this module's header for why the two states are not symmetric.
     pub unclosed: Option<Unclosed>,
@@ -121,6 +137,7 @@ pub struct Scan {
 pub fn scan(source: &str) -> Scan {
     let bytes = source.as_bytes();
     let mut comments = Vec::new();
+    let mut literals = Vec::new();
     let mut unclosed = None;
     let mut at = 0;
     while at < bytes.len() {
@@ -154,6 +171,10 @@ pub fn scan(source: &str) -> Scan {
                 if !closed {
                     unclosed = Some(Unclosed::Literal);
                 }
+                // ⚠ A lifetime stops mattering one byte on; a character literal is at least `'x'`.
+                if end > at + 1 {
+                    literals.push(Literal { at, end });
+                }
                 at = end;
             }
             _ => {
@@ -162,6 +183,7 @@ pub fn scan(source: &str) -> Scan {
                         if !closed {
                             unclosed = Some(Unclosed::Literal);
                         }
+                        literals.push(Literal { at, end: past });
                         past
                     }
                     None => at + 1,
@@ -169,7 +191,11 @@ pub fn scan(source: &str) -> Scan {
             }
         }
     }
-    Scan { comments, unclosed }
+    Scan {
+        comments,
+        literals,
+        unclosed,
+    }
 }
 
 /// `source` with every comment removed — what the code SAYS, rather than what its prose says about
@@ -665,6 +691,23 @@ mod tests {
         assert!(
             !lines[0].1.contains("probe_ms=") && !lines[0].1.contains('주'),
             "⛔ ITEM 1055: a non-ASCII comment survived blanking: {lines:?}",
+        );
+    }
+
+    /// ⚠⚠ **EVERY LITERAL IS REPORTED WHERE IT STANDS, AND A LIFETIME IS NOT ONE** — register item
+    /// 1091, whose doc reader must tell a brace in a string from a brace that opens a body.
+    #[test]
+    fn every_literal_is_reported_where_it_stands_and_a_lifetime_is_not_one() {
+        let source = "fn f<'a>(x: &'a str) -> char {\n    let s = \"{\";\n    let r = br#\"}\"#;\n    '{'\n}\n";
+        let scanned = scan(source);
+        assert_eq!(
+            scanned
+                .literals
+                .iter()
+                .map(|literal| &source[literal.at..literal.end])
+                .collect::<Vec<_>>(),
+            vec!["\"{\"", "br#\"}\"#", "'{'"],
+            "⚠⚠ two strings, the raw one from its prefix, and a character — and neither `'a` opens one",
         );
     }
 }
