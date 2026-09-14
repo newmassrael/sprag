@@ -2117,6 +2117,28 @@ impl PluginGrammar {
     pub const TURN_WITHIN: ArgGrammar =
         ArgGrammar::open(sprag_plugin::Turn::WIRE_KEY, "int").optional();
 
+    /// **WHO ANSWERS THE KIND DOCUMENT'S `judged_rules`** — register item 994. An argv, because the
+    /// judge is a program this daemon spawns and the rendered question is APPENDED as its last
+    /// element. Absent is nobody, and nobody costs exactly nothing.
+    ///
+    /// ⚠⚠ **A CONSTANT AND NOT AN INLINE ARGUMENT ON THE FORM, which is a requirement and not a
+    /// tidiness.** `sprag-mcp` has to classify and describe every published argument, and it reaches
+    /// `sprag-plugin` only as a DEV-dependency — so the key's name has to be readable through this
+    /// grammar or that crate would have to spell it a second time. Its `NOT_A_PANE` list says the
+    /// same thing about the three bounds above, in those words.
+    pub const JUDGE: ArgGrammar =
+        ArgGrammar::open(sprag_plugin::judge::JudgeSpec::ARGV_KEY, "array").optional();
+
+    /// HOW LONG ONE JUDGEMENT MAY TAKE, in milliseconds, before it is abandoned as no answer —
+    /// [`JUDGE`](Self::JUDGE)'s bound. Absent is `JudgeSpec::WITHIN_DEFAULT`, a value read off the
+    /// measurement rather than picked.
+    ///
+    /// ⚠ Sent WITHOUT [`JUDGE`](Self::JUDGE) it is malformed, on the rule
+    /// [`TURN_WITHIN`](Self::TURN_WITHIN) already carries: a bound for a judge nobody named is a
+    /// caller who believes a second agent is deciding their blocked turns.
+    pub const JUDGE_WITHIN: ArgGrammar =
+        ArgGrammar::open(sprag_plugin::judge::JudgeSpec::WITHIN_KEY, "int").optional();
+
     /// `orchestrator` — drive ONE pane with a stimulus until a sentinel appears.
     pub const ORCHESTRATOR_FORM: CallForm = CallForm::object(&[
         Self::selected_by(Self::ORCHESTRATOR),
@@ -2477,11 +2499,11 @@ impl PluginGrammar {
         // ⚠ OPTIONAL, and absence costs exactly nothing: no pane spawned, no model asked, every
         // blocked turn to `screening` as before. A run that did not ask for a second agent must not
         // acquire one, which is why no model is named here or anywhere below this door.
-        ArgGrammar::open(sprag_plugin::judge::JudgeSpec::ARGV_KEY, "array").optional(),
+        Self::JUDGE,
         // ⚠ The bound, which is the caller's for the reason the argv is: it sits in the critical
         // path of a BLOCKED turn, so whoever names a slow judge has to be able to say so. Absent,
         // `JudgeSpec::WITHIN_DEFAULT` stands — a value read off the measurement rather than picked.
-        ArgGrammar::open(sprag_plugin::judge::JudgeSpec::WITHIN_KEY, "int").optional(),
+        Self::JUDGE_WITHIN,
         Self::AWAIT_PERSON,
         Self::HANDBACK_STILL,
         // ⚠⚠ ON THIS FORM ALONE — register item 534. The ceiling belongs to `ai_loop.scxml`, which

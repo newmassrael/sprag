@@ -1711,6 +1711,12 @@ const NOT_A_PANE: &[&str] = &[
     // nobody is watching too, which is why it reaches this list from a form the other three's
     // siblings do not share.
     sprag_host::wire::PluginGrammar::HOLD_WITHIN.name,
+    // ⚠⚠ A BOUND ON ONE JUDGEMENT, in milliseconds — how long the agent answering this document's
+    // `judged_rules` may take before its answer is abandoned (register item 994). The same kind of
+    // number as the four above and classified for the same reason, spelled through the same one
+    // definition — which is why the key is a constant on that grammar rather than inline on the
+    // form: this crate reaches `sprag-plugin` only as a dev-dependency.
+    sprag_host::wire::PluginGrammar::JUDGE_WITHIN.name,
     "cols",
     "rows",
     "opened_by",
@@ -2055,6 +2061,26 @@ fn argument_help(name: &str) -> &'static str {
              agent's own words, both the question you expect and the option you authorise. ⚠ Two \
              entries that fit ONE question and pick DIFFERENT options answer neither: the run \
              stops and says `contradicted`, because which of your own rules wins is not its call."
+        }
+        "judge" => {
+            "WHO DECIDES WHETHER A DIALOG IS ONE YOUR DOCUMENT RESERVED — an ARGV, and the other \
+             half of the loop document's `judged_rules`. A screen rule matches LETTERS on the \
+             screen; a judged rule is about MEANING (*is this an architecture choice?*), and \
+             meaning needs somebody to ask. Give the command that answers, e.g. \
+             `[\"claude\", \"-p\"]`; the question is appended as the last argument, so a print-mode \
+             CLI reads it positionally. ⚠ Leave it out and nothing changes: no second agent is \
+             started, nothing is paid for, and every blocked turn is reported as it always was — \
+             which is what every run did before this key existed. ⚠⚠ Rules with nobody to ask \
+             change nothing, and a judge with no rules is asked nothing: the rules are the loop \
+             DOCUMENT's and this is the caller's, because each is somebody else's to give."
+        }
+        "judge_timeout_ms" => {
+            "HOW LONG ONE JUDGEMENT MAY TAKE before it is abandoned as no answer, in milliseconds. \
+             ⚠ It sits in the critical path of a BLOCKED turn — your agent is stopped at its dialog \
+             and nothing moves until this returns — so it is patience and not generosity: measured \
+             at 4-6 s against a cheap model. ⚠⚠ Leave it out and the daemon's own default stands. \
+             Sending it WITHOUT `judge` is refused rather than ignored, because a bound for a judge \
+             nobody named means you believe a second agent is deciding and none is."
         }
         "screen_rules" => {
             "STANDING INSTRUCTIONS FOR DIALOGS YOU HAVE ALREADY DECIDED ABOUT — a LIST, and the \
@@ -10009,12 +10035,23 @@ mod tests {
             );
         }
         assert_eq!(
-            seen, 19,
+            seen, 20,
             "the int arguments of every published run form: pane, src, dst, timeout_ms, \
              ready_timeout_ms, await_person_ms, handback_still_ms, hold_within_ms, turn_within_ms, \
-             cols, rows, max_turns, reflect_every, context_ceiling, reflect_after_refusals, \
-             max_iterations, max_seconds, max_bytes and max_tokens — MERGED across the forms, so \
-             the agent form's readiness pair adds no new name. ⚠⚠⚠⚠⚠ THE NEWEST IS \
+             judge_timeout_ms, cols, rows, max_turns, reflect_every, context_ceiling, \
+             reflect_after_refusals, max_iterations, max_seconds, max_bytes and max_tokens — \
+             MERGED across the forms, so the agent form's readiness pair adds no new name. \
+             ⚠⚠⚠⚠⚠ THE NEWEST IS `judge_timeout_ms` (item 994), the SIXTH duration on this wire \
+             wearing a number's clothes — and the first that bounds a SECOND AGENT rather than a \
+             peer, a person or an order. It is how long the agent answering this document's \
+             `judged_rules` may take before its answer is abandoned. ⚠⚠ It reaches this tool's \
+             lists the way its five siblings do, and the round that added it found out WHY that \
+             matters: the key was declared inline on the form, `sprag-mcp` reaches `sprag-plugin` \
+             only as a dev-dependency, and this gate is what turned *an unclassified int* into *the \
+             name is spelled somewhere this crate cannot read* — so the argument became a constant \
+             on the grammar both sides already read. ⚠ Its own half-pair rule is not visible here: \
+             sent without `judge` it is malformed, which no per-argument sweep can see. THE OLD \
+             SENTENCE FOLLOWS. THE ONE BEFORE IT IS \
              `hold_within_ms` (item 534), the FIFTH duration on this wire wearing a number's \
              clothes — and the first that bounds an ORDER rather than a WAIT. The four before it \
              ask how long to wait for a pane, a person, a person's hand or a turn; this one asks \
