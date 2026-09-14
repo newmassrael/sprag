@@ -137,19 +137,53 @@
           ]"/>
 
     <!--
-      ⚠⚠ WHAT MAKES A DIALOG ONE THIS LOOP JUDGES rather than quotes — EMPTY,
-      and that is a decision rather than an omission.
+      ⚠⚠ WHAT MAKES A DIALOG ONE THIS LOOP JUDGES rather than quotes — TWO
+      CLAUSES, and they are here in the SAME COMMIT as the door that makes them
+      askable rather than in an earlier one.
 
-      A judged rule costs a model call per blocked turn, and no criterion has
-      been written that a debt run needs. The empty list declines it entirely:
-      no judge is asked, nothing is paid for, and every blocked turn goes to
-      `screening` exactly as it did before judged rules existed.
+      A list here is only half; the other half is WHO answers, and until
+      `JudgeSpec::ARGV_KEY` became a wire argument no caller could supply one.
+      Filled before that, both clauses would have been asked of nobody — which
+      is the state this file spent its `[]` avoiding, and the one thing a list
+      here must never quietly be.
 
-      ⚠ It is DECLARED rather than absent so that turning it on is editing a
-      value here, in the file that owns this loop's decisions, rather than
-      discovering which of two documents the id belongs to.
+      ⚠⚠⚠ THE ORDER IS PAID FOR — one model call per clause, first match stops
+      the rest — AND `architecture` IS FIRST FOR A REASON THAT IS NOT COST. An
+      architecture decision usually ARRIVES as a permission dialog (`Do you
+      want to create DESIGN.txt?` is both at once), so `permission` in front
+      would claim it and answer the cheaper of the two questions: the write
+      allowed for good and the design never reconsidered.
+
+      ⚠⚠ NEITHER CLAUSE GRANTS ANYTHING, and `permission` reads as though it
+      does. `redirecting` presses the refusing key and types the text; any
+      widening after that is the AGENT's own act at its own next dialog. The
+      rule's first key is still a REFUSAL, which is the property that keeps a
+      standing criterion weaker than a standing YES.
+
+      ⛔ AND `permission` MUST NEVER CLAIM A QUESTION OF FACT. `Do you trust
+      this folder?` asks where the pane STANDS — a fact whose answer this loop
+      may not make up, and `may_answer`'s own note holds the measurement. This
+      clause is for questions of CHOICE: whether the same permission will be
+      wanted again. **A fact question claimed here is the regression**, and the
+      two measured dialogs are the contrast arms — the `.claude/` edit dialog
+      whose middle option is the durable one must be claimed, and
+      trust-this-folder must not.
+
+      ⚠ THE QUOTED `Do you want to create` RULE ABOVE STAYS until a launch
+      names a judge. These rules change nothing while nobody is asked them, and
+      that quote is what covers the family meanwhile; removing it belongs to
+      the round where a launch carries the caller's `judge` argument, not to
+      this one.
     -->
-    <data id="judged_rules" expr="[]"/>
+    <data id="judged_rules"
+          expr="[
+            { name: 'architecture',
+              judge: '이건 아키텍처 선택 문제이냐?',
+              text: '비용 무시하고 가장 장기적으로 올바른 방법으로 다시 생각하고 진행' },
+            { name: 'permission',
+              judge: '이건 권한을 물어보는 대화이냐?',
+              text: '이번만 허용하지 말고 앞으로도 계속 허용되는 쪽을 골라라' }
+          ]"/>
 
     <!--
       ⚠⚠⚠⚠ THIS LOOP DOES NOT END ON TURNS, AND THAT IS THIS REPOSITORY'S
