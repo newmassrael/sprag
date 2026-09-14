@@ -1339,6 +1339,14 @@ pub fn judges(
 /// WHICH, because the six have six different remedies and a person handed one word had none of
 /// them. ⚠ `Result` and not `Option`, so a caller cannot go on treating the absence as one thing:
 /// the type makes the reason impossible to drop silently.
+/// What one asking yielded before anybody decided what it MEANT: the reply as its promised shape
+/// admits it, the raw reply beside it, and the exit status.
+///
+/// ⚠ The raw reply travels with the shaped one because [`named_by_status`] reads it, and a caller
+/// that had only the shaped text would be renaming a failure off a different string than the one
+/// the judge printed.
+type Shaped = (String, String, Option<sprag_terminal::PaneExit>);
+
 /// **ASK, AND HAND BACK THE REPLY ITS PROMISED SHAPE ADMITS** — the half [`asked_of_another`] and
 /// [`JudgedRules::claiming`] share, extracted so one asking cannot grow two spellings.
 ///
@@ -1347,8 +1355,6 @@ pub fn judges(
 /// function deliberately has no opinion about it. Register item 659's rule — *the status renames a
 /// failure and never overturns an answer* — is applied by each caller against its own parse, which
 /// is the only place that knows whether there WAS an answer.
-type Shaped = (String, String, Option<sprag_terminal::PaneExit>);
-
 fn shaped_of_another(
     panes: &dyn PaneAccess,
     run: &RunContext,
@@ -1741,71 +1747,6 @@ pub struct Claim {
     pub explained: Option<String>,
 }
 
-/// **WHAT A REPLY MEANS TO A JUDGE** — the half `said_by_another` deliberately does not decide.
-///
-/// `question` is the one that was asked, and it is needed here rather than only at the spawn: a
-/// checker that ECHOES its argv sends this run's own prompt back, and the echo has to be cut off
-/// what the judge is quoted as saying. How long the asking took is not this function's to know: it
-/// travels beside the verdict as a [`Waited`], on every road — see [`asked_of_another`].
-///
-/// # ⛔⛔⛔⛔⛔ THE VERDICT IS FOUND, NOT TAKEN — register item 743
-///
-/// This used to read the reply's FIRST WORD and put that one word through the YES/NO match, so a
-/// judge that answered correctly one line further down had its whole answer thrown away. Two
-/// samples, measured in two repositories, arriving by two different roads:
-///
-/// | what the run recorded | what the reply actually was |
-/// |---|---|
-/// | `NotAVerdict("Permission")` | a tool ADVISORY about a loose allow rule, printed above the answer — and `YES — …` on the line under it |
-/// | `NotAVerdict("My")` | no advisory at all: the judge put its verdict INSIDE a sentence |
-///
-/// ⚠⚠⚠ **WHICH IS WHY THE REPAIR IS NOT AN ADVISORY FILTER.** The first sample was measured in
-/// both directions — same question, same argv, one allow rule the only difference — so what prints
-/// that line is known exactly. **The second has no advisory to filter.** A needle for the one road
-/// leaves the other wide open, and that widening is refused in this crate's own loop document:
-/// *a needle a run can print by working is a needle that stops the run for working.*
-///
-/// ⚠⚠ **WHAT ONE THROWN-AWAY ANSWER COST, so this is not read as tidiness**: that `YES` was the
-/// INDEPENDENT CHECK of another repository's milestone. A round that had been verified was
-/// recorded as a round nothing verified — register item 428's defect arriving down the one road
-/// its remedy was built to close.
-///
-/// # ⚠⚠⚠⚠ The first MARKED verdict word, which is a different rule from *any `yes`*
-///
-/// A verdict counts where the judge MARKED it as its answer, and there are exactly two marks: it
-/// **opens the reply** (position), or it is spelled **in capitals** (emphasis). Both are the mark
-/// this run asked for — `render` says *reply with exactly one word: YES or NO* and the milestone
-/// check's closing instruction says *THE WORD YES OR THE WORD NO*.
-///
-/// ⛔⛔⛔⛔⛔ **AND THE SECOND MARK IS NOT FASTIDIOUSNESS — A GATE IN THIS FILE CAUGHT ITS ABSENCE
-/// THE HOUR THIS WAS WRITTEN.** A scan that took any `no` read the broken checker `Error: no API
-/// key` as a considered REFUSAL, and the shape generalises well past that fixture: *"there is no
-/// evidence for the claim"* is a sentence a judge writes on its way to either verdict. Inside a
-/// sentence, in ordinary case, `no` is English. **A fabricated verdict is worse than the discarded
-/// one this item is about**, and the two marks are what tell them apart.
-///
-/// ⚠ And a verdict is a WORD: `NOT`, `NOTHING` and `YESTERDAY` are not verdicts, though a
-/// substring search finds one in every one of them.
-///
-/// ⚠⚠⚠⚠⚠ **THE ECHO IS CUT BEFORE THE SCAN, AND THAT ORDER IS THE SAFETY PROPERTY.** The rendered
-/// question SAYS the words `YES` and `NO` — it must, it is asking for one of them — so a checker
-/// spelled `/bin/echo` prints a verdict word without having judged anything. Scanning the whole
-/// reply would read that as an agreement, which is exactly the act this module exists to keep out
-/// of reach: **silence is never a yes.**
-///
-/// ⚠ The residue, stated rather than left to be discovered: what stood BEFORE the verdict is not
-/// kept. [`Judgement::explained`] is what a judge went on to say AFTER its answer, an advisory some
-/// tool printed over the top is nobody's reasoning — and a preamble the judge wrote itself goes out
-/// with it. What is lost there is prose about an answer that now arrives; what was lost before was
-/// the answer.
-///
-/// ⚠⚠ **AND THE SECOND RESIDUE, WHICH IS THE ONE THAT COULD BITE**: a checker that QUOTES the
-/// instruction it was given — *"I was asked to answer YES or NO and I cannot"* — has spelled a
-/// marked verdict word it did not mean. A full echo cannot do this (it is cut), and the prompt asks
-/// for no restatement, but a partial quotation is reachable and would be read as the word it
-/// quoted. Filtering that phrase would be a needle over somebody's prose, which is the widening
-/// this item refused; it is named here instead so the next measurement knows where to look.
-
 /// Read a [`Claim`] out of a reply, over the names this run actually offered.
 ///
 /// # ⛔⛔⛔⛔⛔ A name is admitted only if the DOCUMENT wrote it
@@ -1889,6 +1830,70 @@ fn claim_in(reply: &str, question: &str, offered: &[&str]) -> Result<Claim, Unhe
     })
 }
 
+/// **WHAT A REPLY MEANS TO A JUDGE** — the half `said_by_another` deliberately does not decide.
+///
+/// `question` is the one that was asked, and it is needed here rather than only at the spawn: a
+/// checker that ECHOES its argv sends this run's own prompt back, and the echo has to be cut off
+/// what the judge is quoted as saying. How long the asking took is not this function's to know: it
+/// travels beside the verdict as a [`Waited`], on every road — see [`asked_of_another`].
+///
+/// # ⛔⛔⛔⛔⛔ THE VERDICT IS FOUND, NOT TAKEN — register item 743
+///
+/// This used to read the reply's FIRST WORD and put that one word through the YES/NO match, so a
+/// judge that answered correctly one line further down had its whole answer thrown away. Two
+/// samples, measured in two repositories, arriving by two different roads:
+///
+/// | what the run recorded | what the reply actually was |
+/// |---|---|
+/// | `NotAVerdict("Permission")` | a tool ADVISORY about a loose allow rule, printed above the answer — and `YES — …` on the line under it |
+/// | `NotAVerdict("My")` | no advisory at all: the judge put its verdict INSIDE a sentence |
+///
+/// ⚠⚠⚠ **WHICH IS WHY THE REPAIR IS NOT AN ADVISORY FILTER.** The first sample was measured in
+/// both directions — same question, same argv, one allow rule the only difference — so what prints
+/// that line is known exactly. **The second has no advisory to filter.** A needle for the one road
+/// leaves the other wide open, and that widening is refused in this crate's own loop document:
+/// *a needle a run can print by working is a needle that stops the run for working.*
+///
+/// ⚠⚠ **WHAT ONE THROWN-AWAY ANSWER COST, so this is not read as tidiness**: that `YES` was the
+/// INDEPENDENT CHECK of another repository's milestone. A round that had been verified was
+/// recorded as a round nothing verified — register item 428's defect arriving down the one road
+/// its remedy was built to close.
+///
+/// # ⚠⚠⚠⚠ The first MARKED verdict word, which is a different rule from *any `yes`*
+///
+/// A verdict counts where the judge MARKED it as its answer, and there are exactly two marks: it
+/// **opens the reply** (position), or it is spelled **in capitals** (emphasis). Both are the mark
+/// this run asked for — `render` says *reply with exactly one word: YES or NO* and the milestone
+/// check's closing instruction says *THE WORD YES OR THE WORD NO*.
+///
+/// ⛔⛔⛔⛔⛔ **AND THE SECOND MARK IS NOT FASTIDIOUSNESS — A GATE IN THIS FILE CAUGHT ITS ABSENCE
+/// THE HOUR THIS WAS WRITTEN.** A scan that took any `no` read the broken checker `Error: no API
+/// key` as a considered REFUSAL, and the shape generalises well past that fixture: *"there is no
+/// evidence for the claim"* is a sentence a judge writes on its way to either verdict. Inside a
+/// sentence, in ordinary case, `no` is English. **A fabricated verdict is worse than the discarded
+/// one this item is about**, and the two marks are what tell them apart.
+///
+/// ⚠ And a verdict is a WORD: `NOT`, `NOTHING` and `YESTERDAY` are not verdicts, though a
+/// substring search finds one in every one of them.
+///
+/// ⚠⚠⚠⚠⚠ **THE ECHO IS CUT BEFORE THE SCAN, AND THAT ORDER IS THE SAFETY PROPERTY.** The rendered
+/// question SAYS the words `YES` and `NO` — it must, it is asking for one of them — so a checker
+/// spelled `/bin/echo` prints a verdict word without having judged anything. Scanning the whole
+/// reply would read that as an agreement, which is exactly the act this module exists to keep out
+/// of reach: **silence is never a yes.**
+///
+/// ⚠ The residue, stated rather than left to be discovered: what stood BEFORE the verdict is not
+/// kept. [`Judgement::explained`] is what a judge went on to say AFTER its answer, an advisory some
+/// tool printed over the top is nobody's reasoning — and a preamble the judge wrote itself goes out
+/// with it. What is lost there is prose about an answer that now arrives; what was lost before was
+/// the answer.
+///
+/// ⚠⚠ **AND THE SECOND RESIDUE, WHICH IS THE ONE THAT COULD BITE**: a checker that QUOTES the
+/// instruction it was given — *"I was asked to answer YES or NO and I cannot"* — has spelled a
+/// marked verdict word it did not mean. A full echo cannot do this (it is cut), and the prompt asks
+/// for no restatement, but a partial quotation is reachable and would be read as the word it
+/// quoted. Filtering that phrase would be a needle over somebody's prose, which is the widening
+/// this item refused; it is named here instead so the next measurement knows where to look.
 fn verdict_in(reply: &str, question: &str) -> Result<Judgement, Unheard> {
     // ⚠⚠⚠⚠ **THE QUESTION WE SENT IS CUT OFF FIRST, BECAUSE AN ECHO IS NOT A STATEMENT.** The
     // rendered question travels as the LAST ARGV, which a print-mode CLI reads positionally and
@@ -2084,26 +2089,6 @@ fn spoke(panes: &dyn PaneAccess, pane: sprag_terminal::PaneId) -> Option<String>
     Some(said)
 }
 
-/// The question put to the judge: the author's criterion, the dialog, its options, and **the one
-/// distinction the options alone do not carry**.
-///
-/// # ⚠⚠⚠ THE OPTIONS ARE BOTH THE SIGNAL AND THE CONFUSION, MEASURED AT BOTH POLES
-///
-/// ```text
-///                        owner's label   with options   without options
-/// permission to write            NO       F T T           F F F
-/// which files to delete         YES       T T T           F T F
-/// ```
-///
-/// **Neither pole works.** Withholding them removes every false YES and takes the target case with
-/// it — `Which report files should I delete?` is two lines, and without its options there is
-/// nothing in it that says the outcomes differ. Including them recovers the target and starts
-/// reading `1. Yes / 2. Yes, allow all edits / 3. No` as *a set of options on offer*, which is
-/// what the criterion asks about.
-///
-/// So the options stay and the prompt names the difference they cannot show on their own: a menu
-/// whose entries are all variations of **yes-or-no about one act** is a permission, however many
-/// entries it has. That sentence is doing the work, not the presence of the list.
 /// Render EVERY rule into ONE prompt — the whole of what makes this a single model call.
 ///
 /// # ⛔⛔⛔⛔⛔ Why one call and not one per rule
@@ -2152,6 +2137,26 @@ fn render_all(rules: &[JudgedRule], question: &Question) -> String {
     out
 }
 
+/// The question put to the judge: the author's criterion, the dialog, its options, and **the one
+/// distinction the options alone do not carry**.
+///
+/// # ⚠⚠⚠ THE OPTIONS ARE BOTH THE SIGNAL AND THE CONFUSION, MEASURED AT BOTH POLES
+///
+/// ```text
+///                        owner's label   with options   without options
+/// permission to write            NO       F T T           F F F
+/// which files to delete         YES       T T T           F T F
+/// ```
+///
+/// **Neither pole works.** Withholding them removes every false YES and takes the target case with
+/// it — `Which report files should I delete?` is two lines, and without its options there is
+/// nothing in it that says the outcomes differ. Including them recovers the target and starts
+/// reading `1. Yes / 2. Yes, allow all edits / 3. No` as *a set of options on offer*, which is
+/// what the criterion asks about.
+///
+/// So the options stay and the prompt names the difference they cannot show on their own: a menu
+/// whose entries are all variations of **yes-or-no about one act** is a permission, however many
+/// entries it has. That sentence is doing the work, not the presence of the list.
 fn render(criterion: &str, question: &Question) -> String {
     let mut out = String::new();
     out.push_str(

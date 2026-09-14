@@ -13479,25 +13479,6 @@ impl OuterLoop {
         Some(name)
     }
 
-    /// **A DIALOG A JUDGE CLAIMED, REFUSED AND REDIRECTED** — [`screen`](Self::screen)'s act, on the
-    /// other authority.
-    ///
-    /// ⚠⚠ A method of its own and not an arm of `screen`, because a reader of a finished run has to
-    /// be able to tell WHICH authority acted. A rule's quote can be re-read in the document forever;
-    /// a judgement happened once, to one dialog, and [`Noticed::Redirected`] is its only trace.
-    ///
-    /// ⚠ `redirect.none` is `screen.none`'s exit and for its measured reason: the refusing key may
-    /// not take the dialog off the screen, and a dialog still up reads an Enter as an answer to
-    /// itself. Nothing is typed and the person is woken.
-    ///
-    /// ⚠⚠⚠ **AND A STOPPED RUN NEVER GETS HERE AT ALL**, which is the other half of register item
-    /// 241's claim — this is the second state that presses the refusing key, and `screening`'s gate
-    /// says nothing about it. The reason is not a check on this path: reaching `redirecting` needs
-    /// [`judged`](Self::judged) to answer, `judged` needs a judgement, and a judgement is waited on
-    /// through the RUN — so a run that ended inside the answering wait gets `None` and the document
-    /// takes the `screening` edge instead. Held by
-    /// `judge::tests::a_stopped_run_gets_no_judgement_however_fast_the_judge_answers`, whose
-    /// mutation is one line: wait on an uncancellable context and a cancelled run collects a `YES`.
     /// **A DIALOG A JUDGE CLAIMED, AND APPROVED FOR AS LONG AS IT COULD** — [`redirect`](Self::redirect)'s
     /// act, on the one rule that GRANTS.
     ///
@@ -13565,6 +13546,25 @@ impl OuterLoop {
         }
     }
 
+    /// **A DIALOG A JUDGE CLAIMED, REFUSED AND REDIRECTED** — [`screen`](Self::screen)'s act, on the
+    /// other authority.
+    ///
+    /// ⚠⚠ A method of its own and not an arm of `screen`, because a reader of a finished run has to
+    /// be able to tell WHICH authority acted. A rule's quote can be re-read in the document forever;
+    /// a judgement happened once, to one dialog, and [`Noticed::Redirected`] is its only trace.
+    ///
+    /// ⚠ `redirect.none` is `screen.none`'s exit and for its measured reason: the refusing key may
+    /// not take the dialog off the screen, and a dialog still up reads an Enter as an answer to
+    /// itself. Nothing is typed and the person is woken.
+    ///
+    /// ⚠⚠⚠ **AND A STOPPED RUN NEVER GETS HERE AT ALL**, which is the other half of register item
+    /// 241's claim — this is the second state that presses the refusing key, and `screening`'s gate
+    /// says nothing about it. The reason is not a check on this path: reaching `redirecting` needs
+    /// [`judged`](Self::judged) to answer, `judged` needs a judgement, and a judgement is waited on
+    /// through the RUN — so a run that ended inside the answering wait gets `None` and the document
+    /// takes the `screening` edge instead. Held by
+    /// `judge::tests::a_stopped_run_gets_no_judgement_however_fast_the_judge_answers`, whose
+    /// mutation is one line: wait on an uncancellable context and a cancelled run collects a `YES`.
     fn redirect(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Raise, PaneError> {
         let question = match &self.noticed {
             Some(Noticed::Asking(unanswered)) => unanswered.question().cloned(),
