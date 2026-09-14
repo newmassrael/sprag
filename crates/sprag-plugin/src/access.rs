@@ -2661,39 +2661,118 @@ impl WorkspacePaneAccess {
         self
     }
 
-    /// Clone the pane's I/O handle under the workspace lock (released before
-    /// the handle is used), so screen reads / writes never hold the workspace
-    /// lock.
+    /// ⛔⛔⛔⛔⛔ **THE ONE PLACE THAT CHOOSES A POOL — register item 1099.**
+    ///
+    /// A [`Workspace`] is one WINDOW's pane pool, so every door on this surface has to answer the
+    /// same question before it can do anything at all: *which pool holds this pane?* This function
+    /// is that question, and it is asked HERE so that it is asked in one place. `ask` is offered
+    /// this surface's own pool first and, only if that answers `None`, whatever the daemon says
+    /// about [*where else this pane is*](PaneElsewhere). The first `Some` wins and the walk stops.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why a walk over pools and not a fallback per door
+    ///
+    /// The fallback used to live in [`handle`](Self::handle), whose doc claimed *every reader on
+    /// this surface resolves through this function*. **That sentence was false** — register item
+    /// 1099 counted EIGHT doors resolving a pane by hand, of which three followed a moved pane and
+    /// five did not, so a run whose pane had been moved could read its screen and type into it
+    /// while `pane_size` answered *I cannot say* and `respawn` answered *there is no such pane*.
+    /// Nothing made those doors disagree; nothing made them agree either, which is the same defect
+    /// this crate keeps finding: **a decision spelled once per caller is a decision a new caller
+    /// arrives without.**
+    ///
+    /// ⚠⚠ `ask`'s `None` means *this pool does not hold the pane* and nothing else. A door whose
+    /// own answer can legitimately be `None` for a pane the pool DOES hold — `pane_child_exit` for
+    /// a running child, `pane_foreground_leader` for a reaped one — must not express that through
+    /// `ask`, or a pool that holds the pane would be walked past. That is why the three doors
+    /// below ([`on_pane`](Self::on_pane), [`on_pool`](Self::on_pool),
+    /// [`pool_holding`](Self::pool_holding)) are the only callers: each keeps membership and
+    /// answer apart by nesting the answer in a second `Option`, and every door above goes through
+    /// one of them.
+    ///
+    /// ⚠⚠ **A POOL'S LOCK IS TAKEN INSIDE `ask` AND RELEASED BEFORE THE HOOK IS CALLED.** The hook
+    /// walks the session tree and locks other pools; holding one across it would be a lock order
+    /// this layer cannot see, so `ask`'s answer is taken by value first.
+    ///
+    /// ⚠ A host with no hook answers exactly as it did: `None`, and the caller's own sentence.
+    fn whichever_pool_holds<T>(
+        &self,
+        id: PaneId,
+        ask: impl Fn(&Arc<Mutex<Workspace>>) -> Option<T>,
+    ) -> Option<T> {
+        if let Some(found) = ask(&self.workspace) {
+            return Some(found);
+        }
+        let elsewhere = self.panes_elsewhere.as_ref()?(id)?;
+        ask(&elsewhere)
+    }
+
+    /// Read one pane, out of whichever pool holds it — the shape all but three of this surface's
+    /// doors are.
+    ///
+    /// ⚠⚠ `read` runs UNDER that pool's lock, so it must TAKE a value and not USE it: clone the
+    /// handle, load the atomic, copy the path. Anything that blocks — a pty write, a syscall, a
+    /// park — belongs to the caller, after this returns. Every caller here obeys that, and
+    /// [`pane_moved_after`](PaneChanges::pane_moved_after) is the one that says why it matters.
+    ///
+    /// ⚠ `None` is *no pool this surface can reach holds this pane*, which is the sentence each
+    /// door turns into its own refusal.
+    fn on_pane<T>(&self, id: PaneId, read: impl Fn(&Pane) -> T) -> Option<T> {
+        self.whichever_pool_holds(id, |pool| lock(pool).pane(id).map(&read))
+    }
+
+    /// Act on the POOL that holds a pane, rather than on the pane — for the doors whose subject is
+    /// membership itself ([`close`](PaneLifecycle::close)), or the pool's published listing
+    /// ([`pane_size`](PaneAccess::pane_size)).
+    ///
+    /// ⚠⚠ `&mut Workspace` for `close`'s sake, and ONE door rather than a reading one and a
+    /// writing one: a second door is a second place for the choice above to be forgotten, which is
+    /// what register item 1099 is. A reader passed a `&mut` reborrows it and reads.
+    ///
+    /// ⚠ `with`'s value travels OUT of the lock: the guard is this function's local and drops
+    /// after the return value is built, which is what lets `close` hand back a [`Pane`] whose
+    /// blocking `Drop` then runs outside the lock (the R11 lesson).
+    fn on_pool<T>(&self, id: PaneId, with: impl Fn(&mut Workspace) -> T) -> Option<T> {
+        self.whichever_pool_holds(id, |pool| {
+            let mut guard = lock(pool);
+            guard.pane(id).is_some().then(|| with(&mut guard))
+        })
+    }
+
+    /// The pool itself, for the one door that needs to hold it across several steps —
+    /// [`respawn`](PaneLifecycle::respawn), which reads a recipe, spawns outside the lock, hands
+    /// the seat over and closes, and would be describing two different windows if any of those
+    /// four resolved separately.
+    fn pool_holding(&self, id: PaneId) -> Option<Arc<Mutex<Workspace>>> {
+        self.whichever_pool_holds(id, |pool| {
+            lock(pool).pane(id).is_some().then(|| Arc::clone(pool))
+        })
+    }
+
+    /// Clone the pane's I/O handle under its pool's lock (released before the handle is used), so
+    /// screen reads / writes never hold that lock.
     ///
     /// ⚠ `pub(crate)` for the fixtures' sake: a gate about a PERSON typing into a pane has to
     /// reach the door a display client writes through ([`PanePtyHandle::write`]), because the
     /// injection API above is the door the RUN writes through and a fixture that uses it is
     /// staging the person out of the very distinction under test.
     ///
-    /// # ⛔⛔⛔⛔⛔ And it follows a pane that moved windows — register item 682
-    ///
-    /// **THE ONE PLACE, WHICH IS WHY THE FALLBACK IS HERE.** Every reader on this surface —
-    /// `pane_rows`, `pane_collapsed`, the typing door, all of them — resolves through this
-    /// function, so one reading moves the whole surface together. A fallback added at the typing
-    /// door alone would leave a run able to TYPE into its pane and unable to READ it, which is a
-    /// worse state than either.
-    ///
-    /// ⚠⚠ **THE OWN POOL IS ASKED FIRST AND ITS LOCK IS RELEASED BEFORE THE HOOK IS CALLED.** The
-    /// hook walks the session tree and locks other pools; holding this one across it would be a
-    /// lock order this layer cannot see, so the answer is taken by value first.
-    ///
-    /// ⚠ A host with no hook answers exactly as it did: `None`, and the caller's own sentence.
+    /// ⚠⚠ It is one of the many doors that follow a pane which moved windows, and it is no longer
+    /// the place that decides so — see [`whichever_pool_holds`](Self::whichever_pool_holds).
     pub(crate) fn handle(&self, id: PaneId) -> Option<PanePtyHandle> {
-        let own = lock(&self.workspace).pane(id).map(Pane::handle);
-        if own.is_some() {
-            return own;
-        }
-        let elsewhere = self.panes_elsewhere.as_ref()?(id)?;
-        lock(&elsewhere).pane(id).map(Pane::handle)
+        self.on_pane(id, Pane::handle)
     }
 }
 
 impl PaneAccess for WorkspacePaneAccess {
+    /// ⚠⚠ **THIS SURFACE'S OWN POOL, AND DELIBERATELY NOT THE POOL-CHOOSING STEP EVERY OTHER DOOR
+    /// GOES THROUGH** (`WorkspacePaneAccess::whichever_pool_holds`) — register item 1099, stated
+    /// here because it is the one door that could look like an oversight.
+    ///
+    /// Every other door is asked *about a pane the caller already names*, and following that pane
+    /// wherever it went is the whole of register item 682. This one is asked *what panes are
+    /// there*, and the honest answer is about a WINDOW: a listing that swept in every pane of every
+    /// window a session holds would answer a question nobody asked, and the hook is not even shaped
+    /// to be asked it — [`PaneElsewhere`] takes an id, because it answers *where is THIS pane*.
     fn pane_ids(&self) -> Vec<PaneId> {
         lock(&self.workspace).panes().iter().map(Pane::id).collect()
     }
@@ -2714,12 +2793,16 @@ impl PaneAccess for WorkspacePaneAccess {
     ///
     /// ⚠ The pane's ARBITRATED size — what the daemon gave it after tiling — and not the size
     /// anybody asked for. That is the number a delivery's evidence was actually read off.
+    ///
+    /// ⚠⚠ **AND IT IS THE LISTING OF WHICHEVER POOL HOLDS THE PANE** — register item 1099. This
+    /// read the own pool's listing and nothing else, so a run whose pane had been moved could read
+    /// that pane's screen and still be told *I cannot say how big it is*: the `None` register item
+    /// 679 planted for *this host cannot answer*, arriving for a pane that was plainly there.
     fn pane_size(&self, id: PaneId) -> Option<(u16, u16)> {
-        lock(&self.workspace)
-            .list()
-            .into_iter()
-            .find(|info| info.id == id.0)
-            .map(|info| (info.cols, info.rows))
+        self.on_pool(id, |workspace| {
+            workspace.list().into_iter().find(|info| info.id == id.0)
+        })?
+        .map(|info| (info.cols, info.rows))
     }
 
     /// ⚠⚠ THROUGH [`Screen::has_painted`] AND NOT THROUGH THE ROWS — register item 555. The
@@ -2732,39 +2815,24 @@ impl PaneAccess for WorkspacePaneAccess {
         Some(self.handle(id)?.with_screen(Screen::has_painted))
     }
 
+    /// ⚠ A quick atomic load; reading it under the pool's lock (rather than cloning the handle) is
+    /// negligible and needs no producer change.
+    ///
+    /// ⛔⛔⛔ The typing door asks THIS before it asks for the pane's I/O handle — register item
+    /// 682. A surface where one of the two followed a moved pane and the other did not would type
+    /// into a moved pane whose program had EXITED rather than refusing it, because the door's own
+    /// distinction (`PeerGone` before `UnknownPane`) is built out of both answers. They now follow
+    /// for one reason instead of two, which is what register item 1099 asked for.
     fn pane_eof(&self, id: PaneId) -> Option<bool> {
-        // A quick atomic load; reading it under the workspace lock (rather than
-        // cloning the handle) is negligible and needs no producer change.
-        //
-        // ⛔⛔⛔ AND IT FOLLOWS A PANE THAT MOVED WINDOWS, for `handle`'s reason and with a sharper
-        // consequence of its own — register item 682. The typing door asks THIS first: a pane that
-        // had moved answered `None` here, fell through, and got `UnknownPane` from `handle`. With
-        // `handle` following and this one not, a moved pane whose program had EXITED would be
-        // typed into rather than refused — the two readings must move together or the door's own
-        // distinction (`PeerGone` before `UnknownPane`) comes apart.
-        let own = lock(&self.workspace)
-            .pane(id)
-            .map(|pane| pane.pty().is_eof());
-        if own.is_some() {
-            return own;
-        }
-        let elsewhere = self.panes_elsewhere.as_ref()?(id)?;
-        lock(&elsewhere).pane(id).map(|pane| pane.pty().is_eof())
+        self.on_pane(id, |pane| pane.pty().is_eof())
     }
 
-    /// ⛔ Register item 659. **IT FOLLOWS A PANE THAT MOVED WINDOWS**, exactly as
-    /// [`pane_eof`](Self::pane_eof) above does and for that method's stated reason: the two
-    /// readings are about one child, and a surface where one of them followed and the other did not
-    /// would report a moved pane's program as *still running* while its output was plainly over.
+    /// ⛔ Register item 659. The outer `Option` is *is there such a pane* and the inner one is
+    /// *has its child ended* — kept apart, because this reading and
+    /// [`pane_eof`](Self::pane_eof)'s are about one child and a surface that confused them would
+    /// report a running pane as gone the moment it changed windows.
     fn pane_child_exit(&self, id: PaneId) -> Option<sprag_terminal::PaneExit> {
-        let own = lock(&self.workspace)
-            .pane(id)
-            .map(|pane| pane.pty().exit_status());
-        if let Some(own) = own {
-            return own;
-        }
-        let elsewhere = self.panes_elsewhere.as_ref()?(id)?;
-        lock(&elsewhere).pane(id)?.pty().exit_status()
+        self.on_pane(id, |pane| pane.pty().exit_status())?
     }
 
     fn pane_full_text(&self, id: PaneId) -> Option<String> {
@@ -2988,12 +3056,15 @@ impl PaneJobControl for WorkspacePaneAccess {
     /// applies — and that is reported as [`Unstopped::Gone`] rather than as an unknown pane: the
     /// pane is still there, its program is not, and telling a caller their pane does not exist when
     /// it does would send them looking in the wrong place.
+    ///
+    /// ⚠⚠ **AND IT REACHES A PANE THAT MOVED WINDOWS** — register item 1099. A cancel is exactly
+    /// when a run's pane is most likely to have been rearranged by the person watching it, and a
+    /// stop bound to one window's membership list answered *there is no pane N* about a job that
+    /// was visibly running.
     fn pane_stop_job(&self, id: PaneId, stop: Stop, reach: Reach) -> Result<Signalled, PaneError> {
-        let pid = {
-            let workspace = lock(&self.workspace);
-            let pane = workspace.pane(id).ok_or(PaneError::UnknownPane(id))?;
-            pane.pty().pid()
-        };
+        let pid = self
+            .on_pane(id, |pane| pane.pty().pid())
+            .ok_or(PaneError::UnknownPane(id))?;
         let pid = pid.ok_or(PaneError::NotStopped(Unstopped::Gone))?;
         sprag_terminal::stop_foreground_job(pid, stop, reach)
             .map(|job| Signalled::of(&job))
@@ -3007,10 +3078,12 @@ impl PaneForegroundJob for WorkspacePaneAccess {
     /// concurrent reader's median went from +0.8 us to +687 us and its p99 to +41.8 ms, because a
     /// holder doing I/O under the lock every client wake wants is a convoy. This is polled every
     /// [`POLL_INTERVAL`](crate::run::POLL_INTERVAL), which is exactly that shape.
+    ///
+    /// ⚠⚠ And it reads the pane out of whichever pool holds it — register item 1099. This is
+    /// polled for the whole life of a run, so a pane that changed windows mid-run went from
+    /// *this job is running* to *there is no such job* with nothing having happened to the job.
     fn pane_foreground_leader(&self, id: PaneId) -> Option<JobProcess> {
-        let pid = lock(&self.workspace)
-            .pane(id)
-            .and_then(|pane| pane.pty().pid())?;
+        let pid = self.on_pane(id, |pane| pane.pty().pid())??;
         foreground_leader_of(pid)
     }
 }
@@ -3022,11 +3095,15 @@ impl PaneRawCapture for WorkspacePaneAccess {
 }
 
 impl PaneOrigin for WorkspacePaneAccess {
-    /// ⚠ THE PANE'S OWN RECORD, taken under the workspace lock and copied out — the same read
+    /// ⚠ THE PANE'S OWN RECORD, taken under its pool's lock and copied out — the same read
     /// [`respawn`](PaneLifecycle::respawn) makes when it puts a replacement in the same place, so
     /// *where this pane belongs* has ONE answer in this process rather than two.
+    ///
+    /// ⚠⚠ That sentence is why it follows a pane that moved windows — register item 1099. `respawn`
+    /// follows one, so a reader of the same fact that did not would be the second answer this doc
+    /// says does not exist.
     fn pane_start_dir(&self, id: PaneId) -> Option<std::path::PathBuf> {
-        Some(lock(&self.workspace).pane(id)?.start_dir().to_path_buf())
+        self.on_pane(id, |pane| pane.start_dir().to_path_buf())
     }
 }
 
@@ -3060,11 +3137,20 @@ impl WorkspacePaneAccess {
     /// plugin-spawned pane to stop feeding the reaper.
     ///
     /// ⚠⚠ NAMED APART FROM THE TRAIT DOOR IT SERVES ([`PaneLifecycle::spawn_in`]) because it takes
-    /// one more thing: an ENVIRONMENT, which only `respawn` has an opinion about. Two methods with
-    /// one name on one type would resolve by inherent-first and differ only in arity, which is a
-    /// reading nobody should have to do at a call site.
+    /// two more things: an ENVIRONMENT, which only `respawn` has an opinion about, and the POOL to
+    /// spawn into. Two methods with one name on one type would resolve by inherent-first and
+    /// differ only in arity, which is a reading nobody should have to do at a call site.
+    ///
+    /// ⚠⚠⚠ **AND THE POOL IS A PARAMETER, NOT `self.workspace`** — register item 1099. A birth is
+    /// the one act here with no pane to resolve from, so it cannot ask
+    /// [`whichever_pool_holds`](Self::whichever_pool_holds) and its caller must say: `spawn_in`
+    /// and `spawn_offstage` are opening a pane that does not exist yet and name this surface's own
+    /// pool, while `respawn` names the pool holding the pane it is REPLACING — which is how the
+    /// replacement lands in the window the operator is looking at, and how
+    /// [`Workspace::hand_seat_over`] gets two panes in one pool to work with.
     fn spawn_with(
         &self,
+        pool: &Mutex<Workspace>,
         argv: &[String],
         cwd: Option<&std::path::Path>,
         env: &[(std::ffi::OsString, std::ffi::OsString)],
@@ -3114,7 +3200,7 @@ impl WorkspacePaneAccess {
         // pane is weighted exactly like every other one (R337). It used to carry a `home: None` over
         // a comment saying "the host fills this in when it has a tree" — the host did no such thing
         // for this door, and the comment was the only thing that said otherwise.
-        lock(&self.workspace)
+        lock(pool)
             .spawn_with_dirty(command, program.clone(), cols, rows, hooks)
             .map_err(|e| PaneError::Spawn(e.to_string()))
     }
@@ -3134,7 +3220,10 @@ impl PaneLifecycle for WorkspacePaneAccess {
         // ⛔⛔ A `None` here is NOT the daemon's directory — this door's documentation said so for
         // as long as it existed and register item 710 measured it false: the pane lands in `$HOME`,
         // which is why the trait now makes the directory something a caller states.
-        self.spawn_with(argv, cwd, &[], cols, rows)
+        //
+        // ⚠ THIS SURFACE'S OWN POOL, stated rather than defaulted: a pane that does not exist yet
+        // is in no pool, so there is nothing to resolve and the caller is the one who knows.
+        self.spawn_with(&self.workspace, argv, cwd, &[], cols, rows)
     }
 
     /// ⛔⛔⛔⛔⛔ **THROUGH THE DAEMON'S OFFSTAGE DOOR WHEN IT HAS ONE** — register item 679.
@@ -3163,10 +3252,22 @@ impl PaneLifecycle for WorkspacePaneAccess {
     }
 
     fn respawn(&self, id: PaneId) -> Result<PaneId, PaneError> {
-        // ⚠⚠ READ, THEN RELEASE, THEN SPAWN. `spawn_with` takes the workspace lock itself, and this
+        // ⛔⛔⛔⛔⛔ **THE POOL IS CHOSEN ONCE, AND ALL FOUR STEPS BELOW ARE ABOUT THAT POOL** —
+        // register item 1099. This door resolved the pane straight out of `self.workspace`, so a
+        // pane that had moved windows was refused with *no pane N to replace* while it was plainly
+        // open one window over — and that is the door `ai_loop`'s `restarting` state uses, which
+        // made a moved pane un-restartable for the run that was driving it.
+        //
+        // ⚠⚠ Held as the pool and not re-resolved per step: the read, the spawn, the seat handover
+        // and the close must all name ONE window, and four separate resolutions could be four
+        // different answers if somebody moves the pane while this runs.
+        let pool = self
+            .pool_holding(id)
+            .ok_or_else(|| PaneError::Spawn(format!("no pane {} to replace", id.0)))?;
+        // ⚠⚠ READ, THEN RELEASE, THEN SPAWN. `spawn_with` takes the pool's lock itself, and this
         // crate's standing rule is that no lock is held across a syscall — a pty spawn most of all.
         let (argv, env, cwd, (cols, rows)) = {
-            let guard = lock(&self.workspace);
+            let guard = lock(&pool);
             let pane = guard
                 .pane(id)
                 .ok_or_else(|| PaneError::Spawn(format!("no pane {} to replace", id.0)))?;
@@ -3195,13 +3296,16 @@ impl PaneLifecycle for WorkspacePaneAccess {
                 id.0
             )));
         }
-        let fresh = self.spawn_with(&argv, Some(cwd.as_path()), &env, cols, rows)?;
+        // ⚠⚠⚠ INTO THE POOL THAT HOLDS THE PANE BEING REPLACED, which is what makes the next line
+        // legal: a replacement spawned into this surface's own pool while the original sat in
+        // another window would leave `hand_seat_over` with one pane and not two, silently.
+        let fresh = self.spawn_with(&pool, &argv, Some(cwd.as_path()), &env, cols, rows)?;
         // ⚠⚠⚠ THE SEAT'S OWN DECLARATIONS FOLLOW IT, under ONE lock and BEFORE the close: what the
         // caller called this pane, who asked for it, what it may spend and whether it is a remote
         // workspace. `hand_seat_over` is one operation rather than four calls here for the reason it
         // states — register item 478 is what a forgotten one costs, and the compiler is what keeps
         // the set whole. Its answer is not read: both panes were just proved to be in this pool.
-        lock(&self.workspace).hand_seat_over(id, fresh);
+        lock(&pool).hand_seat_over(id, fresh);
         // ⚠ The old pane goes only once the new one is up — see the trait's doc. Its answer is
         // deliberately ignored: it existed a moment ago (it was read above), and a caller holding a
         // fresh pane has nothing to do differently if the reap raced somebody else's close.
@@ -3229,21 +3333,12 @@ impl PaneLifecycle for WorkspacePaneAccess {
     /// ⚠ A host with no hook answers exactly as it did, and a pane that was CLOSED still answers
     /// `false`: the hook is `None` for it too, which is what keeps *moved* and *gone* apart.
     fn close(&self, id: PaneId) -> bool {
-        // Bind the removed Pane so the workspace guard (the temporary) drops
-        // first; the Pane's blocking Drop (kill/wait/join) then runs OUTSIDE
-        // the workspace lock (R11 lesson).
-        let removed = lock(&self.workspace).close(id);
-        if removed.is_some() {
-            return true;
-        }
-        // ⚠⚠ THE OWN POOL'S LOCK IS RELEASED BEFORE THE HOOK IS CALLED — `handle`'s rule, and it
-        // bites harder here: the hook walks the session tree and locks another pool, and the
-        // `Pane` this drops runs a blocking kill/wait/join on the way out.
-        let Some(elsewhere) = self.panes_elsewhere.as_ref().and_then(|hook| hook(id)) else {
-            return false;
-        };
-        let removed = lock(&elsewhere).close(id);
-        removed.is_some()
+        // ⚠⚠ The removed `Pane` travels out through `on_pool`'s return value, so the pool's guard
+        // has already dropped by the time its blocking `Drop` (kill/wait/join) runs here — the R11
+        // lesson, now held by that function's own contract rather than re-derived at this door.
+        self.on_pool(id, |workspace| workspace.close(id))
+            .flatten()
+            .is_some()
     }
 }
 
@@ -3805,6 +3900,400 @@ mod tests {
             PaneError::UnknownPane(pane),
             "⚠⚠ the second producer must still be the second producer — if this stopped raising, \
              the exhaustion above would be over a surface that had changed underneath it",
+        );
+    }
+
+    /// A pane, the window it is about to be moved to, and a surface that can follow it — with a
+    /// STRANGER already sitting in that other window.
+    ///
+    /// ⚠⚠⚠⚠⚠ The destination is a [`Workspace::sibling`] of the run's own pool and not an
+    /// independently built one, and a mutation is why that matters: a pool built on its own draws
+    /// its own id counter, so its first pane is ALSO id 0 — the pane's own id — and a walk that
+    /// ignored the id entirely would hand back a stranger's pane and look correct. `sibling` shares
+    /// `next_id` precisely because *every window of a session must answer from one place*, so this
+    /// stages the world the product can actually produce (register items 617 / 642, and the same
+    /// reasoning `ai_loop`'s judging fixture states).
+    fn a_pane_and_the_window_it_can_move_to() -> (
+        Arc<Mutex<Workspace>>,
+        Arc<Mutex<Workspace>>,
+        WorkspacePaneAccess,
+        PaneId,
+    ) {
+        let own = cat_workspace(40, 8);
+        let destination = Arc::new(Mutex::new(lock(&own).sibling()));
+        {
+            let mut stranger = CommandBuilder::new("/bin/sh");
+            stranger.arg("-c");
+            stranger.arg("cat");
+            stranger.env("TERM", "dumb");
+            lock(&destination)
+                .spawn(stranger, "a stranger".to_string(), 40, 8)
+                .expect("the other window opens a pane of its own");
+        }
+        let hook: PaneElsewhere = {
+            let destination = Arc::clone(&destination);
+            Arc::new(move |id| {
+                lock(&destination)
+                    .pane(id)
+                    .is_some()
+                    .then(|| Arc::clone(&destination))
+            })
+        };
+        let access = WorkspacePaneAccess::new(Arc::clone(&own)).with_panes_elsewhere(Some(hook));
+        let pane = access.pane_ids()[0];
+        (own, destination, access, pane)
+    }
+
+    /// Every non-destructive door on this surface, asked about `pane`, paired with its name and
+    /// with whether it ANSWERED — so a red names the doors rather than the first one.
+    ///
+    /// ⚠⚠ `answered` is `is_some` and never the value: this gate is about *which pool did the
+    /// question reach*, and asserting the values as well would make it fail for reasons that have
+    /// nothing to do with that.
+    fn every_door_answering_about(
+        access: &WorkspacePaneAccess,
+        pane: PaneId,
+    ) -> Vec<(&'static str, bool)> {
+        vec![
+            ("pane_collapsed", access.pane_collapsed(pane).is_some()),
+            ("pane_rows", access.pane_rows(pane).is_some()),
+            ("pane_full_text", access.pane_full_text(pane).is_some()),
+            ("pane_full_lines", access.pane_full_lines(pane).is_some()),
+            ("pane_has_painted", access.pane_has_painted(pane).is_some()),
+            ("pane_eof", access.pane_eof(pane).is_some()),
+            ("pane_size", access.pane_size(pane).is_some()),
+            ("inject", access.inject(pane, &KeyStroke::text("")).is_ok()),
+            (
+                "pane_start_dir",
+                access
+                    .origin()
+                    .expect("this host records where a pane stands")
+                    .pane_start_dir(pane)
+                    .is_some(),
+            ),
+            (
+                "pane_foreground_leader",
+                access
+                    .foreground_job()
+                    .expect("this host can read a foreground job")
+                    .pane_foreground_leader(pane)
+                    .is_some(),
+            ),
+            (
+                "pane_recent_input",
+                access
+                    .input_trail()
+                    .expect("this host records a trail")
+                    .pane_recent_input(pane)
+                    .is_some(),
+            ),
+            (
+                "pane_recent_input_has",
+                access
+                    .input_echo()
+                    .expect("this host echoes what was typed")
+                    .pane_recent_input_has(pane, "")
+                    .is_some(),
+            ),
+            (
+                "pane_hands",
+                access
+                    .hands()
+                    .expect("this host counts hands")
+                    .pane_hands(pane)
+                    .is_some(),
+            ),
+            (
+                "pane_echo",
+                access
+                    .terminal_modes()
+                    .expect("this host reads terminal modes")
+                    .pane_echo(pane)
+                    .is_some(),
+            ),
+            (
+                "pane_end_of_input",
+                access
+                    .terminal_modes()
+                    .expect("this host reads terminal modes")
+                    .pane_end_of_input(pane)
+                    .is_some(),
+            ),
+            (
+                "pane_lines_since",
+                access
+                    .output_lines()
+                    .expect("this host serves output lines")
+                    .pane_lines_since(pane, 0)
+                    .is_some(),
+            ),
+            (
+                "pane_raw_output",
+                access
+                    .raw_capture()
+                    .expect("this host captures raw output")
+                    .pane_raw_output(pane)
+                    .is_some(),
+            ),
+            (
+                "pane_revision",
+                access
+                    .changes()
+                    .expect("every pty this pool owns counts its changes")
+                    .pane_revision(pane)
+                    .is_some(),
+            ),
+            (
+                "pane_moved_after",
+                access
+                    .changes()
+                    .expect("every pty this pool owns counts its changes")
+                    .pane_moved_after(pane, u64::MAX, Duration::from_millis(10))
+                    .is_some(),
+            ),
+        ]
+    }
+
+    /// Name the doors in `doors` that did not answer.
+    fn the_silent_ones(doors: &[(&'static str, bool)]) -> Vec<&'static str> {
+        doors
+            .iter()
+            .filter(|(_, answered)| !answered)
+            .map(|(name, _)| *name)
+            .collect()
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY DOOR ON THIS SURFACE FOLLOWS A PANE THAT MOVED WINDOWS, AND THEY DO IT FOR
+    /// ONE REASON** — register item 1099.
+    ///
+    /// # ⚠⚠⚠⚠⚠ What was measured, and why a per-door gate could not have said it
+    ///
+    /// Register item 682 gave this surface a fallback and put it in `handle`, whose doc then said
+    /// *every reader on this surface resolves through this function*. **Eight doors did not.**
+    /// Three of them (`pane_eof`, `pane_child_exit`, `close`) had been given hand copies of the
+    /// fallback, one at a time, each with its own paragraph explaining why it needed one; five
+    /// (`pane_size`, `respawn`, `pane_stop_job`, `pane_foreground_leader`, `pane_start_dir`) had
+    /// not, and nothing anywhere said which group a door belonged in. A run whose pane had been
+    /// moved could therefore read its screen and type into it while `pane_size` answered *I cannot
+    /// say*, `pane_foreground_leader` answered *no such job*, and `respawn` — the door
+    /// [`AiLoop`](crate::ai_loop::AiLoop)'s restart uses — answered *there is no pane N to
+    /// replace*.
+    ///
+    /// **A gate per door would have measured each hand copy and missed the shape**, which is what
+    /// the three existing ones did: the fallback was correct everywhere it had been written, and
+    /// the defect was entirely in where it had not. So this gate asks EVERY door in one list and
+    /// names the ones that stay silent, which makes a door added without the choice a red that
+    /// says which door.
+    ///
+    /// ⚠⚠ **THE MUTATION IS ONE DELETION.** Removing the second arm of
+    /// `WorkspacePaneAccess::whichever_pool_holds` turns this whole list red at once — the property
+    /// register item 1099 asked for and the thing that was not true before it: the fallback had to
+    /// be deleted door by door, and each deletion reddened only that door's own gate.
+    ///
+    /// ⚠ The CONTROL comes first and is the same list: every door answers while the pane is still
+    /// in this surface's own pool, so a silence below is about the move and not about a fixture
+    /// that never worked.
+    #[test]
+    fn every_door_follows_a_pane_that_moved_to_another_window() {
+        let (own, destination, access, pane) = a_pane_and_the_window_it_can_move_to();
+
+        // ── 1. THE CONTROL: the pane is HERE, and every door answers ──
+        let before = every_door_answering_about(&access, pane);
+        assert!(
+            the_silent_ones(&before).is_empty(),
+            "⚠⚠⚠⚠⚠ THE FIXTURE NEVER WORKED: these doors were silent about a pane this surface's \
+             OWN pool holds, so their silence after the move would say nothing: {:?}",
+            the_silent_ones(&before),
+        );
+
+        // ── 2. THE MOVE — the product's own primitive, and the pane stays ALIVE ──
+        //
+        // ⚠⚠⚠⚠ `close` + `adopt` is what `move-pane`, `join-pane` and `break-pane` each are, and
+        // binding the pane between them is what makes this *the pane moved* rather than *the pane
+        // died*: a dead pane would make every reading below a claim about `PeerGone` instead.
+        let moved = lock(&own)
+            .close(pane)
+            .expect("this surface's own pool held the pane a statement ago");
+        assert!(
+            !moved.pty().is_eof(),
+            "⚠⚠⚠⚠⚠ THE FIXTURE'S PRECONDITION: the pane must still be RUNNING once it has left \
+             this pool",
+        );
+        lock(&destination).adopt(moved);
+
+        // ── 3. THE MEASUREMENT: every door still answers, and the reds name themselves ──
+        let after = every_door_answering_about(&access, pane);
+        assert!(
+            the_silent_ones(&after).is_empty(),
+            "⛔⛔⛔⛔⛔ THESE DOORS DO NOT FOLLOW A PANE THAT MOVED WINDOWS, so a run driving it \
+             reads some facts about its pane and is told others do not exist: {:?}",
+            the_silent_ones(&after),
+        );
+
+        // ── 4. AND THE ONE DOOR THAT IS DESTRUCTIVE, ASKED LAST ──
+        //
+        // ⚠ `pane_stop_job` ends the pane's job, so it cannot sit in the list above. What is
+        // asserted is the REFUSAL it no longer gives: a moved pane is not an unknown one.
+        let stopped = access.pane_stop_job(pane, Stop::Interrupt, Reach::UnderTheProgram);
+        assert!(
+            !matches!(stopped, Err(PaneError::UnknownPane(_))),
+            "⛔⛔⛔ `pane_stop_job` called a moved pane UNKNOWN — and a cancel is exactly when a \
+             person is most likely to have rearranged the windows: {stopped:?}",
+        );
+
+        // ── 5. AND THE DOOR WHOSE `None` MEANS TWO THINGS, ASKED WHERE THEY COME APART ──
+        //
+        // ⚠⚠⚠ `pane_child_exit` cannot sit in the list above, because for a pane whose child is
+        // still RUNNING its honest answer is `None` — the same word an unknown pane gets. The stop
+        // just now is what separates them: the child is ending, so a door that reaches the pane
+        // must eventually say *how* it ended, and one that does not will answer `None` for ever.
+        assert!(
+            until(Duration::from_secs(5), || access
+                .pane_child_exit(pane)
+                .is_some()),
+            "⛔⛔⛔ `pane_child_exit` never reported how a moved pane's child ended, so *still \
+             running* and *no such pane* are the same answer for a pane that changed windows — \
+             and a judging pass reads success off exactly this",
+        );
+
+        // ── 6. AND `close` DISPOSES OF IT WHERE IT NOW LIVES ──
+        assert!(
+            access
+                .lifecycle()
+                .expect("this host owns its panes")
+                .close(pane),
+            "⛔⛔ the one act that DISPOSES of a pane must reach the pool that holds it, or a \
+             moved pane leaks a pty and a process on every asking",
+        );
+        assert!(
+            lock(&destination).pane(pane).is_none(),
+            "⚠⚠ and it must be gone from the pool it had moved to, not merely reported closed",
+        );
+        assert!(
+            lock(&destination).panes().len() == 1,
+            "⚠⚠⚠ THE STRANGER MUST STILL BE THERE: a close that took the other window's pane list \
+             rather than the named pane would pass every assertion above",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE ONE PLACE STAYS ONE PLACE** — register item 1099's other half, and the arm
+    /// that is about the NEXT door rather than about today's.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a behavioural gate cannot hold this
+    ///
+    /// The gate above asks every door that exists today. It cannot ask about a door written
+    /// tomorrow, and *a door written without the pool step* is exactly what register item 1099 is:
+    /// the fallback was correct in all four places it had been written, and the defect was
+    /// entirely in the five where nobody had thought to write it. So the property that has to hold
+    /// is not about answers — it is about the SOURCE: **naming this surface's own pool directly is
+    /// how a door skips the choice**, and there are exactly three lines entitled to do it.
+    ///
+    /// ⚠⚠ Matched as whole lines and not counted, so a fourth reach cannot pass by being the
+    /// fourth of something. A door that needs one of these three shapes for a genuinely new reason
+    /// adds its line here, in a diff, beside the reason — which is the difference between a
+    /// decision recorded and a decision skipped.
+    ///
+    /// ⚠ It reads its own source. A rename of this file turns this red at COMPILE time, which is
+    /// the failure that cannot be mistaken for a pass.
+    #[test]
+    fn the_only_lines_that_name_this_surfaces_own_pool_are_the_three_that_may() {
+        /// The three code lines allowed to reach `self.workspace` without asking which pool holds
+        /// the pane — each with the reason its own doc states at length.
+        const ENTITLED: [&str; 3] = [
+            // `whichever_pool_holds` IS the choice: its first candidate is this surface's pool.
+            "if let Some(found) = ask(&self.workspace) {",
+            // `pane_ids` is asked about a WINDOW, not about a pane — there is no id to resolve.
+            "lock(&self.workspace).panes().iter().map(Pane::id).collect()",
+            // `spawn_in` opens a pane that does not exist yet, so no pool can hold it.
+            "self.spawn_with(&self.workspace, argv, cwd, &[], cols, rows)",
+        ];
+        let source = include_str!("access.rs");
+        // ⚠⚠ THE IMPLEMENTATION AND NOT THIS MODULE. The three literals above are themselves lines
+        // of this file naming `self.workspace`, so a gate that read the whole file would count its
+        // own allow-list and pass at six. The subject is the surface's doors, and they are all
+        // above this boundary.
+        let (implementation, _) = source
+            .split_once("\n#[cfg(test)]")
+            .expect("this file carries its tests behind a `cfg(test)` boundary");
+        // ⚠⚠ Prose is excluded, and THROUGH THE WORKSPACE'S ONE DEFINITION OF WHAT A COMMENT IS —
+        // register item 1051. The first draft of this line was `!line.starts_with("//")`, which is
+        // the approximation that item paid off: it cannot see a comment that begins mid-line, and
+        // this file argues about `self.workspace` at length in prose that a gate counting those
+        // would be measuring instead of the code. `what_a_comment_is_has_one_spelling_in_this_
+        // workspace` is what caught the hand-rolled copy, one gate applying to its own author.
+        let reaching: Vec<String> = sprag_gate::rust_source::uncommented_lines(implementation)
+            .into_iter()
+            .map(|(_, line)| line.trim().to_string())
+            .filter(|line| line.contains("self.workspace"))
+            .collect();
+        assert_eq!(
+            reaching, ENTITLED,
+            "⛔⛔⛔⛔⛔ A DOOR ON THIS SURFACE NAMES ITS OWN POOL DIRECTLY, which is how it skips \
+             `whichever_pool_holds` and stops following a pane that moved windows — the shape \
+             register item 1099 found in five doors at once. Either route it through \
+             `on_pane` / `on_pool` / `pool_holding`, or add its line to `ENTITLED` with the reason \
+             it cannot",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A MOVED PANE CAN BE REPLACED, AND THE REPLACEMENT LANDS IN THE WINDOW THE PANE
+    /// WAS IN** — register item 1099, and the half of it no `Option` can express.
+    ///
+    /// `respawn` resolved its subject out of this surface's own pool, so a moved pane answered
+    /// *there is no pane N to replace* — and that is the door
+    /// [`AiLoop`](crate::ai_loop::AiLoop)'s `restarting` state drives, which made *the person
+    /// moved my pane* and *my agent cannot be restarted* the same event.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why WHERE the replacement lands is the assertion and not a detail
+    ///
+    /// [`Workspace::hand_seat_over`] carries what the caller declared about the seat — its name,
+    /// who asked for it, what it may spend — and it takes two panes **in one pool**. A door that
+    /// followed the pane far enough to read its recipe and then spawned the replacement into this
+    /// surface's own pool would hand the seat over between a pane that is here and a pane that is
+    /// not: the call would answer `false`, nothing reads it, and the operator would watch their
+    /// pane vanish from the window they moved it to and reappear, stripped of its declarations, in
+    /// the one they moved it out of.
+    #[test]
+    fn a_pane_that_moved_windows_is_replaced_in_the_window_it_moved_to() {
+        let (own, destination, access, pane) = a_pane_and_the_window_it_can_move_to();
+        let stood_in = access
+            .origin()
+            .expect("this host records where a pane stands")
+            .pane_start_dir(pane)
+            .expect("the control: a pane in this surface's own pool has a recorded place");
+
+        let moved = lock(&own).close(pane).expect("the pool held it");
+        lock(&destination).adopt(moved);
+
+        let fresh = access
+            .lifecycle()
+            .expect("this host owns its panes")
+            .respawn(pane)
+            .expect("⛔⛔⛔⛔⛔ A MOVED PANE COULD NOT BE REPLACED — the sentence that ends a run");
+        assert_ne!(fresh, pane, "a replacement is a new pane");
+
+        assert!(
+            lock(&destination).pane(fresh).is_some(),
+            "⛔⛔⛔⛔⛔ THE REPLACEMENT LANDED SOMEWHERE ELSE than the window the pane was in, so \
+             `hand_seat_over` had one pane and not two and the seat's declarations were dropped",
+        );
+        assert!(
+            lock(&own).pane(fresh).is_none(),
+            "⚠⚠⚠ and it must NOT be in this surface's own pool — that is the pool the person moved \
+             the pane OUT of",
+        );
+        assert!(
+            lock(&destination).pane(pane).is_none(),
+            "⚠⚠ and the pane being replaced goes, in the pool it actually lived in",
+        );
+        assert_eq!(
+            access
+                .origin()
+                .expect("this host records where a pane stands")
+                .pane_start_dir(fresh),
+            Some(stood_in),
+            "⚠⚠ and the replacement stands where the original was pointed — register item 684, \
+             reached here through a pool this surface does not own",
         );
     }
 
