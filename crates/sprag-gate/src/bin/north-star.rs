@@ -174,7 +174,23 @@ fn main() -> std::process::ExitCode {
     // ⚠⚠ PRINTED ABOVE THE TOTAL, because this is the line a round acts on — register item 833(1).
     // The population says what is owed; this says what to take first.
     let critical = reading.critical();
-    let ranked: Vec<String> = critical.iter().map(ToString::to_string).collect();
+    // ⛔⛔⛔⛔⛔ AND WHICH OF THEM NOBODY CAN TAKE — register item 1108. Working rule 11 reads this
+    // line first and says *take from here*; `admits` filters the same set through `takeable`, so a
+    // critical item a person's decision holds would be NAMED here and REFUSED there, and the reader
+    // acting on the first would be sent at something the second will not let them have. The mark
+    // travels with the number rather than the line being silently shortened, because *there is a
+    // critical item and it is waiting on you* is the whole of what this line has to say then.
+    let stopped = reading.held();
+    let ranked: Vec<String> = critical
+        .iter()
+        .map(|number| {
+            if stopped.contains(number) {
+                format!("{number}(held)")
+            } else {
+                number.to_string()
+            }
+        })
+        .collect();
     println!("critical {}: {}", critical.len(), ranked.join(" "));
     println!("{}", backlogs.unranked);
     // ⛔⛔⛔⛔⛔ AND THE OPEN ITEMS THAT HAVE NOT SAID WHETHER THEIR PRESCRIPTION CAN BE ASKED —
@@ -217,6 +233,27 @@ fn main() -> std::process::ExitCode {
             // same walk and a build that let them disagree should say so instead of panicking.
             None => println!("  {number} held by: a chain that cannot be walked"),
         }
+    }
+    // ⛔⛔⛔⛔⛔ AND THE OPEN ITEMS A PERSON'S DECISION HOLDS — register item 1108, printed beside
+    // the deferrals because it is the other reason an open item is not takeable. It is NEVER
+    // silent, for the reason the release line below states about an empty `deferred`: a reader has
+    // to be able to tell *nobody is waiting on anybody* from *this line does not exist*.
+    //
+    // ⚠⚠ THE ASKING IS PRINTED WITH THE NUMBER, because that is the whole of what makes this a
+    // fact rather than an excuse — and because the person it is owed by is the one most likely to
+    // be reading this report.
+    let holdings = reading.holdings();
+    println!(
+        "held {} waiting on a person: {}",
+        holdings.len(),
+        holdings
+            .iter()
+            .map(|(number, _)| number.to_string())
+            .collect::<Vec<_>>()
+            .join(" "),
+    );
+    for (number, asked) in &holdings {
+        println!("  {number} waits on: {asked}");
     }
     // ⛔⛔⛔⛔⛔ AND WHAT THE CAP WOULD HAVE HELD AND NO LONGER DOES — register item 921. An empty
     // `deferred` line has two completely different causes and a reader has to be able to tell

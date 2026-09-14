@@ -451,6 +451,46 @@ pub const INTERMITTENT: &str = "@intermittent:";
 /// silence.
 pub const JUDGED: &str = "@judged:";
 
+/// ⛔⛔⛔⛔⛔ **THE LINE AN ITEM SAYS ITS REMAINING WORK IS HELD BY A PERSON'S DECISION ON**:
+/// `@held: <date> — <what was asked, and of whom>` — register item 1108.
+///
+/// # ⛔⛔⛔⛔⛔ What this replaces: a HAND LIST, in the file whose own rule forbids one
+///
+/// Some items cannot be finished by any round however good. Item 824's remaining work is a
+/// promotion, which is the owner's; item 808's is a machine only they can clear. The ledger said so
+/// in PROSE — *"@ns: open — 승격은 소유자 결정, 그래도 모집단이다"* — and nothing read it, so this
+/// instrument went on naming them as the next thing to do. What actually kept rounds off them was a
+/// line in the loop's memory index naming seven numbers and saying *do not take these*.
+///
+/// **Measured 2026-09-14: eight such items — 805, 803, 773, 824, 808, 1039, 1004 and 1106 — every
+/// one of them in the population this instrument hands out.** And the same index states the rule
+/// they violate, twice over: *a hand list leaks (80, 762), so the MARK wins*, and *do not keep a
+/// list here — the register is the SSOT and the command is the answer* (823). A list that has to be
+/// read by whoever happens to be looking is the shape register item 705 is about, one layer up.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is not the escape hatch rule 6 refuses
+///
+/// **A held item is still OPEN and still counted by the ending.** Marking something held cannot
+/// move the north star one item closer — see [`Reading::ending`], which takes the population and
+/// knows nothing about this mark, and the gate that holds the two apart. What it changes is the
+/// WORK ORDER: [`Reading::takeable`] stops offering it, exactly as the depth cap does for a
+/// deferral, and for the same stated reason — *registered, and not to be worked until the thing
+/// that holds it lifts*.
+///
+/// ⚠⚠ **AND THE MARK MUST SAY WHAT WAS ASKED.** A bare `@held:` is [`Fault::HeldUnasked`], not a
+/// pass: *this is somebody else's* with no asking behind it is a round excusing itself, which is
+/// precisely what an unclassified case must never buy. The instrument cannot check that a person
+/// was really asked; it can check that the line says so, and refuse the silence.
+///
+/// # ⚠⚠⚠ THE RESIDUE, STATED RATHER THAN HIDDEN
+///
+/// **Nothing retires it, and nothing here reads a clock.** An owner who answered a month ago leaves
+/// the mark standing until the round that acts on the answer removes it, and the date in the line
+/// is for a person rather than for this instrument — there is no clock in this file and inventing
+/// one for this would be the least-evidenced thing in it. What is bought is that *nobody can take
+/// this* stops being a sentence in a memory file and becomes a line the command reads.
+pub const HELD: &str = "@held:";
+
 /// ⛔⛔⛔⛔⛔ **THE LINE AN ITEM PUTS ONE OF ITS OWN MEASUREMENTS ON, IN A FORM THIS TREE CAN BE
 /// ASKED**: `` @witness: `<path>` contains|lacks `<text>` `` — register item 488.
 ///
@@ -1483,6 +1523,13 @@ pub struct Item {
     /// 1053(3). [`FINISH_NONE`] on a [`FINISH`] line. An item with neither this nor a predicate is
     /// in the backlog [`Fault::FinishRatchetGrew`] holds; it is not a pass.
     pub unaskable: bool,
+    /// ⛔⛔⛔ **WHAT A PERSON WAS ASKED THAT THIS ITEM'S REMAINING WORK WAITS ON** — [`HELD`], and
+    /// [`None`] for an item no round is waiting on anybody for.
+    ///
+    /// ⚠ The string is the ASKING, and it is kept rather than reduced to a flag so the report can
+    /// print what is owed by whom. A [`HELD`] line with nothing after it is [`Fault::HeldUnasked`]
+    /// and leaves this `None`, so a refused mark can never quietly hold an item back.
+    pub held: Option<String>,
     /// Whether any block of it names the loop — the alarm's input, never the population's.
     pub names_the_loop: bool,
     /// Whether the prose vocabulary reads it as closed — likewise only the alarm's input.
@@ -1608,6 +1655,18 @@ pub enum Fault {
     /// ⚠ Read from the line rather than guessed at: a typo that counted as an owner would leave the
     /// backlog unowned and the gate green, and there is no ratchet here to absorb one.
     UnknownOwned {
+        /// The item whose line it is.
+        number: u32,
+        /// The line, exactly as written.
+        line: String,
+    },
+    /// ⛔⛔⛔⛔⛔ **A [`HELD`] LINE THAT NAMES NO ASKING** — register item 1108.
+    ///
+    /// The mark takes a round's item out of the work order, which is the one thing that could make
+    /// it an excuse rather than a fact. *This is somebody else's* with nothing behind it is exactly
+    /// that, so the silence is a RED: this instrument cannot check that a person was really asked,
+    /// and it can check that the line says what was asked and of whom.
+    HeldUnasked {
         /// The item whose line it is.
         number: u32,
         /// The line, exactly as written.
@@ -2139,6 +2198,14 @@ impl fmt::Display for Fault {
                  while reading like an owner",
                 line.trim(),
                 OWNABLE.join("`, `"),
+            ),
+            Self::HeldUnasked { number, line } => write!(
+                f,
+                "item {number}: `{}` takes it out of the work order and says nothing about what \
+                 was asked or of whom — a `{HELD}` line is `{HELD} <date> — <the asking>`, and \
+                 without one this mark is a round excusing itself rather than a fact about a \
+                 person's decision",
+                line.trim(),
             ),
             Self::BacklogOwnerUnclear { token, claimed } => match claimed.as_slice() {
                 [] => write!(
@@ -3093,12 +3160,47 @@ impl Reading {
     /// which is the same direction [`Reading::unclassified`] pays down in.
     #[must_use]
     pub fn takeable(&self, cap: u32) -> Vec<u32> {
+        let held = self.held();
         self.population()
             .into_iter()
             // ⛔⛔⛔ [`Reading::debts_above`] AND NOT [`Reading::depth`] — register item 921. The
             // fact and the budget were one number; the cap is about how much of the chain is still
             // OWED, and a paid parent is not a debt.
             .filter(|number| self.debts_above(*number).is_none_or(|owed| owed <= cap))
+            // ⛔⛔⛔⛔⛔ **AND THE SECOND REASON AN OPEN ITEM IS NOT TAKEABLE** — register item
+            // 1108. There was exactly one, the depth cap, so *a person has to answer before this
+            // can move* had nowhere to live but prose nothing reads — and a hand list of eight
+            // numbers in the loop's memory index, in the file whose own rule is that hand lists
+            // leak and marks win. See [`HELD`], which holds why this cannot empty the population.
+            .filter(|number| !held.contains(number))
+            .collect()
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE OPEN ITEMS A PERSON'S DECISION HOLDS** — [`HELD`], and the set
+    /// [`takeable`](Self::takeable) subtracts.
+    ///
+    /// ⚠⚠ **STILL OPEN, AND STILL COUNTED BY THE ENDING.** [`ending`](Self::ending) takes the
+    /// population and knows nothing about this mark, which is what makes the mark a statement about
+    /// the work ORDER rather than an escape from the work. A deferral says the same thing about the
+    /// depth cap one door over.
+    #[must_use]
+    pub fn held(&self) -> Vec<u32> {
+        let open = self.population();
+        self.items
+            .iter()
+            .filter(|item| item.held.is_some() && open.contains(&item.number))
+            .map(|item| item.number)
+            .collect()
+    }
+
+    /// What each held item is waiting on, in the order [`held`](Self::held) answers.
+    #[must_use]
+    pub fn holdings(&self) -> Vec<(u32, String)> {
+        let open = self.population();
+        self.items
+            .iter()
+            .filter(|item| open.contains(&item.number))
+            .filter_map(|item| Some((item.number, item.held.clone()?)))
             .collect()
     }
 
@@ -4278,6 +4380,11 @@ fn owner_value(line: &str) -> Option<&str> {
     line.trim_start().strip_prefix(OWNER)
 }
 
+/// The value of a [`HELD`] line, by the same whole-line rule [`mark_value`] holds.
+fn held_value(line: &str) -> Option<&str> {
+    line.trim_start().strip_prefix(HELD)
+}
+
 /// ⛔⛔⛔⛔⛔ **EVERY DECLARATION TOKEN AN [`OWNER`] LINE MAY NAME** — register item 939, and the
 /// one place that says what the four are.
 ///
@@ -5197,6 +5304,9 @@ pub fn read(text: &str) -> Reading {
         // and whether any block has settled that question yet — see the walk below for why the
         // second flag is not `witnesses.is_empty()`.
         let mut unaskable = false;
+        // ⛔ Register item 1108: what a person was asked that this item's remaining work waits on,
+        // settled by the topmost block that names anything — the rule `owns` follows.
+        let mut held: Option<String> = None;
         let mut settled = false;
         for body in bodies {
             let mut in_block: Vec<Tag> = Vec::new();
@@ -5207,6 +5317,7 @@ pub fn read(text: &str) -> Reading {
             let mut reds: Vec<RedClaim> = Vec::new();
             let mut judgements: Vec<Judged> = Vec::new();
             let mut owned: Vec<&'static str> = Vec::new();
+            let mut holdings: Vec<String> = Vec::new();
             let mut witnessed: Vec<Witness> = Vec::new();
             // ⛔ Register item 1053(3): whether this block says its prescription cannot be asked.
             let mut answered_finish = false;
@@ -5333,6 +5444,21 @@ pub fn read(text: &str) -> Reading {
                         }),
                     }
                 }
+                // ⛔⛔⛔⛔⛔ AND WHETHER A PERSON'S DECISION HOLDS WHAT IS LEFT OF IT — register
+                // item 1108. An EMPTY value is a fault and never a silence, for the two arms above
+                // this one: *this is somebody else's* with no asking behind it is a round excusing
+                // itself from work, and an unclassified case must not read as a pass (rule 6).
+                if let Some(value) = held_value(line) {
+                    let asked = value.trim();
+                    if asked.is_empty() {
+                        faults.push(Fault::HeldUnasked {
+                            number: *number,
+                            line: (*line).to_string(),
+                        });
+                    } else {
+                        holdings.push(asked.to_owned());
+                    }
+                }
                 let Some(value) = mark_value(line) else {
                     continue;
                 };
@@ -5381,6 +5507,13 @@ pub fn read(text: &str) -> Reading {
             // because one item may carry more than one backlog.
             if owns.is_empty() {
                 owns = std::mem::take(&mut owned);
+            }
+            // ⚠ AND WHAT HOLDS IT — register item 1108, by the rule above it exactly: an asking
+            // written in a block that lost the tie is one this item is no longer making, and
+            // holding a round off an item on a sentence nobody is asserting would be the escape
+            // hatch this mark is built not to be.
+            if held.is_none() {
+                held = holdings.first().cloned();
             }
             // ⚠⚠ AND SO DO THE WITNESSES — register item 488, by the same rule and for the same
             // reason the ownership claim above it follows: a premise stated by a block that lost
@@ -5452,6 +5585,7 @@ pub fn read(text: &str) -> Reading {
             owns,
             witnesses,
             unaskable,
+            held,
             names_the_loop,
             reads_as_closed,
         });
@@ -6021,6 +6155,147 @@ mod tests {
             "an item that states nothing is carried as its own number rather than silently dropped",
         );
         assert!(reading.is_green(), "faults: {:?}", reading.faults);
+    }
+
+    /// A ledger with the two reasons an open item is not takeable, and a control that is takeable
+    /// — register item 1108. `700` waits on a person, `701` waits on nobody, and `702` writes the
+    /// mark with nothing after it.
+    const HOLDINGS: &str = "\
+# Ledger
+## A. THE SHARPEST THINGS OPEN
+@ns-unclassified: 0
+@sev-unclassified: 0
+@from-unclassified: 0
+@paid-uncommitted: 0
+@witness-floor: 0
+@finish-unclassified: 0
+
+700. ⛔ **Its last step is a promotion**
+     @ns: open
+     @sev: critical — it stops the loop dead
+     @from: none
+     @finish: none — a fixture states no prescription
+     @held: 2026-09-14 — asked the owner whether to promote; it kills other people's runs
+
+701. ⛔ **Nobody is waiting on anybody**
+     @ns: open
+     @sev: ordinary — an ordinary one
+     @from: none
+     @finish: none — a fixture states no prescription
+";
+
+    /// ⛔⛔⛔⛔⛔ **AN ITEM A PERSON'S DECISION HOLDS IS OUT OF THE WORK ORDER AND STILL OWED** —
+    /// register item 1108.
+    ///
+    /// # ⛔⛔⛔ What this replaces
+    ///
+    /// There was ONE reason an open item was not takeable — the depth cap — so *a person has to
+    /// answer before this can move* lived in prose (`@ns: open — 승격은 소유자 결정`) that nothing
+    /// read, and in a HAND LIST of eight numbers in the loop's memory index saying *do not take
+    /// these*. That index states the rule it was breaking: a hand list leaks, so the mark wins.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The second half is the one that makes this not an escape hatch
+    ///
+    /// **A held item is still in the population and still counted by the ending.** If marking
+    /// something held moved the north star one item closer, the mark would be a way to finish a
+    /// register by annotating it — which is what rule 6 refuses. Both halves are asserted here
+    /// because only one of them looks like the feature.
+    #[test]
+    fn an_item_a_persons_decision_holds_leaves_the_work_order_and_not_the_ledger() {
+        let reading = read(HOLDINGS);
+        assert!(reading.is_green(), "faults: {:?}", reading.faults);
+
+        assert_eq!(
+            reading.held(),
+            vec![700],
+            "the mark is what says so — the prose beside it never did",
+        );
+        assert_eq!(
+            reading.takeable(1),
+            vec![701],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1108: a round asking what to take was handed an item no round \
+             can finish. The depth cap was the only reason an open item could be held back, so \
+             *this one is waiting on a person* had nowhere to live but a hand list",
+        );
+
+        // ── ⛔⛔⛔⛔⛔ AND THE HALF THAT KEEPS IT FROM BEING AN EXCUSE ───────────────────────────
+        assert_eq!(
+            reading.population(),
+            vec![700, 701],
+            "⛔⛔⛔⛔⛔ A HELD ITEM IS STILL OWED. If this mark shrank the population, a register \
+             could be finished by annotating it — which is rule 6's escape hatch wearing the one \
+             shape that would be hardest to see, because the report would look like progress",
+        );
+        assert_eq!(
+            reading.ending().open,
+            vec![700, 701],
+            "⚠⚠ and the ENDING is what the north star is read off, so it is asserted apart from \
+             the population it happens to be derived from today",
+        );
+
+        // ── ⛔⛔⛔ A CRITICAL ITEM THAT IS HELD MUST NOT BE WHAT A ROUND IS SENT AT ─────────────
+        //
+        // ⚠⚠ Working rule 11 reads `critical` first. `700` IS critical, so a reading that let it
+        // through here would send every round at the one item none of them can finish — for ever,
+        // because nothing a round does can lift it.
+        assert_eq!(
+            reading.critical(),
+            vec![700],
+            "the control: it really is critical, or the arm below is about nothing",
+        );
+        assert_eq!(
+            reading.admits(1, &[]),
+            vec![701],
+            "⛔⛔⛔⛔⛔ AND THE OVERRIDE IS NOT A WAY ROUND IT: `critical` steers what a round takes \
+             and it must steer within what a round CAN take, or rule 11 sends every round at a \
+             wall",
+        );
+        assert_eq!(
+            reading.holdings(),
+            vec![(
+                700,
+                "2026-09-14 — asked the owner whether to promote; it kills other people's runs"
+                    .to_owned()
+            )],
+            "⚠⚠⚠ AND WHAT IT WAITS ON TRAVELS WITH IT. The person who can lift this is the one \
+             most likely to be reading the report, and a bare number tells them nothing",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A HELD MARK WITH NO ASKING BEHIND IT IS A RED, NEVER A SILENCE** — register item
+    /// 1108, and rule 6 at the one mark that could become an excuse.
+    ///
+    /// The instrument cannot check that a person was really asked. It can check that the line says
+    /// what was asked and of whom, and refuse the empty one — so *this is somebody else's* costs a
+    /// round a sentence it has to be able to write.
+    #[test]
+    fn a_held_mark_that_names_no_asking_is_refused_and_holds_nothing_back() {
+        let bare = HOLDINGS.replace(
+            "@held: 2026-09-14 — asked the owner whether to promote; it kills other people's runs",
+            "@held:",
+        );
+        let reading = read(&bare);
+        assert!(
+            reading
+                .faults
+                .iter()
+                .any(|fault| matches!(fault, Fault::HeldUnasked { number: 700, .. })),
+            "a mark that takes an item out of the work order and says nothing about why must be a \
+             fault: {:?}",
+            reading.faults,
+        );
+        assert!(
+            reading.held().is_empty(),
+            "⛔⛔⛔⛔⛔ AND THE REFUSED MARK MUST NOT HOLD ANYTHING BACK ANYWAY. A fault that \
+             reddened the ledger while still removing the item from the work order would let a \
+             round have the benefit of the excuse and pay for it in a number nobody reads",
+        );
+        assert_eq!(
+            reading.takeable(1),
+            vec![700, 701],
+            "⚠⚠ so the item is takeable again, which is the state a round must meet: the mark was \
+             not written, whatever it looks like",
+        );
     }
 
     /// ⚠⚠⚠ **SECTION B IS NOT THE POPULATION**, and a mark there must not leak in — the north star
@@ -9074,6 +9349,7 @@ mod tests {
             | Fault::RedClaimedTwice { .. }
             // ⚠ Register item 939's first fault is about ONE line, which its message quotes.
             | Fault::UnknownOwned { .. }
+            | Fault::HeldUnasked { .. }
             // ⚠⚠ Register item 488's four name ONE item each — the item, the path and the text it
             // is about, all in the message — except the last, which is about the LEDGER and names
             // no item because there is none to name: every witness it counts has left the
