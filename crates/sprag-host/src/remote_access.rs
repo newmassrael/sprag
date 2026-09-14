@@ -1808,6 +1808,18 @@ impl PaneCheckout for RemotePaneAccess {
         crate::checkout::IsolatedCheckout::of(dir, &sprag_scratch::scratch_root())
             .map(|cut| Box::new(cut) as Box<dyn CutCheckout>)
     }
+
+    /// ⚠ Both of these are asked of the SHARED tree and not of a copy, which is what makes them
+    /// answerable at two different moments of one run: the base is taken before the run has typed
+    /// a byte, and what moved is read when it claims a milestone. A copy exists only for the
+    /// second of those. See [`crate::checkout::standing_at`].
+    fn standing_at(&self, dir: &std::path::Path) -> Option<String> {
+        crate::checkout::standing_at(dir)
+    }
+
+    fn moved_since(&self, dir: &std::path::Path, base: &str) -> Option<Vec<String>> {
+        crate::checkout::moved_since(dir, base)
+    }
 }
 
 impl CutCheckout for crate::checkout::IsolatedCheckout {

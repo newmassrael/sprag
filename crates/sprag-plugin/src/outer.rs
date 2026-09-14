@@ -8225,6 +8225,28 @@ pub struct OuterLoop {
     /// [`deliveries`](Self#structfield.deliveries) and the evidence level beside it are both built
     /// on: the count and the word a walk carries move in the same arm, so they cannot disagree.
     checks: crate::plugin::Checks,
+    /// ⛔⛔⛔⛔⛔ **WHERE THE TREE STOOD BEFORE THIS RUN TYPED A BYTE** — register item 1106, and
+    /// the one fact that makes *what did this round touch* answerable at all.
+    ///
+    /// # ⚠⚠⚠ Why a run has to remember this rather than ask for it later
+    ///
+    /// A judge is six times faster when the question names the FILES to open, and the only list a
+    /// run's DOCUMENT can honestly author is directories: which files a round touches differs every
+    /// round, and a static list of five would be wrong on almost every one. So the files have to
+    /// come from the work itself — and a version control system can only name them RELATIVE to
+    /// something. By the time a milestone is claimed the work is committed and the tree is clean,
+    /// so *what is uncommitted* names nothing; there is no later moment at which the base can be
+    /// recovered. It exists only before the run starts, and this is where it is kept.
+    ///
+    /// ⚠⚠ **LATCHED, AND ACROSS SESSION REPLACEMENT.** `restarting` closes the inner pane and opens
+    /// a fresh one, and the work of the round so far does not stop being this round's because its
+    /// session was replaced. Re-taking it there would measure the round from the middle of itself
+    /// and hand a judge the last fragment — see [`Self::started_from`], which is the only writer.
+    ///
+    /// ⚠ [`None`] is *nobody could say*: a host with no checkout capability, a directory that is no
+    /// repository, a pane whose birth directory this surface does not know. The check question then
+    /// falls back to what the document authored, exactly as it did before this existed.
+    began_at: Option<String>,
 }
 
 /// **WHAT A RUN HAS ALREADY BEEN TOLD ABOUT THE GROUNDS OF ITS DELIVERIES** — the level a pass's
@@ -8530,6 +8552,10 @@ impl OuterLoop {
             roads: DeliveredByRoad::NONE,
             said: SaidBySentence::NONE,
             checks: crate::plugin::Checks::NONE,
+            // ⚠ Nothing is asked of a version control system HERE, and that is the point: this
+            // constructor holds no pane and no surface, and the base has to be taken against the
+            // tree the DRIVEN PANE was born in. See [`Self::started_from`].
+            began_at: None,
         })
     }
 
@@ -12522,6 +12548,10 @@ impl OuterLoop {
         panes: &dyn PaneAccess,
         run: &RunContext,
     ) -> Result<Option<Reached>, PaneError> {
+        // ⛔⛔⛔⛔⛔ **AND THE TREE IS READ BEFORE THE FIRST PROMPT GOES IN** — register item 1106.
+        // This door is asked on every pump until the pane comes up and exactly once before anything
+        // is typed at it, which is the only moment a round's base exists to be taken.
+        self.started_from(panes);
         match self.driving.ready.reached(panes, self.driving.pane, run)? {
             // ⚠⚠ THE REASON IS RECEIVED AND NOT REPORTED HERE, and that is a boundary rather than a
             // shrug. This machine's record of a pass is a [`Pumped::Moved`] transition, which says
@@ -12534,6 +12564,33 @@ impl OuterLoop {
             Reached::RunEnded(why) => Err(why),
             other => Ok(Some(other)),
         }
+    }
+
+    /// **TAKE THE REVISION THIS ROUND STARTS FROM, ONCE** — register item 1106, and the only writer
+    /// of [`began_at`](Self#structfield.began_at).
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why it latches, and what re-taking it would cost
+    ///
+    /// [`start_ready`](Self::start_ready) is asked on every pump until the pane comes up, and
+    /// `restarting` sends a run back through this door when it replaces its inner session. The work
+    /// of the round so far does not stop being this round's because its session was replaced — so a
+    /// base re-taken there would measure the round **from the middle of itself** and hand a judge
+    /// the last fragment of it, with every file the round had already finished missing from the
+    /// question. That is a silent wrong answer of exactly the shape item 705 is about: the check
+    /// would open real files, judge them carefully, and be looking at part of the work.
+    ///
+    /// ⚠⚠ **AND IT IS NOT RE-TAKEN AFTER A FAILURE EITHER.** A surface that answered [`None`] once
+    /// will be asked again on the next pump — the latch is on the ANSWER, not on the attempt — so a
+    /// capability that becomes available mid-startup is still used. What cannot happen is a second
+    /// answer replacing a first.
+    fn started_from(&mut self, panes: &dyn PaneAccess) {
+        if self.began_at.is_some() {
+            return;
+        }
+        self.began_at = panes.origin().and_then(|origin| {
+            let tree = origin.pane_start_dir(self.driving.pane)?;
+            panes.checkout()?.standing_at(&tree)
+        });
     }
 
     /// **WHAT THE BARRIER SAYS ABOUT THIS PANE, AS THE MACHINE'S OWN EVENT** — or [`None`] for
@@ -15930,15 +15987,45 @@ impl OuterLoop {
         // Choosing before reducing would make a single unusable entry switch item 1072's arm off
         // for a kind whose marks were feeding it fine — silently, because a checker with no file
         // list still ANSWERS and only takes six times as long.
-        let reduce = |key: &str| {
-            Self::paths_a_check_can_open(
-                &self.authored_paths(key).unwrap_or_default(),
-                work_is_in.as_deref(),
-            )
-        };
-        let to_open = match reduce(CHECK_OPENS_KEY) {
+        let reduce = |paths: &[String]| Self::paths_a_check_can_open(paths, work_is_in.as_deref());
+        let authored = |key: &str| reduce(&self.authored_paths(key).unwrap_or_default());
+        // ⛔⛔⛔⛔⛔ **THIS ROUND'S OWN FILES FIRST, AND A DOCUMENT'S LIST ONLY WHERE THERE ARE
+        // NONE** — register item 1106, and the tier item 1072 was measured for and never had.
+        //
+        // ⚠⚠⚠⚠⚠ **WHAT 1074 COULD NOT REACH, STATED PLAINLY.** The arm below is the DOCUMENT's, and
+        // a document is written once while a round's files differ every round — so the only list it
+        // can honestly author is DIRECTORIES, and `debt_loop.scxml` says so in its own words. This
+        // repository's kind names nine of them, covering 224 of its 382 tracked files. **A judge
+        // told to open 58% of a tree is searching**, so the remedy measured at 6x — 33.3 s against
+        // a 185.2 s worst case, on a question naming five FILES — was switched on and then ran this
+        // product's own bound out twice (`CHECK_READINGS`). The list has to be about the WORK, and
+        // the only thing that knows the work is the tree.
+        //
+        // ⚠⚠ **AND NOT THE AGENT'S ACCOUNT**, which is the rule this whole prompt rests on. These
+        // paths come from a version control system asked about a base this driver took before the
+        // run typed anything — two readings this driver made, with nothing the claimant said in
+        // either. See [`crate::access::PaneCheckout::moved_since`].
+        //
+        // ⚠ **A ROUND'S SIZE IS MEASURED AND NOT ASSUMED**: over this repository's last 200
+        // commits the median is 2 changed paths, the 90th percentile 7 and the largest 23 — the
+        // range the 6x reading was taken in, so nothing here caps the list. A cap would be this
+        // driver deciding which of a round's files a judge may not see.
+        let mine = self
+            .began_at
+            .as_deref()
+            .zip(work_is_in.as_deref())
+            .and_then(|(base, tree)| panes.checkout()?.moved_since(tree, base))
+            .unwrap_or_default();
+        // ⚠⚠⚠ THE CHOICE IS MADE ON THE REDUCED LISTS AND NOT ON THE AUTHORED ONES — the ordering
+        // the arm below already had, extended to three tiers for its reason exactly: whether a path
+        // is usable is a fact about THIS RUN, and a tier that reduced to nothing has, from the
+        // checker's own feet, said nothing this question can carry.
+        let to_open = match reduce(&mine) {
             named if !named.is_empty() => named,
-            _ => reduce(PROGRESS_MARKS_KEY),
+            _ => match authored(CHECK_OPENS_KEY) {
+                named if !named.is_empty() => named,
+                _ => authored(PROGRESS_MARKS_KEY),
+            },
         };
         // ⚠⚠ THE COPY WINS WHERE THERE IS ONE, and the shared tree is the fallback rather than the
         // default. Written as `or` on the copy — not as a branch on the capability — so there is no
@@ -25940,6 +26027,26 @@ mod tests {
     struct Isolating {
         inner: WorkspacePaneAccess,
         copy: std::path::PathBuf,
+        /// **WHERE THIS STAND-IN SAYS THE TREE STANDS** — register item 1106's token, and [`None`]
+        /// for a surface that cannot say, which is the arm every document-list gate runs on.
+        at: Option<String>,
+        /// What [`moved_since`](crate::access::PaneCheckout::moved_since) answers — but ONLY when
+        /// handed back the token above, which is how these gates pin that the driver returns the
+        /// base it took rather than one it composed.
+        moved: Vec<String>,
+    }
+
+    impl Isolating {
+        /// The surface every gate written before item 1106 had: it cuts a copy and knows nothing
+        /// about a version control system, so the question falls to what the document authored.
+        fn saying_nothing(inner: WorkspacePaneAccess, copy: std::path::PathBuf) -> Self {
+            Self {
+                inner,
+                copy,
+                at: None,
+                moved: Vec::new(),
+            }
+        }
     }
 
     impl crate::access::CutCheckout for std::path::PathBuf {
@@ -25951,6 +26058,18 @@ mod tests {
     impl crate::access::PaneCheckout for Isolating {
         fn cut(&self, _dir: &std::path::Path) -> Option<Box<dyn crate::access::CutCheckout>> {
             Some(Box::new(self.copy.clone()))
+        }
+
+        fn standing_at(&self, _dir: &std::path::Path) -> Option<String> {
+            self.at.clone()
+        }
+
+        /// ⛔ **IT ANSWERS ONLY FOR THE TOKEN IT HANDED OUT.** A driver that measured a round from
+        /// a base it made up, or from one re-taken after the run had started, would be handing
+        /// something else back — and a stand-in that answered regardless would file that as a pass.
+        /// This is the one property of item 1106 no real repository is needed to measure.
+        fn moved_since(&self, _dir: &std::path::Path, base: &str) -> Option<Vec<String>> {
+            (Some(base) == self.at.as_deref()).then(|| self.moved.clone())
         }
     }
 
@@ -26044,10 +26163,10 @@ mod tests {
 
         // ── THE CLAIM: a surface that can isolate sends the checker to the COPY ────────────────
         let (workspace, pane) = pane_born_in(&repo);
-        let isolating = Isolating {
-            inner: WorkspacePaneAccess::new(Arc::clone(&workspace)),
-            copy: copy.clone(),
-        };
+        let isolating = Isolating::saying_nothing(
+            WorkspacePaneAccess::new(Arc::clone(&workspace)),
+            copy.clone(),
+        );
         let said = question_from(&isolating, pane);
         assert!(
             said.contains(&copy.display().to_string()),
@@ -26165,10 +26284,10 @@ mod tests {
         };
 
         let (workspace, pane) = pane_born_in(&repo);
-        let isolating = Isolating {
-            inner: WorkspacePaneAccess::new(Arc::clone(&workspace)),
-            copy: copy.clone(),
-        };
+        let isolating = Isolating::saying_nothing(
+            WorkspacePaneAccess::new(Arc::clone(&workspace)),
+            copy.clone(),
+        );
 
         // ── ⭐ THE CLAIM: the files a document names are IN the question ───────────────────────
         let named = asked(
@@ -26485,10 +26604,10 @@ mod tests {
             };
 
         let (workspace, pane) = pane_born_in(&repo);
-        let isolating = Isolating {
-            inner: WorkspacePaneAccess::new(Arc::clone(&workspace)),
-            copy: copy.clone(),
-        };
+        let isolating = Isolating::saying_nothing(
+            WorkspacePaneAccess::new(Arc::clone(&workspace)),
+            copy.clone(),
+        );
 
         // ── ⭐ THE CLAIM: the checker's own clause is what reaches the question ────────────────
         //
@@ -26586,6 +26705,179 @@ mod tests {
         let _ = std::fs::remove_dir_all(&repo);
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE FILES THIS ROUND ACTUALLY MOVED, AHEAD OF ANY LIST A DOCUMENT WROTE** —
+    /// register item 1106.
+    ///
+    /// # ⛔⛔⛔ What a document could not do, and why nobody could see it
+    ///
+    /// Item 1072 measured the remedy — a question naming the FILES to open answered in **33.3 s**
+    /// against a **185.2 s** worst case — and item 1074 gave a kind a clause to feed it with. A
+    /// document is written once and a round's files differ every round, so the only list it can
+    /// honestly author is DIRECTORIES: `debt_loop.scxml` says exactly that in its own words, and
+    /// names nine, covering **224 of this tree's 382 tracked files**. A judge told to open 58% of a
+    /// tree is searching. **So the arm was on, fed directories, and ran this product's own 600 s
+    /// bound out twice** — with every gate green, because nothing compared what was in the list
+    /// against what the reading had been taken on.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why it comes from the tree and not from the agent
+    ///
+    /// The claimant's say-so must not enter the verdict — that rule is what an independent check
+    /// IS. These paths are two readings this driver made against a version control system: where
+    /// the tree stood before the run typed a byte, and what has moved since. Nothing the agent said
+    /// reaches them, which is the same argument
+    /// [`check_question`](OuterLoop::check_question) already makes about a document's own list.
+    ///
+    /// # ⚠⚠ The size is measured, so nothing here caps the list
+    ///
+    /// Over this repository's last 200 commits a round moves a median of **2** paths, a 90th
+    /// percentile of **7** and at most **23** — the range the 6x reading was taken in. A cap would
+    /// be this driver deciding which of a round's files a judge may not see.
+    #[test]
+    fn a_checks_question_opens_the_files_this_round_moved_before_any_list_a_document_wrote() {
+        let repo = a_directory_this_gate_owns("1106-the-files-this-round-moved");
+        let copy = repo.join("a-copy-nobody-else-is-in");
+        let silent = Produced::Stated(String::new());
+        let (workspace, pane) = pane_born_in(&repo);
+        let surface = |at: Option<&str>, moved: &[&str]| Isolating {
+            inner: WorkspacePaneAccess::new(Arc::clone(&workspace)),
+            copy: copy.clone(),
+            at: at.map(ToOwned::to_owned),
+            moved: moved.iter().map(|path| (*path).to_owned()).collect(),
+        };
+
+        // ⚠⚠⚠⚠⚠ THROUGH THE PRODUCT'S OWN DOORS, on the 705 gate's measured lesson: a test that
+        // rebuilt these steps stayed GREEN under a mutation that made the product name the wrong
+        // tree. `start_ready` is where a base is taken and `a_check_to_put` is where it is spent.
+        let asked = |panes: &Isolating, opens: &[&str]| -> (Option<String>, String) {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let mut loops = bounded_at(lua, pane, Duration::from_secs(20))
+                .expect("the document's four authored strings");
+            loops
+                .script
+                .set_variable(
+                    &loops.session,
+                    CHECK_OPENS_KEY,
+                    ScriptValue::Array(
+                        opens
+                            .iter()
+                            .map(|path| ScriptValue::String((*path).to_owned()))
+                            .collect(),
+                    ),
+                )
+                .expect("a document's own paths are writable");
+            // ⛔ THE DOOR, NOT THE FIELD. A gate that assigned `began_at` by hand would be green
+            // against a product that never takes a base at all — which is the whole defect, one
+            // layer in.
+            loops
+                .start_ready(panes, &RunContext::uncancellable())
+                .expect("a barrier with no condition is down");
+            let began = loops.began_at.clone();
+            let (_copy, _where, question) = loops.a_check_to_put(panes, &silent);
+            (began, question)
+        };
+
+        // ── ⭐ THE CLAIM: this round's files are what the judge is told to open ────────────────
+        let knows = surface(
+            Some("ROUND-BASE"),
+            &[
+                "crates/sprag-plugin/src/outer.rs",
+                "crates/sprag-gate/src/lib.rs",
+            ],
+        );
+        let (began, mine) = asked(
+            &knows,
+            &["crates/sprag-plugin/src", "crates/sprag-gate/tests"],
+        );
+        assert_eq!(
+            began.as_deref(),
+            Some("ROUND-BASE"),
+            "⛔⛔⛔⛔⛔ THE BASE IS TAKEN AT THE DOOR BEFORE THE FIRST PROMPT, or there is no moment \
+             left at which it exists: by the time a milestone is claimed this loop's own rule has \
+             committed the work and the tree is clean",
+        );
+        assert!(
+            mine.contains("crates/sprag-plugin/src/outer.rs")
+                && mine.contains("crates/sprag-gate/src/lib.rs"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1106: the question did not name the files this round moved. \
+             That list is the only one that is about the WORK, and the 6x reading was taken on \
+             five FILES: {mine}",
+        );
+        assert!(
+            !mine.contains("crates/sprag-gate/tests"),
+            "⛔⛔⛔⛔ AND THE DOCUMENT'S DIRECTORIES CAME THROUGH BESIDE THEM, which is the fold \
+             this item exists to end: a judge handed nine directories covering 58% of a tree is \
+             searching, and merging them with the real list buys back exactly that: {mine}",
+        );
+
+        // ── ⛔⛔⛔ THE LATCH: a round is never measured from the middle of itself ───────────────
+        //
+        // ⚠⚠ `restarting` sends a run back through this door when it replaces its inner session,
+        // and the work of the round so far does not stop being this round's. A base re-taken there
+        // names only the last fragment — and every file the round had already finished is missing
+        // from the question, silently, with the check answering carefully about part of the work.
+        {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let mut loops = bounded_at(lua, pane, Duration::from_secs(20)).expect("a loop");
+            let run = RunContext::uncancellable();
+            loops
+                .start_ready(&knows, &run)
+                .expect("the barrier is down");
+            let moved_on = surface(Some("HALFWAY-THROUGH"), &["crates/only/the/tail.rs"]);
+            loops.start_ready(&moved_on, &run).expect("still down");
+            assert_eq!(
+                loops.began_at.as_deref(),
+                Some("ROUND-BASE"),
+                "⛔⛔⛔⛔⛔ THE BASE MOVED UNDER THE ROUND. A session replacement is not a new \
+                 round, and a base re-taken at one measures the work from the middle of itself",
+            );
+        }
+
+        // ── ⛔ THE CONTROL: a surface that cannot say gets what item 1074 gave it ──────────────
+        //
+        // ⚠⚠⚠ THE SHARPEST ARM. Every kind and every host that predates this datum must behave
+        // EXACTLY as it did — and a checker with no file list still ANSWERS, only six times
+        // slower, so nothing downstream would ever report that this tier had eaten the last one.
+        let (blind, document) = asked(
+            &surface(None, &["crates/never/asked.rs"]),
+            &["crates/sprag-plugin/src", "crates/sprag-gate/tests"],
+        );
+        assert_eq!(
+            blind, None,
+            "⚠ a surface that cannot say where a tree stands must leave the base unset rather than \
+             invent one — `None` is *nobody could say*, never *nothing has happened*",
+        );
+        assert!(
+            document.contains("crates/sprag-plugin/src")
+                && document.contains("crates/sprag-gate/tests")
+                && !document.contains("crates/never/asked.rs"),
+            "⛔⛔⛔⛔⛔ THE FALL-BACK IS GONE: a host that cannot answer about a version control \
+             system must get item 1074's clause, reduced, exactly as before. And a `moved_since` \
+             answered for a base nobody took must reach nothing: {document}",
+        );
+
+        // ── ⚠⚠ AND THE REDUCTION IS THE CHECKER'S FEET HERE TOO — item 705 by the newest road ──
+        //
+        // ⛔⛔ The checker MUTATES what it judges, so a path outside the copy is an instruction to
+        // walk into somebody's work. This tier is a THIRD road to that failure and it is the one
+        // whose paths nobody wrote by hand, which is precisely why it is driven.
+        let (_, outside) = asked(
+            &surface(
+                Some("ROUND-BASE"),
+                &["../somebody-elses-tree/notes.md", "crates/kept.rs"],
+            ),
+            &[],
+        );
+        assert!(
+            !outside.contains("somebody-elses-tree") && outside.contains("crates/kept.rs"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 705, REACHED BY THE NEWEST CLAUSE: one unusable path must not \
+             cost the usable ones, and it must not be named to a checker standing in a copy: \
+             {outside}",
+        );
+
+        knows.lifecycle().expect("lifecycle").close(pane);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
     /// ⛔⛔⛔⛔⛔ **THE CHECKER THE PRODUCT SPAWNS REALLY STANDS IN THE COPY** — register item 705's
     /// last link, and the one nothing but a running check can say.
     ///
@@ -26670,12 +26962,12 @@ mod tests {
         let repo_is = repo.canonicalize().expect("the agent's tree exists now");
 
         let (workspace, pane) = pane_born_in(&repo);
-        let isolating = Isolating {
-            inner: WorkspacePaneAccess::new(Arc::clone(&workspace)),
-            // ⚠ The product is handed the path a CALLER would have — unresolved, through the
-            // symlink — because that is its real input. Only the comparison resolves.
-            copy: copy.clone(),
-        };
+        // ⚠ The product is handed the path a CALLER would have — unresolved, through the symlink —
+        // because that is its real input. Only the comparison resolves.
+        let isolating = Isolating::saying_nothing(
+            WorkspacePaneAccess::new(Arc::clone(&workspace)),
+            copy.clone(),
+        );
         let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
         let mut loops = bounded_at(lua, pane, Duration::from_secs(20))
             .expect("the document's four authored strings");

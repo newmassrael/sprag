@@ -252,6 +252,73 @@ pub fn carried_by(repo: &Path) -> Option<Carried> {
     })
 }
 
+/// **WHERE `repo`'S HISTORY STANDS RIGHT NOW** — the token
+/// [`moved_since`] measures from, or [`None`] where this build cannot say.
+///
+/// # ⚠⚠ Why it is handed out as an opaque string
+///
+/// [`PaneCheckout::standing_at`](sprag_plugin::access::PaneCheckout::standing_at) promises its
+/// caller a token and nothing else — not a commit id, not something orderable — so that the
+/// capability does not oblige every surface behind it to be git. This is the git answer to that
+/// contract and it is the only place the word `HEAD` appears in it.
+///
+/// [`moved_since`]: moved_since
+#[must_use]
+pub fn standing_at(repo: &Path) -> Option<String> {
+    let read = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !read.status.success() {
+        return None;
+    }
+    let at = String::from_utf8(read.stdout).ok()?.trim().to_owned();
+    // ⚠ A repository with no commit yet answers success and NOTHING on some builds, and an empty
+    // token would be handed back to `moved_since` as a revision. *Cannot say* is the honest
+    // reading of it — register item 709's discipline, the same one `carried_by` above states.
+    (!at.is_empty()).then_some(at)
+}
+
+/// **WHICH FILES `repo` HAS MOVED SINCE `base`** — committed and uncommitted alike, relative to
+/// `repo`, or [`None`] where this build cannot say.
+///
+/// # ⚠⚠⚠ `git diff --name-only <base>` and deliberately not two commands
+///
+/// That form compares the WORKING TREE against `base`, so one reading answers both halves of a
+/// round: what it committed and what it has not committed yet. Asking `diff <base>..HEAD` and
+/// `diff HEAD` separately would be two readings of one question — this crate's oldest class — and
+/// they would have to be merged and de-duplicated by a caller who would then own a third answer.
+///
+/// ⚠ `--` ends the options so a `base` that begins with a dash cannot become a flag. Nothing here
+/// composes the token, but it arrives from a capability whose contract says only *hand it back*.
+///
+/// ⚠⚠ An untracked file is absent, which is [`IsolatedCheckout::of`]'s residue stated once more at
+/// the place a reader meets it: a diff describes the tree against a commit, and a file no commit
+/// knows about is not described.
+#[must_use]
+pub fn moved_since(repo: &Path, base: &str) -> Option<Vec<String>> {
+    let read = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["diff", "--name-only", base, "--"])
+        .output()
+        .ok()?;
+    if !read.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8(read.stdout)
+            .ok()?
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+    )
+}
+
 /// Run `command` silently and say whether it succeeded — a spawn that fails and a non-zero exit are
 /// one answer here, because both mean *this did not happen*.
 fn ran(command: &mut Command) -> bool {

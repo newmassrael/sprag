@@ -2254,6 +2254,53 @@ pub trait PaneCheckout {
     /// cleans it up would leave a second tree carrying a half-applied mutation, which is the
     /// confusion this whole capability exists to end.
     fn cut(&self, dir: &std::path::Path) -> Option<Box<dyn CutCheckout>>;
+
+    /// **WHERE `dir`'S HISTORY STANDS RIGHT NOW** — one opaque revision name a later call to
+    /// [`moved_since`](Self::moved_since) can be measured from, or [`None`] where this surface
+    /// cannot say.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why this capability had to learn two more questions — register item 1106
+    ///
+    /// This trait could do exactly one thing: make a copy. So the one part of this product that
+    /// knows what a version control system is could not be ASKED anything, and a supervisor with a
+    /// judge to point at a tree had no source for *what this round touched* but the run's DOCUMENT.
+    /// A document is written once and a round's files differ every round, so the only list a
+    /// document can honestly author is DIRECTORIES — and this repository's own kind names nine,
+    /// covering 224 of its 382 tracked files. **A judge told to open 58% of a tree is still
+    /// searching**, which is why the remedy measured at 6x (a question naming five FILES, 33.3 s
+    /// against a 185.2 s worst case) was switched on and then ran this product's own bound out
+    /// twice. The chain ended here, at a capability that could only cut.
+    ///
+    /// ⚠⚠ **OPAQUE, AND THAT IS THE CONTRACT.** A caller must not parse it, compare it for order,
+    /// or render it to anybody: it is a token to hand back, so that a surface backed by something
+    /// other than git is not forced to spell a commit id. What a caller may assume is exactly what
+    /// [`moved_since`](Self::moved_since) promises about it.
+    ///
+    /// ⚠ [`None`] is *this surface cannot say*, never *nothing has happened*. A caller that read it
+    /// as a revision would measure a round's work from a base it invented.
+    fn standing_at(&self, dir: &std::path::Path) -> Option<String>;
+
+    /// **WHICH FILES `dir` HAS MOVED SINCE `base`** — committed and uncommitted alike, as paths
+    /// relative to `dir`, or [`None`] where this surface cannot say.
+    ///
+    /// # ⚠⚠⚠ Both halves, because a round of work is not one of them
+    ///
+    /// A loop whose own rule ends a round with a commit has nothing uncommitted left by the time
+    /// its milestone is claimed, so *what is uncommitted* names nothing; a round stopped mid-edit
+    /// has committed nothing, so *what was committed* names nothing. Either question alone answers
+    /// **empty** for half of all rounds, and an empty list is indistinguishable from *this surface
+    /// cannot say* at the place that consumes it.
+    ///
+    /// ⚠⚠ **THE RESIDUE, STATED RATHER THAN DISCOVERED LATER: an untracked file does not appear.**
+    /// It is the same residue [`cut`](Self::cut) already carries — a copy is made by describing the
+    /// tree against a commit, and a file no commit knows about is not described — so a claim
+    /// resting on a file the agent never added is judged against a tree without it, by a judge that
+    /// was not told to open it. One residue, one cause, and it is not this method's to close.
+    ///
+    /// ⚠ An EMPTY list is a real answer and a different one from [`None`]: *this round moved
+    /// nothing* is a finding about the round, and a milestone claimed over it is one a judge should
+    /// be reading the round's own account for.
+    fn moved_since(&self, dir: &std::path::Path, base: &str) -> Option<Vec<String>>;
 }
 
 /// A working copy handed out by [`PaneCheckout::cut`], removed when this value is dropped.
