@@ -779,12 +779,14 @@ impl Agent {
                 written,
                 moved,
                 screen,
+                size,
             }) => {
                 return Err(PaneError::NeverTook {
                     attempts,
                     written: written.bytes(),
                     moved,
                     screen,
+                    size,
                 });
             }
             // The prompt is in the pane and the submit after it established nothing, so the peer

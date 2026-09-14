@@ -3607,10 +3607,11 @@ fn what_a_key_does_to_a_live_agents_permission_dialog() {
                 written,
                 moved,
                 screen,
+                size,
             }) => {
                 format!(
                     "⚠ NEVER APPEARED on screen ({attempts} attempts, {written:?}, \
-                     screen moved: {moved}, showing {screen:?})"
+                     screen moved: {moved}, pane {size:?}, showing {screen:?})"
                 )
             }
             Ok(other) => format!("was confirmed on screen ({other:?})"),

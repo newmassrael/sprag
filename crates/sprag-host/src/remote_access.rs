@@ -996,6 +996,26 @@ impl PaneAccess for RemotePaneAccess {
         )
     }
 
+    /// ⚠⚠ **OFF THE SAME `panes` SLOT [`pane_ids`](Self::pane_ids) READS** — register item 679, and
+    /// on [`crate::plugins::PluginWorld::pane_size`]'s terms exactly: that door asks this of a
+    /// daemon at a run's BIRTH and this one asks it while the run DRIVES, so an out-of-process
+    /// driver's refusal names the same number the daemon would. A zero is a daemon that did not
+    /// say, filtered out rather than reported as a pane no columns wide.
+    fn pane_size(&self, id: PaneId) -> Option<(u16, u16)> {
+        let dim = |entry: &serde_json::Value, key: &str| {
+            entry[key]
+                .as_u64()
+                .and_then(|n| u16::try_from(n).ok())
+                .filter(|n| *n > 0)
+        };
+        let panes = self.read(&mux_action_path(PANES_SLOT))?;
+        panes.as_array()?.iter().find_map(|entry| {
+            (entry[PANE_SUMMARY_ID_KEY].as_u64() == Some(id.0))
+                .then(|| Some((dim(entry, "cols")?, dim(entry, "rows")?)))
+                .flatten()
+        })
+    }
+
     fn pane_eof(&self, id: PaneId) -> Option<bool> {
         self.read_pane(id, PANE_EOF_SLOT)?.as_bool()
     }

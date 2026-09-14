@@ -812,16 +812,46 @@ pub enum Delivered {
     /// something. A live loop died on this refusal and nobody could say which pane it had been.
     ///
     /// * `moved` — the screen changed while this delivery was in flight and never carried the text.
-    ///   A composer that folded the paste away moved; a pane too narrow to hold the confirmation on
-    ///   one row moved; **a peer that took the bytes and painted nothing did not.**
+    ///   A composer that folded the paste away moved; **a peer that took the bytes and painted
+    ///   nothing did not.**
     /// * `screen` — what that pane was showing when the last attempt gave up, or [`None`] where the
     ///   pane could not be read at all. A placeholder like `[Pasted text +5 lines]` is the first
     ///   pane saying its own name.
+    /// * `size` — how big that pane was, or [`None`] where the surface could not say. See
+    ///   [`PaneAccess::pane_size`], and below for why a refusal that could not state it was making
+    ///   an accusation.
+    ///
+    /// # 🎯🎯🎯🎯🎯 **AND HOW BIG THE SCREEN WAS** — register item 679
+    ///
+    /// This answer's sentence used to offer a third pane — *or a pane TOO NARROW to carry the
+    /// confirmation on one row* — and send the reader to the screen dump to sort it out. **Two
+    /// things were wrong with it and both are measured here.**
+    ///
+    /// ⛔ **The mechanism it named cannot produce this answer.** The read-back is
+    /// [`PaneAccess::pane_collapsed`], which undoes the TERMINAL's wrapping, and the match is
+    /// whitespace-insensitive so that a composer re-flowing the text onto lines of its own still
+    /// matches (item 421 — see `await_text`'s own comment; named without a link because it is
+    /// private and this doc is public, which `scratch_root` one crate over records paying for). A
+    /// confirmation split across rows by a
+    /// narrow pane is rejoined before anything asks about it. *On one row* was true of a matcher
+    /// this module has not had since item 421.
+    ///
+    /// ⛔⛔ **And the width was never measured.** Register item 421 had already caught this exact
+    /// sentence accusing a narrow pane where the pane was fine — *"whose sentence blames a narrow
+    /// pane and a peer that painted nothing, and both were false"* — and the accusation survived
+    /// that finding because there was no reading to replace it with. A width offered as a suspect
+    /// and never measured is this workspace's rule 10 in one clause.
+    ///
+    /// ⇒ So the guess is gone and the measurement is here. What the size does NOT do is decide
+    /// anything: no threshold is applied, because what a pane must keep is its KIND's to say
+    /// (`LoopKind::keeps`) and this module has no kind. It is evidence beside a verdict, which is
+    /// the only honest thing a reading with no rule behind it can be.
     Unconfirmed {
         attempts: u32,
         written: Written,
         moved: bool,
         screen: Option<String>,
+        size: Option<(u16, u16)>,
     },
     /// **THE TEXT ARRIVED, THE SUBMIT WAS PRESSED, AND THE CALLER'S EVIDENCE FOR IT NEVER CAME** —
     /// typed, and as far as anything here can tell not sent.
@@ -1074,11 +1104,13 @@ impl Delivered {
                 written,
                 moved,
                 screen,
+                size,
             } => Some(PaneError::NeverTook {
                 attempts: *attempts,
                 written: written.bytes(),
                 moved: *moved,
                 screen: screen.clone(),
+                size: *size,
             }),
             // The text is ON that pane and the submit established nothing — the composer is holding
             // a question nobody put. Go and look at it.
@@ -1973,6 +2005,12 @@ pub fn deliver(
         written: Written::of(written),
         moved,
         screen: saw,
+        // ⚠ READ HERE, with the refusal, and not carried down from before the first injection —
+        // register item 679. The pane this delivery gave up on is the pane as it is NOW, and a
+        // window split while the injections were going out is exactly the event this item is
+        // about: a size taken at the start would be the shape the delivery ASSUMED rather than the
+        // one it was read off.
+        size: panes.pane_size(pane),
     })
 }
 
@@ -2944,6 +2982,15 @@ mod tests {
                 // which was a guess, and the suite answered with the measurement.
                 moved: false,
                 screen: Some(GO.to_owned()),
+                // ⚠ A REAL PANE ON A REAL WORKSPACE, so this is the size that surface answered —
+                // register item 679. It is asserted rather than wildcarded because the whole point
+                // of the field is that a refusal can state it: a test that let it be anything would
+                // pass against a surface that had gone back to saying nothing.
+                //
+                // ⚠⚠ `(40, 6)` IS THIS FIXTURE'S OWN SIZE AND WAS MEASURED, not assumed — the line
+                // said `(80, 24)` first, on the same guess the `GO` clause above records making,
+                // and the suite answered with the number again.
+                size: Some((40, 6)),
             },
         );
         assert!(!outcome.is_confirmed());
@@ -3061,6 +3108,111 @@ mod tests {
             fold_said, silent_said,
             "⛔ ITEM 1015: two different panes still leave the same account, which is the defect \
              whole — the refusal is back to telling its reader to go and ask the peer",
+        );
+
+        folding.lifecycle().expect("lifecycle").close(fold_pane);
+        silent.lifecycle().expect("lifecycle").close(silent_pane);
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE REFUSAL SAYS HOW BIG THE PANE WAS, AND STOPS GUESSING THAT IT WAS TOO
+    /// NARROW** — register item 679.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What the sentence used to do
+    ///
+    /// It offered *a pane TOO NARROW to carry the confirmation on one row* as one of the causes and
+    /// then told the reader that the screen dump below was what separated them — which is asking
+    /// somebody to judge a width by eye off text that pane had already wrapped. Register item 421
+    /// had ALREADY measured that same accusation false once (*"whose sentence blames a narrow pane
+    /// and a peer that painted nothing, and both were false"*) and it survived, because there was
+    /// no reading to put in its place.
+    ///
+    /// ⛔⛔ **And the mechanism it named cannot produce this answer.** The read-back is
+    /// [`PaneAccess::pane_collapsed`] — the terminal's wrapping undone — and the match is
+    /// whitespace-insensitive since item 421, so a confirmation split across rows by a narrow pane
+    /// is rejoined before anything asks about it. That clause described a matcher this module has
+    /// not had for two items.
+    ///
+    /// # ⚠⚠ Two peers again, and the size is asserted on BOTH
+    ///
+    /// A number that only appeared on the failing-looking road would be a field a caller could not
+    /// rely on. Both refusals carry it, both name the same pane size, and neither sentence claims
+    /// anything about what that size MEANS — no threshold is applied here, because what a pane must
+    /// keep is its kind's to say and this module has no kind.
+    #[test]
+    fn a_refusal_states_the_pane_it_was_read_off_rather_than_guessing_at_its_width() {
+        let spec = || Delivery {
+            echo_timeout: Duration::from_millis(200),
+            attempts: 2,
+            ..Delivery::new()
+        };
+        // ⚠ Panes opened at sizes THIS TEST CHOSE, and not the fixture default: the claim is that
+        // the refusal reports the pane it was read off, and a size every pane in the suite shares
+        // could be a constant somebody typed into the renderer. ⚠⚠ The two differ from each other
+        // as well, so a renderer that printed one pane's size for both is caught too.
+        let at = |script: &str, cols: u16, rows: u16| {
+            let (access, pane) = access_sized(&peer(script), cols, rows);
+            assert!(
+                shows(&access, pane, GO, Duration::from_secs(10)),
+                "the peer never configured its terminal",
+            );
+            let refused = deliver(
+                &access,
+                &RunContext::uncancellable(),
+                pane,
+                "hello",
+                &spec(),
+            )
+            .expect("a peer that cannot confirm is not an error");
+            (access, pane, refused)
+        };
+
+        // ⛔⛔⛔⛔⛔ THE FOLDING COMPOSER FIRST, AND IT IS THE ROAD THE WHOLE ITEM IS ABOUT — the
+        // `moved: true` branch is the one that carried *or a pane TOO NARROW*, and a gate driven
+        // only by a silent peer never reaches that sentence at all. Measured: putting the clause
+        // back left this test GREEN until this peer was added.
+        let (folding, fold_pane, folded) = at(
+            "dd bs=1 count=1 of=/dev/null 2>/dev/null; printf '[Pasted text +5 lines]'; \
+             exec cat > /dev/null",
+            51,
+            17,
+        );
+        // And a peer that paints nothing, on a DIFFERENT pane, so both roads are held.
+        let (silent, silent_pane, unpainted) = at("exec cat > /dev/null", 63, 19);
+
+        for (refused, want, road) in [
+            (&folded, (51u16, 17u16), "a composer that folded the paste"),
+            (&unpainted, (63, 19), "a peer that painted nothing"),
+        ] {
+            let Delivered::Unconfirmed { size, .. } = refused else {
+                panic!("{road} cannot confirm: {refused:?}");
+            };
+            assert_eq!(
+                *size,
+                Some(want),
+                "{road}: the delivery must report the pane it actually read, or the refusal's \
+                 width clause is a number nobody measured: {refused:?}",
+            );
+            let said = refused.refused().expect("this is a refusal").to_string();
+            assert!(
+                said.contains(&format!("That pane was {}x{}", want.0, want.1)),
+                "{road}: the SENTENCE a person reads has to carry it — the field existing while \
+                 the prose stays silent is the state item 1015 spent a round removing: {said}",
+            );
+            assert!(
+                !said.contains("TOO NARROW"),
+                "⛔ ITEM 679 on {road}: the refusal is guessing at a width again. The read-back \
+                 collapses the terminal's wrapping and matches whitespace-insensitively, so *too \
+                 narrow to carry the confirmation on one row* names a mechanism this module cannot \
+                 produce — and item 421 measured that accusation false on a real run: {said}",
+            );
+        }
+        // ⚠ THE CONTROL: the two roads really are the two roads, or the loop above asserted the
+        // same sentence twice and the fold branch was never entered.
+        let fold_said = folded.refused().expect("a fold is a refusal").to_string();
+        assert!(
+            fold_said.contains("THE SCREEN DID MOVE"),
+            "the folding peer must reach the `moved` branch, which is the one that carried the \
+             guess: {fold_said}",
         );
 
         folding.lifecycle().expect("lifecycle").close(fold_pane);
@@ -4491,6 +4643,7 @@ mod tests {
                 written,
                 moved: false,
                 screen: None,
+                size: None,
             },
             Delivered::Unsubmitted {
                 attempts: 1,
@@ -5216,6 +5369,7 @@ mod tests {
                     written: bytes,
                     moved: false,
                     screen: None,
+                    size: None,
                 },
                 None,
             ),

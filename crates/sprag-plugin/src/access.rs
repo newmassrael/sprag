@@ -418,11 +418,11 @@ pub enum PaneError {
         /// ⛔⛔⛔⛔⛔ **WHETHER THE SCREEN MOVED AT ALL** — register item 1015, and the whole of what
         /// separates two of the three panes this refusal names.
         ///
-        /// A composer that folds a paste away MOVES the screen; a pane too narrow to carry the
-        /// confirmation on one row MOVES it; a peer that takes the bytes and paints nothing does
-        /// NOT. `deliver` has computed this on every delivery since the read-back existed and
-        /// dropped it on the floor — which is why this refusal used to end *only the peer itself
-        /// can tell the first from the last*, a sentence that was false about its own caller.
+        /// A composer that folds a paste away MOVES the screen; a peer that takes the bytes and
+        /// paints nothing does NOT. `deliver` has computed this on every delivery since the
+        /// read-back existed and dropped it on the floor — which is why this refusal used to end
+        /// *only the peer itself can tell the first from the last*, a sentence that was false about
+        /// its own caller.
         moved: bool,
         /// What that pane was showing when the last attempt gave up, or [`None`] where it could not
         /// be read at all.
@@ -431,7 +431,20 @@ pub enum PaneError {
         /// name, and it is the evidence a person would have gone to the pane for — except that by
         /// the time anyone reads a run record the pane is gone.
         screen: Option<String>,
-    } = { attempts: 0, written: 0, moved: false, screen: None },
+        /// 🎯 **HOW BIG THAT PANE WAS**, as `(cols, rows)`, or [`None`] where the surface could not
+        /// say — register item 679, and the third fact of the triple item 1015 started.
+        ///
+        /// This refusal used to name *a pane TOO NARROW to carry the confirmation on one row* as
+        /// one of three causes and could not measure it, so a reader was asked to judge a pane's
+        /// width by eye off text that pane had already wrapped. The clause is gone — see
+        /// [`crate::deliver::Delivered::Unconfirmed`] for the two measurements that removed it —
+        /// and the size is here instead.
+        ///
+        /// ⚠ It decides nothing. What a pane must keep is its KIND's to say, and this refusal has
+        /// no kind: the number is beside the verdict so a reader can check the one hypothesis they
+        /// otherwise had to take on faith.
+        size: Option<(u16, u16)>,
+    } = { attempts: 0, written: 0, moved: false, screen: None, size: None },
     /// ⚠⚠ THE PROMPT ARRIVED AND THE SUBMIT AFTER IT SHOWED NOTHING, so the text is sitting in the
     /// pane and the peer was never asked.
     ///
@@ -857,6 +870,7 @@ impl std::fmt::Display for PaneError {
                 written,
                 moved,
                 screen,
+                size,
             } => {
                 write!(
                     f,
@@ -871,9 +885,8 @@ impl std::fmt::Display for PaneError {
                         "THE SCREEN DID MOVE, without ever carrying the text, so the bytes reached \
                          a program that painted something else for them. That is a COMPOSER THAT \
                          FOLDED THE PASTE AWAY — showing something like \"[Pasted text +5 lines]\" \
-                         where the text should be, which no choice of needle can match — or a pane \
-                         TOO NARROW to carry the confirmation on one row. It is not a peer that \
-                         painted nothing, and the screen below is what separates the two"
+                         where the text should be, which no choice of needle can match. It is not \
+                         a peer that painted nothing, and the screen below is what says which"
                     )?;
                 } else {
                     write!(
@@ -889,6 +902,19 @@ impl std::fmt::Display for PaneError {
                 // read*, which is a fourth thing and must not be printed as an empty screen — a
                 // reader who sees `""` concludes the peer painted nothing, which is the one
                 // reading this refusal has just ruled out or confirmed on other evidence.
+                // 🎯🎯🎯 AND HOW BIG THAT PANE WAS — register item 679. This sentence used to offer
+                // *a pane TOO NARROW* as a third cause and hand the reader the screen dump to
+                // settle it, which is judging a width by eye off text the pane had already
+                // wrapped. The clause is gone and the number is here: a reader who suspects the
+                // window was split can now check rather than believe.
+                //
+                // ⚠ BEFORE the screen and not after it. The screen is a quoted dump of unknown
+                // length and a fact printed past it is a fact nobody reaches — the same ordering
+                // argument `render_health_answer` makes for putting degraded rows first.
+                match size {
+                    Some((cols, rows)) => write!(f, ". That pane was {cols}x{rows}")?,
+                    None => write!(f, ". How big that pane was cannot be said here")?,
+                }
                 match screen {
                     Some(screen) => write!(f, ". The pane was showing: {screen:?}"),
                     None => write!(
@@ -1021,6 +1047,48 @@ pub trait PaneAccess {
     /// reverse. A caller that wants the status must wait for THIS, which is
     /// [`DoneWhen::Reaped`](crate::completion::DoneWhen::Reaped).
     fn pane_child_exit(&self, id: PaneId) -> Option<sprag_terminal::PaneExit> {
+        let _ = id;
+        None
+    }
+
+    /// 🎯🎯🎯🎯🎯 **HOW BIG THIS PANE ACTUALLY IS**, as `(cols, rows)`, or [`None`] where this
+    /// surface cannot say — register item 679.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The defect: a refusal that named the pane's WIDTH as a suspect and could not
+    /// measure it
+    ///
+    /// [`PaneError::NeverTook`]'s sentence offered a reader two causes — a composer that folded the
+    /// paste, or *a pane TOO NARROW to carry the confirmation on one row* — and then told them the
+    /// screen dump below was what separated the two. **Nothing on this surface could answer the
+    /// second**, so the reader was asked to judge a pane's width by eye off text that pane had
+    /// already wrapped. Register item 421 had measured that same accusation FALSE once and it was
+    /// still being made.
+    ///
+    /// ⇒ A verdict about what a screen showed has to be able to say how big the screen was. That is
+    /// [`sprag_terminal::doctor`]'s first rule (*print the measured value beside the verdict*) owed
+    /// one crate over, and until this method there was no reading to print.
+    ///
+    /// # ⚠⚠⚠ Why it is HERE when the host's `PluginWorld` door already answers it
+    ///
+    /// ⚠ Named without an intra-doc link deliberately: `PluginWorld` lives in `sprag_host`, which
+    /// this crate is a dependency OF — a link here would not resolve, and the doc gate runs with
+    /// `-D warnings`, so it would be a broken link caught at a commit rather than at a read.
+    ///
+    /// It does not answer it to this surface. `PluginWorld::pane_size` is the host's door, asked
+    /// once at a run's BIRTH so a kind can refuse a pane that came out the wrong shape (item 772);
+    /// this is the plugin's door, asked while the run DRIVES. The two read the same `list()` DTO —
+    /// deliberately, so *how big is that pane* has one answer per process — and neither derives the
+    /// other, because a birth-time check and a mid-flight reading are different moments and a run's
+    /// window is split between them. That is item 679's whole observation.
+    ///
+    /// # ⚠⚠ The default is [`None`] and it is an ABSENCE, never a claim
+    ///
+    /// Thirty-odd doubles implement this trait and not one of them has a size to give; a default
+    /// that invented `80x24` would put a fabricated measurement into a refusal, which is the
+    /// failure item 772's second round had to undo one crate over (*"it used to arrive here as a
+    /// total `(u16, u16)` with a fabricated 80×24 inside it, and this comparison had no way to tell
+    /// that from a measurement"*). A caller must print *cannot say* rather than a number.
+    fn pane_size(&self, id: PaneId) -> Option<(u16, u16)> {
         let _ = id;
         None
     }
@@ -2536,6 +2604,22 @@ impl PaneAccess for WorkspacePaneAccess {
 
     fn pane_rows(&self, id: PaneId) -> Option<Vec<PaneRow>> {
         Some(self.handle(id)?.with_screen(read_rows))
+    }
+
+    /// ⚠⚠ THROUGH THE SAME `list()` DTO THE `panes` SLOT PUBLISHES — the reason
+    /// `PluginWorld::pane_size` gives for reading it that way, and it holds twice over here:
+    /// *how big is that pane* has one answer in this process, and a refusal that quoted a second
+    /// read of the pty could disagree with the listing the operator is looking at while they read
+    /// it. Register item 679.
+    ///
+    /// ⚠ The pane's ARBITRATED size — what the daemon gave it after tiling — and not the size
+    /// anybody asked for. That is the number a delivery's evidence was actually read off.
+    fn pane_size(&self, id: PaneId) -> Option<(u16, u16)> {
+        lock(&self.workspace)
+            .list()
+            .into_iter()
+            .find(|info| info.id == id.0)
+            .map(|info| (info.cols, info.rows))
     }
 
     /// ⚠⚠ THROUGH [`Screen::has_painted`] AND NOT THROUGH THE ROWS — register item 555. The
