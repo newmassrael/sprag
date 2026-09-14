@@ -2031,6 +2031,117 @@ mod tests {
         );
     }
 
+    /// 🎯🎯🎯🎯🎯 **AN ASKING LEAVES NO PANE BEHIND, ON EVERY ROAD OUT** — register item 679, and
+    /// the question that item wrote down as UNMEASURED.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What was a comment and is now a gate
+    ///
+    /// `asked_of_another` carries the line *"From here every exit path closes the pane. A judge left
+    /// running would hold a pty and a process for the rest of the run, once per blocked turn."*
+    /// **Nothing measured it.** Item 679 suspected the opposite from a screen — *"검사기마다 죽은
+    /// 페인이 하나씩 쌓인다 — 별 항목 감이다"* (a dead pane piling up per check, worth its own
+    /// number) — after finding an `(exited)` pane it had to remove by hand.
+    ///
+    /// ⇒ Measured here: the comment is TRUE of today's code, so that suspicion is refuted and no
+    /// number is owed for it. What was owed is this gate. *Every exit path* is a claim about
+    /// control flow that a single `?` between the spawn and the close would falsify silently, and
+    /// this loop asks a judge on **every reflection turn** — so the leak would be one pty and one
+    /// process per turn, in the run's own window, which is exactly the shape item 679 opened on.
+    ///
+    /// # ⚠⚠ THE THREE ROADS, because one of them is not the others
+    ///
+    /// A verdict, a reply that is no verdict, and a wait that runs out leave that function by three
+    /// different lines. The third is the one where a pane is most likely to be left — the peer is
+    /// still RUNNING when the bound expires — and a gate driven only by the answering road would
+    /// say nothing about it.
+    #[test]
+    fn an_asking_leaves_no_pane_behind_on_any_road_out() {
+        let pool = Arc::new(Mutex::new(sprag_terminal::Workspace::new((80, 24))));
+        let host = crate::access::WorkspacePaneAccess::new(Arc::clone(&pool));
+        let live = || crate::access::PaneAccess::pane_ids(&host).len();
+        // ⚠ THE PREMISE, and it is what makes every count below mean something: this pool starts
+        // empty, so a pane counted afterwards was opened by the asking and by nothing else.
+        assert_eq!(live(), 0, "the fixture pool must start empty");
+
+        let ask = |script: &str, within: Duration| {
+            asked_of_another(
+                &host,
+                &RunContext::uncancellable(),
+                &["/bin/sh".to_owned(), "-c".to_owned(), script.to_owned()],
+                None,
+                "did it hold? answer YES or NO",
+                within,
+            )
+        };
+        let within = Duration::from_secs(20);
+
+        for (road, script, bound, expect) in [
+            ("a verdict", "printf 'YES\\n'", within, Road::Answered),
+            (
+                "a reply that is no verdict",
+                "printf 'maybe\\n'",
+                within,
+                Road::Answered,
+            ),
+            // ⛔ THE ROAD WITH THE PEER STILL RUNNING. `sleep` outlives its bound, so this asking
+            // leaves by the expired-wait line with a live child on the far side of the pty — the
+            // one road where closing is not merely tidy.
+            (
+                "a wait that ran out",
+                "sleep 30",
+                Duration::from_millis(300),
+                Road::Unfinished,
+            ),
+            // ⛔⛔⛔ AND THE QUIETEST ROAD OF THE THREE — a checker that outsings its own retained
+            // history. `spoke` answers `None` once lines have been evicted from under the read
+            // (`lost > 0`), so this asking leaves by the `Unaccountable` line with a peer that
+            // ANSWERED. A mutation that closed the pane everywhere except here was green until
+            // this arm existed, which is what *every exit path* is worth without one.
+            (
+                "a read nothing could account for",
+                "seq 1 200000; printf 'YES\\n'",
+                within,
+                Road::Unaccountable,
+            ),
+        ] {
+            let asked = ask(script, bound);
+            // ⚠⚠ THE ROAD IS ASSERTED, NOT ASSUMED. An arm whose script stopped producing the
+            // ending it was written for would go on passing the count below while measuring the
+            // road beside it — which is the vacuity this module's own tests keep paying for.
+            let took = match &asked.said {
+                // ⚠ A verdict and a reply that is NO verdict are one road out of the pane's
+                // lifetime and two answers above it: the parse happens after the close, so both
+                // reach it. Kept as one `Road` for that reason and not for brevity.
+                Ok(_) | Err(Unheard::NotAVerdict(_)) => Road::Answered,
+                Err(Unheard::Unfinished(_)) => Road::Unfinished,
+                Err(Unheard::Unaccountable) => Road::Unaccountable,
+                Err(other) => panic!("{road} left by a road this gate does not drive: {other:?}"),
+            };
+            assert_eq!(
+                took, expect,
+                "⚠⚠⚠ {road} did not leave by the road it was written for, so the count below is \
+                 about something else: {asked:?}",
+            );
+            assert_eq!(
+                live(),
+                0,
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 679: {road} left a pane in the pool. This loop asks a judge \
+                 on every reflection turn, so a road that does not close is a pty and a process per \
+                 turn — in the window the run is being driven in. Got: {asked:?}",
+            );
+        }
+    }
+
+    /// Which line an asking left `asked_of_another` by — see
+    /// [`an_asking_leaves_no_pane_behind_on_any_road_out`], whose arms assert it rather than
+    /// assuming their script still produces it.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Road {
+        Answered,
+        Unfinished,
+        Unaccountable,
+    }
+
     /// ⛔⛔⛔⛔⛔ **EVERY ROAD OUT OF AN ASKING CARRIES ITS CLOCK** — register item 1073.
     ///
     /// Driven through real panes because the claim is about the ROADS: a verdict, a reply that was
