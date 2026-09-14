@@ -182,6 +182,14 @@ pub enum Malformed {
     /// with nothing to do. ⚠ Refusing WITHOUT redirecting is a real thing to want and it already
     /// has a door — a consent naming the dialog's own *No*.
     SaysNothing,
+    /// A judged rule's `does` is a word this build does not know. ⛔ Refused rather than defaulted:
+    /// the acts differ by whether an unattended run may WIDEN A PERMISSION, so a misspelling is not
+    /// consent to the safer-sounding half either. See [`Act`](crate::judge::Act).
+    ActUnknown,
+    /// A judged rule that WIDENS also carries `text`. That act presses an option and never composes,
+    /// so the sentence would be typed by nobody — and an author who wrote one believed a refusal was
+    /// configured.
+    SaysWhatNobodyTypes,
 }
 
 impl Malformed {
@@ -198,6 +206,17 @@ impl Malformed {
                 "a screen rule with an empty `text` turns the call down and tells the agent \
                  nothing, which leaves it with no next thing to do — say what to do instead, or \
                  use a consent naming the dialog's own refusal if turning it down is all you want"
+            }
+            Self::ActUnknown => {
+                "a judged rule's `does` must be `refuse` (press the dialog's refusing key, then say \
+                 `text`) or `widen` (press the longest-lasting approval the judge names) — an \
+                 unknown word is refused rather than defaulted, because the two differ by whether \
+                 this run may grant a permission with nobody watching"
+            }
+            Self::SaysWhatNobodyTypes => {
+                "a judged rule with `does: widen` also carries `text`, and that act presses an \
+                 option rather than composing a sentence — so nobody would type it. Drop the \
+                 `text`, or make the rule `does: refuse` if telling the agent something is the point"
             }
         }
     }

@@ -140,6 +140,7 @@ pub struct JudgedRule {
     name: String,
     criterion: String,
     text: String,
+    does: Act,
 }
 
 impl JudgedRule {
@@ -149,6 +150,13 @@ impl JudgedRule {
     pub const JUDGE_KEY: &'static str = "judge";
     /// The datamodel and wire key of what the agent is told.
     pub const TEXT_KEY: &'static str = "text";
+    /// The datamodel and wire key of [`Act`] — what the rule DOES once a judge claims the dialog.
+    pub const DOES_KEY: &'static str = "does";
+    /// The word [`Act::Refuse`] is written as. ⚠ Also what an ABSENT key means, so a rule authored
+    /// before this word existed keeps meaning what it meant.
+    pub const REFUSE_WORD: &'static str = "refuse";
+    /// The word [`Act::Widen`] is written as.
+    pub const WIDEN_WORD: &'static str = "widen";
 
     /// A rule called `name`, claiming the dialogs a judge says `criterion` holds of, answered by
     /// refusing the call and saying `text`.
@@ -160,21 +168,39 @@ impl JudgedRule {
     /// than a quote's: an empty quote is carried by every dialog, and an empty criterion is a
     /// question a judge cannot answer at all, so a rule holding one would spend a model call per
     /// blocked turn to learn nothing.
+    /// ⚠⚠ **`does` IS READ BEFORE THE TEXT IS JUDGED, because it decides what the text MEANS.** A
+    /// [`Refuse`](Act::Refuse) with nothing to say is the un-redirected turn `SaysNothing` already
+    /// named; a [`Widen`](Act::Widen) with something to say is prose **nobody types** — that act
+    /// presses an option and never composes. Both are refused rather than trimmed, because each is
+    /// an author who believed the other act was configured.
     pub fn parse(
         name: String,
         criterion: String,
         text: String,
+        does: &str,
     ) -> Result<Self, crate::screen::Malformed> {
         if name.trim().is_empty() || criterion.trim().is_empty() {
             return Err(crate::screen::Malformed::ClaimsEverything);
         }
-        if text.is_empty() {
-            return Err(crate::screen::Malformed::SaysNothing);
+        let does = match does {
+            "" | Self::REFUSE_WORD => Act::Refuse,
+            Self::WIDEN_WORD => Act::Widen,
+            // ⛔ NOT a default. See [`Act`]: the two acts differ by whether an unattended run may
+            // grant, and a misspelling is consent to neither.
+            _ => return Err(crate::screen::Malformed::ActUnknown),
+        };
+        match does {
+            Act::Refuse if text.is_empty() => return Err(crate::screen::Malformed::SaysNothing),
+            Act::Widen if !text.is_empty() => {
+                return Err(crate::screen::Malformed::SaysWhatNobodyTypes);
+            }
+            _ => {}
         }
         Ok(Self {
             name,
             criterion,
             text,
+            does,
         })
     }
 
@@ -195,6 +221,56 @@ impl JudgedRule {
     pub fn text(&self) -> &str {
         &self.text
     }
+
+    /// **WHAT THIS DECISION DOES ONCE A JUDGE CLAIMS THE DIALOG** — the word the template routes on.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the ACT is a word on the RULE and not a fork on its NAME
+    ///
+    /// The obvious spelling is a transition per decision, and `ai_loop.scxml` even documents it:
+    /// *"a fork per decision is one more line"*, keyed on `_event.data.rule`. **A kind document
+    /// cannot write that line.** Measured: `debt_loop.scxml` holds 34 `<data>` elements and ZERO
+    /// `<state>`s — a kind supplies VALUES and the template supplies the flow, so `permission` is a
+    /// name the template has never heard and can never name in a `cond`.
+    ///
+    /// ⇒ the decision travels as a word the TEMPLATE knows, beside the name only the KIND knows.
+    /// That is `keeps`' shape from register item 772 — a word in the document,
+    /// an accessor, a refusal at the door — and it is here for the same reason: the same template
+    /// compiles into every checkout.
+    #[must_use]
+    pub fn does(&self) -> Act {
+        self.does
+    }
+}
+
+/// **WHAT A CLAIMED DIALOG GETS DONE TO IT** — the closed vocabulary a kind document writes in
+/// [`JudgedRule::DOES_KEY`], and the word `ai_loop.scxml` routes `turn.blocked` on.
+///
+/// ⚠⚠ **CLOSED, AND AN UNKNOWN WORD IS A REFUSAL RATHER THAN A DEFAULT** — register item 772's
+/// third property, which is the one that earns the type. A document that misspells `widen` must not
+/// quietly get `Refuse`: the two acts differ by whether an unattended run can WIDEN A PERMISSION,
+/// and a typo is not consent to the safer-sounding half either. It is refused at the door.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Act {
+    /// Press the dialog's refusing key, then type the rule's [`text`](JudgedRule::text).
+    ///
+    /// ⚠ THE DEFAULT, so a rule written before this word existed means exactly what it meant then.
+    /// The first key is a REFUSAL, which is the property that keeps a standing criterion weaker
+    /// than a standing yes — see [`Act::Widen`] for what giving that up buys and costs.
+    #[default]
+    Refuse,
+    /// Press the option the judge named as the LONGEST-LASTING of the dialog's approvals.
+    ///
+    /// ⛔⛔⛔⛔⛔ **THIS IS THE ONE ACT THAT GRANTS**, and every other guard in this file exists
+    /// because the rest do not. Owner's instruction, 2026-09-14: *"낮은 모델로 이게 권한 문제인지
+    /// 확인하고, 권한 문제면 무조건 승인"*. The cost it answers was measured the same day — a run
+    /// stood `blocked` on a permission dialog whose approval option said *for this session*, so
+    /// every session swap asked again and the loop's own unattendedness ended there.
+    ///
+    /// ⚠⚠ **IT MAY NOT CLAIM A QUESTION OF FACT.** `Do you trust this folder?` is a permission
+    /// dialog by any reading and its answer is a FACT about where the pane stands, which no loop
+    /// may invent. A kind that points `Widen` at a fact question is the regression this word is
+    /// most likely to cause; the contrast arms live with the rule that names it.
+    Widen,
 }
 
 /// **WHAT A LOOP JUDGES**, as a list of independent [`JudgedRule`]s.
@@ -249,16 +325,22 @@ impl JudgedRules {
         run: &RunContext,
         question: &Question,
         spec: &JudgeSpec,
-    ) -> Option<(&JudgedRule, Judgement)> {
-        self.rules.iter().find_map(|rule| {
-            judges(panes, run, rule.criterion(), question, spec)
-                // ⚠ The clock is dropped by name — register item 1073's stated residue: a dialog
-                // judge's latency has no tally to join, and its bound is the author's own number.
-                .said
-                .ok()
-                .filter(|judged| judged.holds)
-                .map(|judged| (rule, judged))
-        })
+    ) -> Option<(&JudgedRule, Claim)> {
+        if self.rules.is_empty() {
+            return None;
+        }
+        let offered: Vec<&str> = self.rules.iter().map(JudgedRule::name).collect();
+        let rendered = render_all(&self.rules, question);
+        // ⚠ The clock is dropped by name — register item 1073's stated residue: a dialog judge's
+        // latency has no tally to join, and its bound is the author's own number.
+        // ⚠ NO DIRECTORY, for [`judges`]' reason: the whole of the evidence is the rendered dialog,
+        // and pointing this judge at a repository would suggest otherwise.
+        let (shaped, _waited) =
+            shaped_of_another(panes, run, &spec.argv, None, &rendered, spec.within);
+        let (shaped, _reply, _exit) = shaped.ok()?;
+        let claim = claim_in(&shaped, &rendered, &offered).ok()?;
+        let rule = self.rules.iter().find(|rule| rule.name() == claim.rule)?;
+        Some((rule, claim))
     }
 }
 
@@ -1257,6 +1339,34 @@ pub fn judges(
 /// WHICH, because the six have six different remedies and a person handed one word had none of
 /// them. ⚠ `Result` and not `Option`, so a caller cannot go on treating the absence as one thing:
 /// the type makes the reason impossible to drop silently.
+/// **ASK, AND HAND BACK THE REPLY ITS PROMISED SHAPE ADMITS** — the half [`asked_of_another`] and
+/// [`JudgedRules::claiming`] share, extracted so one asking cannot grow two spellings.
+///
+/// ⚠ The shaping and the exit status travel out WITH the reply rather than being judged here: what
+/// a reply MEANS is the parser's question (a verdict word, or a claimed rule name), and this
+/// function deliberately has no opinion about it. Register item 659's rule — *the status renames a
+/// failure and never overturns an answer* — is applied by each caller against its own parse, which
+/// is the only place that knows whether there WAS an answer.
+type Shaped = (String, String, Option<sprag_terminal::PaneExit>);
+
+fn shaped_of_another(
+    panes: &dyn PaneAccess,
+    run: &RunContext,
+    argv: &[String],
+    cwd: Option<&std::path::Path>,
+    question: &str,
+    within: Duration,
+) -> (Result<Shaped, Unheard>, Waited) {
+    let (heard, waited) = said_by_another(panes, run, argv, cwd, Some(question), within);
+    let shaped = heard.and_then(|(reply, exit)| {
+        // ⚠ A reply that broke its promised shape is refused as it always was, before the status is
+        // consulted — the `?` this replaced returned it unrenamed, and so does this.
+        let shaped = promised_shape(argv, &reply)?;
+        Ok((shaped, reply, exit))
+    });
+    (shaped, waited)
+}
+
 pub fn asked_of_another(
     panes: &dyn PaneAccess,
     run: &RunContext,
@@ -1265,11 +1375,8 @@ pub fn asked_of_another(
     question: &str,
     within: Duration,
 ) -> Asked {
-    let (heard, waited) = said_by_another(panes, run, argv, cwd, Some(question), within);
-    let said = heard.and_then(|(reply, exit)| {
-        // ⚠ A reply that broke its promised shape is refused as it always was, before the status is
-        // consulted — the `?` this replaced returned it unrenamed, and so does this.
-        let shaped = promised_shape(argv, &reply)?;
+    let (shaped, waited) = shaped_of_another(panes, run, argv, cwd, question, within);
+    let said = shaped.and_then(|(shaped, reply, exit)| {
         // ⛔⛔⛔⛔⛔ **THE STATUS RENAMES A FAILURE AND NEVER OVERTURNS AN ANSWER** — register item
         // 659.
         //
@@ -1618,7 +1725,23 @@ pub(crate) fn line_from_another(
 /// has already finished — the pane is closed on the next line either way.
 const REAP_WITHIN: Duration = Duration::from_secs(2);
 
-/// **WHAT A REPLY MEANS TO A JUDGE** — the half [`said_by_another`] deliberately does not decide.
+/// **WHAT ONE CALL OVER EVERY RULE CAME TO** — which decision claimed the dialog, and the option a
+/// [`Act::Widen`] would press.
+///
+/// ⚠ `option` is carried whether or not the claiming rule widens, because the judge answers both
+/// halves in one breath and throwing the number away here would mean asking again to get it back.
+/// Which half is USED is the rule's `does`, one layer up.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Claim {
+    /// The name of the rule the judge said holds, as the judge spelled it.
+    pub rule: String,
+    /// The number of the LONGEST-LASTING approval, where the judge named one.
+    pub option: Option<u32>,
+    /// What the judge went on to say, a line of it — [`Judgement::explained`]'s reason.
+    pub explained: Option<String>,
+}
+
+/// **WHAT A REPLY MEANS TO A JUDGE** — the half `said_by_another` deliberately does not decide.
 ///
 /// `question` is the one that was asked, and it is needed here rather than only at the spawn: a
 /// checker that ECHOES its argv sends this run's own prompt back, and the echo has to be cut off
@@ -1682,6 +1805,90 @@ const REAP_WITHIN: Duration = Duration::from_secs(2);
 /// for no restatement, but a partial quotation is reachable and would be read as the word it
 /// quoted. Filtering that phrase would be a needle over somebody's prose, which is the widening
 /// this item refused; it is named here instead so the next measurement knows where to look.
+
+/// Read a [`Claim`] out of a reply, over the names this run actually offered.
+///
+/// # ⛔⛔⛔⛔⛔ A name is admitted only if the DOCUMENT wrote it
+///
+/// The judge is handed the rule names and asked for one back, so a reply naming something else is
+/// not a decision this run can act on — it is a judge that answered a different question, or one
+/// that invented a rule. Matching against `offered` rather than accepting any token is what keeps a
+/// hallucinated name from selecting an act: an unmatched name is [`Unheard::NotAVerdict`], which is
+/// silence, and silence is never a yes.
+///
+/// ⚠ The echo is cut exactly as [`verdict_in`] cuts it, and for its reason — a checker that prints
+/// its arguments would otherwise have this run's own rule names read back as its answer.
+fn claim_in(reply: &str, question: &str, offered: &[&str]) -> Result<Claim, Unheard> {
+    let trimmed = reply.trim_start();
+    let opening = question.lines().next().unwrap_or_default();
+    let spoken = match opening.is_empty() {
+        true => trimmed,
+        false => trimmed.split(opening).next().unwrap_or_default(),
+    };
+    // ⚠⚠ THE FIRST MARKED WORD DECIDES, which is `verdict_word`'s rule and is here for its reason:
+    // a reply is not guaranteed to be one word, and the word a judge OPENS with is the one it means
+    // as its answer. `NONE` is a real answer — no rule claimed this dialog — and is told apart from
+    // a reply that named nothing readable, because the two have different remedies.
+    // ⛔⛔ **THE FIRST LINE, WORD BY WORD — NOT [`marked_words`].** That iterator's contract is a
+    // VERDICT's: the word a reply opens with, or capitals anywhere. A rule name is neither by
+    // nature — a judge answering `the architecture one` or `permission 2` marks only its first
+    // word — and a name is not prose the way a stray `yes` mid-sentence is: it is a token this run
+    // OFFERED, so finding it is a lookup rather than a guess. The bound is the line, which is where
+    // `explained` already stops.
+    let mut named: Option<(std::ops::Range<usize>, String)> = None;
+    let line = first_line(spoken).unwrap_or_default();
+    let base = spoken.len() - spoken.trim_start().len();
+    for word in line.split_whitespace() {
+        let bare = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
+        if bare.eq_ignore_ascii_case("NONE") {
+            return Err(Unheard::NotAVerdict(String::new()));
+        }
+        if let Some(hit) = offered.iter().find(|name| name.eq_ignore_ascii_case(bare)) {
+            let at = base
+                + spoken[base..]
+                    .find(word)
+                    .map_or(0, |offset| offset + word.len());
+            named = Some((at..at, (*hit).to_owned()));
+            break;
+        }
+    }
+    let Some((at, rule)) = named else {
+        return Err(Unheard::NotAVerdict(
+            first_line(spoken)
+                .unwrap_or_else(|| first_line(trimmed).unwrap_or_default())
+                .to_owned(),
+        ));
+    };
+    // ⚠ The number is read AFTER the name and only from what follows it, so a digit inside the
+    // echoed dialog above cannot be mistaken for the judge's choice.
+    //
+    // ⛔⛔⛔⛔⛔ **NOT THROUGH [`marked_words`], AND A GATE IS WHAT SAID SO.** That iterator yields
+    // the word a reply OPENS with and any word in capitals, which is the right contract for a
+    // VERDICT and the wrong one for a number: `permission 2` marks `permission` and stops, because
+    // `2` is neither first nor upper-case. The control arm of
+    // `a_judge_naming_a_rule_nobody_wrote_has_claimed_nothing` failed on exactly that, which is the
+    // reason it reads both halves back rather than only asserting the refusals.
+    //
+    // ⚠ Bounded to the name's OWN LINE. A number further down is a judge that went on to explain,
+    // and a digit inside an explanation is not a choice — this is the same place `explained` stops.
+    let after = &spoken[at.end..];
+    let option = first_line(after)
+        .unwrap_or_default()
+        .split_whitespace()
+        .find_map(|word| {
+            word.trim_matches(|c: char| !c.is_ascii_digit())
+                .parse::<u32>()
+                .ok()
+        });
+    Ok(Claim {
+        rule,
+        option,
+        explained: first_line(after)
+            .map(ToOwned::to_owned)
+            .filter(|line| !line.is_empty()),
+    })
+}
+
 fn verdict_in(reply: &str, question: &str) -> Result<Judgement, Unheard> {
     // ⚠⚠⚠⚠ **THE QUESTION WE SENT IS CUT OFF FIRST, BECAUSE AN ECHO IS NOT A STATEMENT.** The
     // rendered question travels as the LAST ARGV, which a print-mode CLI reads positionally and
@@ -1897,6 +2104,54 @@ fn spoke(panes: &dyn PaneAccess, pane: sprag_terminal::PaneId) -> Option<String>
 /// So the options stay and the prompt names the difference they cannot show on their own: a menu
 /// whose entries are all variations of **yes-or-no about one act** is a permission, however many
 /// entries it has. That sentence is doing the work, not the presence of the list.
+/// Render EVERY rule into ONE prompt — the whole of what makes this a single model call.
+///
+/// # ⛔⛔⛔⛔⛔ Why one call and not one per rule
+///
+/// The per-rule walk this replaces paid a model call for every clause a kind wrote, in document
+/// order, first match stopping the rest — so the ORDER was priced, and a kind with five decisions
+/// bought five judgements of one dialog. ⚠ That price was also a correctness trap, not only a cost:
+/// putting `permission` before `architecture` made an architecture decision arriving AS a permission
+/// dialog answer the cheaper question, because whichever ran first claimed it.
+///
+/// Asked once, the judge sees every statement together and picks the one that holds — which is the
+/// question a person would ask, and it has no order to pay for.
+///
+/// ⚠⚠ THE SECOND HALF IS ASKED UNCONDITIONALLY, and that is deliberate: the judge cannot know which
+/// decisions WIDEN (that word is the document's, not the dialog's), so asking *which option lasts
+/// longest* of every permission dialog costs nothing extra in calls and means a widening rule never
+/// needs a second one. [`claim_in`] keeps the number; the rule's `does` decides whether it is used.
+fn render_all(rules: &[JudgedRule], question: &Question) -> String {
+    let mut out = String::new();
+    out.push_str(
+        "An AI agent working in a terminal has stopped and is showing the dialog below.\n\n\
+         Decide which ONE of these statements is true of it:\n",
+    );
+    for rule in rules {
+        out.push_str(&format!("  {}: {}\n", rule.name(), rule.criterion()));
+    }
+    out.push_str(
+        "\nOne distinction the options below do not show on their own: when every option is a \
+         variation of yes-or-no about ONE action the agent has already settled on — accept it, \
+         accept it and stop asking, decline it — that is a permission, however many entries it \
+         has. Options that lead to materially different outcomes are a choice.\
+         \n\nReply with ONE line and nothing else:\
+         \n  NONE                 if no statement above is true of this dialog\
+         \n  <name>               the name of the statement that is true\
+         \n  <name> <number>      and, ONLY when this dialog is a permission, the number of the \
+         option that approves it for the LONGEST (a standing allowance beats a one-time one). Do \
+         not explain.\n\nThe dialog:\n",
+    );
+    for line in &question.asked {
+        out.push_str(line);
+        out.push('\n');
+    }
+    for choice in &question.choices {
+        out.push_str(&format!("  {}. {}\n", choice.number, choice.label));
+    }
+    out
+}
+
 fn render(criterion: &str, question: &Question) -> String {
     let mut out = String::new();
     out.push_str(
@@ -1966,6 +2221,187 @@ mod tests {
     use sprag_detect::Choice;
     use sprag_terminal::PaneId;
     use std::sync::{Arc, Mutex};
+
+    /// ⛔⛔⛔⛔⛔ **THE DOOR IS THE ONLY THING BETWEEN A TYPO AND AN UNATTENDED RUN THAT GRANTS** —
+    /// every arm here is a document that must not compile into a `widen`.
+    ///
+    /// # ⚠⚠ Why each arm, and what it would cost if it passed
+    ///
+    /// * **the pair that works** — the control, and it reads the act BACK rather than only
+    ///   accepting. Without it every refusal below would pass against a parser that refuses
+    ///   everything.
+    /// * **an absent `does`** — a RUN and not a refusal: every rule authored before this word
+    ///   existed carries none, and each must keep meaning exactly what it meant. Asserted as the
+    ///   CONSTANT [`Act::Refuse`], so a door that started defaulting to `Widen` reds here.
+    /// * **a misspelled `does`** — refused. ⛔ NOT rounded down to the safer-sounding half: the two
+    ///   acts differ by whether this run may grant a permission with nobody watching, and a typo is
+    ///   consent to neither. A default here would make `widn:` an approval nobody wrote.
+    /// * **`widen` carrying `text`** — refused, because that act presses an option and never
+    ///   composes, so the sentence would be typed by nobody. An author who wrote one believed a
+    ///   REFUSAL was configured, which is the opposite act.
+    /// * **`refuse` carrying no `text`** — the pre-existing refusal, asserted here so the new word
+    ///   cannot be read as having relaxed it.
+    #[test]
+    fn an_act_a_document_did_not_write_is_refused_rather_than_defaulted() {
+        let made = JudgedRule::parse(
+            "permission".to_owned(),
+            "is this a permission dialog".to_owned(),
+            String::new(),
+            JudgedRule::WIDEN_WORD,
+        );
+        assert!(
+            matches!(&made, Ok(rule) if rule.does() == Act::Widen),
+            "⚠ THE CONTROL FIRST, and it reads the act back: a `widen` a document CAN write, or \
+             every refusal below is about a door that refuses everything. Got {made:?}",
+        );
+        let silent = JudgedRule::parse(
+            "architecture".to_owned(),
+            "is this an architecture choice".to_owned(),
+            "think again".to_owned(),
+            "",
+        );
+        assert!(
+            matches!(&silent, Ok(rule) if rule.does() == Act::Refuse),
+            "⚠⚠⚠ AN ABSENT `does` IS A RUN, not a refusal — a rule written before this word existed \
+             means what it always meant, and the act it gets is the CONSTANT rather than a word \
+             spelled at this door. Got {silent:?}",
+        );
+        assert_eq!(
+            JudgedRule::parse(
+                "permission".to_owned(),
+                "is this a permission dialog".to_owned(),
+                String::new(),
+                "widn",
+            ),
+            Err(crate::screen::Malformed::ActUnknown),
+            "⛔⛔⛔⛔⛔ A MISSPELLED ACT IS REFUSED AND NOT ROUNDED DOWN. Defaulting it to `refuse` \
+             would look like the safe choice and is not one: the author asked for an approval and \
+             would be told nothing, so the run they get is not the run they wrote",
+        );
+        assert_eq!(
+            JudgedRule::parse(
+                "permission".to_owned(),
+                "is this a permission dialog".to_owned(),
+                "say something".to_owned(),
+                JudgedRule::WIDEN_WORD,
+            ),
+            Err(crate::screen::Malformed::SaysWhatNobodyTypes),
+            "⛔⛔ A WIDENING THAT ALSO SAYS SOMETHING IS MALFORMED: that act presses an option and \
+             never composes, so the sentence is typed by nobody — and whoever wrote it believed a \
+             refusal was configured",
+        );
+        assert_eq!(
+            JudgedRule::parse(
+                "architecture".to_owned(),
+                "is this an architecture choice".to_owned(),
+                String::new(),
+                JudgedRule::REFUSE_WORD,
+            ),
+            Err(crate::screen::Malformed::SaysNothing),
+            "⚠ AND THE OLDER REFUSAL STILL STANDS — a rule that turns a call down and tells the \
+             agent nothing leaves it with no next thing to do. The new word relaxed nothing",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A NAME THE DOCUMENT DID NOT WRITE SELECTS NO ACT** — the one thing between a
+    /// judge that invents a rule and a run that acts on it.
+    ///
+    /// ⚠⚠ The judge is handed the names and asked for one back, so a reply naming anything else is
+    /// a judge that answered a different question. Matching against what was OFFERED is what makes
+    /// that silence; and **silence is never a yes** is this file's whole direction.
+    ///
+    /// ⚠ `NONE` is a real answer and is told apart from an unreadable one, because the two have
+    /// different remedies — one is a dialog no rule covers, the other is a prompt to fix.
+    #[test]
+    fn a_judge_naming_a_rule_nobody_wrote_has_claimed_nothing() {
+        let offered = ["architecture", "permission"];
+        assert!(
+            matches!(claim_in("permission 2", "ASKED", &offered), Ok(claim)
+                if claim.rule == "permission" && claim.option == Some(2)),
+            "⚠ THE CONTROL: a name the document wrote, with the option the judge chose, read back \
+             whole — both halves of ONE call, which is the whole reason this parser exists",
+        );
+        assert!(
+            matches!(claim_in("architecture", "ASKED", &offered), Ok(claim)
+                if claim.rule == "architecture" && claim.option.is_none()),
+            "⚠⚠ A NAME WITH NO NUMBER IS A CLAIM, not a malformed reply — a refusing rule has no \
+             option to press, so asking for one would make every such answer look broken",
+        );
+        assert!(
+            claim_in("security 2", "ASKED", &offered).is_err(),
+            "⛔⛔⛔⛔⛔ A RULE NOBODY WROTE CLAIMS NOTHING. A judge that invents a name must not \
+             select an act — and `security` is exactly the name this crate's own documentation uses \
+             as its example, so a parser accepting any token would take it",
+        );
+        assert!(
+            claim_in("NONE", "ASKED", &offered).is_err(),
+            "⚠ NONE IS AN ANSWER AND ITS ANSWER IS *no rule claimed this*, which reaches the caller \
+             as the same silence every other unclaimed dialog does",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE PROMPT TEACHES THE ONE DISTINCTION A WIDENING MUST NOT GET WRONG** — a
+    /// question of CHOICE may be approved on a run's behalf and a question of FACT may not.
+    ///
+    /// # ⚠⚠ Why this is asserted about the RENDERED TEXT
+    ///
+    /// Whether a judge tells `Do you want to create DESIGN.txt?` from `Do you trust this folder?`
+    /// is a model's answer and no gate can hold it. What a gate CAN hold is that the question put
+    /// to it carries the distinction at all — the sentence naming *one action the agent has already
+    /// settled on* against *materially different outcomes* — and that the option list travels with
+    /// its NUMBERS, since a judge asked for the longest-lasting approval has nothing to name
+    /// without them.
+    ///
+    /// ⚠ A prompt that lost either would still produce verdicts, and every other gate here would
+    /// stay green: the regression this file most fears is one the parser cannot see.
+    #[test]
+    fn the_question_a_judge_is_asked_carries_the_permission_distinction_and_the_numbers() {
+        let rules = vec![
+            JudgedRule::parse(
+                "architecture".to_owned(),
+                "is this an architecture choice".to_owned(),
+                "think again".to_owned(),
+                JudgedRule::REFUSE_WORD,
+            )
+            .expect("a refusing rule"),
+            JudgedRule::parse(
+                "permission".to_owned(),
+                "is this a permission dialog".to_owned(),
+                String::new(),
+                JudgedRule::WIDEN_WORD,
+            )
+            .expect("a widening rule"),
+        ];
+        let asked = render_all(&rules, &question());
+        for rule in &rules {
+            assert!(
+                asked.contains(rule.name()) && asked.contains(rule.criterion()),
+                "⚠⚠⚠ EVERY RULE TRAVELS IN THE ONE CALL, or the judge is choosing from a list this \
+                 run did not offer — and `{}` is missing from it",
+                rule.name(),
+            );
+        }
+        assert!(
+            asked.contains("already settled on") && asked.contains("materially different outcomes"),
+            "⛔⛔⛔⛔⛔ THE DISTINCTION IS GONE FROM THE PROMPT. Without it a judge has no way to \
+             tell a permission from a choice, and the act on the other side of that answer is the \
+             one that GRANTS. A `widen` pointed at a question of FACT is this feature's regression",
+        );
+        for choice in &question().choices {
+            assert!(
+                asked.contains(&format!("{}. {}", choice.number, choice.label)),
+                "⚠⚠ THE OPTIONS TRAVEL WITH THEIR NUMBERS: a judge asked which option lasts \
+                 longest has nothing to answer with unless the list is numbered, and option {} is \
+                 not in the rendered question",
+                choice.number,
+            );
+        }
+        assert!(
+            asked.contains("NONE"),
+            "⚠ AND `NONE` IS OFFERED, or a judge with no true statement has no way to say so and \
+             will pick the nearest — which is a claim nobody wrote",
+        );
+    }
 
     /// A host with panes but NO LIFECYCLE — so a judgement that tried to spawn would answer `None`
     /// for that reason and not for the one under test.

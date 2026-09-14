@@ -14665,7 +14665,7 @@ mod tests {
     fn every_driven_state_says_whether_its_agent_can_be_asked_for_an_account() {
         /// A turn that ended because the peer's SERVICE was not answering — `working`'s own first
         /// `turn.blocked` guard, and the only road to `service_down`.
-        const BLOCKED_BY_SERVICE: &str = r#"{"service": true, "judged": false}"#;
+        const BLOCKED_BY_SERVICE: &str = r#"{"service": true, "judged": false, "does": ""}"#;
 
         let started_at = |events: &[(AiLoopEvent, &str)]| {
             let (mut engine, host, _lua, _session) = started();
@@ -14801,15 +14801,24 @@ mod tests {
     fn every_driven_state_says_what_a_pass_of_it_is_for() {
         /// A turn that ended because the peer's SERVICE was not answering — `working`'s own first
         /// `turn.blocked` guard, and the only road to `service_down`.
-        const BLOCKED_BY_SERVICE: &str = r#"{"service": true, "judged": false}"#;
+        const BLOCKED_BY_SERVICE: &str = r#"{"service": true, "judged": false, "does": ""}"#;
         /// A blocked turn that is neither an outage nor a decision — an ordinary tool dialog, which
         /// is `working`'s LAST `turn.blocked` arm and the only road to `screening`.
-        const BLOCKED_BY_DIALOG: &str = r#"{"service": false, "judged": false}"#;
+        const BLOCKED_BY_DIALOG: &str = r#"{"service": false, "judged": false, "does": ""}"#;
         /// And one the driver's judge called a DESIGN decision — the middle arm, and the only road
         /// to `redirecting`. ⚠ Nothing in the product publishes a `true` for this key yet; the
         /// document has the route and says so, and a fixture is how a route with no producer is
         /// still measured rather than argued about.
-        const BLOCKED_BY_DESIGN: &str = r#"{"service": false, "judged": true}"#;
+        const BLOCKED_BY_DESIGN: &str = r#"{"service": false, "judged": true, "does": "refuse"}"#;
+        /// **A DIALOG A JUDGED RULE CLAIMED AND WILL APPROVE** — `judged` with the act beside it,
+        /// which is `working`'s road to `widening`.
+        ///
+        /// ⚠ `judged` IS TRUE HERE TOO, and the pair is what the document forks on: a widening rule
+        /// IS a judged one, so a payload carrying only `does` would take the edge for a reason the
+        /// driver never publishes. The order of the two edges is what makes `widen` win, and this
+        /// constant is the input that proves it does.
+        const BLOCKED_BY_PERMISSION: &str =
+            r#"{"service": false, "judged": true, "does": "widen"}"#;
         /// **A MILESTONE AN INDEPENDENT CHECK REFUSED** — [`DONE`]'s six keys with the word in
         /// `checked`, which is `judging`'s road to `disputing`.
         ///
@@ -14914,6 +14923,15 @@ mod tests {
                 ],
                 AiLoopState::Redirecting,
                 crate::act::Does::Redirect,
+            ),
+            (
+                vec![
+                    (AiLoopEvent::Start, ""),
+                    (AiLoopEvent::PromptSent, ""),
+                    (AiLoopEvent::TurnBlocked, BLOCKED_BY_PERMISSION),
+                ],
+                AiLoopState::Widening,
+                crate::act::Does::Widen,
             ),
             (
                 vec![

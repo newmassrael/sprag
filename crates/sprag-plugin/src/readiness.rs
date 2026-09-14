@@ -1680,104 +1680,154 @@ impl Readiness {
             Err(why) => return Ok(Reached::Asking(Unanswered::refused(question, why))),
         };
 
-        let standing_on_it = question.selected() == Some(&chose);
-        // ⚠ THE KEY WHOSE LANDING PLACE IS PROVEN GOES FIRST. Where the peer's own marker is
-        // already on the authorised option, that key is Enter — `Question::selected` says exactly
-        // where it lands. Everywhere else it is the number, whose effect is inferred and whose
-        // proof arrives afterwards, as the marker.
-        let mut bytes = if standing_on_it {
-            panes.inject(pane, &[KeyStroke::named("Enter")])?.bytes()
-        } else {
-            panes
-                .inject(pane, &KeyStroke::text(&chose.number.to_string()))?
-                .bytes()
-        };
-        let mut how = if standing_on_it {
-            Taken::Selected
-        } else {
-            Taken::Numbered
-        };
-
-        // What would END the wait differs by which key went in, and conflating them was a defect
-        // an end-to-end run measured. For a NUMBER, the marker arriving on the option is news. For
-        // an ENTER it is not — the marker was already there, so a wait that treated it as a signal
-        // would return before the peer had touched the key.
-        let settled = poll_until(run, ANSWER_WITHIN, || {
-            match marker_arrived(panes, pane, &question, &chose) {
-                Arrival::LeftTheQuestion => true,
-                Arrival::OnTheOption => !standing_on_it,
-                Arrival::NotYet => false,
-            }
-        });
-        // ⚠⚠⚠ A run ending underneath does not un-type the key, and it does not learn what became
-        // of it either. The two endings are NOT the same sentence, and saying they were is the
-        // defect this arm was split out of: `not_taken` is a fact about the PEER — it went on
-        // asking while this run watched — and a run stopped inside the wait watched nothing. See
-        // [`Refusal::Unwitnessed`]. Both carry what was spent.
-        if settled == Waited::Stopped {
-            return Ok(Reached::Asking(Unanswered::unwitnessed(question, bytes)));
-        }
-
-        // ⚠⚠⚠ THE SECOND KEY, and it is the OTHER one — sent only where the same question is still
-        // up with the marker still on the authorised option, which is the same evidence the first
-        // key was justified by.
-        //
-        // Both directions are real dialogs and neither can be told from a screen. A NUMBER that
-        // moved the marker wants an Enter to commit it. An ENTER the peer ignored — a menu with
-        // number hotkeys and no Enter handling — wants the number, and until an end-to-end run
-        // MEASURED one, the commonest consent there was (`Yes`, on the pre-selected option) could
-        // not be answered at all: the run pressed the one key that dialog does not read and
-        // reported `not_taken`.
-        //
-        // ⚠ The escalation cannot confirm something else by accident. It happens only while the
-        // screen still shows THIS question with the marker on THIS option, so a first key that had
-        // in fact landed would have taken the dialog away and there would be nothing to escalate
-        // into.
-        if marker_arrived(panes, pane, &question, &chose) == Arrival::OnTheOption {
-            if standing_on_it {
-                bytes += panes
-                    .inject(pane, &KeyStroke::text(&chose.number.to_string()))?
-                    .bytes();
-                how = Taken::SelectedThenNumbered;
-            } else {
-                bytes += panes.inject(pane, &[KeyStroke::named("Enter")])?.bytes();
-                how = Taken::NumberedThenConfirmed;
-            }
-        } else if settled == Waited::TimedOut {
-            // The peer neither left the question nor put its marker where this run could act on
-            // it. Nothing further is justified, and re-typing is what this contract exists to not
-            // do.
-            return Ok(Reached::Asking(Unanswered::not_taken(question, bytes)));
-        }
-
-        // ⚠⚠ AN ANSWER IS NOT GIVEN UNTIL THE PEER LEAVES THE QUESTION. A run that reported one off
-        // its own keystroke would report success for a dialog still on the screen, which is
-        // precisely the claim `Reached::Asking` was built to stop being made silently.
-        //
-        // ⚠⚠⚠ THROUGH THE SAME PREDICATE THE REST OF THIS ACT USES, and that is a fix rather than
-        // tidiness. Asked as *"is the pane still blocked"* this outlived the answering bound on
-        // every real daemon: a detector's verdict SETTLES, so the state says blocked for its
-        // hysteresis window after the menu has gone. A run whose answer had plainly landed reported
-        // `not_taken`. See [`Arrival::LeftTheQuestion`].
-        match poll_until(run, ANSWER_WITHIN, || {
-            marker_arrived(panes, pane, &question, &chose) == Arrival::LeftTheQuestion
-        }) {
-            Waited::Ready => Ok(Reached::Answered(Answered {
+        match take_option(panes, pane, &question, &chose, run)? {
+            Took::Left { how, bytes } => Ok(Reached::Answered(Answered {
                 question,
                 chose,
                 how,
                 bytes,
             })),
-            // ⚠⚠ THE TWO UNSATISFIED ENDINGS SAY DIFFERENT THINGS, and this is the wait where that
-            // matters most: the keys are all sent, so the only question left is what the PEER did,
-            // and a stopped run is the one reader that cannot answer it. Measured — the fixture
-            // peer had already committed the authorised option (`TOOK 2 VIA 10`) when the run this
-            // arm reports on was cancelled.
-            Waited::TimedOut => Ok(Reached::Asking(Unanswered::not_taken(question, bytes))),
-            Waited::Stopped => Ok(Reached::Asking(Unanswered::unwitnessed(question, bytes))),
+            Took::StillAsking { bytes } => {
+                Ok(Reached::Asking(Unanswered::not_taken(question, bytes)))
+            }
+            Took::Unwitnessed { bytes } => {
+                Ok(Reached::Asking(Unanswered::unwitnessed(question, bytes)))
+            }
         }
     }
+}
 
+/// **WHAT PRESSING AN OPTION CAME TO** — [`take_option`]'s answer, in nobody's vocabulary but its
+/// own.
+///
+/// ⚠ Deliberately NOT [`Reached`]: this act has two callers now, and only one of them is a
+/// readiness barrier. A readiness-shaped answer here would make the other one translate out of a
+/// vocabulary that is about something else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Took {
+    /// The peer left the question — the option was taken, by `how`.
+    Left { how: Taken, bytes: u64 },
+    /// Every key went in and the peer went on asking. A fact about the PEER, earned by watching.
+    StillAsking { bytes: u64 },
+    /// The run ended inside the wait. **A run that stopped may say what it did, never what the
+    /// other side did about it** — see [`Refusal::Unwitnessed`].
+    Unwitnessed { bytes: u64 },
+}
+
+/// **PRESS `chose` AND WATCH UNTIL THE PEER LEAVES THE QUESTION** — the approving half of
+/// [`crate::screen::refuse`], and the one act in this crate that can ANSWER a dialog rather than
+/// turn it down.
+///
+/// # ⛔⛔⛔⛔⛔ Why this is a function and not two copies
+///
+/// It was inline in the readiness barrier, which was fine while the barrier was its only caller.
+/// A judged rule that WIDENS a permission ([`crate::judge::Act::Widen`]) presses an option too, and
+/// the keystroke sequence below is not a detail either caller may re-derive: which key goes FIRST
+/// depends on where the peer's marker already stands, what ENDS the wait differs by which key went
+/// in, and the escalation may only fire while the same question is still up. Every one of those is
+/// a measurement this crate paid for end-to-end, and a second implementation would inherit none of
+/// them. **This crate has paid for two answers to one question often enough to name it a class.**
+pub(crate) fn take_option(
+    panes: &dyn PaneAccess,
+    pane: PaneId,
+    question: &Question,
+    chose: &Choice,
+    run: &RunContext,
+) -> Result<Took, PaneError> {
+    let standing_on_it = question.selected() == Some(chose);
+    // ⚠ THE KEY WHOSE LANDING PLACE IS PROVEN GOES FIRST. Where the peer's own marker is
+    // already on the authorised option, that key is Enter — `Question::selected` says exactly
+    // where it lands. Everywhere else it is the number, whose effect is inferred and whose
+    // proof arrives afterwards, as the marker.
+    let mut bytes = if standing_on_it {
+        panes.inject(pane, &[KeyStroke::named("Enter")])?.bytes()
+    } else {
+        panes
+            .inject(pane, &KeyStroke::text(&chose.number.to_string()))?
+            .bytes()
+    };
+    let mut how = if standing_on_it {
+        Taken::Selected
+    } else {
+        Taken::Numbered
+    };
+
+    // What would END the wait differs by which key went in, and conflating them was a defect
+    // an end-to-end run measured. For a NUMBER, the marker arriving on the option is news. For
+    // an ENTER it is not — the marker was already there, so a wait that treated it as a signal
+    // would return before the peer had touched the key.
+    let settled = poll_until(run, ANSWER_WITHIN, || {
+        match marker_arrived(panes, pane, question, chose) {
+            Arrival::LeftTheQuestion => true,
+            Arrival::OnTheOption => !standing_on_it,
+            Arrival::NotYet => false,
+        }
+    });
+    // ⚠⚠⚠ A run ending underneath does not un-type the key, and it does not learn what became
+    // of it either. The two endings are NOT the same sentence, and saying they were is the
+    // defect this arm was split out of: `not_taken` is a fact about the PEER — it went on
+    // asking while this run watched — and a run stopped inside the wait watched nothing. See
+    // [`Refusal::Unwitnessed`]. Both carry what was spent.
+    if settled == Waited::Stopped {
+        return Ok(Took::Unwitnessed { bytes });
+    }
+
+    // ⚠⚠⚠ THE SECOND KEY, and it is the OTHER one — sent only where the same question is still
+    // up with the marker still on the authorised option, which is the same evidence the first
+    // key was justified by.
+    //
+    // Both directions are real dialogs and neither can be told from a screen. A NUMBER that
+    // moved the marker wants an Enter to commit it. An ENTER the peer ignored — a menu with
+    // number hotkeys and no Enter handling — wants the number, and until an end-to-end run
+    // MEASURED one, the commonest consent there was (`Yes`, on the pre-selected option) could
+    // not be answered at all: the run pressed the one key that dialog does not read and
+    // reported `not_taken`.
+    //
+    // ⚠ The escalation cannot confirm something else by accident. It happens only while the
+    // screen still shows THIS question with the marker on THIS option, so a first key that had
+    // in fact landed would have taken the dialog away and there would be nothing to escalate
+    // into.
+    if marker_arrived(panes, pane, question, chose) == Arrival::OnTheOption {
+        if standing_on_it {
+            bytes += panes
+                .inject(pane, &KeyStroke::text(&chose.number.to_string()))?
+                .bytes();
+            how = Taken::SelectedThenNumbered;
+        } else {
+            bytes += panes.inject(pane, &[KeyStroke::named("Enter")])?.bytes();
+            how = Taken::NumberedThenConfirmed;
+        }
+    } else if settled == Waited::TimedOut {
+        // The peer neither left the question nor put its marker where this run could act on
+        // it. Nothing further is justified, and re-typing is what this contract exists to not
+        // do.
+        return Ok(Took::StillAsking { bytes });
+    }
+
+    // ⚠⚠ AN ANSWER IS NOT GIVEN UNTIL THE PEER LEAVES THE QUESTION. A run that reported one off
+    // its own keystroke would report success for a dialog still on the screen, which is
+    // precisely the claim `Reached::Asking` was built to stop being made silently.
+    //
+    // ⚠⚠⚠ THROUGH THE SAME PREDICATE THE REST OF THIS ACT USES, and that is a fix rather than
+    // tidiness. Asked as *"is the pane still blocked"* this outlived the answering bound on
+    // every real daemon: a detector's verdict SETTLES, so the state says blocked for its
+    // hysteresis window after the menu has gone. A run whose answer had plainly landed reported
+    // `not_taken`. See [`Arrival::LeftTheQuestion`].
+    match poll_until(run, ANSWER_WITHIN, || {
+        marker_arrived(panes, pane, question, chose) == Arrival::LeftTheQuestion
+    }) {
+        Waited::Ready => Ok(Took::Left { how, bytes }),
+        // ⚠⚠ THE TWO UNSATISFIED ENDINGS SAY DIFFERENT THINGS, and this is the wait where that
+        // matters most: the keys are all sent, so the only question left is what the PEER did,
+        // and a stopped run is the one reader that cannot answer it. Measured — the fixture
+        // peer had already committed the authorised option (`TOOK 2 VIA 10`) when the run this
+        // arm reports on was cancelled.
+        Waited::TimedOut => Ok(Took::StillAsking { bytes }),
+        Waited::Stopped => Ok(Took::Unwitnessed { bytes }),
+    }
+}
+
+impl Readiness {
     /// Whether `pane` satisfies `when` right now.
     fn satisfied(&self, when: &ReadyWhen, panes: &dyn PaneAccess, pane: PaneId) -> bool {
         match when {

@@ -7555,7 +7555,11 @@ pub struct OuterLoop {
     /// what to SAY is the rule's own `text`, and putting it through the datamodel and back would
     /// make the words a run types into somebody's dialog a round trip through a script engine that
     /// has already been measured mangling non-ASCII once.
-    claimed: Option<crate::judge::JudgedRule>,
+    /// ⚠ THE CLAIM TRAVELS WITH THE RULE, because the option number is answered in the SAME model
+    /// call that named the rule — see [`crate::judge::JudgedRules::claiming`]. Keeping only the rule
+    /// would mean asking a second time to learn which option to press, which is the cost the single
+    /// call was built to remove.
+    claimed: Option<(crate::judge::JudgedRule, crate::judge::Claim)>,
     /// **WHERE THIS RUN'S REVIEWS KEEP THEIR COUNTS** — [`AiLoopSpec::review_ledger`]'s value, and
     /// [`None`] for a run that named no directory, which keeps none.
     ///
@@ -10676,15 +10680,22 @@ impl OuterLoop {
                 Some(ScriptValue::String(held)) => Some(held.clone()),
                 _ => None,
             };
-            let (Some(name), Some(criterion), Some(text)) = (
+            // ⚠⚠ **NAME AND CRITERION ARE THE UNREADABLE PAIR; `text` AND `does` ARE NOT.** An
+            // absent `text` is what a `widen` rule looks like and an absent `does` is what every
+            // rule written before that word looked like — both are ANSWERS, so reading them as a
+            // missing element would refuse two documents that are well-formed. What each absence
+            // MEANS is [`JudgedRule::parse`]'s to decide, and it refuses the combinations that are
+            // an author believing the other act was configured.
+            let (Some(name), Some(criterion)) = (
                 text_of(JudgedRule::NAME_KEY),
                 text_of(JudgedRule::JUDGE_KEY),
-                text_of(JudgedRule::TEXT_KEY),
             ) else {
                 return Err(NotScreenable::Unreadable);
             };
+            let text = text_of(JudgedRule::TEXT_KEY).unwrap_or_default();
+            let does = text_of(JudgedRule::DOES_KEY).unwrap_or_default();
             rules.push(
-                JudgedRule::parse(name, criterion, text)
+                JudgedRule::parse(name, criterion, text, &does)
                     .map_err(|why| NotScreenable::Malformed { at, why })?,
             );
         }
@@ -12038,6 +12049,7 @@ impl OuterLoop {
             // undriven state as *carry on* would take the loop somewhere the author did not write,
             // and a route that silently does nothing is worse than one that is missing.
             Does::Redirect => self.redirect(panes, run)?,
+            Does::Widen => self.widen(panes, run)?,
             // ⚠⚠⚠⚠⚠ **THIRTEEN ARMS USED TO STAND BELOW THIS ONE AND ALL THIRTEEN ARE GONE** —
             // register item 470, stage 3. Seven named the document's FINALS and six named its
             // regions and orders, written out so the match stayed exhaustive without a wildcard;
@@ -12799,6 +12811,20 @@ impl OuterLoop {
                 "service": service,
                 "judged": rule.is_some(),
                 "rule": rule.unwrap_or_default(),
+                // ⛔⛔⛔⛔⛔ **THE ACT, BESIDE THE NAME, BECAUSE THE TEMPLATE CANNOT READ THE NAME.**
+                // `ai_loop.scxml` documents a fork keyed on `_event.data.rule` — and a KIND document
+                // cannot write that line: `debt_loop.scxml` holds 34 `<data>` elements and ZERO
+                // `<state>`s, so `permission` is a word the template has never heard. The word HERE
+                // is the template's own closed vocabulary ([`crate::judge::Act`]), which is what
+                // makes `cond="_event.data.does == 'widen'"` a line every checkout compiles.
+                //
+                // ⚠ Empty where nothing was claimed, for `judged`'s measured reason one key over:
+                // this datamodel is Lua, where the only false values are `nil` and `false`, so an
+                // absent key would make a guard reading it fire on every blocked turn.
+                "does": self.claimed.as_ref().map_or("", |(rule, _)| match rule.does() {
+                    crate::judge::Act::Refuse => crate::judge::JudgedRule::REFUSE_WORD,
+                    crate::judge::Act::Widen => crate::judge::JudgedRule::WIDEN_WORD,
+                }),
             }),
         )
     }
@@ -13447,9 +13473,9 @@ impl OuterLoop {
             return None;
         };
         let question = unanswered.question().cloned()?;
-        let (rule, _judged) = rules.claiming(panes, run, &question, &spec)?;
+        let (rule, claim) = rules.claiming(panes, run, &question, &spec)?;
         let name = rule.name().to_owned();
-        self.claimed = Some(rule.clone());
+        self.claimed = Some((rule.clone(), claim));
         Some(name)
     }
 
@@ -13472,12 +13498,79 @@ impl OuterLoop {
     /// takes the `screening` edge instead. Held by
     /// `judge::tests::a_stopped_run_gets_no_judgement_however_fast_the_judge_answers`, whose
     /// mutation is one line: wait on an uncancellable context and a cancelled run collects a `YES`.
+    /// **A DIALOG A JUDGE CLAIMED, AND APPROVED FOR AS LONG AS IT COULD** — [`redirect`](Self::redirect)'s
+    /// act, on the one rule that GRANTS.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Every road out of here that is not a press is `screening`, and that is the safety
+    ///
+    /// The judge names the option in the SAME call that named the rule, so nothing here asks a
+    /// second question — and every way that answer can fail to be usable ends the same way: the
+    /// dialog is handed to `screening` untouched, exactly as a run with no judge at all would hand
+    /// it over. **A widening that cannot say WHICH option must not press one**, and the three ways
+    /// it can fail to say so are told apart only in what a reader sees:
+    ///
+    /// * the judge named no number — the dialog was claimed as a permission and no option was
+    ///   offered as the durable one, which is a judge that answered half;
+    /// * the number is not on this screen — a list that has scrolled does not start at one, and a
+    ///   number nobody offered is not a choice (`Question::choice` is the check);
+    /// * the dialog left while this was decided — nothing to press, and nothing was.
+    ///
+    /// ⚠⚠ **NOTHING IS TYPED AFTER THE PRESS.** A refusal composes a sentence because it owes the
+    /// agent a next thing to do; an approval owes it nothing — the thing it asked for was granted,
+    /// and its own next turn is the answer. That asymmetry is why [`Act::Widen`](crate::judge::Act)
+    /// refuses a rule that carries `text`.
+    fn widen(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Raise, PaneError> {
+        let question = match &self.noticed {
+            Some(Noticed::Asking(unanswered)) => unanswered.question().cloned(),
+            _ => None,
+        };
+        let (Some(question), Some((_rule, claim))) = (question, self.claimed.take()) else {
+            self.noticed = Some(Noticed::Asking(Unanswered::unreadable()));
+            return Ok(AiLoopEvent::RedirectNone.into());
+        };
+        // ⚠ BOTH HALVES OF "which option" ARE ASKED OF THE SCREEN THAT WAS JUDGED, never of a fresh
+        // read: a second look is a dialog's worth of time later, and what is pressed must be what
+        // the judge was shown. `screen`'s rule.
+        // ⚠⚠ `NotOffered` IS THE EXISTING WORD FOR EXACTLY THIS, and it is borrowed rather than
+        // re-spelled: a consent naming an option the dialog does not carry and a judge naming a
+        // number it does not carry are the same fact about the screen, and a reader chasing either
+        // wants the same thing — the option list as it actually stood.
+        let Some(chose) = claim
+            .option
+            .and_then(|number| question.choice(number))
+            .cloned()
+        else {
+            self.noticed = Some(Noticed::Asking(Unanswered::refused(
+                question,
+                crate::consent::Refusal::NotOffered,
+            )));
+            return Ok(AiLoopEvent::RedirectNone.into());
+        };
+        match crate::readiness::take_option(panes, self.driving.pane, &question, &chose, run)? {
+            crate::readiness::Took::Left { .. } => {
+                self.noticed = None;
+                Ok(AiLoopEvent::RedirectDone.into())
+            }
+            // ⚠ The peer went on asking, or this run stopped before it could see. Neither is an
+            // answer, and the dialog is still the person's — `screening`'s road. The two are told
+            // apart because they have different remedies, which is `Unwitnessed`'s whole reason.
+            crate::readiness::Took::StillAsking { bytes } => {
+                self.noticed = Some(Noticed::Asking(Unanswered::not_taken(question, bytes)));
+                Ok(AiLoopEvent::RedirectNone.into())
+            }
+            crate::readiness::Took::Unwitnessed { bytes } => {
+                self.noticed = Some(Noticed::Asking(Unanswered::unwitnessed(question, bytes)));
+                Ok(AiLoopEvent::RedirectNone.into())
+            }
+        }
+    }
+
     fn redirect(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Raise, PaneError> {
         let question = match &self.noticed {
             Some(Noticed::Asking(unanswered)) => unanswered.question().cloned(),
             _ => None,
         };
-        let (Some(question), Some(rule)) = (question, self.claimed.take()) else {
+        let (Some(question), Some((rule, _claim))) = (question, self.claimed.take()) else {
             // Reaching here means the document routed on a verdict whose subject this driver can no
             // longer see. `screen`'s class, and its answer: the person.
             self.noticed = Some(Noticed::Asking(Unanswered::unreadable()));
