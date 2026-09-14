@@ -266,6 +266,16 @@ impl HostState {
             // terms and from the same registry for its reason: a copy holds no windows and would
             // answer *nowhere* about every moved pane, which is the reassuring wrong answer.
             panes_elsewhere: Some(pools_of(Arc::clone(self.registry()))),
+            // ⛔⛔⛔⛔⛔ AND WHERE A HELPER PROCESS GOES SO IT DOES NOT SPLIT THE WINDOW IT IS
+            // HELPING IN — register item 679, from the same registry and for the two above's
+            // reason. The daemon's own birth hooks travel with it: an offstage pane that fed no
+            // reaper would be a pane this daemon had stopped watching, out of sight, which is
+            // strictly worse than one in the way.
+            spawn_offstage: Some(windows_of(
+                Arc::clone(self.registry()),
+                self.on_pane_exit(),
+                self.attention.clone(),
+            )),
         }
     }
 
@@ -359,6 +369,55 @@ pub fn seats_of(registry: Arc<Mutex<SessionRegistry>>) -> crate::plugins::SeatEl
 #[must_use]
 pub fn pools_of(registry: Arc<Mutex<SessionRegistry>>) -> sprag_plugin::access::PaneElsewhere {
     Arc::new(move |pane| Some(crate::lock(&registry).pool_holding(pane)?.pool))
+}
+
+/// ⛔⛔⛔⛔⛔ **HOW A SESSION OPENS A PANE NOBODY ASKED TO LOOK AT** — register item 679, and
+/// [`pools_of`]'s neighbour: that one finds a pane somewhere else, this one PUTS one there.
+///
+/// # ⚠⚠⚠⚠⚠ Why it is a factory over the session, like [`crate::DriverSpawns`]
+///
+/// Offstage is a window of a SESSION, and a session name is precisely what the plugin layer is
+/// free of (the R144 Interface Segregation decision). So the registry is closed over here, the
+/// name is applied where a scope exists ([`crate::plugin_host`]), and what crosses the boundary is
+/// a call with an argv in it.
+///
+/// # ⚠⚠⚠ Why it spawns THROUGH a pane access rather than into the pool
+///
+/// Because a birth is not only a fork. A pane this daemon opens must feed the reaper when it dies
+/// and reach a person when it asks for one, and [`sprag_plugin::WorkspacePaneAccess`] is where
+/// those two hooks are wired — once, in one body, with its own doc refusing a second copy. Handing
+/// this the same two and letting it use the same door is what keeps an offstage pane a pane of
+/// this daemon rather than one the daemon has stopped watching.
+///
+/// ⚠ The two locks are never nested: the pool is taken by handle and the registry guard is dropped
+/// at the end of that statement, before any pty is forked — [`seats_of`]'s rule, and it matters
+/// more here because what follows the lookup is a `posix_spawn`.
+#[must_use]
+pub fn windows_of(
+    registry: Arc<Mutex<SessionRegistry>>,
+    on_pane_exit: Option<Arc<dyn Fn() + Send + Sync>>,
+    attention: Option<Arc<crate::attention::AttentionRouter>>,
+) -> crate::OffstageSpawns {
+    Arc::new(move |session: &str| {
+        let registry = Arc::clone(&registry);
+        let session = session.to_owned();
+        let on_pane_exit = on_pane_exit.clone();
+        let attention = attention.clone();
+        Arc::new(
+            move |argv: &[String], cwd: Option<&std::path::Path>, cols, rows| {
+                let pool = crate::lock(&registry)
+                    .offstage_workspace(&session)
+                    .map_err(|why| sprag_plugin::PaneError::Spawn(why.to_string()))?;
+                let access = sprag_plugin::WorkspacePaneAccess::new(pool)
+                    .with_pane_exit(on_pane_exit.clone())
+                    .with_attention(attention.as_ref().map(|router| {
+                        let router = Arc::clone(router);
+                        Arc::new(move || router.signal()) as sprag_plugin::access::AttentionMinter
+                    }));
+                sprag_plugin::PaneLifecycle::spawn_in(&access, argv, cwd, cols, rows)
+            },
+        ) as sprag_plugin::access::PaneOffstage
+    })
 }
 
 /// The pane `on_dirty` hook that bumps `revision` on every batch of PTY output —

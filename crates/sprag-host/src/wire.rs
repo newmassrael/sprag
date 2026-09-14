@@ -1342,6 +1342,11 @@ impl InlineGrammar {
         ArgGrammar::open(SPAWN_ROWS_KEY, "int").optional(),
         ArgGrammar::open(SPAWN_NAME_KEY, "string").optional(),
         ArgGrammar::open(WINDOW_OPENED_BY_KEY, "int").optional(),
+        // ⛔⛔⛔⛔⛔ WHO THE PANE IS FOR — register item 679. Published here rather than left to a
+        // client's own spelling because a caller that cannot SEE the argument cannot use it, which
+        // is what left every helper process this product starts splitting the window it was
+        // helping in. See `SPAWN_ACTION`'s `offstage` section.
+        ArgGrammar::open(SPAWN_OFFSTAGE_KEY, "bool").optional(),
     ];
 
     /// [`SPAWN_ACTION`] — the birth keys and nothing else.
@@ -2743,6 +2748,9 @@ pub const SPAWN_COLS_KEY: &str = "cols";
 pub const SPAWN_ROWS_KEY: &str = "rows";
 /// The `name` key: what to call the pane that is born.
 pub const SPAWN_NAME_KEY: &str = "name";
+/// ⛔⛔⛔⛔⛔ The `offstage` key: this pane is a helper's, not a person's — see
+/// [`SPAWN_ACTION`]'s own section, which is where the whole argument is written down.
+pub const SPAWN_OFFSTAGE_KEY: &str = "offstage";
 /// [`SPLIT_ACTION`]'s key naming the pane to divide.
 pub const SPLIT_PANE_KEY: &str = "pane";
 /// [`SPLIT_ACTION`]'s key naming WHICH WAY the division runs.
@@ -5093,6 +5101,41 @@ pub const GRID_WORK_SLOT: &str = "grid_work";
 ///
 /// [`SPLIT_ACTION`] takes both arguments identically; a spawn is the one that states no opinion
 /// about the arrangement, which is why it is the one an agent's work pane is born through.
+///
+/// # ⛔⛔⛔⛔⛔ `offstage` — this pane is a helper's work, not a person's
+///
+/// `true` births the pane into the session's [`OFFSTAGE_WINDOW`](sprag_terminal::OFFSTAGE_WINDOW)
+/// — a detached window the daemon keeps for exactly this — instead of the window the request is
+/// scoped to. Absent is `false`, which is what every caller before this argument existed meant and
+/// got. Register item 679.
+///
+/// ## What a wire with no way to say it cost, measured
+///
+/// Every helper process this product starts needs a pane, because a pane is the only thing a
+/// client can make a process in. So a supervisor asking a second agent one question — the
+/// independent milestone check register item 428 exists for — split the window its own run was
+/// being driven in: measured 2026-08-25, a loop's `inner` pane went **110 columns to 54**, under
+/// a floor of 60 the same loop's skill had measured the hard way, and the person saw an
+/// unexplained `terminal-2` appear in their work. The run being narrowed was the run repairing
+/// narrowing.
+///
+/// ## ⚠⚠⚠ Why it is a CLAIM about the caller and not a place
+///
+/// Not `window: "offstage"`. A client that named a window would be deciding this daemon's
+/// arrangement — it would have to know the window exists, create it when it does not, and agree
+/// with every other client about what to call it, which is three ways for two callers to end up in
+/// two different places. What a caller actually knows is *nobody asked to look at this*; where
+/// that goes is the daemon's, and it is one answer
+/// ([`SessionRegistry::offstage_workspace`](sprag_terminal::SessionRegistry::offstage_workspace)).
+///
+/// ⚠⚠ **AND THE PANE IS STILL THE SESSION'S, WHICH IS WHAT MAKES IT CLOSABLE.** It is born in a
+/// window of the scoped session, so [`CLOSE_ACTION`] reaches it on this connection's own scope —
+/// see that verb, which had to learn to address a pane rather than a membership list for exactly
+/// this reason. A birth a caller could not undo would be a leak per asking.
+///
+/// ⚠ An older daemon does not read the key and births into the scoped window, which is this
+/// argument's absence and the behaviour that caller had before. That is the same additive
+/// degradation `cwd` took, and it is why the key is optional rather than a new verb.
 pub const SPAWN_ACTION: &str = "spawn";
 /// The mux control external invoke action that DIVIDES a named pane and spawns the new one into
 /// the half it opens (`{pane, dir, before?, cmd?, cols?, rows?, remote?, cwd?, opened_by?, name?}`),
@@ -10942,7 +10985,26 @@ mod tests {
                 "sprag_workspace/sprag_mux/select_window[object]:window:string",
                 "sprag_workspace/sprag_mux/select_window[object]:window_id:int",
                 "sprag_workspace/sprag_mux/set_floating[object]:id:int floating:bool",
-                "sprag_workspace/sprag_mux/spawn[object]:cmd:array? cwd:string? cols:int? rows:int? name:string? opened_by:int?",
+                // ⛔⛔⛔⛔⛔ **`offstage` ADDED at register item 679, AND IT DOES *NOT* OWE THE
+                // NUMBER** — the rule being `CLIENT_BUILD_PARAM`'s, as R371/R373 state it and item
+                // 873 sharpened it: an added optional is free only while an older daemon
+                // SWALLOWING it does nothing different.
+                //
+                // Measured against that test in both directions. A newer client asking an older
+                // daemon for an offstage birth gets **exactly the birth it got before this key
+                // existed**: the pane is spawned in the scoped window, and it is read, driven and
+                // closed by that client as it always was. Nothing WAITS on the fact — the placement
+                // is worse for the person looking at the window and is not an input to any decision
+                // the caller then makes. Contrast item 873's `dry_run`, where the swallowing daemon
+                // STARTS A LOOP the caller asked it not to start, and item 654's `reach`, where it
+                // takes a pane that does not come back.
+                //
+                // ⚠⚠ **AND THE HALF THAT COULD HAVE OWED IT DOES NOT EXIST**: an offstage pane is
+                // only addressable because `workspace_scene` publishes this session's other
+                // windows' panes, and the two land in ONE build. There is no daemon that honours
+                // the key while hiding what it made — which is the skew that would have been a
+                // spawn a caller could never read.
+                "sprag_workspace/sprag_mux/spawn[object]:cmd:array? cwd:string? cols:int? rows:int? name:string? opened_by:int? offstage:bool?",
                 "sprag_workspace/sprag_mux/split[object]:pane:int? dir:string before:bool? cmd:array? cwd:string? cols:int? rows:int? name:string? opened_by:int?",
                 "sprag_workspace/sprag_mux/stop_job[object]:pane:int signal:string? reach:string?",
                 "sprag_workspace/sprag_mux/swap_pane[object]:pane:int? dir:string",

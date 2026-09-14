@@ -2046,6 +2046,11 @@ pub struct PluginsExternal {
     /// pane a run is DRIVING after somebody moved it to another window. `None` off a daemon, which
     /// leaves a run bound to one window's membership exactly as it was.
     panes: Option<sprag_plugin::access::PaneElsewhere>,
+    /// ⛔⛔⛔⛔⛔ **WHERE A HELPER PROCESS THIS SURFACE STARTS GOES** — register item 679, and
+    /// [`panes`](Self::panes)' shape reversed: that one FINDS a pane in another window, this one
+    /// PUTS one there. `None` off a daemon, which leaves every helper splitting the window its run
+    /// is being driven in, exactly as it did.
+    offstage: Option<sprag_plugin::access::PaneOffstage>,
     /// **HOW TO START A RUN IN A PROCESS OF ITS OWN**, or `None` where this host drives runs on
     /// threads of its own — register items 544 and 643.
     ///
@@ -2135,6 +2140,26 @@ impl PluginsExternal {
         self
     }
 
+    /// ⛔⛔⛔⛔⛔ **KEEP A RUN'S HELPER PROCESSES OUT OF THE WINDOW THE RUN IS IN** — register item
+    /// 679, and [`following_panes_elsewhere`](Self::following_panes_elsewhere)'s shape reversed.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What a surface with nowhere else to put one did, measured
+    ///
+    /// A helper needs a pane, because a pane is the only thing this layer can make a process in —
+    /// there is no `std::process::Command` anywhere in it, by construction. So the independent
+    /// milestone check took its run's `inner` pane from **110 columns to 54**, against a floor of
+    /// 60 that the same loop's skill had measured the hard way, and it did it **once per
+    /// reflection turn**.
+    ///
+    /// ⚠ Whoever installs this is saying *this daemon has another window to use*. A host that
+    /// installs none behaves exactly as it did — see
+    /// [`sprag_plugin::PaneLifecycle::spawn_offstage`], where that degradation is named.
+    #[must_use]
+    pub fn opening_panes_offstage(mut self, open: sprag_plugin::access::PaneOffstage) -> Self {
+        self.offstage = Some(open);
+        self
+    }
+
     /// Build the host over the shared workspace + run registry, plus the daemon's
     /// `on_pane_exit` death-signal (`None` off a daemon).
     #[must_use]
@@ -2164,6 +2189,9 @@ impl PluginsExternal {
             // ⚠ AND A POOL THAT IS THE WHOLE WORLD CANNOT LOSE A PANE TO ANOTHER WINDOW — register
             // item 682, on the line above's terms. See `following_panes_elsewhere`.
             panes: None,
+            // ⚠ AND A HOST WITH ONE WINDOW HAS NOWHERE TO PUT A HELPER BUT IN IT — register item
+            // 679, on the line above's terms. See `opening_panes_offstage`.
+            offstage: None,
             // ⚠ IN-PROCESS is what a host built without saying otherwise does — see
             // `driving_out_of_process`, and `crate::options::RUN_DRIVER_PROCESS` for why that is
             // the default rather than the destination.
@@ -3276,7 +3304,12 @@ impl PluginsExternal {
             // above is ONE WINDOW's and this run holds it for life; the hook is what keeps the
             // run's subject the PANE. A host that installs none is a host whose pool is the whole
             // world, and this run behaves exactly as it did.
-            .with_panes_elsewhere(self.panes.clone());
+            .with_panes_elsewhere(self.panes.clone())
+            // ⛔⛔⛔⛔⛔ AND WHERE THE HELPERS THIS RUN STARTS GO — register item 679. The pool above
+            // is ONE WINDOW's and this run drives a pane of it, so without this hook every judge
+            // this run asks splits that window: measured at 110 columns to 54, once per reflection
+            // turn. A host that installs none is a host with one window, and behaves as it did.
+            .with_offstage(self.offstage.clone());
         let on_end = self.on_run_end.clone();
         let worker_progress = Arc::clone(progress);
         let handle = thread::spawn(move || {
@@ -11129,6 +11162,97 @@ mod tests {
             blocked_by: None,
             place: None,
         }
+    }
+
+    /// 🎯🎯🎯🎯🎯 **A DAEMON THAT HAS SOMEWHERE OFFSTAGE HANDS IT TO THE SURFACE THAT DRIVES RUNS,
+    /// AND A HOST WITHOUT ONE IS LEFT EXACTLY AS IT WAS** — register item 679's last wire, and the
+    /// one nothing else can see.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why this needs a gate rather than being obvious
+    ///
+    /// Every other gate for this item drives a surface that was HANDED an offstage. The step where
+    /// a daemon's is handed over lives in [`crate::plugin_host`], which is six lines of `match`
+    /// nothing reads afterwards — delete them and the plugin gates stay green, the registry gates
+    /// stay green, the wire gates stay green, and every helper this daemon's in-process runs start
+    /// goes back into the window the run is being driven in. That is the shape this repository
+    /// keeps paying for: **a seam wired at both ends and not in the middle.**
+    ///
+    /// ⚠⚠ **THE CONTROL IS THE DAEMON THAT SHARES NONE**, and it is not decoration: an
+    /// implementation that installed one unconditionally would leave an in-process host — a GUI's,
+    /// every fixture in this file — holding a hook minted from a registry it does not have.
+    ///
+    /// ⚠ It reads the FIELD, which is the only way to state this claim: what `plugin_host`
+    /// produces is a surface, and whether that surface can open a pane out of sight is not
+    /// observable from outside this module without driving a whole run against a live daemon.
+    #[test]
+    fn a_daemon_that_can_open_offstage_hands_that_to_the_runs_it_drives() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let runs = Arc::new(Mutex::new(RunRegistry::default()));
+        let channels = Arc::new(crate::notify::ChannelRegistry::default());
+        // The registry a daemon's minter closes over — the real one, so what is installed below is
+        // `windows_of`'s own product and not a stand-in for it.
+        let registry = Arc::new(Mutex::new(sprag_terminal::SessionRegistry::new((80, 24))));
+        let session = lock(&registry).default_session().name().to_owned();
+
+        let bare = crate::DaemonShared {
+            on_pane_exit: None,
+            attachments: None,
+            attention: None,
+            agents: None,
+            samplers: crate::Samplers::default(),
+            spawn_driver: None,
+            seats_elsewhere: None,
+            panes_elsewhere: None,
+            // ⚠ THE CONTROL: a host with no session tree has nowhere else to put a pane.
+            spawn_offstage: None,
+            runs: None,
+        };
+        let without = crate::plugin_host(
+            Arc::clone(&workspace),
+            &runs,
+            &session,
+            "0",
+            &channels,
+            &bare,
+        );
+        assert!(
+            without.offstage.is_none(),
+            "⛔⛔⛔ a host whose daemon shares no offstage was given one anyway, so an in-process \
+             host holds a hook minted from a registry it has not got",
+        );
+
+        let sharing = crate::DaemonShared {
+            spawn_offstage: Some(crate::rpc::windows_of(Arc::clone(&registry), None, None)),
+            ..bare
+        };
+        let with = crate::plugin_host(workspace, &runs, &session, "0", &channels, &sharing);
+        let open = with.offstage.as_ref().expect(
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 679: the daemon knows where offstage is and the surface \
+                 that drives its runs was not told. Every judge an in-process run asks then splits \
+                 the window that run is being driven in — measured at 110 columns to 54, under a \
+                 floor of 60, once per reflection turn.",
+        );
+
+        // ⚠⚠ AND IT IS THE RIGHT SESSION'S, driven rather than assumed: the hook is a closure over
+        // a name, and one minted for the wrong session would be indistinguishable from the right
+        // one until a pane came out of it somewhere nobody expected.
+        let pane = open(&["cat".to_owned()], None, 20, 4).expect("the minted door opens a pane");
+        let home = lock(&registry).pool_holding(pane).map(|at| at.window);
+        assert_eq!(
+            home.as_deref(),
+            Some(sprag_terminal::OFFSTAGE_WINDOW),
+            "the pane a daemon's offstage door opens is in the offstage window",
+        );
+        assert_eq!(
+            lock(&registry)
+                .session(&session)
+                .unwrap()
+                .current_window()
+                .name(),
+            "0",
+            "⛔⛔⛔ and the session did not follow it — a helper that moves every attached client \
+             onto its own window has taken the screen by the other road",
+        );
     }
 
     /// ⚠⚠⚠⚠⚠ **A RUN'S ASKER MAY BE SITTING IN A WINDOW THIS POOL IS NOT** — register item 689.

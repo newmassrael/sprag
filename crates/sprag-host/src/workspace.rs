@@ -610,6 +610,12 @@ impl WorkspaceExternal {
             // This surface resolves panes through the REGISTRY it already holds, so a hook that
             // answers one question about one pane buys it nothing. Named for the reason above it.
             panes_elsewhere: _,
+            // ⚠⚠ NOR HOW TO OPEN ONE OUT OF SIGHT — register item 679, and the sharpest case of the
+            // three above's argument: this surface holds the REGISTRY, so it resolves offstage
+            // directly (`birth_pool`) rather than through a hook minted for a layer that has no
+            // registry to resolve it with. Taking the hook here would be a second authority on
+            // where offstage is. Named for the reason above it.
+            spawn_offstage: _,
         } = daemon;
         Self {
             registry,
@@ -959,10 +965,48 @@ impl WorkspaceExternal {
         Ok(id)
     }
 
+    /// ⛔⛔⛔⛔⛔ **WHICH POOL A BIRTH LANDS IN — THE SCOPE'S WINDOW, OR OFFSTAGE** — register item
+    /// 679. See [`SPAWN_OFFSTAGE_KEY`](crate::wire::SPAWN_OFFSTAGE_KEY), and
+    /// [`SessionRegistry::offstage_workspace`](sprag_terminal::SessionRegistry::offstage_workspace)
+    /// for what offstage IS.
+    ///
+    /// # ⚠⚠⚠ Why the daemon decides the place and the caller only says who it is for
+    ///
+    /// Because a client that named a window would have to know it exists, create it when it does
+    /// not, and agree with every other client about what to call it. What a caller knows is
+    /// *nobody asked to look at this*; where such work goes is one answer, held once, by the one
+    /// thing holding the session tree.
+    ///
+    /// ⚠ An absent key is `false`, which is every caller before this argument existed — and a
+    /// `null` reads as absent for the reason [`stop_job`](Self::stop_job) states: a generated
+    /// client spells an omitted argument that way and is an ordinary client.
+    ///
+    /// # Errors
+    ///
+    /// [`InvokeError::TypeMismatch`] for a non-boolean, and `Rejected` when the scoped session is
+    /// gone — which is a refusal this door could not previously produce because it reached for a
+    /// pool it was already holding.
+    fn birth_pool(
+        &self,
+        map: &Map<String, Value>,
+    ) -> Result<Arc<Mutex<sprag_terminal::Workspace>>, InvokeError> {
+        let offstage = match map.get(crate::wire::SPAWN_OFFSTAGE_KEY) {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(said)) => *said,
+            Some(_) => return Err(InvokeError::TypeMismatch),
+        };
+        if !offstage {
+            return Ok(Arc::clone(self.workspace()));
+        }
+        lock(&self.registry)
+            .offstage_workspace(self.scope.session())
+            .map_err(refused)
+    }
+
     /// `spawn` action: create a pane in THIS request's session and return its id. `cmd` (an argv
     /// array) defaults to `$SHELL`; `cols`/`rows` default to the workspace's default size; `cwd`
     /// defaults to the daemon's directory; `opened_by` names the pane whose occupant is asking;
-    /// `name` is what to call the pane.
+    /// `name` is what to call the pane; `offstage` puts it where nobody is looking.
     fn spawn(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let empty = Map::new();
         let map = match args {
@@ -976,7 +1020,11 @@ impl WorkspaceExternal {
         let spec = Self::parse_spawn(map)?;
         let opener = self.parse_opener(map)?;
         let name = self.parse_pane_name(map)?;
-        let id = self.spawn_parsed(self.workspace(), spec, opener, name)?;
+        // ⛔⛔⛔⛔⛔ AND WHO THE PANE IS FOR, which is what decides the POOL — register item 679.
+        // Resolved with the other three, before anything is built, so a session that went away
+        // under this request costs no forked child either.
+        let pool = self.birth_pool(map)?;
+        let id = self.spawn_parsed(&pool, spec, opener, name)?;
         // A NEW pane changed the set: wake parked waiters now, before its first output, so a
         // mirror learns the pane exists immediately (the pane-set change-notification, distinct
         // from the per-pane output bump the hook fires).
@@ -1043,6 +1091,43 @@ impl WorkspaceExternal {
         ))
     }
 
+    /// ⛔⛔⛔⛔⛔ **WHICH WINDOW OF THE SCOPED SESSION TO CLOSE `pane` IN** — the scope's own unless
+    /// another window of that SAME session is holding it. Register items 679 and 682.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why the scope's window alone stopped being an answer
+    ///
+    /// It was one while a pane could only ever be in the window a caller was scoped to. Two things
+    /// ended that, and both are already relied on elsewhere: a person MOVES panes between windows
+    /// (`break_pane` / `join_pane` — register item 682 is the bill for a run that kept reading a
+    /// pane it could no longer close), and this daemon now BIRTHS panes into a window the caller
+    /// never names ([`birth_pool`](Self::birth_pool), register item 679). After the second of
+    /// those, a caller could open a pane through this surface and then be told no such pane
+    /// existed when it tried to dispose of it — one pty and one process leaked per asking, and
+    /// `close`'s answer is a word nobody is obliged to read.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the SESSION still bounds it, where `stop_job` and `rename_pane` are daemon-wide
+    ///
+    /// Those two act ON a pane and leave it where it is; this one DESTROYS it, and destroying
+    /// cascades — the last pane of a window takes the window, and the last window of a session
+    /// takes the session ([`crate::wire::CLOSE_ACTION`]). A connection scoped to one session
+    /// should not be able to end another one by naming a number, and a pane id is a number a
+    /// caller can be wrong about. So the widening is exactly as far as the caller's own scope
+    /// reaches and no further.
+    ///
+    /// ⚠ A pane NO window of this session holds falls back to the scope's window, so the refusal
+    /// is `close_pane`'s own `UnknownPane` — the sentence that caller already had, rather than a
+    /// second vocabulary for *it is not here*.
+    fn window_holding_for_close(
+        registry: &SessionRegistry,
+        scope: &SessionScope,
+        pane: PaneId,
+    ) -> String {
+        registry
+            .pool_holding(pane)
+            .filter(|home| home.session == scope.session())
+            .map_or_else(|| scope.window().to_owned(), |home| home.window)
+    }
+
     /// `close` action: reap the pane with `id` — tmux `kill-pane`. See
     /// [`crate::wire::CLOSE_ACTION`] for the answer's grammar and the cascade.
     ///
@@ -1052,11 +1137,13 @@ impl WorkspaceExternal {
     /// so a session ended from the pane end releases its viewers exactly as one ended by name does.
     fn close(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let id = self.pane_target(as_object(args)?, "id")?;
-        // The window is the SCOPE's, unchanged: `close` has always acted within the scoped
-        // session's current window (its pool was the only thing it could reach), and widening the
-        // target to any window holding the id is a separate decision about addressing.
-        let outcome =
-            lock(&self.registry).close_pane(self.scope.session(), self.scope.window(), id);
+        let outcome = {
+            let mut registry = lock(&self.registry);
+            // ⛔⛔⛔⛔⛔ **THE SESSION IS THE SCOPE; THE WINDOW NEVER WAS THE CALLER'S TO KNOW** —
+            // register items 679 and 682. See `window_holding_for_close`.
+            let window = Self::window_holding_for_close(&registry, &self.scope, id);
+            registry.close_pane(self.scope.session(), &window, id)
+        };
         let outcome = match outcome {
             Ok(outcome) => outcome,
             Err(error) => return Err(refused(error)),
@@ -4092,6 +4179,7 @@ mod tests {
                     // ⚠ And one window is this fixture's whole world — items 689 and 682.
                     seats_elsewhere: None,
                     panes_elsewhere: None,
+                    spawn_offstage: None,
                     runs: None,
                 },
             )
@@ -4304,11 +4392,156 @@ mod tests {
                     // ⚠ And one window is this fixture's whole world — items 689 and 682.
                     seats_elsewhere: None,
                     panes_elsewhere: None,
+                    spawn_offstage: None,
                     runs: None,
                 },
             ),
             revision,
         )
+    }
+
+    /// 🎯🎯🎯🎯🎯 **AN OFFSTAGE BIRTH LANDS IN ANOTHER WINDOW, LEAVES THE SESSION WHERE IT IS, AND
+    /// IS STILL CLOSABLE ON THIS SCOPE** — register item 679, over the wire, which is the road the
+    /// defect was measured on.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why THIS surface is the one that had to learn it
+    ///
+    /// Because it is the surface the repayment is for. `run-driver-process` has defaulted to `on`
+    /// since 2026-08-25, so a run's driver is another process and every pane it opens is born by
+    /// this verb, over a socket. The milestone checker whose pane took a loop's `inner` from **110
+    /// columns to 54** came down this exact path. An offstage only the in-process pane access
+    /// understood would have missed the one caller that made the item.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The three claims, and why the third is the one that would be forgotten
+    ///
+    /// A birth that goes somewhere the caller cannot address is a LEAK, not a repair: this loop
+    /// asks a judge on every reflection turn, `close` answers a word nobody is obliged to read,
+    /// and nobody is looking at that window. `close` had always acted inside the scope's WINDOW —
+    /// its own comment said widening was "a separate decision" — and that decision is made here,
+    /// because opening a door a caller cannot shut is not a thing this surface may do.
+    ///
+    /// ⚠⚠ **THE CONTROL IS THE ORDINARY BIRTH**, and without it the gate is decoration: the two
+    /// panes differ in one key, so an `offstage` that did nothing, and an `offstage` that sent
+    /// EVERY birth away, both go red here.
+    #[test]
+    fn an_offstage_birth_goes_to_another_window_and_close_still_reaches_it() {
+        let reg = registry();
+        let scope = SessionScope::unscoped(&reg);
+        let session = scope.session().to_owned();
+        let scoped = scope.window().to_owned();
+        let (mut ext, _revision) = scoped_control(&reg, scope);
+
+        // ── THE CONTROL ── an ordinary birth, which must be exactly where it always was.
+        let onstage = ext
+            .invoke(SPAWN_ACTION, IntrospectValue::Json(json!({"cmd": ["cat"]})))
+            .expect("an ordinary birth still works");
+        let IntrospectValue::Int(onstage) = onstage else {
+            panic!("a spawn answers a pane id");
+        };
+        let onstage = sprag_terminal::PaneId(u64::try_from(onstage).unwrap());
+
+        // ── THE CLAIM ── the same birth, said to be a helper's.
+        let offstage = ext
+            .invoke(
+                SPAWN_ACTION,
+                IntrospectValue::Json(json!({"cmd": ["cat"], "offstage": true})),
+            )
+            .expect("an offstage birth is a birth");
+        let IntrospectValue::Int(offstage) = offstage else {
+            panic!("a spawn answers a pane id");
+        };
+        let offstage = sprag_terminal::PaneId(u64::try_from(offstage).unwrap());
+
+        let home = |pane| {
+            lock(&reg)
+                .pool_holding(pane)
+                .map(|home| (home.session, home.window))
+        };
+        assert_eq!(
+            home(onstage),
+            Some((session.clone(), scoped.clone())),
+            "the control must still land in the window the request is scoped to, or the claim \
+             below is about a surface that sends every birth away",
+        );
+        assert_eq!(
+            home(offstage),
+            Some((session.clone(), sprag_terminal::OFFSTAGE_WINDOW.to_owned())),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 679: the helper's pane was born in the window the person is \
+             looking at. That is the defect — measured at 110 columns to 54, under a floor of 60, \
+             once per reflection turn.",
+        );
+        assert_eq!(
+            lock(&reg)
+                .session(&session)
+                .unwrap()
+                .current_window()
+                .name(),
+            scoped,
+            "⛔⛔⛔ and the session followed the new window, so a helper took the person's screen \
+             by another road: every attached client follows the current window",
+        );
+
+        // ── AND IT CAN BE SHUT ── on this same scope, with no window named, which is all a
+        // caller holding a pane id has.
+        let ended = ext
+            .invoke(
+                CLOSE_ACTION,
+                IntrospectValue::Json(json!({"id": offstage.0})),
+            )
+            .expect(
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 679: a caller could open a pane offstage and NOT close \
+                 it. `close` answers a word nobody is obliged to read and nobody is looking at \
+                 that window, so this is one pty and one process leaked per asking, silently.",
+            );
+        assert!(
+            matches!(ended, IntrospectValue::Json(_)),
+            "close answers its usual grammar: {ended:?}",
+        );
+        assert_eq!(
+            home(offstage),
+            None,
+            "and the pane is really gone from the pool it was in",
+        );
+        assert_eq!(
+            home(onstage),
+            Some((session, scoped)),
+            "while the pane nobody asked about is untouched — a close that reached too far would \
+             be a worse defect than the one this repays",
+        );
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A NON-BOOLEAN `offstage` IS A MALFORMED REQUEST, NOT A QUIET `false`** — rule: an
+    /// escape hatch nothing refuses is how a capability stops applying.
+    ///
+    /// A string `"true"` is the shape a hand-written client actually sends, and reading it as
+    /// absent would put the helper back in the person's window while the caller believed it had
+    /// asked otherwise — the silent half of this item, which is the half that survived three
+    /// weeks.
+    #[test]
+    fn an_offstage_that_is_not_a_boolean_is_refused_rather_than_read_as_no() {
+        let reg = registry();
+        let scope = SessionScope::unscoped(&reg);
+        let session = scope.session().to_owned();
+        let (mut ext, _revision) = scoped_control(&reg, scope);
+        let windows = || lock(&reg).session(&session).unwrap().windows().len();
+        let before = windows();
+        assert!(
+            matches!(
+                ext.invoke(
+                    SPAWN_ACTION,
+                    IntrospectValue::Json(json!({"cmd": ["cat"], "offstage": "true"})),
+                ),
+                Err(InvokeError::TypeMismatch),
+            ),
+            "a string is not a boolean, and guessing which way it meant is how a helper ends up \
+             in somebody's window with nothing saying so",
+        );
+        assert_eq!(
+            windows(),
+            before,
+            "and nothing was built: the refusal is parsed before any place is made, exactly as \
+             `cwd`'s is",
+        );
     }
 
     /// A control surface WITH a detector installed, plus the registry it shares — the daemon's
@@ -4335,6 +4568,7 @@ mod tests {
                     // ⚠ And one window is this fixture's whole world — items 689 and 682.
                     seats_elsewhere: None,
                     panes_elsewhere: None,
+                    spawn_offstage: None,
                     runs: None,
                 },
             ),
@@ -4470,6 +4704,7 @@ mod tests {
                 // ⚠ And one window is this fixture's whole world — items 689 and 682.
                 seats_elsewhere: None,
                 panes_elsewhere: None,
+                spawn_offstage: None,
                 runs: Some(Arc::clone(&runs)),
             },
         );
@@ -4624,6 +4859,7 @@ mod tests {
                 spawn_driver: None,
                 seats_elsewhere: None,
                 panes_elsewhere: None,
+                spawn_offstage: None,
                 runs: Some(Arc::clone(&runs)),
             },
         );
@@ -4898,6 +5134,7 @@ mod tests {
                 // ⚠ And one window is this fixture's whole world — items 689 and 682.
                 seats_elsewhere: None,
                 panes_elsewhere: None,
+                spawn_offstage: None,
                 runs: None,
             },
         );
@@ -5042,6 +5279,7 @@ mod tests {
                 spawn_driver: None,
                 seats_elsewhere: None,
                 panes_elsewhere: None,
+                spawn_offstage: None,
                 runs: Some(Arc::clone(&runs)),
             },
         );
@@ -5938,6 +6176,7 @@ mod tests {
                 // ⚠ And one window is this fixture's whole world — items 689 and 682.
                 seats_elsewhere: None,
                 panes_elsewhere: None,
+                spawn_offstage: None,
                 runs: None,
             },
         );
@@ -7704,6 +7943,7 @@ mod tests {
                 // ⚠ And one window is this fixture's whole world — items 689 and 682.
                 seats_elsewhere: None,
                 panes_elsewhere: None,
+                spawn_offstage: None,
                 runs: None,
             },
         );
@@ -8130,6 +8370,7 @@ mod tests {
                 // ⚠ And one window is this fixture's whole world — items 689 and 682.
                 seats_elsewhere: None,
                 panes_elsewhere: None,
+                spawn_offstage: None,
                 runs: None,
             },
         );
@@ -8324,6 +8565,7 @@ mod tests {
                 // ⚠ And one window is this fixture's whole world — items 689 and 682.
                 seats_elsewhere: None,
                 panes_elsewhere: None,
+                spawn_offstage: None,
                 runs: None,
             },
         );
@@ -8395,6 +8637,7 @@ mod tests {
                 // ⚠ And one window is this fixture's whole world — items 689 and 682.
                 seats_elsewhere: None,
                 panes_elsewhere: None,
+                spawn_offstage: None,
                 runs: None,
             },
         );
@@ -9048,6 +9291,7 @@ mod tests {
                 // ⚠ And one window is this fixture's whole world — items 689 and 682.
                 seats_elsewhere: None,
                 panes_elsewhere: None,
+                spawn_offstage: None,
                 runs: None,
             },
         );
@@ -9542,6 +9786,7 @@ mod tests {
                 // ⚠ And one window is this fixture's whole world — items 689 and 682.
                 seats_elsewhere: None,
                 panes_elsewhere: None,
+                spawn_offstage: None,
                 runs: None,
             },
         )
@@ -10606,10 +10851,12 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::an_optional_argument_may_be_declined_as_null)
                 .count_or_panic(),
-            69,
+            70,
             "one probe per OPTIONAL declared argument of every form — required ones are not \
              driven, because `null` for something the grammar demands is malformed rather than \
-             declined",
+             declined. The newest is `spawn`'s `offstage` (item 679), and it is exactly the kind \
+             this gate is for: a client whose language spells an omitted boolean `null` must get \
+             the birth it always got, not a refusal",
         );
     }
 
@@ -10620,9 +10867,11 @@ mod tests {
         assert_eq!(
             mux_gate(sprag_conformance::a_declared_argument_is_one_the_daemon_reads)
                 .count_or_panic(),
-            110,
+            111,
             "one probe per declared argument of every FORM — the whole published grammar, counted \
-             per form rather than per verb. The newest is `report_agent`'s `running` (item 721), \
+             per form rather than per verb. The newest is `spawn`'s `offstage` (item 679), which \
+             says a birth is a helper's rather than a person's; before it came \
+             `report_agent`'s `running` (item 721), \
              which is what tells a peer quiet inside a tool call from one that has stopped; before \
              it came `stop_job`'s `reach` (item 654), which decides whether a stop may take the \
              pane with the job, `respawn`'s `pane` (item 557), `report_agent`'s `build` (item 412), \

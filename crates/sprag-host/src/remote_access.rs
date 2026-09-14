@@ -1457,6 +1457,43 @@ impl sprag_plugin::PaneChanges for RemotePaneAccess {
     }
 }
 
+impl RemotePaneAccess {
+    /// **SEND ONE [`SPAWN_ACTION`]** — the body both [`PaneLifecycle::spawn_in`] and
+    /// [`PaneLifecycle::spawn_offstage`] are, differing only in whether the birth says it is a
+    /// helper's.
+    ///
+    /// ⚠ ONE BODY AND NOT TWO, for the reason [`crate::workspace`]'s own spawn states: the
+    /// interesting content here is the cwd's refusal and the argument names, and a second copy is
+    /// a second place for one of them to be spelled differently.
+    fn born_pane(
+        &self,
+        argv: &[String],
+        cwd: Option<&std::path::Path>,
+        cols: u16,
+        rows: u16,
+        offstage: bool,
+    ) -> Result<PaneId, PaneError> {
+        let mut args = json!({
+            SPAWN_CMD_KEY: argv, SPAWN_COLS_KEY: cols, SPAWN_ROWS_KEY: rows
+        });
+        if let Some(cwd) = cwd {
+            let Some(text) = cwd.to_str() else {
+                return Err(PaneError::Spawn(format!(
+                    "the working directory {} cannot be sent over this wire, which carries text",
+                    cwd.display()
+                )));
+            };
+            args[SPAWN_CWD_KEY] = json!(text);
+        }
+        // ⚠⚠ SENT ONLY WHEN IT IS TRUE, which keeps an ordinary birth byte-for-byte the request it
+        // always was — a daemon that has never seen the key is then not being handed one.
+        if offstage {
+            args[crate::wire::SPAWN_OFFSTAGE_KEY] = json!(true);
+        }
+        self.born(mux_action_path(SPAWN_ACTION), args)
+    }
+}
+
 /// **OPENING, REPLACING AND CLOSING PANES OVER THE SOCKET** — register item 557, and the surface
 /// `outer.rs` rolls a loop's inner session through.
 ///
@@ -1499,19 +1536,35 @@ impl PaneLifecycle for RemotePaneAccess {
         cols: u16,
         rows: u16,
     ) -> Result<PaneId, PaneError> {
-        let mut args = json!({
-            SPAWN_CMD_KEY: argv, SPAWN_COLS_KEY: cols, SPAWN_ROWS_KEY: rows
-        });
-        if let Some(cwd) = cwd {
-            let Some(text) = cwd.to_str() else {
-                return Err(PaneError::Spawn(format!(
-                    "the working directory {} cannot be sent over this wire, which carries text",
-                    cwd.display()
-                )));
-            };
-            args[SPAWN_CWD_KEY] = json!(text);
-        }
-        self.born(mux_action_path(SPAWN_ACTION), args)
+        self.born_pane(argv, cwd, cols, rows, false)
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE SAME BIRTH, SAID TO BE A HELPER'S** — register item 679, over the wire.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why this surface is the one that had to learn it
+    ///
+    /// **It is the surface the repayment is FOR.** A daemon drives its runs in processes of their
+    /// own by default (`run-driver-process`, on since 2026-08-25), and such a driver reaches every
+    /// pane through this type — so the milestone checker whose pane halved a loop's window was
+    /// born down this exact method. An offstage that only the in-process surface understood would
+    /// have been wired past the one caller that made the item.
+    ///
+    /// ⚠ A daemon too old to read the key births into the scoped window, which is what this caller
+    /// had before — the additive degradation [`SPAWN_ACTION`]'s own doc states, and the reason this
+    /// is an argument rather than a verb.
+    ///
+    /// # Errors
+    ///
+    /// [`spawn_in`](Self::spawn_in)'s exactly — and a daemon whose scoped SESSION is gone, which
+    /// this call can meet where that one cannot: offstage is resolved by name.
+    fn spawn_offstage(
+        &self,
+        argv: &[String],
+        cwd: Option<&std::path::Path>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<PaneId, PaneError> {
+        self.born_pane(argv, cwd, cols, rows, true)
     }
 
     /// Replace `id` with a fresh pane running the same thing in the same place — see this impl's own

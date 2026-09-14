@@ -80,10 +80,10 @@ pub use pty::{
     PaneEcho, PaneEndOfInput, PaneSignalKeys, PtyDemand, SignalKey, Unraised, pty_demand,
 };
 pub use registry::{
-    Ended, KillOutcome, Located, LocatedWindow, OrderStep, PaneKillOutcome, PaneMoveError,
-    PlaceHow, Session, SessionError, SessionId, SessionInfo, SessionRegistry, TreePane,
-    TreeSession, TreeWindow, Window, WindowBirth, WindowId, WindowInfo, WindowKillOutcome,
-    WindowPlace, ZoomOutcome,
+    Ended, KillOutcome, Located, LocatedWindow, OFFSTAGE_WINDOW, OrderStep, PaneKillOutcome,
+    PaneMoveError, PlaceHow, Session, SessionError, SessionId, SessionInfo, SessionRegistry,
+    TreePane, TreeSession, TreeWindow, Window, WindowBirth, WindowId, WindowInfo,
+    WindowKillOutcome, WindowPlace, ZoomOutcome,
 };
 pub use remote::SshRemote;
 pub use resources::{Cpu, PaneResourceReading, PaneResourceSampler, PaneResources, SETTLE, Taken};

@@ -296,6 +296,21 @@ pub struct DaemonShared {
     /// [`None`] off a daemon, for the field above's reason exactly: a host whose pool is the whole
     /// world cannot lose a pane to another window.
     pub panes_elsewhere: Option<sprag_plugin::access::PaneElsewhere>,
+    /// ⛔⛔⛔⛔⛔ **HOW THIS DAEMON OPENS A PANE NOBODY ASKED TO LOOK AT**, for a given session — or
+    /// [`None`] for a host with no session tree. Register item 679. See [`rpc::windows_of`].
+    ///
+    /// # ⛔⛔⛔⛔⛔ What a daemon with no such place did instead, measured
+    ///
+    /// It put the helper in the window it was helping. Every second process this product starts —
+    /// the independent milestone check (register item 428), the classifier, the dialog judge — goes
+    /// through one door, and that door spawned a PANE, into the pool the run was holding. Measured
+    /// 2026-08-25: a loop's `inner` pane went **110 columns to 54** under a floor of 60, and the
+    /// person saw an unnamed `terminal-2` appear in their work.
+    ///
+    /// ⚠ A FACTORY over the session, exactly like [`spawn_driver`](Self::spawn_driver) above and
+    /// for its reason: offstage is a window of a session, this is built once at boot, and a session
+    /// is per request.
+    pub spawn_offstage: Option<OffstageSpawns>,
 }
 
 /// The host's SAMPLED facts, one sampler each, shared by every arm that serves them.
@@ -606,6 +621,14 @@ pub type RunAnnounce = Arc<dyn Fn(crate::runs::RunId) + Send + Sync>;
 /// [`DaemonShared::spawn_driver`], which holds the whole argument for why this is injected.
 pub type DriverSpawns = Arc<dyn Fn(&str, &str) -> plugins::DriverSpawn + Send + Sync>;
 
+/// ⛔⛔⛔⛔⛔ **HOW A DAEMON OPENS A PANE OUT OF SIGHT, FOR A SESSION** — see
+/// [`DaemonShared::spawn_offstage`], which holds the whole argument, and [`rpc::windows_of`],
+/// which is the one thing that makes one.
+///
+/// A factory over the SESSION for [`DriverSpawns`]' reason exactly: what it mints is minted once
+/// at boot, and the name it needs arrives per request.
+pub type OffstageSpawns = Arc<dyn Fn(&str) -> sprag_plugin::access::PaneOffstage + Send + Sync>;
+
 /// **WHERE A RUN'S END AND A PERSON'S ORDER TO IT ARE ANNOUNCED**, for watchers of `session` —
 /// `(on_end, on_ordered)`.
 ///
@@ -747,6 +770,40 @@ pub fn workspace_scene(
             .map(|pane| pane_container(pane.id(), pane.pty(), pane.start_dir(), cells))
             .collect()
     };
+    // ⛔⛔⛔⛔⛔ **AND EVERY OTHER PANE OF THIS SESSION, ADDRESSABLE BUT NOT DRAWN** — register item
+    // 679.
+    //
+    // # ⛔⛔⛔⛔⛔ Why the tree had to reach past one window, measured
+    //
+    // This assembly's own doc says the boundary is the SESSION — *"a pane belonging to another
+    // session is not addressable"* — and the code was narrower than the sentence: only the scoped
+    // WINDOW's panes got a node. That gap is the same one three items have already paid for from
+    // the other side (682: a run's pane moved windows; 689: its asker sits in another; 690: a
+    // driver must be told which), and this item walked into it head-on. A daemon's runs are driven
+    // out of process by default, so a driver reaches every pane over this tree — and the moment a
+    // helper was born offstage it became a pane that could be SPAWNED and CLOSED and never READ.
+    // Measured: the judge's own gates came back `Unaccountable` and `Unanswered`, which is a
+    // checker that cannot be heard rather than one that said nothing.
+    //
+    // # ⚠⚠⚠⚠⚠ Cells are for the window you are LOOKING at; addressability is for driving
+    //
+    // So these are always `Omitted` and never `cells`. That is not a saving, it is the honest
+    // answer: a screen grid is what a client renders the window it is attached to with, and
+    // rendering is exactly what nobody is doing to these panes. What they carry is
+    // `SpragPaneExternal` — the reading and typing doors — which is all a supervisor ever wanted
+    // and the whole of what was missing. A tree that handed every window's cells to every request
+    // would make each one proportional to the whole session, which is the one cost this assembly's
+    // doc names.
+    //
+    // ⚠⚠ REGISTRY LOCK, THEN THE POOLS, NEVER NESTED: the handles come out by value and the
+    // registry guard is dropped at the end of that statement — this file's order everywhere.
+    let elsewhere = lock(registry).other_pools_of(scope.session(), workspace);
+    for pool in &elsewhere {
+        let guard = lock(pool);
+        children.extend(guard.panes().iter().map(|pane| {
+            pane_container(pane.id(), pane.pty(), pane.start_dir(), PaneCells::Omitted)
+        }));
+    }
     // The mux control plane speaks the REGISTRY (sessions / windows / layout are mux
     // concerns), so it carries the scope that says WHICH session it may act on...
     children.push(Scene::External(
@@ -838,6 +895,18 @@ pub fn plugin_host(
     // times on this repository's own loops, with the pane's program still running across the death.
     let host = match daemon.panes_elsewhere.clone() {
         Some(panes) => host.following_panes_elsewhere(panes),
+        None => host,
+    };
+    // ⛔⛔⛔⛔⛔ AND WHERE A HELPER PROCESS THIS RUN STARTS GOES — register item 679, on the two
+    // lines above's terms and applied to THIS session, which is the one fact the plugin surface may
+    // not hold. A run asks a judge on every reflection turn and each asking is a process, so
+    // without this every one of them splits the window the run is being driven in: measured at 110
+    // columns to 54, under a floor of 60.
+    //
+    // ⚠ `session` and not the window: offstage is a window this function is naming the SESSION of,
+    // and which window it turns out to be is the registry's answer rather than this scope's.
+    let host = match &daemon.spawn_offstage {
+        Some(mint) => host.opening_panes_offstage(mint(session)),
         None => host,
     };
     // ⚠⚠⚠⚠⚠ AND WHERE A RUN'S DRIVER IS PUT IN A PROCESS OF ITS OWN — register items 544 / 643 /

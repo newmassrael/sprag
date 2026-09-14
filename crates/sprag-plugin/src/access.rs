@@ -2303,6 +2303,60 @@ pub trait PaneLifecycle {
         rows: u16,
     ) -> Result<PaneId, PaneError>;
 
+    /// ⛔⛔⛔⛔⛔ **SPAWN A PANE FOR WORK NOBODY ASKED TO LOOK AT** — everything
+    /// [`spawn_in`](Self::spawn_in) does, somewhere that is not the window a run is being driven
+    /// in. Register item 679.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What the one door cost, measured rather than reasoned
+    ///
+    /// Every helper process this product starts needs a pane, because a pane is the only thing
+    /// here that can BE a process — the plugin layer holds no `std::process::Command` at all, by
+    /// construction. So each helper split the window it was helping in. Measured 2026-08-25 on
+    /// this repository's own loop: the independent milestone checker (register item 428) took the
+    /// run's `inner` pane from **110 columns to 54**, against the same skill's measured floor of
+    /// 60 — *the run repairing narrowing was narrowed by its own checking*. And it is not one
+    /// caller: [`crate::judge::asked_of_another`] is the single door every helper goes through,
+    /// so the milestone check, the classifier and the dialog judge all did it.
+    ///
+    /// ⚠⚠ **THE CALLER IS SAYING WHO THE WORK IS FOR, NOT WHERE TO PUT IT.** A supervisor asking a
+    /// second process one question is not asking for anybody's screen; a person opening a pane is.
+    /// That distinction is the whole content of this door, and it is why it is spelled at the call
+    /// site rather than inferred from an argv.
+    ///
+    /// # ⛔⛔⛔⛔⛔ REQUIRED, and that is [`spawn_in`](Self::spawn_in)'s own argument one axis over
+    ///
+    /// The obvious shape is a provided method defaulting to `spawn_in` — *a surface with nowhere
+    /// else to put a pane degrades to today's behaviour, and the degradation is named*. **It was
+    /// written that way and measured false the same hour.** Both implementors in this workspace
+    /// override it, so the default body was reachable from nothing: a mutation that made it refuse
+    /// outright left every gate in this repository green.
+    ///
+    /// A default nothing reaches is not a degradation, it is a place for the next implementor to
+    /// land silently — which is exactly what `spawn_in`'s doc says about the directory it made
+    /// required: *"An implementation that quietly dropped the argument would put the caller back
+    /// where 710 found it, with nothing anywhere saying so."* One item over, the same sentence:
+    /// an implementation that quietly dropped OFFSTAGE would put every helper back in the window
+    /// its run is being driven in, with nothing anywhere saying so.
+    ///
+    /// ⚠⚠ **SO A SURFACE WITH NOWHERE ELSE TO GO SPELLS `spawn_in` HERE**, at its own site, where
+    /// a reader meets it — see [`WorkspacePaneAccess`]'s, which is that arm and says so.
+    ///
+    /// ⚠ **AND A CALLER MAY NOT READ A PANE'S PLACE OFF THIS CALL.** It answers a [`PaneId`] and
+    /// nothing about where that id lives; a caller that needed to know would be asking this layer
+    /// for a fact about windows, which is the fact it does not hold.
+    ///
+    /// # Errors
+    ///
+    /// [`spawn_in`](Self::spawn_in)'s exactly — and, for a surface with an offstage of its own,
+    /// whatever that surface's refusal to make one is.
+    fn spawn_offstage(
+        &self,
+        argv: &[String],
+        cwd: Option<&std::path::Path>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<PaneId, PaneError>;
+
     /// Spawn a pane running `argv` at `cols × rows` **with no opinion about where** —
     /// [`spawn_in`](Self::spawn_in) with no directory.
     ///
@@ -2472,6 +2526,31 @@ pub type AgentStateSource = Arc<dyn Fn(PaneId) -> Option<AgentObservation> + Sen
 /// that can tell them apart from inside a run.
 pub type PaneElsewhere = Arc<dyn Fn(PaneId) -> Option<Arc<Mutex<Workspace>>> + Send + Sync>;
 
+/// ⛔⛔⛔⛔⛔ **HOW TO OPEN A PANE WHERE NOBODY IS LOOKING** — register item 679, and the hook that
+/// makes [`PaneLifecycle::spawn_offstage`] mean something on a surface that holds one window's
+/// pool.
+///
+/// # ⚠⚠⚠⚠⚠ Why it is a hook and not this layer resolving a window
+///
+/// [`PaneElsewhere`]'s reason verbatim, and the R144 Interface Segregation decision behind it: a
+/// [`Workspace`] is ONE WINDOW's pane pool and this layer holds no session tree, so *somewhere
+/// else* is not a place it can name. What arrives is an opaque `Fn` that answers *here is a pane,
+/// born out of sight* — this surface never learns what a window is, which is the property that
+/// kept the plugin crate free of the registry while the defect it repays is entirely about
+/// windows.
+///
+/// ⚠ Its arguments are [`PaneLifecycle::spawn_in`]'s exactly, and deliberately: offstage is a
+/// statement about WHERE, never about what runs or where it stands. A hook that took anything more
+/// would be a second birth door for the caller to keep in step with the first.
+///
+/// ⚠⚠ `None` on the surface that holds one is not a gap — see
+/// [`PaneLifecycle::spawn_offstage`], where the degradation is named.
+pub type PaneOffstage = Arc<
+    dyn Fn(&[String], Option<&std::path::Path>, u16, u16) -> Result<PaneId, PaneError>
+        + Send
+        + Sync,
+>;
+
 /// [`PaneAccess`] over a shared [`Workspace`] — the production implementation.
 pub struct WorkspacePaneAccess {
     workspace: Arc<Mutex<Workspace>>,
@@ -2509,6 +2588,10 @@ pub struct WorkspacePaneAccess {
     /// for a host with no session tree — register item 682. Opaque exactly as its three neighbours
     /// are, and consulted only when this pool does not hold the id.
     panes_elsewhere: Option<PaneElsewhere>,
+    /// ⛔⛔⛔⛔⛔ **WHERE THIS HOST PUTS WORK NOBODY ASKED TO LOOK AT** ([`PaneOffstage`]), or
+    /// `None` for a host that holds one window's pool and nothing else — register item 679.
+    /// Opaque exactly as its four neighbours are.
+    offstage: Option<PaneOffstage>,
 }
 
 impl WorkspacePaneAccess {
@@ -2522,6 +2605,10 @@ impl WorkspacePaneAccess {
             on_attention: None,
             agent_state: None,
             panes_elsewhere: None,
+            // ⚠ A HOST WITH NOWHERE ELSE TO PUT A PANE is what a surface built without saying
+            // otherwise has — see `with_offstage`, and `PaneLifecycle::spawn_offstage` for what it
+            // then does instead.
+            offstage: None,
         }
     }
 
@@ -2558,6 +2645,19 @@ impl WorkspacePaneAccess {
     #[must_use]
     pub fn with_panes_elsewhere(mut self, source: Option<PaneElsewhere>) -> Self {
         self.panes_elsewhere = source;
+        self
+    }
+
+    /// ⛔⛔⛔⛔⛔ **Attach the daemon's *open one out of sight* door** ([`PaneOffstage`]), so a
+    /// helper process this surface starts does not split the window a run is being driven in —
+    /// register item 679. A builder for [`with_pane_exit`](Self::with_pane_exit)'s reason.
+    ///
+    /// ⚠ Whoever installs this is saying *this daemon has somewhere else to put a pane*. Passing
+    /// `None` leaves [`PaneLifecycle::spawn_offstage`] on its named degradation — today's
+    /// behaviour exactly, which is what an in-process host holding one pool has always had.
+    #[must_use]
+    pub fn with_offstage(mut self, open: Option<PaneOffstage>) -> Self {
+        self.offstage = open;
         self
     }
 
@@ -3037,6 +3137,31 @@ impl PaneLifecycle for WorkspacePaneAccess {
         self.spawn_with(argv, cwd, &[], cols, rows)
     }
 
+    /// ⛔⛔⛔⛔⛔ **THROUGH THE DAEMON'S OFFSTAGE DOOR WHEN IT HAS ONE** — register item 679.
+    ///
+    /// ⚠⚠ The hook is the whole of the override: everything this surface would otherwise do to a
+    /// birth — the three reader-thread hooks, the pool's cgroup lineage — is done by whatever the
+    /// hook spawns THROUGH, which on a daemon is this same type over the offstage window's pool.
+    /// A body that wired the hooks again here would be the second copy `spawn_with`'s own doc
+    /// refuses, one window over.
+    ///
+    /// ⚠⚠ And with no hook, `spawn_in` — SPELLED HERE, because the trait has no default to inherit
+    /// and deliberately so: a default nothing reaches is a place for an implementor to land
+    /// silently, which is the mistake this whole item is. This host holds one pool; the pane lands
+    /// in it; a reader meets that sentence at the arm that performs it.
+    fn spawn_offstage(
+        &self,
+        argv: &[String],
+        cwd: Option<&std::path::Path>,
+        cols: u16,
+        rows: u16,
+    ) -> Result<PaneId, PaneError> {
+        match &self.offstage {
+            Some(open) => open(argv, cwd, cols, rows),
+            None => self.spawn_in(argv, cwd, cols, rows),
+        }
+    }
+
     fn respawn(&self, id: PaneId) -> Result<PaneId, PaneError> {
         // ⚠⚠ READ, THEN RELEASE, THEN SPAWN. `spawn_with` takes the workspace lock itself, and this
         // crate's standing rule is that no lock is held across a syscall — a pty spawn most of all.
@@ -3084,11 +3209,40 @@ impl PaneLifecycle for WorkspacePaneAccess {
         Ok(fresh)
     }
 
+    /// ⛔⛔⛔⛔⛔ **AND IT FOLLOWS A PANE THIS POOL DOES NOT HOLD** — [`pane_eof`](Self::pane_eof)'s
+    /// rule on the LIFECYCLE side, which is where it was missing. Register items 682 and 679.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why a reader following and a close not following is worse than neither
+    ///
+    /// Every READER on this surface already resolves through a pool that may not be this one — a
+    /// run keeps reading and typing into the pane it drives after somebody moves it to another
+    /// window. This door did not, so the one act that DISPOSES of a pane was the one act bound to
+    /// a membership list: a caller could watch a pane, read its answer, and then fail to close it,
+    /// silently, because `close` answers a `bool` nobody is obliged to read.
+    ///
+    /// ⚠⚠ **AND [`spawn_offstage`](PaneLifecycle::spawn_offstage) MAKES THAT CERTAIN RATHER THAN
+    /// POSSIBLE.** A pane opened out of sight is, by construction, in a pool this surface was not
+    /// built over — so a close that could only reach its own pool would leak a pty and a process
+    /// on **every** asking, which is precisely the shape register item 679 opened on, moved one
+    /// window along and made systematic. Half of this seam wired is worse than none of it.
+    ///
+    /// ⚠ A host with no hook answers exactly as it did, and a pane that was CLOSED still answers
+    /// `false`: the hook is `None` for it too, which is what keeps *moved* and *gone* apart.
     fn close(&self, id: PaneId) -> bool {
         // Bind the removed Pane so the workspace guard (the temporary) drops
         // first; the Pane's blocking Drop (kill/wait/join) then runs OUTSIDE
         // the workspace lock (R11 lesson).
         let removed = lock(&self.workspace).close(id);
+        if removed.is_some() {
+            return true;
+        }
+        // ⚠⚠ THE OWN POOL'S LOCK IS RELEASED BEFORE THE HOOK IS CALLED — `handle`'s rule, and it
+        // bites harder here: the hook walks the session tree and locks another pool, and the
+        // `Pane` this drops runs a blocking kill/wait/join on the way out.
+        let Some(elsewhere) = self.panes_elsewhere.as_ref().and_then(|hook| hook(id)) else {
+            return false;
+        };
+        let removed = lock(&elsewhere).close(id);
         removed.is_some()
     }
 }

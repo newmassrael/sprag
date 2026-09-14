@@ -1222,7 +1222,24 @@ pub(crate) fn said_by_another(
     //
     // ⚠ `None` stays honest: a caller with nothing on disk to point at (a dialog judge) says so, and
     // the pane lands wherever a pane with no opinion lands.
-    let pane = match life.spawn_in(&argv, cwd, JudgeSpec::PANE.0, JudgeSpec::PANE.1) {
+    // ⛔⛔⛔⛔⛔ **AND OUT OF SIGHT, WHICH IS REGISTER ITEM 679.** This called `spawn_in`, and
+    // `spawn_in` puts a pane in the pool the caller holds — which for a run is **the window the run
+    // is being driven in**. So the one door every helper process in this crate goes through split
+    // that window on every use: measured 2026-08-25, the milestone checker took a loop's `inner`
+    // pane from 110 columns to 54, under a floor of 60 that the same loop's own skill had measured
+    // the hard way. The run being narrowed was the run repairing narrowing.
+    //
+    // ⚠⚠ **AND IT IS NOT THE AGENT'S DOING, WHICH IS WHY THE REPAIR IS HERE.** Item 679 opened
+    // blaming a probe pane an agent had opened for itself; the correction measured the checker.
+    // Both arrive through this line — `asked_of_another` is the only door — so this is the one
+    // place that can answer for all of them, and a fix aimed at an agent's habits would have
+    // reached none of them.
+    //
+    // ⚠ `spawn_offstage` DEGRADES to `spawn_in` on a surface with nowhere else to put a pane, by
+    // name — see its own doc. Nothing here reads where the pane landed: this function's subject is
+    // the answer, and a judge that behaved differently depending on which window it was in would
+    // be a worse thing than a narrow pane.
+    let pane = match life.spawn_offstage(&argv, cwd, JudgeSpec::PANE.0, JudgeSpec::PANE.1) {
         Ok(pane) => pane,
         // ⚠ THE SPAWN'S OWN SENTENCE, not a word this function invents: item 593 suspected a cwd
         // the checker could not read and had no way to confirm it, because the one thing that knew
@@ -2130,6 +2147,202 @@ mod tests {
                  turn — in the window the run is being driven in. Got: {asked:?}",
             );
         }
+    }
+
+    /// 🎯🎯🎯🎯🎯 **AN ASKING OPENS ITS PANE OFFSTAGE, AND CLOSES IT THERE, ON EVERY ROAD OUT** —
+    /// register item 679's `(b)`, and the gate above's two claims moved one window along.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What the two counts tell apart, which neither tells alone
+    ///
+    /// The gate above proves the run's pool ends EMPTY — and it would go on proving that if this
+    /// repair were reverted, because a pane born in the run's pool and closed there also ends at
+    /// zero. *Where the pane was born* is invisible to a count taken afterwards. So the
+    /// discriminator is the OPENER'S OWN TALLY: it is called only by
+    /// [`crate::access::PaneLifecycle::spawn_offstage`], so a judge that went back to `spawn_in`
+    /// leaves it at nought while every other assertion here still passes.
+    ///
+    /// ⚠⚠ **AND THE OFFSTAGE POOL'S COUNT IS THE HALF THAT WOULD LEAK.** A pane born in a pool the
+    /// surface was not built over is exactly what `close` could not reach until this round, and
+    /// `close` answers a `bool` nobody is obliged to read — so the failure mode is silent, one pty
+    /// and one process per reflection turn, in a window nobody is looking at. Half of this seam
+    /// wired is worse than none of it, which is why both counts are here and why all four roads
+    /// are driven rather than the answering one.
+    #[test]
+    fn an_asking_opens_its_pane_offstage_and_closes_it_there_on_any_road_out() {
+        // ⚠⚠ SIBLING POOLS, not two independent ones: a `Workspace` mints pane ids from a counter
+        // it shares with its siblings, so two fresh pools would hand out the SAME id and the
+        // `panes_elsewhere` hook below would resolve one pool's pane in the other. That is the
+        // registry's own invariant and a fixture that broke it would be measuring a world this
+        // product cannot produce.
+        let stage = Arc::new(Mutex::new(sprag_terminal::Workspace::new((80, 24))));
+        let wings = Arc::new(Mutex::new(
+            stage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .sibling(),
+        ));
+
+        // How many times the offstage door was used — the whole discriminator. See the doc above.
+        let opened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let offstage: crate::access::PaneOffstage = {
+            let wings = Arc::clone(&wings);
+            let opened = Arc::clone(&opened);
+            Arc::new(
+                move |argv: &[String], cwd: Option<&std::path::Path>, cols, rows| {
+                    opened.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    // The same door a daemon's minter uses, over the OTHER pool — `rpc::windows_of`'s
+                    // shape, so this fixture drives the arrangement production has rather than one
+                    // invented for it.
+                    crate::access::PaneLifecycle::spawn_in(
+                        &crate::access::WorkspacePaneAccess::new(Arc::clone(&wings)),
+                        argv,
+                        cwd,
+                        cols,
+                        rows,
+                    )
+                },
+            )
+        };
+        let host = crate::access::WorkspacePaneAccess::new(Arc::clone(&stage))
+            .with_offstage(Some(offstage))
+            // ⛔ AND HOW THE SURFACE FINDS A PANE IT DID NOT PUT IN ITS OWN POOL — the daemon's
+            // `pools_of`, which is what makes `close` able to reach what `spawn_offstage` opened.
+            // Without it this fixture would be a host that can open offstage and not tidy up,
+            // which is not an arrangement anything assembles.
+            .with_panes_elsewhere(Some({
+                let wings = Arc::clone(&wings);
+                Arc::new(move |id| {
+                    wings
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .pane(id)
+                        .is_some()
+                        .then(|| Arc::clone(&wings))
+                }) as crate::access::PaneElsewhere
+            }));
+
+        let live = |pool: &Arc<Mutex<sprag_terminal::Workspace>>| {
+            pool.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .panes()
+                .len()
+        };
+        // ⚠ THE PREMISE, as the gate above states it: both pools start empty, so every count
+        // below is about this asking and nothing else.
+        assert_eq!((live(&stage), live(&wings)), (0, 0));
+
+        let within = Duration::from_secs(20);
+        for (road, script, bound, expect) in [
+            ("a verdict", "printf 'YES\\n'", within, Road::Answered),
+            (
+                "a reply that is no verdict",
+                "printf 'maybe\\n'",
+                within,
+                Road::Answered,
+            ),
+            (
+                "a wait that ran out",
+                "sleep 30",
+                Duration::from_millis(300),
+                Road::Unfinished,
+            ),
+            (
+                "a read nothing could account for",
+                "seq 1 200000; printf 'YES\\n'",
+                within,
+                Road::Unaccountable,
+            ),
+        ] {
+            let before = opened.load(std::sync::atomic::Ordering::SeqCst);
+            let asked = asked_of_another(
+                &host,
+                &RunContext::uncancellable(),
+                &["/bin/sh".to_owned(), "-c".to_owned(), script.to_owned()],
+                None,
+                "did it hold? answer YES or NO",
+                bound,
+            );
+            // ⚠⚠ THE ROAD IS ASSERTED, NOT ASSUMED — the gate above's rule, for its reason: an arm
+            // whose script stopped producing its ending would measure the road beside it.
+            let took = match &asked.said {
+                Ok(_) | Err(Unheard::NotAVerdict(_)) => Road::Answered,
+                Err(Unheard::Unfinished(_)) => Road::Unfinished,
+                Err(Unheard::Unaccountable) => Road::Unaccountable,
+                Err(other) => panic!("{road} left by a road this gate does not drive: {other:?}"),
+            };
+            assert_eq!(
+                took, expect,
+                "⚠⚠⚠ {road} did not leave by the road it was written for: {asked:?}",
+            );
+            assert_eq!(
+                opened.load(std::sync::atomic::Ordering::SeqCst),
+                before + 1,
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 679: {road} did not go through the offstage door, so its \
+                 pane was born in the window the run is being driven in. That is the defect \
+                 itself: measured at 110 columns to 54, under a floor of 60, once per reflection \
+                 turn. Every other count in this gate passes while this one is wrong.",
+            );
+            assert_eq!(
+                live(&stage),
+                0,
+                "⛔⛔⛔ {road} put a pane in the RUN's pool, which is the window a person is \
+                 looking at: {asked:?}",
+            );
+            assert_eq!(
+                live(&wings),
+                0,
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 679: {road} left its pane offstage. A close that cannot \
+                 reach the pool a birth landed in leaks a pty and a process per asking, silently \
+                 — `close` answers a word nobody is obliged to read, and nobody is looking at that \
+                 window. Got: {asked:?}",
+            );
+        }
+    }
+
+    /// ⚠⚠⚠⚠⚠ **A SURFACE WITH NOWHERE ELSE TO PUT A PANE OPENS IT WHERE IT ALWAYS DID** —
+    /// [`crate::access::PaneLifecycle::spawn_offstage`]'s named degradation, driven.
+    ///
+    /// # Why the degradation needs a gate of its own
+    ///
+    /// Because it is an ESCAPE HATCH, and an escape hatch nothing measures is how a capability
+    /// quietly stops applying. The two arms are the whole contract: with a hook the pane goes
+    /// through it, without one the pane lands in this pool and is closed there — and an
+    /// implementation that refused, panicked, or answered `NoPane` instead would break every
+    /// in-process host (a GUI's, every fixture in this crate) while the gate above went on passing.
+    ///
+    /// ⚠⚠ **AND THIS GATE IS WHY THE TRAIT HAS NO DEFAULT.** The degradation was first written as
+    /// a provided method on [`crate::access::PaneLifecycle`] and this test aimed at it — but both
+    /// implementors override, so that body was reachable from nothing and a mutation making it
+    /// refuse left the whole repository green. The arm that actually runs is
+    /// [`crate::access::WorkspacePaneAccess`]'s `None`, which is what this drives.
+    #[test]
+    fn an_asking_on_a_host_with_no_offstage_opens_where_it_always_did() {
+        let pool = Arc::new(Mutex::new(sprag_terminal::Workspace::new((80, 24))));
+        let host = crate::access::WorkspacePaneAccess::new(Arc::clone(&pool));
+        let asked = asked_of_another(
+            &host,
+            &RunContext::uncancellable(),
+            &[
+                "/bin/sh".to_owned(),
+                "-c".to_owned(),
+                "printf 'YES\\n'".to_owned(),
+            ],
+            None,
+            "did it hold? answer YES or NO",
+            Duration::from_secs(20),
+        );
+        assert!(
+            asked.said.is_ok(),
+            "⛔⛔⛔⛔⛔ a host with no offstage stopped being able to ask at all. Every in-process \
+             host in this product holds ONE pool and has nowhere else to go — a GUI's, and every \
+             fixture in this crate — so refusing here would take a check that works perfectly well \
+             and break it in the name of tidiness. Got: {asked:?}",
+        );
+        assert_eq!(
+            crate::access::PaneAccess::pane_ids(&host).len(),
+            0,
+            "and it still closes what it opened, in the only pool it has",
+        );
     }
 
     /// Which line an asking left `asked_of_another` by — see

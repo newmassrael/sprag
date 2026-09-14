@@ -316,6 +316,16 @@ impl PlaceHow {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **THE WINDOW A SESSION KEEPS FOR WORK NOBODY ASKED TO LOOK AT** — register item 679.
+/// See [`SessionRegistry::offstage_workspace`], which is the only thing that reads it and the only
+/// thing that creates it.
+///
+/// ⚠ A word rather than a number, because the number names are what
+/// [`Session::new_window`](Session::new_window) ALLOCATES for a window a caller did not name — so
+/// an integer here would collide with the next window a person opens, and it would tell that
+/// person nothing about what they were looking at. This one says what it is.
+pub const OFFSTAGE_WINDOW: &str = "offstage";
+
 /// How a window is BORN — whether it takes the screen, and who asked for it.
 ///
 /// # Why a type rather than two arguments
@@ -4025,6 +4035,106 @@ impl SessionRegistry {
             .map(|w| Arc::clone(w.workspace()))
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE POOL FOR WORK NOBODY ASKED TO LOOK AT** — `session`'s
+    /// [`OFFSTAGE_WINDOW`], born [detached](WindowBirth::detached) the first time anything asks
+    /// for it and handed back unchanged every time after. Register item 679.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What a daemon that had no such place did instead, measured
+    ///
+    /// It put the pane in the window the person was looking at. Every helper process this product
+    /// starts needs a pane to be a process in ([`crate::Workspace`] is the only door to one), and
+    /// a pane is born into a POOL — so a supervisor that spawned a checker split the very window
+    /// its run was being driven in. Measured 2026-08-25: `inner` **110x45 → 54x45**, against a
+    /// skill whose own measured floor is 60 columns, and the run whose narrowing it caused was the
+    /// run repairing narrowing. The pane carried no name and no title (`claude -p` is
+    /// non-interactive, so it writes none), so what the person saw was an unexplained `terminal-2`
+    /// wedged into their work.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why ONE window per session, reused, rather than one per asking
+    ///
+    /// Because the alternative is a window per helper process, and this daemon's loops ask a judge
+    /// **on every reflection turn** — a window list that grows without bound is the same act of
+    /// taking somebody's screen, one indirection further out. Reuse is safe for the reason the
+    /// pool itself is: a pane is closed by whoever opened it, so an offstage window between two
+    /// askings holds nothing.
+    ///
+    /// # ⚠⚠ It is a NAME, and that is deliberate rather than an omission
+    ///
+    /// There is no hidden window in this registry and there should not be: every window a session
+    /// holds is addressable, listable and killable, and a place a person cannot see is a place
+    /// nothing can be cleaned out of. So a session that already carries a window called
+    /// `offstage` gets that one — it is the same address, and inventing a second name to avoid a
+    /// collision would make the address ambiguous, which is exactly what
+    /// [`Session::new_window`](Session::new_window) refuses duplicates to prevent.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Unknown`] if no session carries `session`. The creation cannot fail for any
+    /// other reason: [`OFFSTAGE_WINDOW`] satisfies [`WindowName`] by construction, and a window
+    /// already carrying the name is REUSED above rather than offered to the duplicate check.
+    pub fn offstage_workspace(
+        &mut self,
+        session: &str,
+    ) -> Result<Arc<Mutex<Workspace>>, SessionError> {
+        if let Some(pool) = self.window_workspace(session, OFFSTAGE_WINDOW) {
+            return Ok(pool);
+        }
+        // ⚠⚠ DETACHED, which is the whole content of this function. `new_window` SELECTS what it
+        // creates (tmux's default, and what every client attached to the session follows), so the
+        // one line that keeps a helper process off the person's screen is this flag — see
+        // `WindowBirth::detached`, whose own doc states the principle this item measured.
+        //
+        // ⚠ `opened_by: None`: a window nobody claims. The asker is a supervisor rather than a
+        // person's pane, and stamping the run's pane here would read as *that pane wanted a
+        // window*, which is the attribution item 679 had to correct once already.
+        self.new_window(
+            session,
+            Some(OFFSTAGE_WINDOW),
+            WindowBirth {
+                detached: true,
+                opened_by: None,
+            },
+        )?;
+        Ok(self
+            .window_workspace(session, OFFSTAGE_WINDOW)
+            .expect("the window was just created in this session"))
+    }
+
+    /// ⛔⛔⛔⛔⛔ **EVERY POOL OF ONE SESSION, EXCEPT THE WINDOW A CALLER ALREADY HOLDS** — cloned,
+    /// for [`window_workspace`](Self::window_workspace)'s reason. Empty for a session nobody
+    /// carries. Register item 679.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why a scene assembly needs it, and why the exclusion is a parameter
+    ///
+    /// A request resolves to ONE window's pool, and that pool is what the scene's screens are built
+    /// from. But a pane id is registry-unique and a supervisor's business crosses windows — its
+    /// asker sits in one (register item 689), the pane it drives can be moved to one (682), and
+    /// since this item the helpers it starts are BORN in one ([`offstage_workspace`](Self::offstage_workspace)).
+    /// Such a caller needs those panes ADDRESSABLE, and needs nothing else about them.
+    ///
+    /// ⚠⚠ **SO THE CALLER NAMES THE POOL IT HAS RATHER THAN FILTERING AFTERWARDS.** Two windows of
+    /// a session are two `Arc`s and never two copies, so the exclusion is [`Arc::ptr_eq`] and is
+    /// exact; a caller that walked everything and de-duplicated by pane id would be re-deriving
+    /// membership it was already holding, and would build a second node for every pane it can
+    /// already see.
+    #[must_use]
+    pub fn other_pools_of(
+        &self,
+        session: &str,
+        held: &Arc<Mutex<Workspace>>,
+    ) -> Vec<Arc<Mutex<Workspace>>> {
+        let Some(session) = self.sessions.iter().find(|s| s.name == session) else {
+            return Vec::new();
+        };
+        session
+            .windows
+            .iter()
+            .map(Window::workspace)
+            .filter(|pool| !Arc::ptr_eq(pool, held))
+            .map(Arc::clone)
+            .collect()
+    }
+
     /// [`PaneHome`] for `pane` — where it is and what speaks to it.
     ///
     /// **WHERE `pane` IS — SESSION, WINDOW AND THE POOL IT IS SITTING IN** — cloned, for
@@ -5706,6 +5816,114 @@ mod tests {
                 .map(Window::name)
                 .collect::<Vec<_>>(),
         );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **OFFSTAGE IS ONE DETACHED WINDOW PER SESSION, AND THE SECOND ASKING GETS THE
+    /// FIRST ONE** — register item 679, and the three properties
+    /// [`SessionRegistry::offstage_workspace`] is for.
+    ///
+    /// # ⚠⚠⚠ Why all three are asserted here rather than in three tests
+    ///
+    /// They are one act's three ways of going wrong and each hides the others. A window that is
+    /// created but ATTACHED takes the person's screen, which is the whole defect one indirection
+    /// along. One created FRESH each time turns a judge asked on every reflection turn into an
+    /// unbounded window list, which is the same defect one indirection further still. And a pool
+    /// that is not the WINDOW'S is a pane nobody can address. A gate for any one of them passes
+    /// while the other two are broken.
+    ///
+    /// ⚠⚠ **THE FIXTURE MAKES `unchanged` AND `the new one` DIFFERENT STRINGS**, the way the
+    /// detached-birth gate above it does: the session is moved onto a second window first, so
+    /// "current is where it was" cannot be satisfied by an accident of ordering.
+    #[test]
+    fn offstage_is_one_detached_window_per_session_and_the_next_asking_reuses_it() {
+        let mut reg = SessionRegistry::new((80, 24));
+        let default = default_name(&reg);
+        // The session is put somewhere that is NEITHER window 0 nor offstage, so the two answers
+        // this gate tells apart are two different names.
+        reg.new_window(&default, Some("work"), WindowBirth::default())
+            .unwrap();
+        assert_eq!(
+            reg.session(&default).unwrap().current_window().name(),
+            "work"
+        );
+        let before: Vec<String> = reg
+            .session(&default)
+            .unwrap()
+            .windows()
+            .iter()
+            .map(|w| w.name().to_owned())
+            .collect();
+        assert!(
+            !before.iter().any(|name| name == OFFSTAGE_WINDOW),
+            "the premise: no offstage window exists until something asks for one, so every count \
+             below is about this call and nothing else — {before:?}",
+        );
+
+        let first = reg.offstage_workspace(&default).unwrap();
+        assert_eq!(
+            reg.session(&default).unwrap().current_window().name(),
+            "work",
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 679: asking for offstage MOVED THE SESSION. Every client \
+             attached to a session follows its current window, so a helper process that is not a \
+             person just took the person's screen — which is the act this whole capability exists \
+             to stop, arriving through the door built to stop it.",
+        );
+
+        // ⚠⚠ THE POOL IS THE WINDOW'S, asserted by IDENTITY rather than by emptiness: two empty
+        // pools are indistinguishable by their contents, and a door that handed back some other
+        // empty workspace would pass every count in this test while the pane it took landed
+        // nowhere addressable.
+        let named = reg
+            .window_workspace(&default, OFFSTAGE_WINDOW)
+            .expect("the offstage window now exists and is addressable by name");
+        assert!(
+            Arc::ptr_eq(&first, &named),
+            "⛔⛔⛔ the pool handed back is not the one the offstage WINDOW holds, so a pane born \
+             in it would be in no window of this session",
+        );
+
+        let second = reg.offstage_workspace(&default).unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 679: the second asking got a DIFFERENT pool. This daemon's \
+             loops ask a judge on every reflection turn, so a window per asking is an unbounded \
+             window list — the same act of taking somebody's screen, one indirection out.",
+        );
+        let after: Vec<String> = reg
+            .session(&default)
+            .unwrap()
+            .windows()
+            .iter()
+            .map(|w| w.name().to_owned())
+            .collect();
+        assert_eq!(
+            after.iter().filter(|name| *name == OFFSTAGE_WINDOW).count(),
+            1,
+            "two askings, one window: {after:?}",
+        );
+        assert_eq!(
+            after.len(),
+            before.len() + 1,
+            "and nothing else was created either: {after:?}",
+        );
+    }
+
+    /// ⛔ **A SESSION THAT IS NOT THERE IS THE ONLY WAY OFFSTAGE REFUSES** — and it refuses by
+    /// NAME, which is what lets a caller tell it from a birth that failed.
+    ///
+    /// Worth its own arm because the alternative shape is a `panic!` or a silently-created
+    /// session: this is reached from a wire request whose scope can be destroyed while the request
+    /// is in flight, which is a fact about a live daemon rather than a defensive case.
+    #[test]
+    fn offstage_refuses_a_session_that_is_not_there_and_names_it() {
+        let mut reg = SessionRegistry::new((80, 24));
+        // ⚠ Matched rather than unwrapped: the Ok side is a pool and a `Workspace` carries no
+        // `Debug`, so `unwrap_err` cannot be spelled here. The arm names what it refuses.
+        match reg.offstage_workspace("nosuch") {
+            Err(SessionError::Unknown(name)) => assert_eq!(name, "nosuch"),
+            Err(other) => panic!("refused, but not by the session's name: {other}"),
+            Ok(_) => panic!("⛔⛔⛔ offstage made a place in a session that does not exist"),
+        }
     }
 
     /// A window records WHO ASKED, it survives a snapshot round trip, and a window nobody claims

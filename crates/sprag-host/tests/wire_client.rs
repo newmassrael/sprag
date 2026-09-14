@@ -35,8 +35,8 @@ use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_input::Modifiers;
 use sprag_plugin::{
     Attended, Delivered, Delivery, Driver, Guardrails, Interruption, KeyStroke, OrchestrationSpec,
-    Orchestrator, OutcomeState, PaneAccess, PaneError, Reached, Readiness, ReadyWhen, RunContext,
-    Written, deliver,
+    Orchestrator, OutcomeState, PaneAccess, PaneError, PaneLifecycle, Reached, Readiness,
+    ReadyWhen, RunContext, Written, deliver,
 };
 use sprag_rpc::{
     CLIENT_ATTACH_METHOD, CLIENT_BUILD_PARAM, CLIENT_HELLO_METHOD, CLIENT_PARAM,
@@ -14554,5 +14554,97 @@ fn a_remote_driver_is_told_which_panes_have_painted() {
         "⚠⚠⚠ and the control: a pane running `cat` has painted NOTHING, so a surface answering \
          `true` here is answering a constant rather than the question. `has_painted`'s own doc \
          names this peer as the one a caller must not conclude is dead.",
+    );
+}
+
+/// 🎯🎯🎯🎯🎯 **A DRIVER'S HELPER PANE IS BORN IN ANOTHER WINDOW, OVER A REAL SOCKET, AND THE
+/// DRIVER CAN STILL CLOSE IT** — register item 679's `(b)`, end to end on the road the defect was
+/// actually measured on.
+///
+/// # ⛔⛔⛔⛔⛔ Why the socket is the only place this claim can be made
+///
+/// `run-driver-process` has defaulted to **on** since 2026-08-25, so a run's driver is a separate
+/// process and every pane it opens goes client → wire → daemon. The checker whose pane took a
+/// loop's `inner` from **110 columns to 54** — under a floor of 60 the same loop's skill had
+/// measured the hard way — was born down exactly this path. Every in-process gate for this item
+/// passes on a build where [`RemotePaneAccess::spawn_offstage`] sends nothing, and that build is
+/// the one the product ships: **the half that matters would have been the half with no gate.**
+///
+/// # ⚠⚠⚠⚠⚠ The three claims, and the control that makes them mean something
+///
+/// The control is the ORDINARY birth through the same surface, in the same run of the same daemon:
+/// it must still land in the window the driver is scoped to. Without it, a build that sent every
+/// birth offstage — or one that had simply moved the daemon's default — would satisfy the claim
+/// while being a different and worse defect.
+///
+/// ⚠⚠ And the CLOSE is not tidiness. A driver asks a judge on every reflection turn; `close`
+/// answers a word nobody is obliged to read; nobody is looking at that window. A birth this
+/// surface could not undo is one pty and one process leaked per turn, in silence — strictly worse
+/// than the pane being in the way, which at least a person can see.
+#[test]
+fn a_remote_drivers_offstage_pane_lands_in_another_window_and_it_can_still_close_it() {
+    let (_host, sock) = spawn_host();
+    let (remote, mut setup) = remote_driver(&sock);
+
+    // WHERE A PANE IS, asked of the daemon rather than assumed — the tree carries every window of
+    // every session with the panes in it, which is the only answer a client can get to this.
+    let window_of = |setup: &mut HostConn, pane: PaneId| -> Option<String> {
+        tree_of(setup).iter().find_map(|session| {
+            session["windows"]
+                .as_array()?
+                .iter()
+                .find(|window| {
+                    window["panes"]
+                        .as_array()
+                        .is_some_and(|panes| panes.iter().any(|held| held["id"] == json!(pane.0)))
+                })
+                .map(|window| window["name"].as_str().unwrap_or_default().to_owned())
+        })
+    };
+
+    // ── THE CONTROL ── an ordinary birth through the same surface, first.
+    let onstage = PaneLifecycle::spawn_in(&remote, &["cat".to_owned()], None, 20, 4)
+        .expect("an ordinary remote birth still works");
+    let scoped = window_of(&mut setup, onstage).unwrap_or_else(|| {
+        panic!("the control pane must be somewhere, or nothing below is measurable")
+    });
+
+    // ── THE CLAIM ── the same birth, said to be a helper's.
+    let offstage = PaneLifecycle::spawn_offstage(&remote, &["cat".to_owned()], None, 20, 4)
+        .expect("an offstage birth is a birth");
+    let landed = window_of(&mut setup, offstage);
+    assert_eq!(
+        landed.as_deref(),
+        Some(sprag_terminal::OFFSTAGE_WINDOW),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 679: a remote driver's helper pane was born in the window the \
+         driver is scoped to — which for a run is the window the run is being DRIVEN in. That is \
+         the whole defect, on the road the product actually takes: measured at 110 columns to 54, \
+         under a floor of 60, once per reflection turn. The control landed in {scoped:?}.",
+    );
+    assert_ne!(
+        landed.as_deref(),
+        Some(scoped.as_str()),
+        "⚠⚠⚠ THE CONTROL AND THE CLAIM MUST BE DIFFERENT WINDOWS, or this daemon simply renamed \
+         the one window it has and the assertion above is about a word rather than a place",
+    );
+
+    // ── AND THE DRIVER CAN SHUT WHAT IT OPENED ── on its own connection, holding only an id.
+    assert!(
+        PaneLifecycle::close(&remote, offstage),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 679: the driver opened a pane offstage and could not close it. \
+         `close` acted inside the SCOPE's window, so a birth the daemon placed elsewhere was a \
+         pane the caller could never reach — one pty and one process per asking, in a window \
+         nobody is watching, with `close`'s own `bool` the only thing that said so.",
+    );
+    assert_eq!(
+        window_of(&mut setup, offstage),
+        None,
+        "and it is really gone from the daemon's tree",
+    );
+    assert_eq!(
+        window_of(&mut setup, onstage).as_deref(),
+        Some(scoped.as_str()),
+        "while the pane nobody asked about is untouched — a close that reached too far would be a \
+         worse defect than the one this repays",
     );
 }
