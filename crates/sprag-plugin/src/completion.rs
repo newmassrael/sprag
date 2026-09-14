@@ -400,6 +400,60 @@ pub enum Unmet {
 }
 
 impl Unmet {
+    /// ⛔⛔⛔⛔⛔ **CAN A PEER WHOSE PROGRAM HAS EXITED STILL SUPPLY THIS?** — register item 1080,
+    /// and the question [`Over::PeerGone`] is asked on.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the contract has to answer this, measured
+    ///
+    /// `PeerGone` means *this turn has nobody left to end it*, and that sentence is about a
+    /// RELATION between a dead peer and what the caller is waiting for — not about the death. It
+    /// used to be decided from the death alone, and [`Unreaped`](Self::Unreaped) is the term where
+    /// those two come apart: **a status arrives BECAUSE the program exited.** The exit is that
+    /// term's precondition, so reading it as the obstacle inverted the one case it governs.
+    ///
+    /// Measured on this repository's own gate — `sh -c 'exit 3'`, whose child ends at once:
+    /// `Completion::new(DoneWhen::Reaped).wait(..)` answered **`PeerGone` in 0.00s**, never using
+    /// a millisecond of its ten-second bound, while the status the caller asked for landed a
+    /// moment later and the very next line of that gate reads it as `code == 3`. Deterministic on
+    /// the build machine, green in a loaded full suite — the race is between the pty thread that
+    /// sees end-of-file and the reaper that collects the status, and what decided the answer was
+    /// which of those two won.
+    ///
+    /// ⚠⚠ **AND [`Unreaped`](Self::Unreaped)'S OWN DOC DESCRIBED A STATE NOTHING COULD REACH.** It
+    /// says the term covers *gone and has not been reaped*, and *a wait that ends here having seen
+    /// EOF is a reaper that did not run* — but `ended_of` intercepted exactly that reading before
+    /// it could be reported, so the sentence documented an unreachable value. A count no path can
+    /// produce is this workspace's rule 5, met in a type.
+    ///
+    /// ⚠ Exhaustive by construction, and that is the structure: a fourth [`DoneWhen`] arriving with
+    /// a term of its own cannot compile until somebody answers this question about it. That is what
+    /// was missing when [`Reaped`](DoneWhen::Reaped) was added — the peer-gone reading predates it
+    /// and nothing obliged the new contract to be held up against it.
+    #[must_use]
+    pub fn survives_the_peer(&self) -> bool {
+        match self {
+            // ⛔ THE ONLY ONE. The reaper supplies it and the exit is what STARTS the reaper, so a
+            // dead peer is this term's precondition rather than its obstacle.
+            Self::Unreaped => true,
+            // The peer itself is what would have to be alive — the term IS its aliveness. (Not
+            // reachable here: `Exits` is satisfied by the same end-of-file, so its `Wanting` is
+            // empty and the turn is `Yes` before this is asked. Answered honestly all the same,
+            // because a value that is unreachable today is a value somebody routes to tomorrow.)
+            Self::PeerAlive => false,
+            // A supervisor reports on a RUNNING agent. A gone process is reported by nobody, which
+            // is the measurement `Over::PeerGone` was created for — register item 323.
+            Self::Unarmed
+            | Self::Unobserved
+            | Self::Restless(_)
+            | Self::AnotherAgent { .. }
+            | Self::Unmoved { .. }
+            | Self::Unasked { .. } => false,
+            // Not a term of any contract — the bound ran out before anything was looked at, so
+            // there is no peer reading to relate it to.
+            Self::Unlooked => false,
+        }
+    }
+
     /// This term as a clause a person reads, naming the values it was decided from.
     #[must_use]
     pub fn describe(&self) -> String {
@@ -492,6 +546,22 @@ impl Wanting {
     #[must_use]
     pub fn terms(&self) -> &[Unmet] {
         &self.0
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHETHER ANYTHING OUTSTANDING COULD STILL ARRIVE FROM A PEER THAT HAS EXITED** —
+    /// register item 1080. See [`Unmet::survives_the_peer`] for what each term answers and why.
+    ///
+    /// ⚠⚠ ANY, and not all: one term that can still be supplied is one reason to keep waiting, and
+    /// a wait that gave up while the thing it asked for was on its way would be reporting a failure
+    /// about a turn that succeeds a moment later. The bound is what ends the case where it never
+    /// comes — a reaper that does not run is a real ending, and it is [`Over::NotYet`] carrying
+    /// [`Unmet::Unreaped`] rather than a word about the peer.
+    ///
+    /// ⚠ A SATISFIED contract answers `false`, and nothing reads it there: `ended_of` asks the
+    /// contract first, so an empty `Wanting` has already ended the turn as [`Over::Yes`].
+    #[must_use]
+    pub fn anything_survives_the_peer(&self) -> bool {
+        self.0.iter().any(Unmet::survives_the_peer)
     }
 
     /// **WHAT A PERSON READING A STALLED RUN IS TOLD**, or [`None`] where nothing is outstanding.
@@ -1241,7 +1311,16 @@ impl Completion {
         // The two absences are different sentences: *this pane is not mine to ask about* is not
         // *this pane's program has exited*, and only the second is a fact about a peer. It is the
         // same reading [`PaneAccess::inject`] refuses on, at the other end of the same turn.
-        if eof == Some(true) {
+        //
+        // ⛔⛔⛔⛔⛔ **AND THE DEATH ALONE DOES NOT DECIDE IT — THE CONTRACT IS ASKED WHETHER WHAT IT
+        // WANTS CAN STILL ARRIVE.** Register item 1080. This word means *nobody is left to end this
+        // turn*, which is a relation between a dead peer and the outstanding terms rather than a
+        // fact about the death; deciding it from `eof` alone made it false for the one contract
+        // whose evidence a dead peer PRODUCES. `DoneWhen::Reaped` waits for an exit status, the
+        // status exists because the program exited, and this line answered *nobody is left* at the
+        // exact instant the answer was on its way — measured as `PeerGone` in 0.00s of a
+        // ten-second bound, against a child that had exited 3. See `Unmet::survives_the_peer`.
+        if eof == Some(true) && !wanting.anything_survives_the_peer() {
             return Some(Over::PeerGone(pane));
         }
         self.asked_of(seen).map(Over::Asking)
@@ -3066,6 +3145,110 @@ mod tests {
              as a claim in a comment",
         );
         running.lifecycle().expect("lifecycle").close(pane);
+    }
+
+    /// **A PANE WHOSE CHILD HAS GONE AND WHOM NOBODY HAS COLLECTED YET** — one reading, held still.
+    ///
+    /// ⚠⚠⚠⚠⚠ A DOUBLE, and deliberately, where this module's other fixtures run a real `/bin/sh`.
+    /// The instant under test is a RACE between the pty thread that sees end-of-file and the reaper
+    /// that collects the status, and a fixture that spawns a real child can only reach it by
+    /// winning that race — which is exactly what register item 1080 spent six samples on: red on a
+    /// build machine, green under a loaded suite, and neither answer about the rule. The subject
+    /// here is not whether the operating system can produce this reading (it plainly does — that is
+    /// what the gate below measures against a real child) but **what the contracts do with it**,
+    /// and that has to be askable without a stopwatch.
+    struct AChildGoneAndUncollected;
+
+    impl PaneAccess for AChildGoneAndUncollected {
+        fn pane_ids(&self) -> Vec<PaneId> {
+            vec![PaneId(0)]
+        }
+        fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+            Some(String::new())
+        }
+        fn pane_rows(&self, _id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+            Some(Vec::new())
+        }
+        /// ⚠ THE OUTPUT IS OVER...
+        fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+            Some(true)
+        }
+        /// ...⚠ AND THE STATUS IS NOT IN YET. `Some(pane) / None(status)` is not spellable through
+        /// this door, and does not need to be: the pane is plainly known — every other reader here
+        /// answers about it.
+        fn pane_child_exit(&self, _id: PaneId) -> Option<sprag_terminal::PaneExit> {
+            None
+        }
+        fn pane_full_text(&self, _id: PaneId) -> Option<String> {
+            Some(String::new())
+        }
+        fn inject(
+            &self,
+            id: PaneId,
+            _keys: &[crate::access::KeyStroke],
+        ) -> Result<crate::access::Written, crate::access::PaneError> {
+            Err(crate::access::PaneError::PeerGone(id))
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A DEAD PEER ENDS THE TURN ONLY FOR THE CONTRACTS WHOSE EVIDENCE IT TAKES AWAY** —
+    /// register item 1080, measured without a stopwatch.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why this is asserted of all three contracts at ONE reading
+    ///
+    /// [`Over::PeerGone`] means *this turn has nobody left to end it*. That is a RELATION between a
+    /// dead peer and what the caller is waiting for, and it used to be decided from the death
+    /// alone — which is a constant, and a constant cannot discriminate. Driving the three contracts
+    /// over one fixed reading is what makes the discrimination the assertion: **the same dead peer
+    /// is an ending for one contract, an answer for another, and an irrelevance for the third.**
+    ///
+    /// * [`Exits`](DoneWhen::Exits) NAMED the exit as its evidence — `Yes`, and a whole capture.
+    /// * [`Settles`](DoneWhen::Settles) waits on a supervisor, and a gone process is reported by
+    ///   nobody — `PeerGone`, which is register item 323's measurement and must survive this repair.
+    /// * [`Reaped`](DoneWhen::Reaped) waits for a status that exists BECAUSE the child exited — so
+    ///   the death is its precondition, and the honest answer is *not yet*, carrying
+    ///   [`Unmet::Unreaped`] whose own doc describes this exact state.
+    ///
+    /// ⚠⚠ The `Settles` arm is the one that would go quietly wrong: a repair that taught the
+    /// peer-gone reading to stand down would hand a dead agent back to a loop as a slow one, and
+    /// that loop burns its whole per-turn bound — half an hour, shipped — on evidence that cannot
+    /// arrive.
+    #[test]
+    fn a_dead_peer_ends_the_turn_only_for_the_contracts_whose_evidence_it_takes_away() {
+        let gone = AChildGoneAndUncollected;
+        let pane = PaneId(0);
+
+        assert_eq!(
+            Completion::new(DoneWhen::Exits).stands(&gone, pane).over,
+            Some(Over::Yes),
+            "⚠⚠⚠ THE CONTROL: this contract named the exit as its evidence, so the same reading \
+             must be a whole capture — if this stopped being `Yes`, the two arms below would be \
+             about a surface that had changed underneath them",
+        );
+
+        assert_eq!(
+            Completion::new(DoneWhen::Settles).stands(&gone, pane).over,
+            Some(Over::PeerGone(pane)),
+            "⛔⛔⛔⛔⛔ THE WORD REGISTER ITEM 323 BOUGHT IS GONE: a supervisor reports on a running \
+             agent, so a contract waiting for one to come back to rest has nobody left to end it — \
+             and a loop told anything else waits out its whole bound on evidence that cannot arrive",
+        );
+
+        let reaped = Completion::new(DoneWhen::Reaped).stands(&gone, pane);
+        assert_eq!(
+            reaped.over, None,
+            "⛔⛔⛔⛔⛔ THE TURN WAS ENDED AT THE INSTANT ITS ANSWER WAS ON ITS WAY. This contract \
+             waits for an exit STATUS, and a status exists because the program exited — the death \
+             is its precondition, not its obstacle. Register item 1080 measured the other reading \
+             as `PeerGone` in 0.00s of a ten-second bound, against a child that had exited 3",
+        );
+        assert_eq!(
+            reaped.wanting.terms(),
+            [Unmet::Unreaped],
+            "⚠⚠⚠⚠ AND IT MUST SAY SO IN THE TERM WHOSE DOC DESCRIBES THIS EXACT STATE — *gone and \
+             has not been reaped*. That sentence documented an unreachable value for as long as \
+             the peer-gone reading intercepted it, which is rule 5 of this workspace met in a type",
+        );
     }
 
     /// ⛔⛔⛔⛔⛔ **A CONTRACT THAT WANTS THE STATUS IS NOT SATISFIED BY THE OUTPUT ENDING** —
