@@ -1411,7 +1411,14 @@ pub struct Placed {
     /// Whether a declared override (a `critical` severity, or a standing red) placed it.
     pub critical: bool,
     /// Its chain depth, `None` when nobody wrote the chain down — see [`Reading::depth`].
+    ///
+    /// ⚠⚠ Carried but NOT sorted on — see [`Reading::work_order`]'s term 2. It is how the item was
+    /// born and it never falls, so a reader needs it to understand the `why`; what places the item
+    /// is [`owed`](Self::owed), which does fall.
     pub depth: Option<u32>,
+    /// How much of the chain above it is still owed — see [`Reading::debts_above`]. **This is the
+    /// term that placed it**, and `None` means nobody wrote the chain down.
+    pub owed: Option<u32>,
     /// The term that put it here, in words a reader can check against the ledger.
     pub why: String,
 }
@@ -3108,6 +3115,42 @@ impl Reading {
             .collect()
     }
 
+    /// 🎯🎯🎯🎯🎯 **WHAT THE CHEAP BRANCH HAS LEFT BEHIND** — register item 670.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why this is a reading and NOT a gate
+    ///
+    /// The loop document authors *pay it or register it, and either is a complete answer*, and its
+    /// own comment says why demanding the fix would be wrong: it *"would make the honest reply «I
+    /// ran out of room» impossible to give, and a run that hides an unfixed finding to look
+    /// finished is the failure this is trying to prevent"*. Item 670 does not dispute that — it
+    /// says the two branches are priced differently and **nothing measures the difference**.
+    /// Registering costs a few lines and needs no evidence remade inside the turn; paying costs a
+    /// gate, a mutation and the round. With nothing counting, the cheap branch wins every time.
+    ///
+    /// ⇒ So this counts, and [`Reading::work_order`] is where the count acquires teeth — a residue
+    /// re-enters the order by its age the moment nothing above it is owed. Neither is enforcement:
+    /// no round is made to take one and no finding is made to be fixed.
+    ///
+    /// # ⚠⚠ The two numbers are two different greens, which is [`Unclaimed`]'s rule
+    ///
+    /// *Nothing was ever registered instead of paid* and *everything registered has since come due
+    /// and been paid* both read as zero due. A caller printing one number would say the same
+    /// sentence about a ledger that has never deferred anything and one that has cleared a hundred.
+    #[must_use]
+    pub fn residue(&self) -> Residue {
+        let registered: Vec<u32> = self
+            .population()
+            .into_iter()
+            .filter(|number| self.depth(*number).is_some_and(|depth| depth > 0))
+            .collect();
+        let due = registered
+            .iter()
+            .copied()
+            .filter(|number| self.debts_above(*number) == Some(0))
+            .collect();
+        Residue { registered, due }
+    }
+
     /// **WHAT A ROUND MAY TAKE NEXT, AS ONE SET** — working rules 11 and 14 made into a predicate
     /// instead of a sentence somebody reads. Register item 839.
     ///
@@ -3222,22 +3265,52 @@ impl Reading {
     ///    ALONE when there are any, so a `critical` key in the sort below could never separate two
     ///    items and deleting it left every gate green. Steering still needs no edit to this rule —
     ///    it just happens one call earlier, in the one place that decides what may be taken.
-    /// 2. **Chain depth, ascending** — and this term is MEASURED rather than assumed, which is the
-    ///    half a borrowed rule would have skipped. Asked of this ledger on 2026-09-11: an item that
-    ///    is itself nobody's child spawns **0.240** children; an item that IS a child spawns
-    ///    **0.338** — 41% more. Depth predicts drift, so ascending points away from it. The same
-    ///    session had measured the fork from the other side (item 1050): three rounds spent inside
-    ///    one chain paid two items and opened three — **1.5 children per repayment, five times the
-    ///    ledger's own average**.
+    /// 2. **What is still OWED above it ([`Reading::debts_above`]), ascending** — and this term is
+    ///    MEASURED rather than assumed, which is the half a borrowed rule would have skipped. Asked
+    ///    of this ledger on 2026-09-11: an item that is itself nobody's child spawns **0.240**
+    ///    children; an item that IS a child spawns **0.338** — 41% more. Being inside a live chain
+    ///    predicts drift, so ascending points away from it. The same session had measured the fork
+    ///    from the other side (item 1050): three rounds spent inside one chain paid two items and
+    ///    opened three — **1.5 children per repayment, five times the ledger's own average**.
+    ///
+    ///    # ⛔⛔⛔⛔⛔ `debts_above` AND NOT [`Reading::depth`] — register item 670, and item 921's
+    ///    split finished where it was left
+    ///
+    ///    Item 921 took this exact confusion out of the CAP, in words this term ignored for three
+    ///    weeks: *the fact and the budget were one number; the cap is about how much of the chain
+    ///    is still OWED, and a paid parent is not a debt.* [`Reading::takeable`] and
+    ///    [`Reading::deferred`] were moved onto `debts_above` and this sort key was not — so the
+    ///    instrument answered *what may be taken* with one quantity and *in what order* with
+    ///    another, which is item 213's second authority on one question.
+    ///
+    ///    ⚠⚠⚠⚠⚠ **AND THE TWO ANSWERS CONTRADICTED EACH OTHER IN ONE PRINTOUT.** Measured
+    ///    2026-09-14 on the real ledger: the reading said `released 2 the cap no longer holds:
+    ///    1048 1049` — working rule 14's *first candidates once the cap lifts* — while this order
+    ///    put those same two numbers **last and second-to-last of 115**. Twenty-two open items were
+    ///    placed by this term, every one of them under ancestors that are all paid.
+    ///
+    ///    ⇒ **`depth` is how an item was BORN and it never falls; `debts_above` is whether the
+    ///    chain above it is still being worked, and it falls to zero when that chain closes.** The
+    ///    drift this term exists to avoid is *diving deeper into a chain I am in the middle of*,
+    ///    and that is `debts_above`. A residue whose parent is paid is not drift: it is the promise
+    ///    that repayment made when the register accepted *pay it or register it* as complete.
+    ///
+    ///    ⚠⚠ **THAT IS REGISTER ITEM 670'S DONE-WHEN, AND IT IS AN INSTRUMENT RATHER THAN
+    ///    ENFORCEMENT** — which the loop document's own clause requires. Nothing here forces a
+    ///    round to take a residue and nothing forbids registering one; what changes is that the
+    ///    cheap branch stops being free, because the item it registered re-enters the order the
+    ///    moment its parent is marked paid. ⛔ It re-enters BY NUMBER and not at the front: term 3
+    ///    is there because *오래된 부채일수록 빨리 가라앉는다*, and promoting a residue ahead of an
+    ///    older root would sink the older debt to buy the younger one a turn.
     /// 3. **Number, ascending** — so the order is total and two runs agree, and because a lower
     ///    number is an OLDER debt: rule 13's own worry is that *오래된 부채일수록 빨리 가라앉는다*.
     ///
-    /// ⛔⛔⛔ **`None` depth sorts WITH the roots, not behind them, and that is a decision.**
-    /// [`Reading::depth`] answers `None` for *nobody wrote it down*, which on this ledger is **379**
-    /// of 602 items — the standing backlog, which predates the mark. Sorting them last would put
-    /// every recently-opened child in front of every old debt and make term 2 point AT the drift it
-    /// exists to avoid. They are not reported as roots (the `why` says *unrecorded*); they are
-    /// merely not treated as deep.
+    /// ⛔⛔⛔ **An unwritten chain sorts WITH the roots, not behind them, and that is a decision.**
+    /// [`Reading::debts_above`] answers `None` for *nobody wrote it down*, which on this ledger is
+    /// **379** of 602 items — the standing backlog, which predates the mark. Sorting them last would
+    /// put every recently-opened child in front of every old debt and make term 2 point AT the drift
+    /// it exists to avoid. They are not reported as roots (the `why` says *unrecorded*); they are
+    /// merely not treated as owing anything above them.
     ///
     /// # ⚠ What this does NOT decide
     ///
@@ -3260,28 +3333,41 @@ impl Reading {
             .map(|number| {
                 let over = overrides.contains(&number);
                 let depth = self.depth(number);
-                let why = match (over, takeable.contains(&number), depth) {
-                    (true, _, _) => {
+                let owed = self.debts_above(number);
+                let why = match (over, takeable.contains(&number), depth, owed) {
+                    (true, ..) => {
                         "critical or a standing red — declared, and it jumps the queue".to_owned()
                     }
-                    (false, false, _) => "nothing is takeable, so the unclassified backlog is the \
-                                          work — it cannot be taken while anything else is"
+                    (false, false, ..) => {
+                        "nothing is takeable, so the unclassified backlog is the \
+                                           work — it cannot be taken while anything else is"
+                            .to_owned()
+                    }
+                    (false, true, None, _) => "depth unrecorded — it predates the mark, so it is \
+                                               not drift by construction"
                         .to_owned(),
-                    (false, true, None) => "depth unrecorded — it predates the mark, so it is not \
-                                            drift by construction"
-                        .to_owned(),
-                    (false, true, Some(0)) => {
+                    (false, true, Some(0), _) => {
                         "a root — nothing opened it while paying something else".to_owned()
                     }
-                    (false, true, Some(deep)) => format!(
-                        "depth {deep} — opened while paying something else, which is where drift \
-                         lives"
+                    // ⚠ The two arms a single `depth` could not tell apart, and the reason this
+                    // term is `debts_above` — register item 670. Both were opened while something
+                    // else was being paid; only one of them is still inside a chain somebody is
+                    // working.
+                    (false, true, Some(deep), Some(0) | None) => format!(
+                        "depth {deep}, nothing owed above it — opened while paying something else \
+                         and everything above it is settled, so it is the promise that repayment \
+                         made, now due"
+                    ),
+                    (false, true, Some(deep), Some(owed)) => format!(
+                        "depth {deep}, {owed} still owed above it — inside a chain being worked, \
+                         which is where drift lives"
                     ),
                 };
                 Placed {
                     number,
                     critical: over,
                     depth,
+                    owed,
                     why,
                 }
             })
@@ -3293,7 +3379,7 @@ impl Reading {
         // it left every gate green. Keeping a term that cannot change an answer would be a second
         // authority on tiering — item 213 — and the one that PRINTS would not be the one that
         // refuses. So the tiering stays in `admits`, and what is sorted here is what is left.
-        out.sort_by_key(|placed| (placed.depth.unwrap_or(0), placed.number));
+        out.sort_by_key(|placed| (placed.owed.unwrap_or(0), placed.number));
         out
     }
 
@@ -4303,6 +4389,17 @@ pub enum Recording {
     /// ⛔ The two commits are on histories that do not contain one another, so neither is older.
     /// Rule 6: this is refused rather than guessed at in either direction.
     Unrelated(Judged),
+}
+
+/// What the *register the rest* branch has left open — see [`Reading::residue`], register item 670.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Residue {
+    /// Every open item another item opened while it was being paid, in number order.
+    pub registered: Vec<u32>,
+    /// The subset with nothing owed above them — the promise that repayment made, now due. ⚠ A
+    /// subset and not a partition: an item under a parent that is still open is in `registered`
+    /// and in neither this nor [`Reading::deferred`] until the cap reaches it.
+    pub due: Vec<u32>,
 }
 
 /// 🎯🎯🎯🎯🎯 **WHAT A PLATFORM REPORTED THAT THE LEDGER DOES NOT ACCOUNT FOR** — register item 998.
@@ -5558,6 +5655,14 @@ mod tests {
     /// no answer and the clause that asserts the order was holding nothing up. `805` is a root with
     /// the highest number: depth puts it third, number puts it last, and the two rules are finally
     /// distinguishable on this ledger.
+    ///
+    /// ⛔⛔⛔⛔⛔ **AND `806`/`807` ARE HERE FOR THE SAME REASON ONE TERM DOWN — register item 670.**
+    /// In `800`–`805` every chain runs up to an OPEN parent, so [`Reading::depth`] and
+    /// [`Reading::debts_above`] are the same number on every item and the sort key could be either
+    /// with no test able to tell. `807` is opened while `806` was being paid and `806` is settled:
+    /// its depth is 1 for ever and nothing is owed above it. That is the whole population item 670
+    /// is about — twenty-two of them on the real ledger, all sorted to the back as drift while the
+    /// same reading called two of them released.
     const ORDERED: &str = "\
 # Ledger
 ## A. THE SHARPEST THINGS OPEN
@@ -5599,6 +5704,16 @@ mod tests {
      @sev: ordinary — it is the standing backlog
      @finish: none — a fixture states no prescription
      @from: none
+
+806. ⛔ **A settled parent**
+     @ns: out — not this loop's, so nothing above 807 is owed
+     @from: none
+
+807. ⛔ **One deep under a parent that is SETTLED**
+     @ns: open — registered while 806 was being closed, and never paid
+     @sev: ordinary — it is the standing backlog
+     @finish: none — a fixture states no prescription
+     @from: 806
 ";
 
     /// ⛔⛔⛔⛔⛔ **THE ORDER A ROUND TAKES WORK IN IS DERIVED, AND EVERY TERM OF IT IS DRIVEN** —
@@ -5623,12 +5738,61 @@ mod tests {
             .collect();
         assert_eq!(
             order,
-            vec![800, 801, 805, 802, 803],
-            "with nothing critical the terms are chain depth ascending, then number: `800` has no \
-             chain written down and `801` and `805` are roots, so all three sort ahead of the two \
-             that were opened while something else was being paid — even though `805` carries the \
-             highest number in the ledger. That last part is the whole of the depth term: without \
-             it this list is `800 801 802 803 805` and the rule is just *lowest number first*.",
+            vec![800, 801, 805, 807, 802, 803],
+            "with nothing critical the terms are what is still OWED above it ascending, then \
+             number: `800` has no chain written down, `801` and `805` are roots, and `807`'s \
+             parent is settled — so all four sort ahead of the two that sit under a parent still \
+             open, even though `805` and `807` carry the highest numbers in the ledger. That last \
+             part is the whole of the term: without it this list is `800 801 802 803 805 807` and \
+             the rule is just *lowest number first*.",
+        );
+
+        // ⛔⛔⛔⛔⛔ **AND THE TERM IS `debts_above`, NOT `depth`** — register item 670, and this is
+        // the clause the whole item turns on. `807` is one deep and always will be; what fell is
+        // what is owed above it. Sorting on depth puts it behind `802`, which is the answer this
+        // instrument gave for three weeks while its own `released` line called such items the
+        // first candidates once the cap lifts.
+        let residue = order
+            .iter()
+            .position(|number| *number == 807)
+            .expect("807 is in the order");
+        let live_chain = order
+            .iter()
+            .position(|number| *number == 802)
+            .expect("802 is in the order");
+        assert!(
+            residue < live_chain,
+            "a residue whose parent is settled is not drift — it is the promise that closure made, \
+             and it sorts by its age like any other debt. Got: {order:?}",
+        );
+        let placed = reading.work_order(9, &[]);
+        let seven = placed
+            .iter()
+            .find(|p| p.number == 807)
+            .expect("807 is placed");
+        assert_eq!(
+            (seven.depth, seven.owed),
+            (Some(1), Some(0)),
+            "the two quantities disagree on this item, which is what makes the fixture able to \
+             tell the two sort keys apart: {seven:?}",
+        );
+        assert!(
+            seven.why.contains("nothing owed above it") && !seven.why.contains("drift lives"),
+            "and the placement must not go on calling it drift once its chain is closed, or the \
+             reader is told the opposite of what the order just did: {seven:?}",
+        );
+        let deep = placed
+            .iter()
+            .find(|p| p.number == 803)
+            .expect("803 is placed");
+        assert_eq!(
+            (deep.depth, deep.owed),
+            (Some(2), Some(2)),
+            "and an item still inside a live chain owes every link of it: {deep:?}",
+        );
+        assert!(
+            deep.why.contains("drift lives"),
+            "which is the one case the term was measured for, and it keeps its words: {deep:?}",
         );
 
         // ⛔⛔⛔ THE CONTROL, AND IT IS LOAD-BEARING: without it, *always the lowest number* passes
@@ -5688,6 +5852,48 @@ mod tests {
         );
     }
 
+    /// 🎯🎯🎯🎯🎯 **THE CHEAP BRANCH IS COUNTED, AND ITS TWO ZEROES ARE DIFFERENT** — register
+    /// item 670.
+    ///
+    /// The loop document ends a run with *pay what you can pay now; register the rest*, prices the
+    /// two the same, and nothing measured the difference. Measured on the real ledger 2026-09-14:
+    /// **22 open items** had been registered while something else was being paid and every one of
+    /// them was sorted behind every root, while the same reading called two of them released.
+    ///
+    /// ⚠⚠ The control is what makes the second number load-bearing: a ledger that never deferred
+    /// anything and one whose every deferral has come due both read `0 due`, and a caller shown one
+    /// number could not tell them apart.
+    #[test]
+    fn the_residue_the_register_branch_leaves_is_counted_and_says_which_is_due() {
+        let reading = read(ORDERED);
+        let residue = reading.residue();
+        assert_eq!(
+            (residue.registered.as_slice(), residue.due.as_slice()),
+            ([802, 803, 807].as_slice(), [807].as_slice()),
+            "three items were opened while something else was being paid, and ONE of them sits \
+             under a parent that is settled — that is the only one whose promise has come due",
+        );
+
+        // ⛔ THE CONTROL, and it is the whole point of two numbers: a ledger with nothing
+        // registered at all reads `0 due` exactly as a ledger whose every residue has been paid
+        // does, and only `registered` separates them.
+        let never = ORDERED
+            .replace("     @from: 801\n", "     @from: none\n")
+            .replace("     @from: 802\n", "     @from: none\n")
+            .replace("     @from: 806\n", "     @from: none\n");
+        let never = read(&never);
+        assert!(never.is_green(), "faults: {:?}", never.faults);
+        assert_eq!(
+            (
+                never.residue().registered.as_slice(),
+                never.residue().due.as_slice()
+            ),
+            ([].as_slice(), [].as_slice()),
+            "nothing was ever registered instead of paid, which is a different green from \
+             everything registered having come due",
+        );
+    }
+
     /// ⛔⛔⛔⛔⛔ **THE UNCLASSIFIED BACKLOG IS NOT NEXT WHILE ANYTHING IS TAKEABLE, AND THE ORDER
     /// SAYS WHY** — register item 1052's fourth condition, resting on item 1050's measurement.
     ///
@@ -5732,6 +5938,13 @@ mod tests {
             )
             .replace(
                 "@ns: open — opened by the round that paid 802",
+                "@ns: out — not this loop's",
+            )
+            // ⚠ The residue under a settled parent has to be emptied too, or *nothing is takeable*
+            // is false and this arm asserts about a ledger that still has work in it — register
+            // item 670 added it, and the miss showed up as `[807]` where `[804]` was expected.
+            .replace(
+                "@ns: open — registered while 806 was being closed, and never paid",
                 "@ns: out — not this loop's",
             );
         // ⚠ `801` and `805` share a line, so the replace above took both — stated rather than left
@@ -9737,6 +9950,23 @@ mod tests {
             "⛔⛔⛔⛔⛔ REGISTER ITEM 1050: the report no longer prints whether either term of the \
              ending can reach zero, so working rule 5 goes back to being a question a round is \
              supposed to remember to ask itself — which item 1050 measured nobody doing",
+        );
+        // 🎯 AND HOW MUCH THE CHEAP CLOSING BRANCH IS HOLDING — register item 670, held here for
+        // this gate's own reason. [`Reading::residue`]'s test judges a `Residue`; only this says
+        // the count reaches a reader, and item 670 is precisely about a quantity nobody reads.
+        //
+        // ⚠⚠ THE PRINT AND NOT THE CALL, the lesson this gate already paid for twice: the format
+        // literal is pinned as well as the call, or a binary that asks for the residue and drops
+        // it passes. ⚠ BOTH numbers, because `0 due` alone cannot tell *nothing was ever
+        // registered instead of paid* from *everything registered has come due*.
+        assert!(
+            BIN.contains("let residue = reading.residue();")
+                && BIN.contains("residue {} registered while paying, {} due")
+                && BIN.contains("residue.registered.len()")
+                && BIN.contains("residue.due.len()"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 670: the report no longer says how much of this ledger the \
+             *register the rest* branch is holding, so the loop document's two closing branches go \
+             back to being priced the same by a register that counts neither",
         );
         // 🎯 AND WHAT TO TAKE NEXT — register item 1052, held here for this gate's own reason one
         // question over. [`Reading::work_order`]'s tests judge a `Vec<Placed>`; only this says the

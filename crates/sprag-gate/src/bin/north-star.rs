@@ -238,6 +238,20 @@ fn main() -> std::process::ExitCode {
             }
         }
     }
+    // 🎯🎯🎯🎯🎯 AND WHAT THE *REGISTER THE REST* BRANCH HAS LEFT OPEN — register item 670. The
+    // loop document prices its two closing branches the same and they are not the same price;
+    // this is the number that says how much of the ledger the cheap one is holding. ⚠ It is a
+    // READING and never a fault: the document's own comment is right that demanding the fix would
+    // make *"I ran out of room"* impossible to say. What gives it teeth is the work order, where a
+    // due residue takes its place by age instead of sitting behind every root for ever.
+    let residue = reading.residue();
+    let due: Vec<String> = residue.due.iter().map(ToString::to_string).collect();
+    println!(
+        "residue {} registered while paying, {} due (nothing owed above them): {}",
+        residue.registered.len(),
+        residue.due.len(),
+        due.join(" "),
+    );
     // ⛔ THE SUITE IS ASKED HERE AND REPORTED LOWER DOWN — register item 1052. A standing red is one
     // of the two declared overrides that decide what this ledger admits, so the work-order
     // screening cannot be assembled before it is known. Only the ASKING moved: the `reds` lines
