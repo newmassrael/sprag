@@ -4734,6 +4734,7 @@ mod tests {
             // fact a pane's row is about.
             request: None,
             overridden: None,
+            keeps: None,
             opened_by: None,
             opened_by_session: None,
             // ⚠ Register item 890's column, absent for the reason its sibling fixture states.
@@ -4880,6 +4881,7 @@ mod tests {
             plugin: crate::plugins::PluginName::AiLoop,
             request: None,
             overridden: None,
+            keeps: None,
             opened_by: None,
             opened_by_session: None,
             tree: None,
@@ -5013,6 +5015,7 @@ mod tests {
             plugin: crate::plugins::PluginName::AiLoop,
             request: None,
             overridden: None,
+            keeps: None,
             opened_by: None,
             opened_by_session: None,
             tree: None,
@@ -5252,6 +5255,7 @@ mod tests {
             plugin: crate::plugins::PluginName::AiLoop,
             request: None,
             overridden: None,
+            keeps: None,
             opened_by: None,
             // ⚠ THE WHOLE VARIABLE. It is the one name that survives a restart, and matching it is
             // what makes pane 0's answer about ownership rather than about a seat number.

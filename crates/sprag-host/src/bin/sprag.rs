@@ -8571,6 +8571,28 @@ fn render_run(run: &Value) -> String {
     let revived_pane = state[sprag_host::plugins::RUN_REVIVED_PANE_KEY]
         .as_str()
         .map_or_else(String::new, |said| format!(" · {said}"));
+    // 🎯🎯🎯🎯🎯 **AND WHETHER ITS PANE HAS STOPPED KEEPING THE DIMENSION ITS KIND KEEPS** —
+    // register item 1098, and `revived_pane`'s neighbour on the STATUS LINE for that clause's
+    // measured reason exactly: the repayment skill's post-promotion check reads the heading and
+    // the ONE line after it, so a clause anywhere else is invisible to the reading this exists to
+    // serve.
+    //
+    // ⛔⛔⛔⛔⛔ **AND THIS IS THE CLAUSE THAT MAKES THE PREMISE A LIVE ONE.** The daemon proves the
+    // pane keeps that dimension at the DOOR and nothing re-asked it afterwards, while the pane goes
+    // on being somebody else's to change — register item 679 measured a loop's `inner` pane going
+    // 110 columns to 54 mid-run, with every reading the product could take still saying the run was
+    // healthy. The host now re-asks on every look; this is where the answer reaches a person, and
+    // without this line it reaches nobody.
+    //
+    // ⚠ The daemon's sentence verbatim, `waiting`'s rule: what a kind holds its pane to is the
+    // document's answer and the comparison is the host's, so a clause composed here would be a
+    // client re-deciding a rule it cannot see the inputs to.
+    //
+    // ⚠ Read off `state`, where only a `running` row can carry it — the structural guard both
+    // clauses above rely on, so this renderer needs no status test of its own either.
+    let lost_axis = state[sprag_host::plugins::RUN_LOST_AXIS_KEY]
+        .as_str()
+        .map_or_else(String::new, |said| format!(" · {said}"));
     let head = format!(
         "run {id}  {label}{opener}{kind}{}{}{}\n",
         render_build(run),
@@ -8597,7 +8619,7 @@ fn render_run(run: &Value) -> String {
         // ⚠ THE COUNTERS, so a person watching a long loop can tell PROGRESS from STUCK — two looks
         // showing the same numbers is the answer to that question, and `running` alone was not.
         Some("running") => format!(
-            "{head}  running — {} iterations, {} {} so far{waiting}{resumed}{revived_pane}{}{}{}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{read_back}{fullness}{authors}{verified}{canceller}\n{}",
+            "{head}  running — {} iterations, {} {} so far{waiting}{resumed}{revived_pane}{lost_axis}{}{}{}{order}{walk_to}{briefed}{prompts}{split}{landed}{stuck}{read_back}{fullness}{authors}{verified}{canceller}\n{}",
             state["iterations"].as_u64().unwrap_or_default(),
             state["cost"].as_u64().unwrap_or_default(),
             state["unit"].as_str().unwrap_or("steps"),

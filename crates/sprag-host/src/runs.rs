@@ -1614,6 +1614,22 @@ struct RunRecord {
     /// about the request this run was submitted with, and a row that showed it changing would be
     /// reporting on the reading rather than on the run.
     overridden: Option<crate::plugins::Overridden>,
+    /// ⛔⛔⛔⛔⛔ **THE AXIS THIS RUN'S KIND HOLDS ITS PANE TO** — register item 1098, resolved at
+    /// the door by `PluginKind::own_axis` and [`None`] where its kind names none.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why a WORD is stored where every neighbour stores an answer
+    ///
+    /// Because the answer is not storable: it is *does this pane still keep that axis*, and the
+    /// pane changes under the run. [`overridden`](Self::overridden) above is a level that never
+    /// moves and is therefore decided once; this is the opposite kind of fact, and what is kept is
+    /// the one half that DOES hold still — the rule — so that the other half can be read fresh
+    /// every time somebody looks. See `PluginsExternal::lost_its_kinds_axis_now`.
+    ///
+    /// ⚠⚠ **AND THAT IS WHY IT IS HERE AND NOT IN THE RUN'S PROGRESS.** A driver publishes what it
+    /// SPENT; this is a claim about the world beside the run, which the plugin structurally cannot
+    /// see (it holds no answer to *what does this daemon open a pane at*) — the same split
+    /// `blocked_now` and `revived_pane_now` are already on.
+    keeps: Option<sprag_plugin::kind::Kept>,
     /// ⛔⛔⛔⛔⛔ **THE PROCESS THIS BOOT ENDED BECAUSE IT WAS STILL DRIVING A RUN NOBODY IS PUTTING
     /// BACK** — register item 740, written once by `put_back_inherited_runs` through
     /// [`RunRegistry::ended_leftover_driver`].
@@ -1879,6 +1895,9 @@ pub struct RunSummary {
     /// overridden`, republished because the row is where a person meets the run, and the row is
     /// what said nothing on 2026-09-03 while a loop spent against ceilings 47 times its document's.
     pub overridden: Option<crate::plugins::Overridden>,
+    /// ⛔⛔⛔⛔⛔ **THE AXIS THIS RUN'S KIND HOLDS ITS PANE TO** — `RunRecord::keeps`, republished
+    /// because the thing that re-asks it reads this summary. Register item 1098.
+    pub keeps: Option<sprag_plugin::kind::Kept>,
     /// ⛔⛔⛔⛔⛔ **THE PROCESS A BOOT ENDED BECAUSE IT WAS STILL DRIVING THIS WITHHELD RUN** —
     /// register item 740, and [`None`] wherever there was nothing left typing.
     ///
@@ -1950,6 +1969,10 @@ pub struct NewRun {
     /// 853, answered at the door by `crate::plugins::parse_guardrails` and [`None`] when the run's
     /// plugin has no document that authors any bound.
     pub overridden: Option<crate::plugins::Overridden>,
+    /// ⛔⛔⛔⛔⛔ **THE AXIS THIS RUN'S KIND HOLDS ITS PANE TO** — register item 1098, answered at
+    /// the door by `PluginKind::own_axis`. See `RunRecord::keeps` for why the RULE is carried where
+    /// its neighbours carry answers.
+    pub keeps: Option<sprag_plugin::kind::Kept>,
 }
 
 /// **A RUN A PREDECESSOR DAEMON LEFT BEHIND THAT THIS ONE COULD PICK UP** — register item 543's
@@ -6843,6 +6866,11 @@ impl RunRegistry {
             // carried from the submit that answered it. It is the CALLER's `NewRun` field and not a
             // `None` written here, because this is the one moment the question has an answer.
             overridden: run.overridden,
+            // ⛔⛔⛔⛔⛔ AND THE AXIS ITS KIND HOLDS ITS PANE TO — register item 1098, carried from
+            // the submit for the line above's reason and re-asked for a reason of its own: this is
+            // the RULE, not an answer, and the answer is read fresh at every look because the pane
+            // it is about changes under the run.
+            keeps: run.keeps,
             // ⚠ AND NO PREDECESSOR LEFT A PROCESS DRIVING IT — register item 740, on the line
             // above's argument: this daemon is spawning this run's only driver, right now.
             ended_driver: None,
@@ -8434,6 +8462,19 @@ impl RunRegistry {
                     .overridden
                     .as_deref()
                     .and_then(crate::plugins::Overridden::restored),
+                // ⛔⛔⛔⛔⛔ **AND THE AXIS IS *NOT* READ FROM THE LOG — register item 1098.** The
+                // line above takes its answer from the file precisely because the request cannot
+                // re-derive it; this one is the opposite case and the opposite rule applies. The
+                // boot that acts on this record calls `PluginsExternal::put_back`, which goes
+                // through `plugin_from_request` and therefore OPENS THE KIND DOCUMENT — so the word
+                // arrives from the one authority that has always answered it, freshly, on the
+                // build that is about to drive the run. A word copied out of a predecessor's file
+                // would be the older build's reading of a document this one may spell differently,
+                // which is exactly the two-authorities disease one line up.
+                //
+                // ⚠ Until that resume runs, the row holds no axis and says nothing about one —
+                // which is true: nothing is driving the pane, so there is no premise to hold.
+                keeps: None,
                 // ⚠⚠ AND NOTHING HAS BEEN ENDED YET — register item 740. This reads the log; the
                 // boot that acts on it (`put_back_inherited_runs`) is a later call with the socket
                 // in hand, and this field is its answer rather than the file's. A record that
@@ -8537,6 +8578,10 @@ impl RunRegistry {
                 // 🎯 AND SO IS THIS — item 853, on the line above's argument exactly: it is decided
                 // by the submit and nothing later can change which authors a run was started under.
                 overridden: record.overridden.clone(),
+                // ⛔ AND THE AXIS ITS KIND HOLDS IT TO — item 1098. The RULE is a level that never
+                // moves, exactly like its neighbours here; what moves is the pane it is about, and
+                // that is read by whoever asks rather than copied into this snapshot.
+                keeps: record.keeps,
                 // ⚠ A LEVEL THAT NEVER MOVES EITHER — item 740, on the line above's argument. A
                 // boot ends a leftover once and writes it here once; a row that showed this
                 // appearing and going away would be reporting on the daemon, not on the run.
@@ -9259,6 +9304,7 @@ mod tests {
                 // without parsing a request, so *nobody answered* is the only honest value; the
                 // gates that drive the answer are `parse_guardrails`'s own, in `plugins`.
                 overridden: None,
+                keeps: None,
                 state,
                 run: Box::new(ThreadRun::new(
                     Orders::new(
@@ -9868,6 +9914,7 @@ mod tests {
             opened_by_session: None,
             tree: None,
             overridden: None,
+            keeps: None,
             state: Arc::new(Mutex::new(RunState::Running)),
             run: Box::new(ThreadRun::new(
                 Orders::new(
@@ -10215,6 +10262,7 @@ mod tests {
             opened_by_session: None,
             tree: None,
             overridden: None,
+            keeps: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(an_outcome()),
                 output: None,
@@ -10336,6 +10384,7 @@ mod tests {
             opened_by_session: None,
             tree: None,
             overridden: None,
+            keeps: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(an_outcome()),
                 output: None,
@@ -10520,6 +10569,7 @@ mod tests {
             opened_by_session: None,
             tree: None,
             overridden: None,
+            keeps: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(an_outcome()),
                 output: None,
@@ -10635,6 +10685,7 @@ mod tests {
             opened_by_session: None,
             tree: None,
             overridden: None,
+            keeps: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(an_outcome()),
                 output: None,
@@ -10786,6 +10837,7 @@ mod tests {
             opened_by_session: None,
             tree: None,
             overridden: None,
+            keeps: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(an_outcome()),
                 output: None,
@@ -11073,6 +11125,7 @@ mod tests {
                 opened_by_session: None,
                 tree: None,
                 overridden: None,
+                keeps: None,
                 state: Arc::new(Mutex::new(RunState::Done {
                     outcome: Box::new(an_outcome()),
                     output: None,
@@ -11723,6 +11776,7 @@ mod tests {
                 opened_by_session: None,
                 tree: None,
                 overridden: None,
+                keeps: None,
                 state: Arc::new(Mutex::new(RunState::Done {
                     outcome: Box::new(ending.clone()),
                     output: None,
@@ -12023,6 +12077,7 @@ mod tests {
                 opened_by_session: None,
                 tree: None,
                 overridden: None,
+                keeps: None,
                 state: Arc::clone(&state),
                 // ⚠⚠ AND THE CELL STAYS EMPTY, which is what an out-of-process run's cell really
                 // is: `spawn_driven_run` files one and says it never moves (item 662). A fixture
@@ -12316,6 +12371,7 @@ mod tests {
             opened_by_session: None,
             tree: None,
             overridden: None,
+            keeps: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(ended),
                 output: None,
@@ -12452,6 +12508,7 @@ mod tests {
                 opened_by_session: None,
                 tree: None,
                 overridden: None,
+                keeps: None,
                 state: Arc::new(Mutex::new(RunState::Reported(Box::new(ending)))),
                 run: Box::new(EndedRun::restored(false, None, None)),
                 progress: ProgressCell::default(),
@@ -12577,6 +12634,7 @@ mod tests {
             opened_by_session: None,
             tree: None,
             overridden: None,
+            keeps: None,
             state: Arc::clone(&state),
             run: Box::new(EndedRun::restored(false, None, None)),
             progress: ProgressCell::default(),
@@ -12765,6 +12823,7 @@ mod tests {
                 opened_by_session: asker.map(str::to_owned),
                 tree: None,
                 overridden: None,
+                keeps: None,
                 state: Arc::new(Mutex::new(RunState::Done {
                     outcome: Box::new(an_outcome()),
                     output: None,
@@ -12894,6 +12953,7 @@ mod tests {
                 opened_by_session: None,
                 tree: tree.map(str::to_owned),
                 overridden: None,
+                keeps: None,
                 // ⛔ FINISHED, and that is the arm: `request`'s guard would drop the column here.
                 state: Arc::new(Mutex::new(RunState::Done {
                     outcome: Box::new(an_outcome()),
@@ -13057,6 +13117,7 @@ mod tests {
                 opened_by_session: None,
                 tree: None,
                 overridden: None,
+                keeps: None,
                 state: Arc::new(Mutex::new(RunState::Done {
                     outcome: Box::new(an_outcome()),
                     output: None,
@@ -13163,6 +13224,7 @@ mod tests {
             opened_by_session: None,
             tree: None,
             overridden: None,
+            keeps: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(an_outcome()),
                 output: None,
@@ -13205,6 +13267,7 @@ mod tests {
             opened_by_session: None,
             tree: None,
             overridden: None,
+            keeps: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(an_outcome()),
                 output: None,
@@ -13288,6 +13351,7 @@ mod tests {
             opened_by_session: None,
             tree: None,
             overridden: None,
+            keeps: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(an_outcome()),
                 output: None,
@@ -13400,6 +13464,7 @@ mod tests {
             opened_by_session: None,
             tree: None,
             overridden: None,
+            keeps: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(sprag_plugin::Outcome {
                     // ⚠ NOT a convergence, which is the whole point: the sentence's *work is
@@ -13535,6 +13600,7 @@ mod tests {
             opened_by_session: None,
             tree: None,
             overridden: None,
+            keeps: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(ended),
                 output: None,
@@ -13616,6 +13682,7 @@ mod tests {
             opened_by_session: None,
             tree: None,
             overridden: None,
+            keeps: None,
             state: Arc::new(Mutex::new(RunState::Done {
                 outcome: Box::new(sprag_plugin::Outcome {
                     // ⚠ NOT a convergence: the run this question is asked about is the one that
@@ -14545,6 +14612,7 @@ mod tests {
             opened_by_session: None,
             tree: None,
             overridden: None,
+            keeps: None,
             state: Arc::new(Mutex::new(RunState::Running)),
             run: Box::new(RecordingRun(Arc::clone(&log))),
             progress: ProgressCell::default(),
@@ -14939,6 +15007,7 @@ mod tests {
                 opened_by_session: None,
                 tree: None,
                 overridden: None,
+                keeps: None,
                 state: Arc::new(Mutex::new(if ended {
                     RunState::Reported(Box::new(serde_json::json!({ "state": "converged" })))
                 } else {

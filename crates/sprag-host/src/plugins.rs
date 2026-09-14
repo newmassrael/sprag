@@ -1025,6 +1025,26 @@ pub const RUN_WAITING_KEY: &str = "waiting";
 /// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`RUN_INHERITED_KEY`]'s argument unchanged: an added
 /// answer key withdraws no address and widens no value space a peer decodes whole.
 pub const RUN_REVIVED_PANE_KEY: &str = "revived_pane";
+/// 🎯🎯🎯🎯🎯 **THAT THIS RUN'S PANE HAS STOPPED KEEPING THE DIMENSION ITS KIND KEEPS** — register
+/// item 1098, and [`RUN_REVIVED_PANE_KEY`]'s sibling in every respect above.
+///
+/// # ⛔⛔⛔⛔⛔ The key exists because the CHECK was a door and the fact is a state
+///
+/// A run is accepted only into a pane that keeps its kind's axis — and then the pane goes on being
+/// somebody else's to change. Register item 679 measured it: a loop's `inner` pane went **110
+/// columns to 54 while the run was going**, and every reading the product could take said the run
+/// was healthy. A door cannot hold a premise that does not hold still; a row read at the moment
+/// somebody looks can.
+///
+/// ⚠⚠ It is read where [`RUN_WAITING_KEY`] is read and lives inside the state object on that key's
+/// guard, so *the pane this run is driving right now* is true by construction.
+///
+/// ⚠ Presence is the claim: absent covers a run driving nothing, a kind that holds its runs to no
+/// axis, a world that cannot measure, and — overwhelmingly — a pane that is perfectly fine.
+///
+/// ⚠ No [`sprag_rpc::WIRE_PROTOCOL`] bump, on [`RUN_REVIVED_PANE_KEY`]'s argument verbatim: an
+/// added answer key withdraws no address and widens no value space a peer decodes whole.
+pub const RUN_LOST_AXIS_KEY: &str = "lost_axis";
 /// **WHERE A RUN'S MACHINE WAS, WRITTEN INTO THE REQUEST A DAEMON HANDS A DRIVER** — register item
 /// 543's fourth brick, and the one key on that map a CLIENT may not set.
 ///
@@ -3136,7 +3156,12 @@ fn plugin_from_request(
             // ⚠ LAST of the three, on the same ordering argument they already make: *this pane is
             // in the wrong tree* and *its neighbours are strangers* are better sentences than *it
             // is the wrong shape*, and a pane that is all three should be told the first.
-            ai_loop_keeps_what_its_kind_keeps(
+            // ⛔⛔⛔⛔⛔ AND THE AXIS IT ACCEPTED IS KEPT — register item 1098. The word died with
+            // this call for as long as the check existed, which is what made the premise a
+            // one-shot: nothing downstream could ask the same question again. It is carried beside
+            // the plugin on `own_bounds`' exact terms — read once where the kind document is open,
+            // never re-derived — and re-asked at every live look on the run's row.
+            let axis = ai_loop_keeps_what_its_kind_keeps(
                 kind.keeps().as_deref(),
                 world.pane_size(pane),
                 world.opens_panes_at(),
@@ -3157,7 +3182,7 @@ fn plugin_from_request(
                 }),
             };
             Ok((
-                PluginKind::AiLoop(Box::new(loops), authored, numbers),
+                PluginKind::AiLoop(Box::new(loops), authored, numbers, axis),
                 label,
             ))
         }
@@ -3208,6 +3233,11 @@ impl PluginsExternal {
         let named_tree = tree
             .as_deref()
             .map(|path| path.to_string_lossy().into_owned());
+        // ⛔⛔⛔⛔⛔ **READ BEFORE THE PLUGIN MOVES INTO THE WORKER** — register item 1098, on
+        // `drive_on_a_thread`'s own stated rule: once the thread owns it there is nothing left here
+        // to ask. This is the LAST moment the word the door accepted is reachable, and the row is
+        // what has to hold it afterwards.
+        let keeps = plugin.own_axis();
         let (state, run) = self.drive_on_a_thread(id, &progress, plugin, guardrails, tree);
         lock(&self.runs).submit(crate::runs::NewRun {
             id,
@@ -3229,6 +3259,11 @@ impl PluginsExternal {
             // register item 853. Answered at the door, where both authors are in hand, and never
             // re-derived: see `Resolved`.
             overridden,
+            // ⛔⛔⛔⛔⛔ AND THE AXIS ITS KIND HOLDS ITS PANE TO — register item 1098, on the line
+            // above's terms and with one difference that is the whole of that item: this word is
+            // carried in order to be USED AGAIN. The check it came from ran once, at the door, and
+            // proved something about a pane that a person can change a minute later.
+            keeps,
         })
     }
 
@@ -3407,6 +3442,13 @@ impl PluginsExternal {
             .filter(|order| plugin.as_plugin().honours(*order))
             .collect();
         let name = plugin.name();
+        // ⛔⛔⛔⛔⛔ AND THE AXIS ITS KIND HOLDS ITS PANE TO — register item 1098, off the same
+        // validating copy and for the line above's reason exactly. ⚠⚠ It matters MORE on this road
+        // than on the in-process one: the driver over there holds the only live plugin and this
+        // daemon's row is the only thing a person reads, so a word that did not travel here would
+        // leave every out-of-process run — which is every run this daemon starts by default —
+        // unable to say its pane had stopped keeping what it was accepted for.
+        let keeps = plugin.own_axis();
 
         // ⚠⚠⚠⚠⚠ **A CALLER MAY NOT SAY WHERE A RUN STARTS** — register item 543, and see
         // [`RUN_PLACE_KEY`] for why that is enforced here instead of in the grammar. This wire
@@ -3475,6 +3517,9 @@ impl PluginsExternal {
             // same answer (`drive_request` says so where it declines to use it); publishing it from
             // one side is what keeps a fact with two possible authors down to one.
             overridden,
+            // ⛔⛔⛔⛔⛔ AND THE AXIS, on the line above's argument and with the same author: the
+            // child parses the same map, and the row a person reads is this side's.
+            keeps,
         }))
     }
 
@@ -4197,6 +4242,59 @@ impl PluginsExternal {
         })
     }
 
+    /// 🎯🎯🎯🎯🎯 **THAT THIS RUN'S PANE HAS STOPPED KEEPING THE DIMENSION ITS KIND KEEPS** —
+    /// register item 1098, and [`blocked_now`](Self::blocked_now)'s third sibling on exactly its
+    /// terms: a thing the daemon can see at the moment the row is read and the plugin structurally
+    /// cannot.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What a premise checked ONCE is worth, measured
+    ///
+    /// [`ai_loop_keeps_what_its_kind_keeps`] runs in `plugin_from_request` — at the door, before a
+    /// single turn — and then never again. What it proves is that the run's pane has the dimension
+    /// its kind keeps, and **that is not a fact about the run, it is a fact about a pane somebody
+    /// else can change**: a person drags a splitter, a window re-tiles because anything was born or
+    /// closed in it, a client attaches with a different size. Register item 679's own observation
+    /// is that shape — a loop's `inner` pane went from 110 columns to 54 **while the run was
+    /// going** — and the run carried on with a premise nothing held.
+    ///
+    /// ⇒ So the premise is re-asked here, and this is where re-asking is free: the row is read when
+    /// somebody looks, which is the moment the answer is wanted and the only moment it is worth
+    /// anything. ⚠⚠ **Nothing runs on a clock.** That is deliberate and it is register items
+    /// 629-640's lesson one axis over — a watcher that polled a pane a hundred times a second to
+    /// learn one bit is the shape this daemon spent four rounds removing.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The SAME rule, not a second one
+    ///
+    /// It calls the door's own function with the door's own arguments. A live check that asked a
+    /// different question — *is it smaller than it was*, say, which needs no
+    /// [`PluginWorld::opens_panes_at`] and is tempting for that reason — would be a second
+    /// authority on one rule, free to call a pane healthy that the door would have turned away.
+    /// What differs between the two askings is not the rule but the CONSEQUENCE: the door refuses a
+    /// run that would start wrong, and this tells a person about one that went wrong, because
+    /// ending somebody's run over a splitter they dragged would be worse than the defect.
+    ///
+    /// ⚠⚠ **THE WORD IS THE ROW'S, NOT RE-READ FROM THE DOCUMENT** — `RunRecord::keeps`, resolved
+    /// at the door by the one parse. Re-opening the kind document on every look would be a second
+    /// read of one author's clause and would cost a file parse per row.
+    ///
+    /// ⚠ [`None`] when no pane is driven, when the kind holds its runs to no axis, when this world
+    /// cannot size the pane or say what it opens panes at, and — the ordinary case — when the pane
+    /// is fine. Presence is the claim, exactly as its two siblings are.
+    fn lost_its_kinds_axis_now(&self, run: &crate::runs::RunSummary) -> Option<String> {
+        let axis = run.keeps?;
+        let pane = self.driven_pane(run)?;
+        // ⚠⚠ THROUGH `PluginWorld`, which is the door's own reader — so the number this compares is
+        // the number the door compared, off the same `list()` DTO the `panes` slot publishes
+        // (register item 679). A second read of the pty here could disagree with the listing the
+        // operator is looking at while they read it.
+        let now = self.pane_size(pane)?;
+        // ⚠ The refusal's own sentence, which is the point: one rule, one wording. A reader meets
+        // the same words at the door and on the row, so the remedy is recognisable as one thing.
+        ai_loop_keeps_what_its_kind_keeps(Some(axis.word()), Some(now), self.opens_panes_at())
+            .err()
+            .map(|why| format!("⚠ {why}"))
+    }
+
     /// **WHICH PANE THIS RUN IS DRIVING RIGHT NOW**, or [`None`] for a run that is not running or
     /// has had no pane vouched for.
     ///
@@ -4246,6 +4344,7 @@ impl PluginsExternal {
                             LiveLook {
                                 blocked_now: self.blocked_now(run),
                                 revived_pane: self.revived_pane_now(run),
+                                lost_axis: self.lost_its_kinds_axis_now(run),
                             },
                         )
                     })
@@ -4372,10 +4471,18 @@ enum PluginKind {
     // by the same road. See `AuthoredNumbers`: they are the rest of the class the bounds are one
     // half of, and a run whose `context_ceiling` came from a launcher rather than from its document
     // said nothing about it until they travelled too.
+    //
+    // ⛔⛔⛔⛔⛔ AND THE AXIS ITS KIND HOLDS IT TO — register item 1098, carried for the two reasons
+    // above and a third of its own: that one is read AGAIN, long after the door. `keeps` is the
+    // only premise on this road that can stop being true while the run goes — a person drags a
+    // splitter and the pane the run was accepted with is not the pane it is driving — so the word
+    // has to outlive the call that parsed it. It is `Option` because a kind that names no axis
+    // holds its runs to none, which is a decision and not a gap.
     AiLoop(
         Box<sprag_plugin::AiLoop>,
         AuthoredGuardrails,
         AuthoredNumbers,
+        Option<Kept>,
     ),
 }
 
@@ -4892,7 +4999,7 @@ impl PluginKind {
             // ⚠ READ AT BUILD TIME AND CARRIED, not read again here: the kind document is opened
             // once per run in `build_plugin`, and re-opening it would be a second read of one
             // author's clause — the thing `LoopKind`'s own doc says a kind must never become.
-            PluginKind::AiLoop(_, authored, _) => *authored,
+            PluginKind::AiLoop(_, authored, _, _) => *authored,
         }
     }
 
@@ -4911,7 +5018,34 @@ impl PluginKind {
             | PluginKind::Agent(_)
             | PluginKind::Answer(_)
             | PluginKind::Dialogue(_) => AuthoredNumbers::none(),
-            PluginKind::AiLoop(_, _, numbers) => *numbers,
+            PluginKind::AiLoop(_, _, numbers, _) => *numbers,
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE AXIS THIS RUN'S KIND HOLDS ITS PANE TO**, or [`None`] where its kind names
+    /// none — register item 1098, and [`own_bounds`](Self::own_bounds)' sibling with one difference
+    /// that is the whole item.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Those two are read once because they cannot change; this one is read AGAIN
+    ///
+    /// A document's bounds and numbers are decided when it is written, so carrying them is only
+    /// about not re-opening the document. `keeps` is a claim about a PANE — and the pane a run was
+    /// accepted with is not the pane it is driving an hour later, because a person can drag a
+    /// splitter and a window re-tiles when anything is born or closed in it. The check at the door
+    /// therefore proved something that **stops being true**, and until this travelled there was no
+    /// word left anywhere to re-ask it with.
+    ///
+    /// ⚠⚠ **IT IS THE WORD THE DOOR ACCEPTED**, not the document's raw string —
+    /// [`ai_loop_keeps_what_its_kind_keeps`] does the one parse and hands back what it admitted. A
+    /// run cannot be held on its row to an axis its door would have refused.
+    fn own_axis(&self) -> Option<Kept> {
+        match self {
+            PluginKind::Orchestrator(_)
+            | PluginKind::Pipe(_)
+            | PluginKind::Agent(_)
+            | PluginKind::Answer(_)
+            | PluginKind::Dialogue(_) => None,
+            PluginKind::AiLoop(_, _, _, axis) => *axis,
         }
     }
 }
@@ -5609,6 +5743,22 @@ use sprag_plugin::kind::Kept;
 /// WORD is a rule nobody wrote down, and a missing MEASUREMENT is a fact nobody has. Refusing the
 /// second would stop every unattended run on a daemon no client is watching.
 ///
+/// # ⛔⛔⛔⛔⛔ It ANSWERS THE AXIS IT ACCEPTED — register item 1098
+///
+/// This returned `()`, and the word it had parsed died with the call. That was enough while the
+/// check ran once; it stopped being enough the moment anything wanted to ask the SAME question
+/// again — see [`PluginsExternal::lost_its_kinds_axis_now`], which re-asks it at every live look.
+///
+/// ⚠⚠ **SO A RUN CAN ONLY EVER BE HELD TO A WORD THIS FUNCTION ACCEPTED**, by construction rather
+/// than by a caller's discipline: the parse happens here, once, and what comes back is the parsed
+/// value. A second `Kept::of_word` at the other asker would be a second reading of one author's
+/// clause, free to admit a word this one refuses.
+///
+/// ⚠ [`None`] is *this kind holds its runs to no axis* and is the only road to it. The two
+/// ABSENCES below — a pane this world cannot size, a daemon that has not said what it opens panes
+/// at — answer `Some`: the axis is known and merely unmeasurable NOW, which is exactly the state a
+/// later asking may find measurable.
+///
 /// # Errors
 ///
 /// [`refused`]'s sentence when the kind names an unknown dimension, or when the pane kept less than
@@ -5617,9 +5767,9 @@ fn ai_loop_keeps_what_its_kind_keeps(
     keeps: Option<&str>,
     pane: Option<(u16, u16)>,
     opens_at: Option<(u16, u16)>,
-) -> Result<(), InvokeError> {
+) -> Result<Option<Kept>, InvokeError> {
     let Some(rule) = keeps else {
-        return Ok(());
+        return Ok(None);
     };
     // ⛔⛔ A WORD THIS BUILD DOES NOT KNOW IS A REFUSAL AND NOT A PASS — `stands_in`'s rule, and
     // this workspace's rule 6. An unclassified value falling through to `Ok` would disarm the check
@@ -5641,13 +5791,13 @@ fn ai_loop_keeps_what_its_kind_keeps(
     // ⚠ A world that cannot size the pane is an ABSENCE of the fact, not a claim about it — the
     // same reading `pane_start_dir`'s `None` gets one check up.
     let Some(pane) = pane else {
-        return Ok(());
+        return Ok(Some(kept));
     };
     // ⚠⚠ AND A WORLD THAT CANNOT SAY WHAT IT OPENS A PANE AT IS THE SAME ABSENCE, read the same
     // way — register item 772's second round. It used to arrive here as a total `(u16, u16)` with a
     // fabricated 80×24 inside it, and this comparison had no way to tell that from a measurement.
     let Some(opens_at) = opens_at else {
-        return Ok(());
+        return Ok(Some(kept));
     };
     // 🎯🎯🎯 THE AXIS COMES OFF THE WORD — register item 679. This used to be two hand-written
     // destructures (`let Some((_, rows)) = …`) sitting under a comparison against one constant, so
@@ -5668,7 +5818,7 @@ fn ai_loop_keeps_what_its_kind_keeps(
             costs = kept.costs(),
         )));
     }
-    Ok(())
+    Ok(Some(kept))
 }
 
 /// **THE TREE A DIRECTORY BELONGS TO** — the nearest ancestor-or-self carrying `marker`, or [`None`]
@@ -7509,6 +7659,9 @@ pub(crate) struct LiveLook {
     /// Whether the pane this run is driving came back from a restore, as a sentence —
     /// `PluginsExternal::revived_pane_now`, published as [`RUN_REVIVED_PANE_KEY`].
     pub(crate) revived_pane: Option<String>,
+    /// Whether the pane this run is driving has stopped keeping its kind's axis, as a sentence —
+    /// `PluginsExternal::lost_its_kinds_axis_now`, published as [`RUN_LOST_AXIS_KEY`].
+    pub(crate) lost_axis: Option<String>,
 }
 
 /// Render one run as JSON for `query("runs")`.
@@ -7546,6 +7699,7 @@ pub(crate) fn run_to_json(run: &RunSummary, seat: Option<u64>, look: LiveLook) -
     let LiveLook {
         blocked_now,
         revived_pane,
+        lost_axis,
     } = look;
     let (cost, unit) = run
         .progress
@@ -7602,6 +7756,15 @@ pub(crate) fn run_to_json(run: &RunSummary, seat: Option<u64>, look: LiveLook) -
             // the blocked agent and never learn the pane was the wrong one to answer in.
             if let Some(said) = revived_pane {
                 going[RUN_REVIVED_PANE_KEY] = json!(said);
+            }
+            // 🎯🎯🎯🎯🎯 AND THAT ITS PANE HAS STOPPED KEEPING ITS KIND'S AXIS — register item 1098,
+            // the two above's sibling and a THIRD key for the reason the second is not folded into
+            // the first. `waiting` is *nothing will move until somebody comes*, `revived_pane` is
+            // *what is moving is moving in last week's conversation*, and this is *what is moving
+            // has half the room its kind says it needs*. All three can be true at once, and a
+            // person who fixed one because the row named one would leave the other two standing.
+            if let Some(said) = lost_axis {
+                going[RUN_LOST_AXIS_KEY] = json!(said);
             }
             going
         }
@@ -12615,6 +12778,7 @@ mod tests {
                     opened_by_session: None,
                     tree: None,
                     overridden: None,
+                    keeps: None,
                     state: RunState::Running,
                     progress,
                     reported: None,
@@ -12933,6 +13097,19 @@ mod tests {
     /// than on a request, because that is where a driver reports it and where every reader of a
     /// running row goes first.
     fn a_run_driving(registry: &Arc<Mutex<RunRegistry>>, pane: PaneId) -> u64 {
+        a_run_driving_held_to(registry, pane, None)
+    }
+
+    /// The same, HELD TO an axis its kind names — register item 1098.
+    ///
+    /// ⚠ [`a_run_driving`] is this with no axis, defined in terms of it rather than beside it: two
+    /// spellings of *what a running row looks like* is how a gate comes to drive a row the product
+    /// never builds.
+    fn a_run_driving_held_to(
+        registry: &Arc<Mutex<RunRegistry>>,
+        pane: PaneId,
+        keeps: Option<Kept>,
+    ) -> u64 {
         let id = lock(registry).reserve();
         lock(registry).submit(crate::runs::NewRun {
             id,
@@ -12940,6 +13117,7 @@ mod tests {
             plugin: PluginName::AiLoop,
             request: None,
             overridden: None,
+            keeps,
             opened_by: None,
             opened_by_session: None,
             tree: None,
@@ -12952,6 +13130,219 @@ mod tests {
             })),
         });
         id.0
+    }
+
+    /// 🎯🎯🎯🎯🎯 **A PANE THAT STOPS KEEPING ITS KIND'S AXIS WHILE THE RUN IS GOING MAKES THE ROW
+    /// SAY SO — AND THE ROW SAID NOTHING A MOMENT BEFORE** — register item 1098.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The one arm that is the whole item, and why the others cannot replace it
+    ///
+    /// Arm ③ resizes a pane **with no new run, no re-submit and nothing else touched**, and demands
+    /// that the row's answer CHANGE. Every other assertion here would go on passing on a build that
+    /// computed this once at the door and stored the sentence — which is exactly the build that
+    /// exists today and exactly what item 1098 is: *a premise checked once, about a thing that does
+    /// not hold still*. A gate that only ever looked at a pane which was already wrong would be
+    /// measuring the DOOR, which has been measured since item 772.
+    ///
+    /// ⚠⚠ **AND IT MUST GO SILENT AGAIN**, which arm ④ drives. A one-way latch would be a build
+    /// that remembered the first bad reading — the same defect wearing the repair's clothes — and
+    /// it would tell a person to fix a window they had already fixed, for the rest of the run.
+    ///
+    /// # ⚠⚠⚠ The two controls, and what each one alone would let through
+    ///
+    /// A pane that keeps its axis (arm ②) catches *always speaks*; without it a build that returned
+    /// its sentence unconditionally passes arm ①. A pane that is just as small under a kind that
+    /// names NO axis (arm ②'s second row) catches *speaks about any small pane*; without it a build
+    /// that never reads `RunRecord::keeps` at all passes ① and the first control, and would put
+    /// this warning on every run in a small window.
+    #[test]
+    fn a_pane_that_stops_keeping_its_kinds_axis_makes_the_row_say_so_while_the_run_goes() {
+        // ⚠ 24 rows is what this pool opens a pane at, so the rule's threshold is 12 — the door's
+        // own `has * 2 < opens`, which this gate never re-spells.
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let open_at = |cols, rows| {
+            lock(&workspace)
+                .spawn(CommandBuilder::new("cat"), "cat".to_owned(), cols, rows)
+                .expect("the fixture's pane spawns")
+        };
+        // Healthy on the kept axis: full height, and it stays that way until arm ③ moves it.
+        let healthy = open_at(80, 24);
+        // Already short, for the control that must stay silent because its kind names no axis.
+        let short = open_at(80, 8);
+
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let held = a_run_driving_held_to(&registry, healthy, Some(Kept::Rows));
+        let unheld = a_run_driving_held_to(&registry, short, None);
+        let external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        // ⚠⚠ THROUGH THE SLOT, never through the method: what a person reads is the row, and a
+        // gate on the composer cannot see the crossing — this file's own stated rule at its
+        // sibling key's gate.
+        let said = |id: u64| -> Value {
+            read_runs(&external)
+                .iter()
+                .find(|row| row["id"].as_u64() == Some(id))
+                .unwrap_or_else(|| panic!("the fixture's own run {id} is listed"))["state"]
+                [RUN_LOST_AXIS_KEY]
+                .clone()
+        };
+
+        // ── ① AND ② THE PREMISE: nothing is wrong yet, so NOTHING speaks ──────────────────────
+        assert_eq!(
+            said(held),
+            Value::Null,
+            "⛔⛔⛔ THE PREMISE: a run whose pane has every row this pool opens a pane at must say \
+             nothing, or arm ③ below is about a key that was already set and measures nothing",
+        );
+        assert_eq!(
+            said(unheld),
+            Value::Null,
+            "⚠⚠⚠ THE SECOND CONTROL, and it is already short: a run whose KIND names no axis is \
+             held to none. A build that keyed on the pane's size alone passes every other arm and \
+             puts this warning on every run in a small window",
+        );
+
+        // ── ③ THE CLAIM: the window is divided UNDER THE RUN, and nothing else happens ─────────
+        //
+        // ⛔ No new run, no re-submit, no second `PluginsExternal`. The only thing that moves is
+        // the pane — which is what a person dragging a splitter does, and what register item 679
+        // measured happening to a live loop at 110 columns to 54.
+        lock(&workspace)
+            .resize(healthy, 80, 8, (0, 0))
+            .expect("the fixture's own pane resizes");
+        let spoke = said(held);
+        let spoke = spoke.as_str().unwrap_or_default();
+        assert!(
+            spoke.contains("8 rows") && spoke.contains("24"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1098: the pane this run is driving lost more than half the \
+             dimension its kind keeps, WHILE THE RUN WAS GOING, and the row a person reads says \
+             nothing. The check that would have caught it ran once — at the door, before the first \
+             turn — and proved something about a pane a person can change a minute later. The \
+             sentence must carry what the pane HAS and what this daemon opens one at, or a reader \
+             has a warning with no measurement in it. Got: {spoke:?}",
+        );
+        assert!(
+            spoke.contains(Kept::Rows.word()),
+            "⚠⚠ and it must name the AXIS, or a person told to *divide the window the other way* \
+             cannot tell which way that is: {spoke:?}",
+        );
+        assert_eq!(
+            said(unheld),
+            Value::Null,
+            "⚠⚠⚠ THE CONTROL HELD THROUGH THE CLAIM: the run whose kind names no axis is in a pane \
+             of exactly the same size now, and must still say nothing",
+        );
+
+        // ── ④ AND IT GOES SILENT AGAIN WHEN THE WINDOW IS PUT BACK ───────────────────────────
+        lock(&workspace)
+            .resize(healthy, 80, 24, (0, 0))
+            .expect("the fixture's own pane resizes back");
+        assert_eq!(
+            said(held),
+            Value::Null,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1098: the person divided the window the other way and the row \
+             STILL says they should. A build that latched the first bad reading is the same \
+             one-shot defect this item is, wearing the repair's clothes — and it would leave that \
+             instruction standing for the rest of the run, which is worse than never saying it: \
+             the next real one is then indistinguishable from the stale one.",
+        );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE AXIS THE DOOR ACCEPTED REACHES THE ROW THAT RE-ASKS IT** — register item
+    /// 1098's middle, and the half no other gate can see.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why a seam wired at both ends needs a gate in the MIDDLE
+    ///
+    /// The gate above builds its row's axis directly, so it measures *row → sentence* and would go
+    /// on passing if nothing ever put an axis on a row. The door's own check has been measured
+    /// since item 772, so it measures *document → refusal*. Between them are four plain field
+    /// copies — `own_axis` → `NewRun` → `RunRecord` → `RunSummary` — and **a `None` anywhere along
+    /// them is silent**: every run would simply never speak, which is indistinguishable from every
+    /// window being fine. That is the shape this repository paid for one round ago on another item.
+    ///
+    /// # ⚠⚠ The word is the DOCUMENT's, read here rather than written down
+    ///
+    /// The assertion compares against what this repository's own kind document holds, opened
+    /// afresh. A literal `"rows"` here would be a third spelling of one author's clause — and it
+    /// would turn green into a lie the day the owner changes the policy, which is precisely the
+    /// decision item 679 recorded as theirs and not this build's.
+    #[test]
+    fn the_axis_a_kinds_door_accepted_reaches_the_row_that_re_asks_it() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((80, 24))));
+        let pane = echoing_agent_pane(&workspace);
+        let registry = Arc::new(Mutex::new(RunRegistry::default()));
+        let mut external = PluginsExternal::new(
+            Arc::clone(&workspace),
+            Arc::clone(&registry),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        // What this repository's kind document actually says — the authority, opened for this gate.
+        let script: Arc<dyn sce_rust_runtime::IScriptEngine> =
+            Arc::new(sce_rust_lua::LuaEngine::new());
+        let authored = sprag_plugin::kind::LoopKind::debt(script)
+            .expect("this repository's kind document must open")
+            .keeps()
+            .and_then(|word| Kept::of_word(&word));
+        assert!(
+            authored.is_some(),
+            "⚠⚠⚠ THE PREMISE: this repository's kind document must name an axis this build knows, \
+             or every assertion below is comparing two `None`s and holds nothing. If the owner has \
+             deliberately removed the clause, this gate is what should be re-decided — not the \
+             product.",
+        );
+
+        // ── ① THE DOOR KEEPS WHAT IT ACCEPTED ─────────────────────────────────────────────────
+        let asked = ai_loop_request(pane, json!({}));
+        let (built, _label) = external
+            .build_plugin(asked.as_object().expect("an object"))
+            .expect("a plain ai_loop request is well-formed");
+        assert_eq!(
+            built.own_axis(),
+            authored,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1098: the door parsed its kind's axis to run its check and \
+             then dropped the word. That is what made the premise a one-shot — with nothing left to \
+             ask with, the run went on under a claim about a pane that nobody could re-measure.",
+        );
+
+        // ── ② AND IT REACHES THE ROW, over the door a caller actually uses ────────────────────
+        let started = external
+            .invoke(RUN_ACTION, IntrospectValue::Json(asked.clone()))
+            .expect("the loop starts");
+        let IntrospectValue::Int(started) = started else {
+            panic!("a run answers its id");
+        };
+        let started = u64::try_from(started).expect("a run id is not negative");
+        let carried = lock(&registry)
+            .snapshot()
+            .into_iter()
+            .find(|row| row.id.0 == started)
+            .expect("the run this gate started is in the registry")
+            .keeps;
+        assert_eq!(
+            carried, authored,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1098: the door accepted an axis and the RUN does not carry it, \
+             so the live look has nothing to re-ask with and every row stays silent for ever. A \
+             silent row and a healthy window are the same reading — which is exactly the state this \
+             item was filed against, and it would survive every other gate in this file.",
+        );
+
+        // ⚠ The run's worker is ended rather than left to outlive the gate: it drives a real pane.
+        let _ = external.invoke(
+            CANCEL_ACTION,
+            IntrospectValue::Json(json!({ "id": started })),
+        );
     }
 
     /// **A DIRECTORY THAT IS A TREE**, for a fixture whose pane a loop will be built over —
@@ -13908,6 +14299,7 @@ mod tests {
                     tree: None,
                     // ⚠ Not what this gate measures — item 853. Its own gates drive the key.
                     overridden: None,
+                    keeps: None,
                     state,
                     progress: sprag_plugin::Progress {
                         waiting: waiting.map(str::to_owned),
@@ -13996,6 +14388,7 @@ mod tests {
                 opened_by_session: None,
                 tree: None,
                 overridden: None,
+                keeps: None,
                 state: RunState::Panicked(why.to_owned()),
                 progress: sprag_plugin::Progress::default(),
                 reported: None,
@@ -14064,6 +14457,7 @@ mod tests {
                     opened_by_session: None,
                     tree: None,
                     overridden: None,
+                    keeps: None,
                     state: RunState::Running,
                     progress,
                     reported: None,
@@ -14238,6 +14632,7 @@ mod tests {
                     opened_by_session: None,
                     tree: None,
                     overridden: None,
+                    keeps: None,
                     state: RunState::Running,
                     progress: cell,
                     reported: said.as_ref().map(progress_to_json),
@@ -14419,6 +14814,7 @@ mod tests {
                     opened_by_session: None,
                     tree: None,
                     overridden: None,
+                    keeps: None,
                     state: RunState::Running,
                     progress: sprag_plugin::Progress::default(),
                     reported: None,
@@ -14521,6 +14917,7 @@ mod tests {
                     opened_by_session: None,
                     tree: None,
                     overridden: None,
+                    keeps: None,
                     state: RunState::Running,
                     progress,
                     reported: None,
@@ -20324,6 +20721,7 @@ mod tests {
             opened_by_session: None,
             tree: None,
             overridden: None,
+            keeps: None,
             state: RunState::Running,
             progress: sprag_plugin::Progress {
                 at: Some("working"),
@@ -23815,6 +24213,7 @@ mod tests {
                 opened_by_session: None,
                 tree: None,
                 overridden: None,
+                keeps: None,
                 state: Arc::new(Mutex::new(RunState::Running)),
                 run: Box::new(crate::runs::EndedRun::restored(false, None, None)),
                 progress: Arc::clone(&cell),
@@ -24217,6 +24616,7 @@ mod tests {
                 opened_by_session: None,
                 tree: None,
                 overridden: None,
+                keeps: None,
                 state: Arc::new(Mutex::new(RunState::Running)),
                 run: Box::new(crate::runs::EndedRun::restored(false, None, None)),
                 progress: Arc::clone(&cell),
