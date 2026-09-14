@@ -23547,41 +23547,77 @@ mod tests {
     /// ⚠ The claim is a DISTANCE, not an ordering: the peer cannot announce itself for a second, so
     /// a driver that skips the barrier returns in milliseconds and one that honours it cannot. A
     /// gate asserting only *"it was delivered eventually"* would pass either way.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The control is ANOTHER DRIVER, not the screen — register item 1100
+    ///
+    /// This gate used to end by reading the pane and requiring `PEER-READY` to be ON IT, as its
+    /// evidence that *the wait above was the barrier doing its job rather than the fixture being
+    /// slow for some other reason*. Two things were wrong with that, and the second is the one that
+    /// matters:
+    ///
+    /// 1. **The screen does not keep the past.** The peer is `exec cat`, so the start prompt comes
+    ///    straight back out of it — and that prompt is **1109 bytes against this pane's 640 cells**
+    ///    (measured 2026-09-14). Once the echo lands, `PEER-READY` is scrolled away by
+    ///    construction. Whether it had landed yet when this line read the screen is a race with
+    ///    nothing but scheduling in it, which is why the assertion went red under a parallel sweep
+    ///    and never alone.
+    /// 2. **It did not test what it claimed.** `PEER-READY` reaching the screen says the PEER
+    ///    announced itself; it says nothing about the BARRIER, which would have let this run type a
+    ///    second earlier and still leave that text to arrive on schedule. A control has to vary the
+    ///    thing under test, and that thing is the barrier.
+    ///
+    /// So the control is the same peer, on the same machine, moments apart, driven by a loop built
+    /// with **no readiness condition at all** ([`bounded_at`] against [`ready_bounded_at`]). It has
+    /// no lower bound to hit; the subject has one the peer's own `sleep` enforces. Comparing the
+    /// two in one run is what makes the claim survive a loaded box — register item 1056's lesson,
+    /// one file over: **compare against something the alternative cannot cross, not against a
+    /// number an afternoon can move.**
     #[test]
     fn the_loop_does_not_type_its_first_prompt_before_the_pane_is_ready() {
         /// How long the peer takes to come up. Far outside the poll interval, far inside the
         /// gate's own patience.
         const SLOW: Duration = Duration::from_millis(1_000);
 
-        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
-        let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
-        let pane = {
+        /// A peer that can read nothing for [`SLOW`], then says so and starts taking bytes.
+        fn a_slow_peer() -> (Arc<Mutex<Workspace>>, PaneId) {
+            let workspace = Arc::new(Mutex::new(Workspace::new((80, 8))));
             let mut command = CommandBuilder::new("/bin/sh");
             command.arg("-c");
             command.arg("sleep 1; stty -echo; printf 'PEER-READY\\n'; exec cat");
             command.env("TERM", "dumb");
-            workspace
+            let pane = workspace
                 .lock()
                 .unwrap()
                 .spawn(command, "sh".to_string(), 80, 8)
-                .expect("spawn pane")
-        };
-        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
-        // ⚠ NO `started` HERE. That is the whole point — see the doc above.
+                .expect("spawn pane");
+            (workspace, pane)
+        }
 
-        let mut loops = ready_bounded_at(
-            lua,
-            pane,
+        /// Drive `loops` one pump at `pane` and answer how long the first prompt took to go in.
+        fn how_long_the_first_prompt_took(
+            loops: &mut OuterLoop,
+            access: &WorkspacePaneAccess,
+        ) -> (Duration, Pumped) {
+            let began = std::time::Instant::now();
+            let pumped = loops
+                .pump(access, &RunContext::uncancellable())
+                .expect("the pane must stay readable");
+            (began.elapsed(), pumped)
+        }
+
+        // ── THE SUBJECT: a barrier naming the peer's banner ──
+        //
+        // ⚠ NO `started` HERE. That is the whole point — see the doc above.
+        let (subject_workspace, subject) = a_slow_peer();
+        let subject_access = WorkspacePaneAccess::new(Arc::clone(&subject_workspace));
+        let mut with_a_barrier = ready_bounded_at(
+            Arc::new(sce_rust_lua::LuaEngine::new()),
+            subject,
             ReadyWhen::Prints("PEER-READY".to_string()),
             Duration::from_millis(200),
         )
         .expect("the document's datamodel must carry its four authored strings");
-
-        let began = std::time::Instant::now();
-        let pumped = loops
-            .pump(&access, &RunContext::uncancellable())
-            .expect("the pane must stay readable");
-        let waited = began.elapsed();
+        let (waited, pumped) = how_long_the_first_prompt_took(&mut with_a_barrier, &subject_access);
 
         assert!(
             matches!(
@@ -23600,14 +23636,40 @@ mod tests {
              still starting — measured against a live agent as a whole run that delivered in 10 ms \
              and then sat in `working` until somebody stopped it.",
         );
+
+        // ── THE CONTROL: the same peer, just started, driven with NO barrier ──
+        //
+        // ⚠⚠ Spawned AFTER the subject's pump rather than beside it, so this peer is as freshly
+        // started as the subject's was — a control that had already finished its `sleep` would be
+        // fast for a reason that has nothing to do with the barrier.
+        let (control_workspace, control) = a_slow_peer();
+        let control_access = WorkspacePaneAccess::new(Arc::clone(&control_workspace));
+        let mut without_a_barrier = bounded_at(
+            Arc::new(sce_rust_lua::LuaEngine::new()),
+            control,
+            Duration::from_millis(200),
+        )
+        .expect("the same document, with no readiness condition authored into it");
+        let (unbarriered, _) =
+            how_long_the_first_prompt_took(&mut without_a_barrier, &control_access);
+
         assert!(
-            access
-                .pane_collapsed(pane)
-                .is_some_and(|seen| seen.contains("PEER-READY")),
-            "⚠ THE CONTROL: the peer really did announce itself, so the wait above was the barrier \
-             doing its job rather than the fixture being slow for some other reason",
+            waited >= unbarriered + Duration::from_millis(500),
+            "⛔⛔⛔ THE BARRIER IS NOT WHAT PRODUCED THE WAIT. The same peer, freshly started on \
+             this same machine, was typed into after {unbarriered:?} by a loop carrying no \
+             readiness condition — against {waited:?} for the loop that carries one. If those two \
+             are close, the subject's wait came from something this gate is not varying (process \
+             startup, a loaded box) and the assertion above is measuring that instead.",
         );
-        access.lifecycle().expect("lifecycle").close(pane);
+
+        subject_access
+            .lifecycle()
+            .expect("lifecycle")
+            .close(subject);
+        control_access
+            .lifecycle()
+            .expect("lifecycle")
+            .close(control);
     }
 
     /// ⚠⚠⚠ **HOW LONG A TURN MAY TAKE IS THE DOCUMENT'S, AND IT IS READ AT THE MOMENT OF THE
