@@ -9834,7 +9834,13 @@ mod tests {
         // form gained `judge` and `judge_timeout_ms`, which are arguments a caller SENDS, not words
         // a peer reads back out of an answer or a run log. The argument-shape pin is the one that
         // saw them, and it is the one that moved.
-        47,
+        // ⚠⚠ 48 — REGISTER ITEM 667: a THIRTEENTH environment check, `stray-daemon`, and this pin
+        // is the subject rather than a bystander. `Check` is a closed set a peer decodes whole, and
+        // `Diagnosis::of` maps `Check::ALL`, so the word is in EVERY report the day it compiles —
+        // an older client meets it on the first diagnosis it asks for and loses the twelve rows it
+        // does understand with it. ⚠ `Blind`'s new `no-process-table` rides inside that same
+        // document and earns no separate entry: a reader that can meet one can meet the other.
+        48,
         &[
             "check:pane-isolation",
             "check:pane-admission",
@@ -9848,6 +9854,8 @@ mod tests {
             "check:ccache-on-path",
             "check:ccache-sizing",
             "check:fast-linker",
+            // ⚠⚠ R339: the thirteenth check — a daemon of this program nobody is attached to.
+            "check:stray-daemon",
             "unmeasured:nothing_enforced",
             "unmeasured:not_placed",
             "unmeasured:refused",
@@ -10483,7 +10491,13 @@ mod tests {
             // keys the `ai_loop` form gained take the caller's OWN value — an argv and a number —
             // so neither has a closed vocabulary, which this pin's own doc says makes an argument
             // invisible to it. The shape pin is where two new keys are visible.
-            47,
+            //
+            // ⚠ 48 — REGISTER ITEM 667: re-stamped with every PUBLISHED vocabulary unchanged. The
+            // thirteenth environment check is an ANSWER word — a row in a diagnosis a caller READS
+            // — and no caller picks a check out of a list to ask for one: `machine_health` takes
+            // nothing at all, which is the whole point of that tool. The answer-vocabulary pin is
+            // the one that saw it.
+            48,
             // An entry with nothing after the colon publishes a grammar and NO closed vocabulary —
             // ids, names, paths and numbers, all of them values the caller invents. They are here
             // rather than filtered out because a verb that GAINS a vocabulary must move this pin,
@@ -10867,7 +10881,12 @@ mod tests {
             // build that will ask nobody. That is items 492 and 494's exemption meeting its stated
             // limit — an added key is free only while nobody reads its absence as a promise — and it
             // is 45's `dry_run` reasoning exactly, one form over.
-            47,
+            //
+            // ⚠ 48 — REGISTER ITEM 667: re-stamped with every argument SHAPE unchanged. The
+            // thirteenth environment check takes nothing and is asked for by nobody — a diagnosis
+            // answers every check on the set, so the word arrives in a reply rather than in a call.
+            // The answer-vocabulary pin is the one that saw it.
+            48,
             &[
                 "sprag_workspace/pane_<id>/sprag_input/clipboard_answer[object]:seq:int sel:string text:string",
                 "sprag_workspace/pane_<id>/sprag_input/focus[object]:focused:bool",
@@ -11538,7 +11557,12 @@ mod tests {
         // a form that is served at an address this daemon already served, and no answer word, no
         // action and no address moved. What DID move is an argument's shape, and the shape pin is
         // where that is recorded.
-        47,
+        //
+        // ⚠ 48 — REGISTER ITEM 667: re-stamped with the SURFACE unchanged. A thirteenth check is a
+        // row inside the answer the doctor address already served, so no address, action or form
+        // moved — this pin walks addresses, which is why it is silent, and the answer-vocabulary
+        // pin is where the word is recorded.
+        48,
         &[
             // ⚠ TWICE, and not a duplicate: this list is the flat set of ADDRESSES the daemon serves
             // across every surface, and both the multiplexer and each pane's input surface answer a

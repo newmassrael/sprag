@@ -58,8 +58,9 @@ pub mod workspace;
 pub use activity::{ActivityReading, ActivitySampler, SessionActivity};
 pub use command::{command_from_parts, default_shell_command, shell_command_line};
 pub use doctor::{
-    Blind, Ccache, Check, Diagnosis, Evidence, Finding, Level, Load, Measurement, NoEvidence,
-    PaneReading, PaneSite, Readings, Sibling, Sources, Subject, SubtreeReading, Verdict,
+    Blind, Ccache, Check, DaemonReading, DaemonSelf, Daemons, Diagnosis, Evidence, Finding, Level,
+    Load, Measurement, NoEvidence, PaneReading, PaneSite, Readings, Sibling, Sources, Subject,
+    SubtreeReading, Verdict,
 };
 pub use layout::{
     DividerStep, LayoutError, LayoutNode, LayoutNodeWire, LayoutSnapshot, LayoutTree, LayoutWire,

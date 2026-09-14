@@ -11406,6 +11406,73 @@ mod tests {
         );
     }
 
+    /// 🎯🎯🎯🎯🎯 **WHAT AN AGENT IS TOLD ABOUT A DAEMON NOBODY IS ATTACHED TO** — register item
+    /// 667, and this is that item's done-when spelled as a predicate rather than as a sentence in a
+    /// register nothing runs.
+    ///
+    /// The item's own words are *`machine_health` or `doctor` says "this machine has N daemons of
+    /// this image and M of them have nobody attached"*. The neighbour above proves every check gets
+    /// a ROW; only this proves the row carries the four facts a person acts on — how many daemons,
+    /// how many abandoned, which pid, and WHICH BUILD each one is running. The build is not
+    /// decoration: the residue that opened the item was a `target/debug` daemon beside a promoted
+    /// install, and a report naming only the pid would have left the reader unable to see it.
+    #[test]
+    fn a_daemon_nobody_is_attached_to_reaches_the_agent_with_its_pid_and_its_build() {
+        use sprag_terminal::doctor::{DaemonReading, Daemons, Readings};
+
+        let readings = Readings {
+            daemons: Some(Daemons {
+                program: "sprag-term".to_owned(),
+                mine: 100,
+                found: vec![
+                    DaemonReading {
+                        pid: 100,
+                        image: "/home/dev/.local/share/sprag/bin/sprag-term".to_owned(),
+                        socket: "/run/user/1000/sprag-host.sock".to_owned(),
+                        attached: 3,
+                    },
+                    DaemonReading {
+                        pid: 4242,
+                        image: "/home/dev/sprag/target/debug/sprag-term".to_owned(),
+                        socket: "/tmp/scratch/probe.sock".to_owned(),
+                        attached: 0,
+                    },
+                ],
+            }),
+            ..Readings::default()
+        };
+        let answer = render_health_answer(&Diagnosis::of(&readings));
+
+        assert!(
+            answer.starts_with("1 of "),
+            "the abandoned daemon is the finding this report LEADS with, ahead of the rows that \
+             could not be read: {answer}",
+        );
+        assert!(
+            answer.contains("daemons running `sprag-term`: 2, 1 with nobody attached"),
+            "the two counts the item asks for, in one sentence: {answer}",
+        );
+        assert!(
+            answer.contains(
+                "pid 4242: /home/dev/sprag/target/debug/sprag-term on /tmp/scratch/probe.sock, \
+                 nobody attached"
+            ),
+            "and the abandoned one named by pid, by BUILD and by socket: {answer}",
+        );
+        assert!(
+            answer.contains(
+                "pid 100: /home/dev/.local/share/sprag/bin/sprag-term on \
+                 /run/user/1000/sprag-host.sock, 3 attached — this report's own"
+            ),
+            "the daemon the reader is talking to is shown and marked, never silently dropped: \
+             {answer}",
+        );
+        assert!(
+            answer.contains("read the pid's own tree before ending it"),
+            "the remedy is the person's to run, and it says what to look at first: {answer}",
+        );
+    }
+
     /// A pane with no reading says WHICH reason it is, never a blank or a zero.
     ///
     /// Each is acted on differently — a whole machine that enforces nothing, one pane nobody placed,

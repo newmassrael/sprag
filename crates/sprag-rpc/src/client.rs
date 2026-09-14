@@ -1248,8 +1248,29 @@ impl ScopeAsk {
 ///   (`sprag_host::plugins`' `ai_loop` arm), and their words are published by the type that
 ///   resolves them, so the list a client is shown and the list the door accepts cannot drift.
 ///
+/// * **48 — A THIRTEENTH ENVIRONMENT CHECK, IN A SET ITS READER DECODES WHOLE.** Register item 667.
+///   The diagnosis gains `stray-daemon`: whether another daemon of this program is still running on
+///   this machine with nobody attached to it. The residue behind it was measured — an agent's probe
+///   daemon that outlived the turn that spawned it, was reparented to `systemd --user`, and went on
+///   holding its socket with no client on it, invisible to every reading a session can reach.
+///
+///   ⚠⚠⚠⚠⚠ **AN ADDED ANSWER WORD IN A CLOSED SET, WHICH IS VERSION 27's AND 44's RULE EXACTLY.**
+///   `Check` is `#[serde(rename_all = "kebab-case")]` on a closed set, and a `Diagnosis` is decoded
+///   WHOLE — so an older client meeting `check: stray-daemon` fails the entire document rather than
+///   the field, and loses the twelve rows it does understand along with the one it does not. Loudly
+///   and not quietly, unlike 46's ceiling; the number is owed either way.
+///
+///   ⚠⚠ **AND EVERY REPORT CARRIES IT, BY CONSTRUCTION.** `Diagnosis::of` maps `Check::ALL`, so
+///   this is not a word that appears only when something is wrong — the row is in every diagnosis
+///   the day it compiles, which is what makes the skew certain rather than conditional.
+///
+///   ⚠ `Blind` gains `no-process-table` in the same change and is NOT on this pin, for the reason
+///   the pin's own note gives beside `agent.state`: it is carried inside `Verdict::Blind`, which
+///   only ever travels as part of a `Diagnosis` — the same document the `Check` word already fails.
+///   A reader that could meet the one can meet the other, so it is one skew and not two.
+///
 /// [`CLIENT_BUILD_PARAM`]: crate::CLIENT_BUILD_PARAM
-pub const WIRE_PROTOCOL: u32 = 47;
+pub const WIRE_PROTOCOL: u32 = 48;
 
 /// WHICH BUILD THIS IMAGE IS — the identity [`WIRE_PROTOCOL`] above cannot carry, and the reason it
 /// is published from here is that this is where [`WIRE_PROTOCOL`] is: the two are read together,

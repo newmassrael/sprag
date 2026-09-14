@@ -38,6 +38,11 @@
 //! edits `PATH` in its own rc file has a different one and the kernel does not publish it. That
 //! bound is stated in the criterion the check prints, because a reader who does not know it would
 //! read a clean verdict as a promise it is not.
+//!
+//! [`Check::StrayDaemon`] recognises a daemon by the FILE NAME of its program, so a fork of this
+//! daemon renamed on disk is not one of *these* daemons however alike it behaves. That is
+//! deliberate and is the only spelling that catches the case the check exists for — a second daemon
+//! running a DIFFERENT BUILD of the same program, whose full path is by definition not ours.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -90,6 +95,15 @@ closed_set! {
         CcacheSizing,
         /// Is there a fast linker for the panes' builds to use?
         FastLinker,
+        /// Is another daemon of this program still running on this machine with nobody attached?
+        ///
+        /// The one arm here that is not about a resource setting, and it is on this list rather
+        /// than on a per-pane surface for the reason the whole module exists: a daemon nobody is
+        /// attached to is in NO session, so no tool divided by session can reach it. The
+        /// investigation behind it found an agent's probe daemon that had outlived the turn that
+        /// spawned it, been reparented to `systemd --user`, and gone on holding its socket with no
+        /// client on it — invisible to every other reading here.
+        StrayDaemon,
     }
 }
 
@@ -264,6 +278,24 @@ impl Check {
                 remedy: "install mold or lld and select it in the build's link flags — finding it \
                          on PATH is not the same as a build choosing it",
             },
+            Self::StrayDaemon => Entry {
+                name: "stray-daemon",
+                asks: "is another daemon of this program still running with nobody attached?",
+                source: "/proc/<pid>/exe for every process on this machine, and the socket each \
+                         listening one serves in /proc/net/unix",
+                criterion: "a daemon of this program, OTHER than the one this report came from, \
+                            with no client attached. Attachment is counted from the kernel's \
+                            socket table rather than asked of the daemon, so one that has stopped \
+                            answering is still counted; the reporting daemon is never its own \
+                            fault, because the report is itself an attachment. A second daemon \
+                            somebody IS attached to is the supported per-socket model and is \
+                            listed, not flagged",
+                remedy: "read the pid's own tree before ending it — a daemon with nobody attached \
+                         is either an unattended run whose panes are still working or a leftover \
+                         whose only child is its boot shell, and only the second is waste. The \
+                         image beside each pid says which build it is running, which is the other \
+                         thing a second daemon costs",
+            },
         }
     }
 
@@ -286,6 +318,7 @@ impl Check {
             Self::CcacheOnPath => judge_ccache_on_path(readings),
             Self::CcacheSizing => judge_ccache_sizing(readings),
             Self::FastLinker => judge_fast_linker(readings),
+            Self::StrayDaemon => judge_stray_daemon(readings),
         }
     }
 
@@ -437,6 +470,15 @@ pub enum Blind {
     /// reported `33 shims in /usr/lib/ccache` and `not installed on this host` in ONE report, which
     /// is a sentence the reader can see is false.
     Unanswered,
+    /// The kernel's own tables — which processes exist, and which sockets they hold — were not
+    /// there to read, so no process outside this one could be named at all.
+    ///
+    /// Its own arm rather than [`NoHierarchy`](Self::NoHierarchy)'s: a machine with no cgroup v2
+    /// is an ordinary machine that simply cannot arbitrate, and a machine that publishes no
+    /// process table is one where every reading here about OTHER processes is a guess. A reader
+    /// responds differently — the first is a configuration, the second means look somewhere else
+    /// entirely.
+    NoProcessTable,
 }
 
 impl std::fmt::Display for Blind {
@@ -449,6 +491,9 @@ impl std::fmt::Display for Blind {
             Self::NotInstalled => f.write_str("not installed on this host"),
             Self::Unanswered => {
                 f.write_str("installed, but the program did not answer where this daemon runs")
+            }
+            Self::NoProcessTable => {
+                f.write_str("this host publishes no process table for anything but ourselves")
             }
         }
     }
@@ -530,6 +575,48 @@ pub struct Readings {
     /// Whether a cgroup v2 hierarchy was found at all. `false` makes the per-pane rows blind rather
     /// than clean.
     pub hierarchy: bool,
+    /// Every daemon of this program the machine is running, and what is attached to each.
+    ///
+    /// [`None`] is the one absence this cannot recover from — either this process could not name
+    /// its own program, or the kernel published no socket table — and it makes
+    /// [`Check::StrayDaemon`] blind rather than clean.
+    pub daemons: Option<Daemons>,
+}
+
+/// Every daemon of one program on this machine, as the kernel's tables show them.
+///
+/// # Why the reporting daemon is IN the list rather than filtered out of it
+///
+/// A report that quietly dropped the reader's own daemon would answer *how many daemons are there*
+/// with a number that is one short of the truth, and the reader has no way to tell which. It is
+/// here, marked, and the judgement excludes it — the exclusion is a property of the verdict, not
+/// of the reading.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Daemons {
+    /// The program every row here was recognised by — this process's own executable, by file name.
+    pub program: String,
+    /// This process. A row with this pid is the daemon the reader is talking to.
+    pub mine: u32,
+    /// One row per daemon found, in pid order.
+    pub found: Vec<DaemonReading>,
+}
+
+/// One daemon of this program, and what the kernel says is attached to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DaemonReading {
+    /// Which process.
+    pub pid: u32,
+    /// The executable the kernel resolves for it, `(deleted)` and all.
+    ///
+    /// Kept whole rather than reduced to a file name, because the fault this check is looking for
+    /// is a daemon running a different BUILD of the same program, and the build is the part of the
+    /// path that a file name throws away. A `(deleted)` suffix is the kernel saying the image it is
+    /// running has since been replaced on disk, which is the same fault one step further along.
+    pub image: String,
+    /// The socket it is listening on.
+    pub socket: String,
+    /// How many clients the kernel shows connected to that socket.
+    pub attached: usize,
 }
 
 /// What the machine as a whole is being asked to run.
@@ -1157,6 +1244,71 @@ fn judge_fast_linker(readings: &Readings) -> Finding {
     }
 }
 
+/// # Why *nobody attached* is the criterion and *more than one daemon* is not
+///
+/// Two daemons on two sockets is this project's supported shape — `crate::durability` keys a
+/// snapshot on the socket precisely so they can coexist — so a count would flag the design. What
+/// the investigation actually found was a daemon that no client had been on since the turn that
+/// spawned it died, and *nobody is attached* is the reading that separates it from every legitimate
+/// second daemon.
+///
+/// # Why the reporting daemon is excluded rather than counted
+///
+/// Not a convenience: the report reached the reader over an attachment to that daemon, so calling
+/// it abandoned would be a sentence the reader can see is false — [`Blind::Unanswered`]'s lesson,
+/// which was paid for by a report that printed two contradictory rows about ccache. An in-process
+/// host reaches this with no client at all, and it is the same exclusion that keeps that honest.
+fn judge_stray_daemon(readings: &Readings) -> Finding {
+    let check = Check::StrayDaemon;
+    let Some(daemons) = readings.daemons.as_ref() else {
+        return check.found(
+            Verdict::Blind(Blind::NoProcessTable),
+            Evidence::of("daemons of this program", "not countable on this host"),
+        );
+    };
+    let stray: Vec<&DaemonReading> = daemons
+        .found
+        .iter()
+        .filter(|daemon| daemon.pid != daemons.mine && daemon.attached == 0)
+        .collect();
+    let evidence = daemons.found.iter().fold(
+        Evidence::of(
+            format!("daemons running `{}`", daemons.program),
+            format!(
+                "{}, {}",
+                daemons.found.len(),
+                match stray.len() {
+                    0 => "and somebody is attached to every one but this report's own".to_owned(),
+                    count => format!("{count} with nobody attached"),
+                },
+            ),
+        ),
+        |evidence, daemon| evidence.and(format!("pid {}", daemon.pid), daemon_row(daemon, daemons)),
+    );
+    if stray.is_empty() {
+        check.found(Verdict::Healthy, evidence)
+    } else {
+        check.found(Verdict::Degraded, evidence)
+    }
+}
+
+/// `/usr/bin/sprag-term on /run/user/1000/sprag.sock, 3 attached`.
+fn daemon_row(daemon: &DaemonReading, daemons: &Daemons) -> String {
+    let attached = match daemon.attached {
+        0 => "nobody attached".to_owned(),
+        count => format!("{count} attached"),
+    };
+    // Marked rather than left to the reader to work out from a pid they did not choose: the row
+    // that is exempt from the verdict has to say so where the verdict is read, or the report and
+    // its own criterion read as contradicting each other.
+    let mine = if daemon.pid == daemons.mine {
+        " — this report's own"
+    } else {
+        ""
+    };
+    format!("{} on {}, {attached}{mine}", daemon.image, daemon.socket)
+}
+
 /// Whether `weight` is at least `ours`, where an ABSENT weight means the CPU controller never
 /// reached that level.
 ///
@@ -1278,6 +1430,40 @@ pub struct Subject {
     pub panes: Vec<PaneSite>,
     /// The delegated subtree this daemon builds panes into, when it has one.
     pub subtree: Option<PathBuf>,
+    /// This process, for the one check whose subject is other processes like it.
+    ///
+    /// [`None`] where the process could not name itself, which makes [`Check::StrayDaemon`] blind:
+    /// a peer can only be recognised against something, and inventing a program name here would
+    /// make every daemon on the machine either invisible or a stranger.
+    pub daemon: Option<DaemonSelf>,
+}
+
+/// The reporting process, in the two terms [`Check::StrayDaemon`] needs to recognise its peers.
+///
+/// Read from the process rather than handed in as a constant, so a fork, a rename or a second
+/// build cannot leave the check hunting for a program that is not the one running.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DaemonSelf {
+    /// This process's pid, so its own row can be excluded from its own verdict.
+    pub pid: u32,
+    /// The FILE NAME of this process's executable — see the module docs for why a name and not a
+    /// path.
+    pub program: String,
+}
+
+impl DaemonSelf {
+    /// This process, when it can name itself.
+    #[must_use]
+    pub fn here() -> Option<Self> {
+        Some(Self {
+            pid: std::process::id(),
+            program: std::env::current_exe()
+                .ok()?
+                .file_name()?
+                .to_str()?
+                .to_owned(),
+        })
+    }
 }
 
 /// One live pane, as the daemon knows it before `/proc` is asked.
@@ -1335,7 +1521,11 @@ impl Subject {
                 })
             }));
         }
-        Self { panes, subtree }
+        Self {
+            panes,
+            subtree,
+            daemon: DaemonSelf::here(),
+        }
     }
 }
 
@@ -1406,8 +1596,255 @@ impl Readings {
                 .collect(),
             paths: paths.len(),
             hierarchy: sources.cgroup.as_deref().is_some_and(Path::is_dir),
+            daemons: read_daemons(subject, sources),
         }
     }
+}
+
+/// Every process on this machine running the same program as this one, that is LISTENING.
+///
+/// # Why listening, and not the program alone
+///
+/// The daemon and its clients are one binary here — `sprag-term` serves when it is given
+/// `--daemon` and drives a terminal otherwise — so a program name alone would count every client
+/// as a daemon. Holding a listening socket is the thing a daemon does that a client does not, and
+/// it is also the thing that makes an abandoned one COST something: the socket is what a later
+/// process finds and connects to.
+///
+/// # Why the count of attached clients comes from the kernel and not from the daemon
+///
+/// Asking a daemon how many clients it has means connecting to it, which makes this reading one of
+/// them, and means a daemon that has wedged answers nothing — the exact daemon most worth finding.
+/// `/proc/net/unix` carries the listener's path on every SERVER-side end of a connection to it,
+/// because only a bound socket has an address to print and a client's own end is unbound. Counting
+/// those rows is therefore counting the clients, from outside, with nothing connected and nothing
+/// written.
+///
+/// # ⚠⚠⚠⚠⚠ And a connection that has ARRIVED is not yet a connection that was ACCEPTED
+///
+/// Measured on 2026-09-14 against a real listener, one client at a time, because the first draft of
+/// this reader assumed otherwise and a real-kernel test refuted it in one run:
+///
+/// ```text
+/// bound only :  [('01', 4098871)]                            the door
+/// 1 pending  :  [('01', 4098871), ('02', 0)]                 connected, NOT yet accepted
+/// 1 accepted :  [('01', 4098871), ('03', 4117604)]           after accept(), and a new inode
+/// ```
+///
+/// A pending end has no `struct socket` yet, so the kernel prints it `02` with inode `0` — and a
+/// reader that counted only `03` would call a daemon whose accept loop has stopped *abandoned*,
+/// which is the one daemon on the machine people are actively failing to reach. Both states are a
+/// client on the door and both are counted; the listener itself is `01` and is neither.
+fn read_daemons(subject: &Subject, sources: &Sources) -> Option<Daemons> {
+    let me = subject.daemon.as_ref()?;
+    let sockets = SocketTable::read(sources)?;
+    let mut found: Vec<DaemonReading> = process_ids(sources)
+        .into_iter()
+        .filter_map(|pid| {
+            let image = image_of(pid, sources)?;
+            (program_of(&image) == me.program).then_some(())?;
+            let socket = sockets.listening_of(pid, sources)?;
+            Some(DaemonReading {
+                attached: sockets.clients_on(&socket),
+                pid,
+                image,
+                socket,
+            })
+        })
+        .collect();
+    found.sort_by_key(|daemon| daemon.pid);
+    Some(Daemons {
+        program: me.program.clone(),
+        mine: me.pid,
+        found,
+    })
+}
+
+/// Every pid `/proc` names, unsorted.
+///
+/// An unreadable `/proc` answers an empty list rather than an absence: the caller has already had
+/// [`SocketTable::read`] fail on the same filesystem by then, so there is one place that decides
+/// this host cannot be read and it is not here.
+fn process_ids(sources: &Sources) -> Vec<u32> {
+    let Ok(entries) = std::fs::read_dir(&sources.proc) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
+        .collect()
+}
+
+/// What `/proc/<pid>/exe` resolves to, with the kernel's `(deleted)` suffix left on.
+///
+/// [`std::fs::read_link`] and not [`std::fs::canonicalize`]: the second would follow the link to a
+/// real file, which fails for exactly the deleted image this most wants to report, and would
+/// resolve a symlinked install directory into a path the reader does not recognise.
+fn image_of(pid: u32, sources: &Sources) -> Option<String> {
+    Some(
+        std::fs::read_link(sources.proc.join(pid.to_string()).join("exe"))
+            .ok()?
+            .to_str()?
+            .to_owned(),
+    )
+}
+
+/// The program a resolved image names, with the kernel's `(deleted)` suffix taken back off.
+///
+/// The suffix is part of the link's TEXT, not of the file name, so a daemon whose binary has been
+/// replaced under it would otherwise be running a program called `sprag-term (deleted)` and match
+/// nothing. That daemon is the most interesting one this check can find.
+fn program_of(image: &str) -> &str {
+    let path = image.strip_suffix(DELETED_IMAGE).unwrap_or(image);
+    Path::new(path)
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or(path)
+}
+
+/// What the kernel appends to `/proc/<pid>/exe` once the image behind it is unlinked.
+const DELETED_IMAGE: &str = " (deleted)";
+
+/// `/proc/net/unix`, parsed once per capture.
+///
+/// One read for the whole machine rather than one per daemon: the file is a snapshot of the
+/// kernel's socket table, and two reads of it are two different moments — a client that connected
+/// between them would be counted against one daemon and not the other.
+#[derive(Debug)]
+struct SocketTable {
+    rows: Vec<SocketRow>,
+}
+
+/// One row of `/proc/net/unix`, in the three fields this module reads.
+#[derive(Debug)]
+struct SocketRow {
+    /// The socket's inode, which is how `/proc/<pid>/fd` names it.
+    inode: u64,
+    /// Whether the kernel has it listening for connections, or already connected to one.
+    state: SocketState,
+    /// The filesystem path it is bound to. Only a bound socket has one, which is why a connected
+    /// row carrying a path is a SERVER-side connection and not a client's.
+    path: String,
+}
+
+/// The three socket states this check tells apart, in the kernel's own numbering.
+///
+/// Three and not two: see [`read_daemons`] for the measurement that separates the middle one, which
+/// a reader is most likely to leave out and which is the one a wedged daemon's clients are all in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SocketState {
+    /// `01` — bound and accepting. A daemon's door.
+    Listening,
+    /// `02` — a connection the kernel has put on a door that has not accepted it yet. Its inode is
+    /// `0`, because there is no `struct socket` behind it to have one.
+    Arriving,
+    /// `03` — one end of an accepted connection.
+    Connected,
+}
+
+impl SocketState {
+    /// Whether this end is a CLIENT on somebody's door, as opposed to the door itself.
+    const fn is_a_client(self) -> bool {
+        match self {
+            Self::Arriving | Self::Connected => true,
+            Self::Listening => false,
+        }
+    }
+}
+
+impl SocketTable {
+    /// The kernel's unix socket table, or the absence of one.
+    fn read(sources: &Sources) -> Option<Self> {
+        let table = std::fs::read_to_string(sources.proc.join("net/unix")).ok()?;
+        Some(Self {
+            rows: table.lines().filter_map(SocketRow::parse).collect(),
+        })
+    }
+
+    /// The path `pid` is listening on, if it is listening on one.
+    ///
+    /// A process may hold several sockets, and the first LISTENING one with a path is its door —
+    /// this daemon opens exactly one. A pid whose `/proc/<pid>/fd` cannot be read (another user's,
+    /// or one that exited between the two reads) is simply not a daemon this can see, which is the
+    /// same answer as not being one.
+    fn listening_of(&self, pid: u32, sources: &Sources) -> Option<String> {
+        let fds = std::fs::read_dir(sources.proc.join(pid.to_string()).join("fd")).ok()?;
+        let held: BTreeSet<u64> = fds
+            .flatten()
+            .filter_map(|entry| socket_inode(&std::fs::read_link(entry.path()).ok()?))
+            .collect();
+        self.rows
+            .iter()
+            .find(|row| {
+                row.state == SocketState::Listening
+                    && !row.path.is_empty()
+                    && held.contains(&row.inode)
+            })
+            .map(|row| row.path.clone())
+    }
+
+    /// How many clients the kernel shows on the door at `path`, accepted or still arriving.
+    ///
+    /// See [`read_daemons`] for why this counts the clients and why it counts both states: the
+    /// listening row is neither, and a client's OWN end carries no path, so every remaining row
+    /// bearing this path is one connection the daemon is holding or has been handed.
+    fn clients_on(&self, path: &str) -> usize {
+        self.rows
+            .iter()
+            .filter(|row| row.state.is_a_client() && row.path == path)
+            .count()
+    }
+}
+
+impl SocketRow {
+    /// One line of `/proc/net/unix`, or [`None`] for its header and for anything this does not
+    /// understand.
+    ///
+    /// The columns are `Num RefCount Protocol Flags Type St Inode Path`, and the path is LAST —
+    /// so it is taken as the remainder of the line rather than as a field, because a socket path
+    /// may contain a space and splitting on whitespace would truncate it to its first word.
+    fn parse(line: &str) -> Option<Self> {
+        let mut fields = line.split_whitespace();
+        let state = match fields.nth(5)? {
+            "01" => SocketState::Listening,
+            "02" => SocketState::Arriving,
+            "03" => SocketState::Connected,
+            _ => return None,
+        };
+        let inode = fields.next()?.parse().ok()?;
+        Some(Self {
+            inode,
+            state,
+            path: rest_after(line, 7).trim_end().to_owned(),
+        })
+    }
+}
+
+/// Everything after the first `fields` whitespace-separated fields of `line`, verbatim.
+///
+/// Written as an offset walk rather than as `split_whitespace().skip(n).collect::<Vec<_>>().join(" ")`
+/// because that spelling REBUILDS the tail with single spaces, and the tail here is a filesystem
+/// path: one written with two spaces in it would come back as a path that does not exist.
+fn rest_after(line: &str, fields: usize) -> &str {
+    let mut rest = line;
+    for _ in 0..fields {
+        rest = rest.trim_start();
+        let Some(end) = rest.find(char::is_whitespace) else {
+            return "";
+        };
+        rest = &rest[end..];
+    }
+    rest.trim_start()
+}
+
+/// The inode in a `socket:[12345]` symlink target, which is how `/proc/<pid>/fd` spells a socket.
+fn socket_inode(target: &Path) -> Option<u64> {
+    target
+        .to_str()?
+        .strip_prefix("socket:[")?
+        .strip_suffix(']')?
+        .parse()
+        .ok()
 }
 
 /// `/proc/pressure/<resource>`, or the absence.
@@ -1813,6 +2250,46 @@ mod tests {
             );
         }
 
+        /// One process's `/proc/<pid>/exe` and the socket inodes its `/proc/<pid>/fd` holds.
+        ///
+        /// Symlinks and not files, because that is what the reader dereferences: a fixture that
+        /// wrote the exe as a regular file would pass a `read_to_string` implementation and fail
+        /// the `read_link` one, which is the reverse of what a fixture is for. `socket:[N]` targets
+        /// point at nothing, exactly as the kernel's do.
+        fn running(&self, pid: u32, exe: &str, socket_inodes: &[u64]) {
+            let dir = self.root.join(format!("proc/{pid}"));
+            std::fs::create_dir_all(dir.join("fd")).expect("fixture pid directory");
+            std::os::unix::fs::symlink(exe, dir.join("exe")).expect("fixture exe link");
+            for (fd, inode) in socket_inodes.iter().enumerate() {
+                std::os::unix::fs::symlink(
+                    format!("socket:[{inode}]"),
+                    dir.join("fd").join(fd.to_string()),
+                )
+                .expect("fixture fd link");
+            }
+        }
+
+        /// `/proc/net/unix`, header and all, from `(inode, state, path)` rows.
+        ///
+        /// The header is written because the real file has one and dropping it would leave the
+        /// parser's first-line handling untested — the column layout is the only thing standing
+        /// between this reader and a machine's whole socket table read one field out.
+        fn sockets(&self, rows: &[(u64, &str, &str)]) {
+            let mut table =
+                String::from("Num       RefCount Protocol Flags    Type St Inode Path\n");
+            for (inode, state, path) in rows {
+                let flags = if *state == "01" {
+                    "00010000"
+                } else {
+                    "00000000"
+                };
+                table.push_str(&format!(
+                    "0000000000000000: 00000002 00000000 {flags} 0001 {state} {inode} {path}\n"
+                ));
+            }
+            self.write("proc/net/unix", &table);
+        }
+
         /// One cgroup, with the interface files the kernel would have made.
         fn cgroup(&self, relative: &str, weight: &str, usage_usec: u64, procs: &str) -> PathBuf {
             let at = format!("cgroup/{relative}");
@@ -1875,6 +2352,10 @@ mod tests {
         let subject = Subject {
             panes: vec![admitted(1, 111)],
             subtree: Some(machine.root.join("cgroup/user.slice/sprag.scope")),
+            // Spelled rather than defaulted: this is the one field on a subject that names a
+            // PROCESS, and a fixture that quietly inherited the test runner's own would count the
+            // developer's real machine into a reading that is supposed to be replayable.
+            daemon: None,
         };
         (machine, subject)
     }
@@ -2049,6 +2530,7 @@ mod tests {
         let subject = Subject {
             panes: vec![admitted(1, 111)],
             subtree: Some(machine.root.join("cgroup/scope")),
+            daemon: None,
         };
         let sources = Sources {
             shims: machine.root.join("shims"),
@@ -2109,6 +2591,7 @@ mod tests {
                 },
             ],
             subtree: Some(machine.root.join("cgroup/scope")),
+            daemon: None,
         };
         let sources = Sources {
             shims: machine.root.join("shims"),
@@ -2317,5 +2800,326 @@ Local storage:
     fn an_absent_counter_is_still_a_value() {
         assert_eq!(Counted::NoController, Counted::NoController);
         assert_eq!(Waiting::NotAccounted.avg60(), None);
+    }
+
+    // ── the daemons on this machine ─────────────────────────────────────────────────────────
+
+    /// A subject naming a program, for the daemon fixtures.
+    fn looking_for(program: &str) -> Subject {
+        Subject {
+            panes: Vec::new(),
+            subtree: None,
+            daemon: Some(DaemonSelf {
+                pid: 100,
+                program: program.to_owned(),
+            }),
+        }
+    }
+
+    /// ⚠ THE WHOLE READING, and the three ways a process can fail to be a daemon of this program.
+    ///
+    /// One fixture rather than four, because the discriminations only mean anything against each
+    /// other: a reader that returned every process, or every process of this program, or every
+    /// listening process, passes a test built on any ONE of them.
+    #[test]
+    fn a_daemon_is_this_program_listening_and_its_clients_are_counted_from_the_table() {
+        let machine = FakeMachine::new("daemons");
+        // Us: listening, two clients on it.
+        machine.running(100, "/usr/bin/sprag-term", &[10, 11, 12]);
+        // Another daemon of this program with nobody on it — the fault this check exists for.
+        machine.running(200, "/home/dev/target/debug/sprag-term", &[20]);
+        // A CLIENT of this program: same executable, no listening socket.
+        machine.running(300, "/usr/bin/sprag-term", &[11]);
+        // A daemon of some OTHER program, listening, abandoned. Not ours to report.
+        machine.running(400, "/usr/bin/some-other-daemon", &[40]);
+        machine.sockets(&[
+            (10, "01", "/run/a.sock"),
+            (11, "03", "/run/a.sock"),
+            (12, "03", "/run/a.sock"),
+            (20, "01", "/tmp/probe.sock"),
+            (40, "01", "/run/other.sock"),
+        ]);
+        assert_eq!(
+            SocketTable::read(&machine.sources())
+                .expect("the fixture publishes a table")
+                .clients_on("/run/other.sock"),
+            0,
+            "the other program's daemon is abandoned too — this check is bounded to OURS, and \
+             that bound has to be a measurement rather than a sentence",
+        );
+        let daemons = read_daemons(&looking_for("sprag-term"), &machine.sources())
+            .expect("a machine that publishes both tables is readable");
+        assert_eq!(daemons.program, "sprag-term");
+        assert_eq!(daemons.mine, 100);
+        assert_eq!(
+            daemons
+                .found
+                .iter()
+                .map(|daemon| (
+                    daemon.pid,
+                    daemon.image.as_str(),
+                    daemon.socket.as_str(),
+                    daemon.attached
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (100, "/usr/bin/sprag-term", "/run/a.sock", 2),
+                (
+                    200,
+                    "/home/dev/target/debug/sprag-term",
+                    "/tmp/probe.sock",
+                    0
+                ),
+            ],
+            "the client of this program, and the daemon of another, are not daemons of ours",
+        );
+    }
+
+    /// ⚠⚠ A DAEMON WHOSE BINARY WAS REPLACED UNDER IT IS THE MOST INTERESTING ONE HERE, and the
+    /// kernel spells it `… (deleted)`.
+    ///
+    /// Measured, not assumed: `/proc/<pid>/exe` keeps resolving after the file is unlinked and the
+    /// suffix is part of the LINK TEXT. A reader that took the file name straight off it would look
+    /// for a program called `sprag-term (deleted)`, match nothing, and report a clean machine — so
+    /// the stalest daemon on the box would be the one guaranteed invisible.
+    #[test]
+    fn a_daemon_running_a_deleted_image_is_still_a_daemon_of_this_program() {
+        let machine = FakeMachine::new("deleted");
+        machine.running(100, "/usr/bin/sprag-term", &[10]);
+        machine.running(200, "/home/dev/target/debug/sprag-term (deleted)", &[20]);
+        machine.sockets(&[(10, "01", "/run/a.sock"), (20, "01", "/tmp/probe.sock")]);
+        let daemons = read_daemons(&looking_for("sprag-term"), &machine.sources()).expect("read");
+        assert_eq!(
+            daemons
+                .found
+                .iter()
+                .map(|daemon| daemon.image.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "/usr/bin/sprag-term",
+                "/home/dev/target/debug/sprag-term (deleted)",
+            ],
+            "matched despite the suffix, and the suffix KEPT in what the reader is shown",
+        );
+    }
+
+    /// A socket path with a space in it is one path, not two.
+    ///
+    /// `/proc/net/unix` puts the path last precisely because it can contain anything a filename
+    /// can. A reader that took field eight would truncate it, and would then count zero clients on
+    /// a daemon that has them — a false clean, which is the direction that costs.
+    #[test]
+    fn a_socket_path_with_a_space_is_read_whole() {
+        let machine = FakeMachine::new("spaced");
+        machine.running(100, "/usr/bin/sprag-term", &[10, 11]);
+        machine.sockets(&[
+            (10, "01", "/run/two words.sock"),
+            (11, "03", "/run/two words.sock"),
+        ]);
+        let daemons = read_daemons(&looking_for("sprag-term"), &machine.sources()).expect("read");
+        assert_eq!(
+            daemons
+                .found
+                .iter()
+                .map(|daemon| (daemon.socket.as_str(), daemon.attached))
+                .collect::<Vec<_>>(),
+            vec![("/run/two words.sock", 1)],
+        );
+    }
+
+    /// ⚠⚠ A DAEMON THAT HAS STOPPED ACCEPTING IS THE ONE PEOPLE ARE FAILING TO REACH, and its
+    /// clients are all in the state a two-state reader would drop.
+    ///
+    /// Its socket carries only `02` rows — connections the kernel has queued on a door nobody is
+    /// taking them off. Counting those as nobody would tell a person to go and kill the daemon
+    /// their own terminal is blocked on, which is the worst answer this check could give.
+    #[test]
+    fn clients_queued_on_a_door_nobody_is_accepting_are_still_clients() {
+        let machine = FakeMachine::new("wedged");
+        machine.running(100, "/usr/bin/sprag-term", &[10]);
+        machine.running(200, "/usr/bin/sprag-term", &[20]);
+        machine.sockets(&[
+            (10, "01", "/run/a.sock"),
+            (20, "01", "/run/wedged.sock"),
+            // Inode 0 twice, as the kernel really writes it — two clients, not one row seen twice.
+            (0, "02", "/run/wedged.sock"),
+            (0, "02", "/run/wedged.sock"),
+        ]);
+        let daemons = read_daemons(&looking_for("sprag-term"), &machine.sources()).expect("read");
+        assert_eq!(
+            daemons
+                .found
+                .iter()
+                .map(|daemon| (daemon.pid, daemon.attached))
+                .collect::<Vec<_>>(),
+            vec![(100, 0), (200, 2)],
+            "the wedged daemon has two people on it and the idle one has nobody",
+        );
+    }
+
+    /// Two absences, and both make the check BLIND rather than clean.
+    ///
+    /// A machine with no socket table cannot be asked, and a process that cannot name its own
+    /// program has nothing to recognise a peer against. Either one reported as *no daemons found*
+    /// would be a clean verdict about a question nobody asked.
+    #[test]
+    fn a_machine_that_cannot_be_asked_answers_nothing_rather_than_none() {
+        let machine = FakeMachine::new("blind");
+        machine.running(100, "/usr/bin/sprag-term", &[10]);
+        machine.sockets(&[(10, "01", "/run/a.sock")]);
+        assert_eq!(
+            read_daemons(
+                &Subject {
+                    panes: Vec::new(),
+                    subtree: None,
+                    daemon: None,
+                },
+                &machine.sources(),
+            ),
+            None,
+            "a process that cannot name itself recognises no peer",
+        );
+        let nowhere = Sources {
+            proc: machine.root.join("proc-that-is-not-there"),
+            ..machine.sources()
+        };
+        assert_eq!(
+            read_daemons(&looking_for("sprag-term"), &nowhere),
+            None,
+            "and neither does a host with no socket table",
+        );
+    }
+
+    /// The header line, and every row this reader does not understand, are skipped rather than
+    /// parsed into a zero.
+    #[test]
+    fn only_the_three_states_this_check_names_are_rows() {
+        assert!(
+            SocketRow::parse("Num       RefCount Protocol Flags    Type St Inode Path").is_none()
+        );
+        assert!(
+            SocketRow::parse("0000000000000000: 00000002 00000000 00000000 0001 07 7 /a.sock")
+                .is_none(),
+            "state 07 is a socket on its way out, which is neither a door nor a client on one",
+        );
+        let door =
+            SocketRow::parse("0000000000000000: 00000002 00000000 00010000 0001 01 7 /a.sock")
+                .expect("a listening row");
+        assert_eq!(
+            (door.inode, door.state, door.path.as_str()),
+            (7, SocketState::Listening, "/a.sock"),
+        );
+        // ⚠ Inode ZERO, and that is the kernel's real answer for a connection nobody has accepted
+        // yet — a parser that treated a zero inode as a failure would drop exactly the clients of
+        // the daemon that has stopped accepting them.
+        let arriving =
+            SocketRow::parse("0000000000000000: 00000002 00000000 00000000 0001 02 0 /a.sock")
+                .expect("an arriving row");
+        assert_eq!(
+            (arriving.inode, arriving.state, arriving.path.as_str()),
+            (0, SocketState::Arriving, "/a.sock"),
+        );
+        assert!(arriving.state.is_a_client() && !door.state.is_a_client());
+    }
+
+    /// ⚠⚠⚠⚠⚠ THE REAL KERNEL, because every fixture above is a file this module also WROTE.
+    ///
+    /// The fixtures prove the arithmetic and prove nothing about the layout: `/proc/net/unix`'s
+    /// column order, the `socket:[N]` spelling of an fd, and the path `net/unix` itself are all
+    /// facts about Linux that a fake `/proc` written by this same module cannot disagree with. A
+    /// reader that looked for `net/unix.txt` would pass all six and report a clean machine forever.
+    ///
+    /// So this one binds a REAL listening socket, finds ITSELF through the kernel's own tables, and
+    /// then watches the attached count move when a real client connects — which is the exact number
+    /// the check's verdict turns on, measured end to end with nothing stubbed.
+    ///
+    /// ⚠⚠⚠⚠⚠ It has already earned its place once: it FAILED on its first run against a reader
+    /// that counted only accepted connections, which is how the `02` state in [`SocketState`] came
+    /// to be known at all. Every fixture in this module passed that same reader.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_real_kernel_shows_this_process_listening_and_counts_a_real_client() {
+        use std::os::unix::net::UnixStream;
+
+        // Both halves through `sprag_scratch`, and both because a gate in this workspace says so:
+        // the NAME because a per-run path built on the root alone is one nothing sweeps when the
+        // run that made it is killed (item 795), and the BIND because macOS gives 104 bytes of
+        // `sun_path` against a 48-byte scratch root, so a name that binds here is refused there
+        // (item 957). `scratch_for` mints the pid where the reaper reads it and sweeps this
+        // prefix's dead owners in the same call.
+        let at = sprag_scratch::scratch_for("sprag-doctor", "sock");
+        let _ = std::fs::remove_file(&at);
+        let door = sprag_scratch::bind_socket(&at).expect("a real listening socket");
+        // Our own program, whatever cargo named this test binary — the check recognises peers by
+        // the running program and never by a constant, so the fixture must not supply one either.
+        let me = DaemonSelf::here().expect("this process can name itself");
+        let subject = Subject {
+            panes: Vec::new(),
+            subtree: None,
+            daemon: Some(me.clone()),
+        };
+        let ours = |readings: Option<Daemons>| {
+            readings
+                .expect("this host publishes a process table")
+                .found
+                .into_iter()
+                .find(|daemon| daemon.pid == me.pid)
+                .expect("this process is listening, so it is a daemon of its own program")
+        };
+
+        let alone = ours(read_daemons(&subject, &Sources::default()));
+        assert_eq!(
+            alone.socket,
+            at.to_str().expect("a utf-8 fixture path"),
+            "the door found through /proc is the one this test opened",
+        );
+        assert_eq!(alone.attached, 0, "nobody has connected to it yet");
+        assert!(
+            alone.image.ends_with(&me.program),
+            "the image the kernel resolves ends in the program it was recognised by: {}",
+            alone.image,
+        );
+
+        // ⚠ NOT ACCEPTED YET. This is the state the first draft of this reader could not see, and
+        // the run that found it is the only reason the `02` arm exists.
+        let client = UnixStream::connect(&at).expect("a real client");
+        let arrived = ours(read_daemons(&subject, &Sources::default()));
+        assert_eq!(
+            arrived.attached, 1,
+            "a client the daemon has not taken off the door is still a client on it",
+        );
+
+        let taken = door.accept().expect("the door accepts").0;
+        let accepted = ours(read_daemons(&subject, &Sources::default()));
+        assert_eq!(
+            accepted.attached, 1,
+            "and it is the SAME client after accept(), not a second one — the kernel moves the row \
+             from 02 to 03 and gives it an inode, which a reader counting both states must not \
+             double",
+        );
+
+        drop(taken);
+        drop(client);
+        drop(door);
+        std::fs::remove_file(&at).expect("the fixture socket is removed");
+    }
+
+    /// An abstract socket, and a socket bound to no path at all, are both read without a panic —
+    /// and the pathless one is never mistaken for a daemon's door.
+    #[test]
+    fn a_socket_with_no_path_is_not_a_door() {
+        let machine = FakeMachine::new("pathless");
+        machine.running(100, "/usr/bin/sprag-term", &[10, 11]);
+        machine.sockets(&[(10, "01", ""), (11, "01", "@abstract")]);
+        let daemons = read_daemons(&looking_for("sprag-term"), &machine.sources()).expect("read");
+        assert_eq!(
+            daemons
+                .found
+                .iter()
+                .map(|daemon| daemon.socket.as_str())
+                .collect::<Vec<_>>(),
+            vec!["@abstract"],
+            "the unnamed listening socket is skipped and the abstract one is the door",
+        );
     }
 }

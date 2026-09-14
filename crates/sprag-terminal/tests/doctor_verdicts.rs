@@ -13,8 +13,8 @@
 use std::time::Duration;
 
 use sprag_terminal::doctor::{
-    Blind, Ccache, Check, Diagnosis, Evidence, Finding, Level, Load, Measurement, PaneReading,
-    Readings, Sibling, SubtreeReading, Verdict,
+    Blind, Ccache, Check, DaemonReading, Daemons, Diagnosis, Evidence, Finding, Level, Load,
+    Measurement, PaneReading, Readings, Sibling, SubtreeReading, Verdict,
 };
 use sprag_terminal::{
     Cpu, Landing, PaneId, PaneLineage, Percent, Pressure, Refusal, SessionId, Waiting, WindowId,
@@ -63,6 +63,21 @@ fn healthy() -> Readings {
         linkers: vec!["mold".to_owned()],
         paths: 1,
         hierarchy: true,
+        daemons: Some(Daemons {
+            program: "sprag-term".to_owned(),
+            mine: 100,
+            found: vec![daemon(100, "/usr/bin/sprag-term", "/run/a.sock", 2)],
+        }),
+    }
+}
+
+/// One daemon row, for the fixtures that move the attachment.
+fn daemon(pid: u32, image: &str, socket: &str, attached: usize) -> DaemonReading {
+    DaemonReading {
+        pid,
+        image: image.to_owned(),
+        socket: socket.to_owned(),
+        attached,
     }
 }
 
@@ -147,7 +162,7 @@ fn a_diagnosis_answers_every_check_in_the_sets_own_order() {
             .collect::<Vec<_>>(),
         Check::ALL.to_vec(),
     );
-    assert_eq!(Check::ALL.len(), 12, "the checks this round built");
+    assert_eq!(Check::ALL.len(), 13, "the checks this round built");
 }
 
 /// A healthy machine has nothing degraded, and every row still carries what it measured.
@@ -878,6 +893,101 @@ fn no_subtree_and_no_hierarchy_are_different_absences() {
     assert_eq!(
         judged(Check::ControllerDelegation, &unplaced).0,
         Verdict::Blind(Blind::NoHierarchy),
+    );
+}
+
+/// A second daemon of this program that no client is on is the residue this check exists for, and
+/// the report names its pid and the BUILD it is running.
+///
+/// The build matters as much as the pid: the daemon that was actually found this way was a
+/// `target/debug` one beside a promoted install, and a report that said only *pid 4242 is
+/// abandoned* would leave the reader unable to see that two images were serving one machine.
+#[test]
+fn a_second_daemon_with_nobody_on_it_is_the_fault() {
+    let mut abandoned = healthy();
+    abandoned
+        .daemons
+        .as_mut()
+        .expect("the healthy machine has a daemon reading")
+        .found
+        .push(daemon(
+            4242,
+            "/home/dev/target/debug/sprag-term",
+            "/tmp/probe.sock",
+            0,
+        ));
+    let (verdict, said) = judged(Check::StrayDaemon, &abandoned);
+    assert_eq!(verdict, Verdict::Degraded);
+    assert!(
+        said.contains("1 with nobody attached"),
+        "the count a reader acts on is missing: {said}",
+    );
+    assert!(
+        said.contains(
+            "pid 4242=/home/dev/target/debug/sprag-term on /tmp/probe.sock, nobody \
+                       attached"
+        ),
+        "the row has to name the pid, the image and the socket: {said}",
+    );
+}
+
+/// ⚠⚠⚠⚠⚠ THE REPORTING DAEMON IS NOT ITS OWN FAULT, and this is the case that separates a criterion
+/// from a count.
+///
+/// A daemon reached over an in-process host has no client on its socket at all, and a report that
+/// called it abandoned would be telling the reader their own terminal is a leftover — a sentence
+/// they can see is false, which is the whole reason [`Blind::Unanswered`] exists one type over. The
+/// row is still PRINTED and still marked; what changes is the verdict.
+#[test]
+fn the_daemon_the_report_came_from_is_never_the_abandoned_one() {
+    let mut alone = healthy();
+    let daemons = alone.daemons.as_mut().expect("a daemon reading");
+    daemons.found = vec![daemon(100, "/usr/bin/sprag-term", "/run/a.sock", 0)];
+    let (verdict, said) = judged(Check::StrayDaemon, &alone);
+    assert_eq!(
+        verdict,
+        Verdict::Healthy,
+        "the attachment this report travelled over is the one it cannot see: {said}",
+    );
+    assert!(
+        said.contains(
+            "pid 100=/usr/bin/sprag-term on /run/a.sock, nobody attached — this \
+                       report's own"
+        ),
+        "and it is still shown, marked, so the criterion and the rows do not read as \
+         contradicting each other: {said}",
+    );
+}
+
+/// Two daemons somebody is attached to are the supported per-socket shape, not a fault.
+///
+/// `sprag_host::durability` keys a snapshot on the socket precisely so two can coexist, so a check
+/// that counted daemons rather than reading their attachments would flag the design.
+#[test]
+fn a_second_daemon_somebody_is_using_is_the_supported_shape() {
+    let mut two = healthy();
+    two.daemons
+        .as_mut()
+        .expect("a daemon reading")
+        .found
+        .push(daemon(4242, "/usr/bin/sprag-term", "/run/b.sock", 1));
+    let (verdict, said) = judged(Check::StrayDaemon, &two);
+    assert_eq!(verdict, Verdict::Healthy, "{said}");
+    assert!(
+        said.contains("daemons running `sprag-term`=2"),
+        "and both are counted where the reader can see them: {said}",
+    );
+}
+
+/// A host that publishes no process table cannot be asked, and *no daemons found* would be a clean
+/// verdict about a question nobody put.
+#[test]
+fn a_machine_whose_processes_cannot_be_listed_is_blind_about_daemons() {
+    let mut unreadable = healthy();
+    unreadable.daemons = None;
+    assert_eq!(
+        judged(Check::StrayDaemon, &unreadable).0,
+        Verdict::Blind(Blind::NoProcessTable),
     );
 }
 

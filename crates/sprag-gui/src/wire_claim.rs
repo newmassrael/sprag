@@ -417,7 +417,13 @@ pub(crate) mod grammar {
         // nobody. **A window starts no runs and asks nobody anything** — it renders panes and types
         // into them — so this pin moves for a fifteenth cause it takes no part in. Fifteen for
         // fifteen, and the eighth is still the only one this surface authors.
-        47,
+        // ⚠⚠⚠ THE SIXTEENTH, and it is a row in a report about the MACHINE: register item 667 gave
+        // the diagnosis a `stray-daemon` check, so a person can finally see a daemon of this
+        // program that nobody is attached to. **A window asks about no machine** — `machine_health`
+        // takes nothing and is served on the multiplexer's own door, and this surface renders panes
+        // — so this pin moves for a sixteenth cause it takes no part in. Sixteen for sixteen, and
+        // the eighth is still the only one this surface authors.
+        48,
         &[
             (
                 "the command palette",
