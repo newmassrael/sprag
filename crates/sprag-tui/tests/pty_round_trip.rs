@@ -2819,15 +2819,138 @@ fn a_pane_move_reaches_a_parked_wait_sooner_than_this_file_polls() {
         taken.push(waited);
     }
     taken.sort();
-    let median = taken[taken.len() / 2];
     assert!(
-        median < POLL,
-        "⛔ ITEM 1042: a typed byte took a median {median:?} to wake a parked wait, and this file's \
-         sleep is {POLL:?}. The park is what makes the input-path instrument able to see below that \
-         sleep — a sweep paced by the sleep reported 20.6-21.2 ms at all twelve of its points — so \
-         a park no faster than it leaves every reading quantised under a new name.\n  took: \
-         {taken:?}\n  {}",
+        holds_a_reading_no_poll_could_produce(&taken, POLL),
+        "⛔ ITEM 1042: not one of these wakes came back faster than this file's {POLL:?} sleep, so \
+         nothing here distinguishes a park from a poll — which is the one thing this gate exists \
+         to tell apart. Either the daemon has stopped WAKING the wait (the regression), or this \
+         machine could not complete a single trip inside {POLL:?} (in which case the reading is \
+         absent, and rule 6 of this workspace says an absent reading is a red and never a pass — \
+         re-run it somewhere it can be taken).\n  took: {taken:?}\n  {}",
         how_loaded(),
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **DOES THIS SET OF WAKES CONTAIN ONE A POLL COULD NOT HAVE PRODUCED?** — register item
+/// 1056, and the predicate `a_pane_move_reaches_a_parked_wait_sooner_than_this_file_polls` decides on.
+///
+/// # ⛔⛔⛔⛔⛔ Why the MEDIAN was the wrong question, proved by a red it produced
+///
+/// That gate used to assert `median < POLL`, and register item 1056 opened on it losing to a busy
+/// machine. The sample it failed with settles what really happened:
+///
+/// ```text
+/// took: [2.814ms, 2.821ms, 4.863ms, 35.202ms, 62.499ms, 91.263ms, 656.724ms]
+/// ```
+///
+/// **The minimum is 2.8 ms, and a wait paced by a 20 ms sleep cannot return in 2.8 ms.** So at the
+/// instant that gate reported a failure, the park was still a park — the thing it says it exists to
+/// catch had not happened, and it said it had. The median was dragged over the line by a tail
+/// (656 ms) that says something about the machine and nothing about the mechanism.
+///
+/// ⚠⚠ And the load reading printed beside that failure refutes the item's own diagnosis as well:
+/// `load 0.89 over 32 cores`, `cpu some avg10=2.17%`. It was not a loaded box. Re-measured
+/// 2026-09-14 against far harsher conditions than that failure ever saw — 64 busy loops; 48 busy
+/// loops plus bulk readers holding `io some avg10=86.87%` where the failure showed 75.99%; the
+/// whole 120-test binary in parallel — the gate stayed **green every time**. The defect was never
+/// in the machine.
+///
+/// # ⭐ What a poll can and cannot do, which is why ONE reading settles it
+///
+/// A wait paced by `sleep(poll)` looks at its answer only after the sleep, so **every** figure it
+/// can ever produce is at or above `poll`. A single reading below it is therefore something no poll
+/// could have produced, and the population needs no median, no tail and no quiet machine: the
+/// comparison is against a bound the alternative mechanism CANNOT cross, rather than against a
+/// number a busy afternoon can move. That is register item 1042's own lesson — *the comparison is
+/// against a measured quantity* — applied to this gate at last.
+///
+/// ⚠⚠ **THAT BOUND IS MEASURED AND NOT ARGUED.** Putting a `sleep(POLL)` back into the live gate's
+/// own loop — the regression this pair exists to catch — produced
+/// `[20.123ms, 20.144ms, 20.145ms, 20.147ms, 20.172ms, 80.855ms, 116.397ms]` on 2026-09-14. The
+/// tail moves with the machine exactly as a park's does; **the floor does not budge below the
+/// poll**, and cannot. That is the whole of why one reading under it is proof and a median is not.
+///
+/// ⚠ A slow park is not what this asks about, deliberately, and the gate's doc always said so:
+/// *what this must catch is a park that has stopped being a park — not a slow afternoon.* The
+/// sentence was right and the predicate did not implement it.
+///
+/// ⚠⚠ **AN EMPTY SAMPLE IS FALSE**, not vacuously true: no reading is not a reading that beat a
+/// poll, and rule 6 of this workspace's round discipline is that an unclassified pass is a red.
+fn holds_a_reading_no_poll_could_produce(taken: &[Duration], poll: Duration) -> bool {
+    taken.iter().any(|waited| *waited < poll)
+}
+
+/// ⛔⛔⛔⛔⛔ **THE PREDICATE IS DRIVEN BY THE TWO READINGS THAT WERE ACTUALLY TAKEN** — register
+/// item 1056, and the half the live gate above cannot hold.
+///
+/// # ⚠⚠⚠⚠⚠ Why this exists beside a gate that already measures a real machine
+///
+/// The live gate can only go red by LOSING a race, which is what made register item 1080 and this
+/// one so expensive: six samples of item 1080 alternated red and green on the same commit, and this
+/// one was re-measured green under load harsher than the load it was filed for. A gate whose colour
+/// depends on what else the box is doing cannot be mutated, cannot be reproduced on demand, and
+/// teaches the next round to say *flake* — which register items 700/701 name as the moment
+/// diagnosis stopped.
+///
+/// So the JUDGEMENT is separated from the MEASUREMENT and asked directly, with both populations
+/// taken from this repository's own records rather than invented:
+///
+/// * **A park under pressure** — the exact sample register item 1056 was opened on, quoted from the
+///   failure text. Its median is 35 ms and its minimum is 2.8 ms. A poll cannot produce 2.8 ms, so
+///   this must be accepted: it is a park, on a bad afternoon.
+/// * **A sleep-paced sweep** — the figures item 1042 recorded before the repair, *20.6–21.2 ms at
+///   all twelve of its points*. Nothing here is under the poll, because nothing can be. This must
+///   be refused.
+///
+/// ⚠⚠ **The two are what the old predicate could not tell apart**: `median < POLL` refuses the
+/// first (35 ms) and refuses the second (21 ms) — one right answer and one wrong one, for the same
+/// reason, and the reason is that a median is a fact about a machine's afternoon.
+#[test]
+fn the_poll_test_accepts_a_slow_park_and_refuses_a_fast_poll() {
+    // ⚠ Quoted from the failure register item 1056 was opened on — a real park, a loaded moment.
+    let a_park_under_pressure: Vec<Duration> =
+        [2_814, 2_821, 4_863, 35_202, 62_499, 91_263, 656_724]
+            .into_iter()
+            .map(Duration::from_micros)
+            .collect();
+    // ⚠ Quoted from register item 1042's own before-figures: a sweep paced by the sleep, which
+    // reported 20.6-21.2 ms at all twelve of its points and never once below the poll.
+    let a_sleep_paced_sweep: Vec<Duration> = [
+        20_600, 20_700, 20_800, 20_900, 21_000, 21_050, 21_100, 21_120, 21_150, 21_180, 21_190,
+        21_200,
+    ]
+    .into_iter()
+    .map(Duration::from_micros)
+    .collect();
+
+    assert!(
+        holds_a_reading_no_poll_could_produce(&a_park_under_pressure, POLL),
+        "⛔⛔⛔⛔⛔ THE GATE STILL REFUSES THE SAMPLE IT WAS WRONGLY OPENED ON. Its minimum is \
+         2.8 ms and a wait paced by a {POLL:?} sleep cannot return in 2.8 ms — so the park was \
+         still a park at the instant the old predicate called it a failure",
+    );
+    assert!(
+        !holds_a_reading_no_poll_could_produce(&a_sleep_paced_sweep, POLL),
+        "⛔⛔⛔⛔⛔ THE GATE ACCEPTS A SLEEP. Every figure register item 1042 measured before its \
+         repair sat at 20.6-21.2 ms, above the {POLL:?} poll that produced them, and a predicate \
+         that passes those is one the regression can walk straight through",
+    );
+    assert!(
+        !holds_a_reading_no_poll_could_produce(&[], POLL),
+        "⛔ AN ABSENT READING IS NOT A PASSING ONE — rule 6 of this workspace's round discipline, \
+         and the one answer an empty population must never give",
+    );
+
+    // ⚠⚠ AND THE OLD PREDICATE IS SHOWN FAILING THE SAME PAIR, so this gate states the repair
+    // rather than merely asserting the new rule. A median cannot separate these two: it refuses
+    // BOTH, and only one of them deserves it.
+    let median_of = |taken: &[Duration]| taken[taken.len() / 2];
+    assert!(
+        median_of(&a_park_under_pressure) >= POLL && median_of(&a_sleep_paced_sweep) >= POLL,
+        "⚠⚠⚠⚠⚠ THE PREMISE OF THIS WHOLE REPAIR: the old `median < POLL` rule must refuse both \
+         populations — that is what made it unable to tell a slow park from a fast poll. If a \
+         median could separate them, register item 1056 has a different cause than the one \
+         measured and this gate is arguing for the wrong change",
     );
 }
 
