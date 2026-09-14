@@ -1085,6 +1085,78 @@ const CHECK_READINGS: &[Reading] = &[
         QuestionShape::Directory,
         "loop run 348, image 706c4019, ended 2026-09-12T16:56Z",
     ),
+    // ⛔⛔⛔⛔⛔ 2026-09-14 — **THE SHAPE THE PRODUCT ACTUALLY ASKS, AND IT IS NOT THE ONE THIS TABLE
+    // PRICED.** Read out of the loop's own store (`Checks::latency`, which item 1073 built and
+    // which nothing had ever transcribed) for every run on a build carrying `check_opens`:
+    // `008a74f8c8a6` and `c4cace165224`, both verified to hold the clause (`git show
+    // <build>:…/debt_loop.scxml`) and the second verified in the DEPLOYED binary this loop runs.
+    //
+    // ⛔ Every one of these was `QuestionShape::DirectoriesNamed`, because that kind's clause names
+    // nine directories — 58% of the tree — rather than files. The 33.3 s row above named five
+    // FILES, and until this round both were the same value. That is why the gate below could
+    // report 1800% of room for *the shape the product asks* while two real checks ran out.
+    //
+    // ⚠ One row per RUN and a floor per run, on this table's own rule: the store keeps a run's
+    // `slowest_ms` rather than each check's, so a run that answered five times contributes its
+    // worst. The true distribution is therefore no FASTER than these and may be slower.
+    Reading::answered(
+        177_266,
+        JudgeModel::Default,
+        QuestionShape::DirectoriesNamed,
+        "loop run 359, image 008a74f8, ended 2026-09-13T21:00Z",
+    ),
+    Reading::answered(
+        215_328,
+        JudgeModel::Default,
+        QuestionShape::DirectoriesNamed,
+        "loop run 368, image c4cace16, ended 2026-09-14T05:27Z",
+    ),
+    Reading::answered(
+        283_427,
+        JudgeModel::Default,
+        QuestionShape::DirectoriesNamed,
+        "loop run 370, image c4cace16, ended 2026-09-14T06:23Z",
+    ),
+    Reading::answered(
+        319_303,
+        JudgeModel::Default,
+        QuestionShape::DirectoriesNamed,
+        "loop run 372, image c4cace16, ended 2026-09-14T05:15Z",
+    ),
+    Reading::answered(
+        342_593,
+        JudgeModel::Default,
+        QuestionShape::DirectoriesNamed,
+        "loop run 364, image c4cace16, ended 2026-09-14T01:08Z",
+    ),
+    Reading::answered(
+        358_154,
+        JudgeModel::Default,
+        QuestionShape::DirectoriesNamed,
+        "loop run 374, image c4cace16, still running when read 2026-09-14",
+    ),
+    // ⛔⛔⛔⛔⛔ AND THE RUN THAT COULD NOT HAVE ITS OWN MILESTONE VERIFIED — this session's, and the
+    // reason any of this was measured. `asked 7, answered 5, outran 2`, and the driver handed the
+    // claimant `Unheard::Unfinished` whose FIRST remedy is a document clause this kind already
+    // authors. The remedy was on; it was fed directories.
+    Reading::answered(
+        394_232,
+        JudgeModel::Default,
+        QuestionShape::DirectoriesNamed,
+        "loop run 365, image c4cace16, slowest of its 5 answers, read 2026-09-14",
+    ),
+    Reading::outran(
+        600_000,
+        JudgeModel::Default,
+        QuestionShape::DirectoriesNamed,
+        "loop run 365, image c4cace16, first of 2 that outran, read 2026-09-14",
+    ),
+    Reading::outran(
+        600_000,
+        JudgeModel::Default,
+        QuestionShape::DirectoriesNamed,
+        "loop run 365, image c4cace16, second of 2 that outran, read 2026-09-14",
+    ),
 ];
 
 /// **ONE TIMED MILESTONE CHECK** — register item 1073's row: how it ended, what judged it, what it
@@ -1167,13 +1239,40 @@ enum JudgeModel {
 }
 
 /// **WHAT THE JUDGE WAS ASKED** — register item 1072 changed it, which is why it is a field.
+///
+/// # ⛔⛔⛔⛔⛔ Two values could not hold the difference the 6x is ABOUT
+///
+/// The field was `Directory | FilesNamed`, and `FilesNamed` meant *the clause was written* — not
+/// *the clause named files*. Those came apart the moment this repository's own kind authored
+/// [`CHECK_OPENS_KEY`]: it names nine **directories**, re-derived 2026-09-14 as **224 of the tree's
+/// 382 tracked files — 58% of it**. A judge told to open 58% of a tree is still searching; the
+/// reading that priced this arm at 33.3 s named **five files**.
+///
+/// ⛔ So the two populations whose latencies differ by an order of magnitude were **one value**, and
+/// the gate below asserted a 1800% margin for *the shape the product asks* off a single reading of
+/// a shape this kind has never once been asked. Measured against the loop's own store the same
+/// week: seven runs of the directories-named shape answered at **177.3 / 215.3 / 283.4 / 319.3 /
+/// 342.6 / 358.2 / 394.2 s** and **two ran the 600 s bound out** — while the table said 1800%.
+///
+/// ⚠⚠ The lesson is [`Cleared`](crate::readiness::Cleared)'s, one type over and the same week: a
+/// value that folds facts which differ cannot be asked the question it exists to answer. Here the
+/// fold was in the INSTRUMENT, so it made a bound's own gate green about a bound that had failed.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum QuestionShape {
-    /// Pointed at a directory and left to find its own way around — every check before item 1072,
-    /// and still what a kind that names no file to open gets.
+    /// Pointed at a directory and left to find its own way around, with **no list at all** — every
+    /// check before item 1072, and still what a kind authoring neither clause gets.
     Directory,
-    /// Handed the files to open — item 1072's arm, measured six times faster.
+    /// Handed a list, and its entries are **DIRECTORIES** — so the judge is searching a narrower
+    /// tree rather than opening anything.
+    ///
+    /// ⚠⚠ This is not a degenerate case of the arm below; it is what this repository's own kind
+    /// asks on **every** run, and the honest shape for it — a round of this loop pays one register
+    /// item and which files that touches differs every round, so the document cannot author them.
+    /// That is a statement about what a DOCUMENT can know, and the driver stands in a tree.
+    DirectoriesNamed,
+    /// Handed a list, and its entries are **FILES to open** — item 1072's arm, and the one
+    /// measured six times faster.
     FilesNamed,
 }
 
@@ -30534,19 +30633,21 @@ mod tests {
         // ⚠ THE PREMISE, BEFORE THE FIGURES: a table that lost rows would make every assertion
         // below a comparison with less than was measured, so it is stated rather than assumed.
         assert!(
-            answered.len() >= 8 && ran_out.len() >= 7,
+            answered.len() >= 15 && ran_out.len() >= 9,
             "⚠ the readings table has lost rows, so what follows compares the bound with less than \
              was measured: {CHECK_READINGS:?}",
         );
 
         // ── ⚠⚠⚠ THE CONTROL: THE ANSWERED READINGS ALONE SAY WHAT THIS GATE ALWAYS SAID ────────
         //
-        // ⛔ 323%, and it was 507% when the bound was chosen. A third of the margin went to a
-        // reading taken on an IDLE host — so the next author to add a slow answer, or to trim this
-        // bound, meets this line instead of a comment.
+        // ⛔ 152%, and it was 507% when the bound was chosen and 323% for eleven days after. **The
+        // remaining half went in ONE day**, to seven readings of the shape this product actually
+        // asks — which nothing had ever transcribed out of the store the product writes them to.
+        // The next author to add a slow answer, or to trim this bound, meets this line rather than
+        // a comment; that is the whole reason the figure is exact.
         assert_eq!(
             check_headroom(&answered, CHECK_WITHIN),
-            Headroom::Clears(323),
+            Headroom::Clears(152),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 674: the ANSWERED readings no longer clear the milestone check's \
              bound by the margin it was chosen with. A check that outruns this is \
              `Unheard::Unfinished`, and item 428's rule means the milestone then rests on the \
@@ -30556,26 +30657,45 @@ mod tests {
         // ── ⛔⛔⛔⛔⛔ THE CLAIM: COUNTED WITH THE CHECKS THAT RAN OUT, THERE IS NO MARGIN ─────────
         assert_eq!(
             check_headroom(CHECK_READINGS, CHECK_WITHIN),
-            Headroom::Outrun(7),
+            Headroom::Outrun(9),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 1073: the milestone check's bound has been outrun by real \
              checks, and this table has to say so rather than report the room it has over the \
              ones that happened to answer. A margin over survivors is the reassurance that kept \
              seven timeouts out of every number this gate printed",
         );
 
-        // ── ⛔⛔⛔ AND THE TWO SHAPES OF QUESTION ARE TWO POPULATIONS ─────────────────────────────
+        // ── ⛔⛔⛔ AND THE THREE SHAPES OF QUESTION ARE THREE POPULATIONS ───────────────────────
+        //
+        // ⛔⛔⛔⛔⛔ **THIS ASSERTION WAS A PAIR AND THE PAIR WAS THE DEFECT.** It read
+        // `(Outrun(7), Clears(1800))` and said *the shape the product asks since item 1072 answered
+        // in a sixth of the worst* — true of the one row it had, and false of the product. Since
+        // item 1074 this repository's own kind authors `check_opens` as **nine directories**, so
+        // every real check of that arm was filed as `FilesNamed` while a judge went on searching
+        // 58% of a tree. Seven such runs are now in the table and **two of them ran this bound
+        // out**, which no figure in the old pair could have shown.
+        //
+        // ⚠⚠ The `FilesNamed` line is KEPT at 1800% deliberately, and it is now a statement about
+        // a shape **this kind has never once been asked**: one reading, five files, 33.3 s. It is
+        // the control for the claim beside it — the remedy is real and it is not what is being fed.
         let directory = of(|reading| reading.shape == QuestionShape::Directory);
+        let dirs_named = of(|reading| reading.shape == QuestionShape::DirectoriesNamed);
         let files_named = of(|reading| reading.shape == QuestionShape::FilesNamed);
         assert_eq!(
             (
                 check_headroom(&directory, CHECK_WITHIN),
+                check_headroom(&dirs_named, CHECK_WITHIN),
                 check_headroom(&files_named, CHECK_WITHIN),
             ),
-            (Headroom::Outrun(7), Headroom::Clears(1800)),
-            "⛔⛔⛔ REGISTER ITEMS 1072 AND 1073: every check that ran out was asked about a \
-             DIRECTORY, and the one reading of the shape the product asks since item 1072 — the \
-             files to open — answered in a sixth of the worst. A margin over both shapes at once \
-             describes neither, and a kind that names no file still asks the first",
+            (
+                Headroom::Outrun(7),
+                Headroom::Outrun(2),
+                Headroom::Clears(1800)
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEMS 1072, 1073 AND 1074: the arm measured at 6x is ON for this \
+             repository's own kind and is fed DIRECTORIES, and that arm has now outrun this bound \
+             twice. A margin over shapes at once describes none of them — and a shape that folds \
+             *a list of files* into *a list of directories* is the fold that let this gate stay \
+             green while a real milestone claim went unverified",
         );
 
         // ── AND THE ANSWER THAT MOVED THE MARGIN IS IN THE TABLE, NOT ONLY IN THE PROSE ────────
@@ -30585,13 +30705,17 @@ mod tests {
             .max_by_key(Reading::millis)
             .expect("a non-empty table has a worst reading");
         assert_eq!(
-            worst.millis(),
-            185_200,
-            "⚠⚠⚠ THE CONTROL'S OWN PREMISE: the 2026-08-31 reading is what makes the control say \
-             anything the five older ones did not, so a table that has lost it is one where 323 is \
-             the old margin under a new name — worst is now {} ({})",
+            (worst.millis(), worst.shape),
+            (394_232, QuestionShape::DirectoriesNamed),
+            "⚠⚠⚠ THE CONTROL'S OWN PREMISE, AND IT HAS CHANGED HANDS. It used to be the 2026-08-31 \
+             reading at 185.2 s, asked about a bare DIRECTORY. The slowest answer anybody has \
+             timed is now a run of the arm item 1072 built — fed nine directories by this \
+             repository's own kind — so the worst case is no longer a shape the product has moved \
+             on from. A table that has lost this row is one where 152 is an old margin under a new \
+             name: worst is now {} ({}, {:?})",
             worst.millis(),
             worst.whence,
+            worst.shape,
         );
 
         // ── AND A FASTER JUDGE IS A MEASURED OPTION, NOT A SUGGESTION ─────────────────────────

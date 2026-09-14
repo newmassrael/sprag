@@ -889,12 +889,27 @@ impl Unheard {
             // ⚠⚠ AND THE WORDS ARE THE TYPE'S, not a second vocabulary spelled here: `describe`
             // answers all six endings, where a sentence written at this site would be one author
             // of a fact `Over` already owns — which is how the two come to disagree.
+            // ⛔⛔⛔⛔⛔ **AND THE FIRST REMEDY NAMED THE WRONG HALF OF ITS OWN CLAUSE** — register
+            // item 1106, measured 2026-09-14 by a reader following this sentence and finding the
+            // clause already written. It said *a kind declaring none leaves it searching*, which
+            // sends anybody meeting it to check whether a list exists; this repository's own kind
+            // has declared one since item 1074 and its checker went on searching anyway, because
+            // the nine entries are DIRECTORIES — 224 of 382 tracked files, 58% of the tree. The
+            // 6x was measured on a question naming five FILES. So *is there a list* was never the
+            // question, and a sentence that asks it sends a reader to a clause they will find in
+            // good order and learn nothing from.
+            //
+            // ⚠⚠ What a reader can act on is what the entries ARE, so that is what this says now.
+            // The arithmetic behind *a directory is not a file to open* is in `CHECK_READINGS`,
+            // where the two shapes are two populations: the files-named row clears this bound by
+            // 1800% and the directories-named ones have run it out twice.
             Self::Unfinished(over) => {
                 format!(
                     "the checker was started and never answered: {} — the first remedy is its \
-                     DOCUMENT's: marks that land inside the tree are named to the checker as files \
-                     to open (measured 6x faster), and a kind declaring none leaves it searching. \
-                     Then give it longer, or a faster judge",
+                     DOCUMENT's: what it names to open must be FILES, because a list of \
+                     DIRECTORIES leaves a judge searching exactly as a bare tree does (measured 6x \
+                     faster on five files; this repository's own kind names nine directories and \
+                     has outrun this bound). Then give it longer, or a faster judge",
                     over.describe(),
                 )
             }
