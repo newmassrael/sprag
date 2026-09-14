@@ -112,6 +112,114 @@ impl KindDocument for Engine<crate::sm::unclaimed_loop::UnclaimedLoopPolicy> {
 /// *nothing claims that* and pass — which is the escape hatch this workspace's rule 6 is about.
 pub type Claimed = (&'static str, fn(&LoopKind) -> bool);
 
+sprag_vt::closed_set! {
+    /// 🎯🎯🎯🎯🎯 **THE DIMENSION A KIND'S RUNS KEEP WHOLE** — the vocabulary
+    /// [`LoopKind::keeps`] may be answered with. Register item 772 opened the axis and register
+    /// item 679 is why there are two words in it.
+    ///
+    /// # ⛔⛔⛔⛔⛔ Why a closed set where the sibling vocabulary is a bare constant
+    ///
+    /// `stands_in`'s word is one word and is a `const &str` beside its door, which is right for a
+    /// vocabulary of one. This one is not, and the shape it was in could not grow: the door held
+    /// `const KEEPS_ITS_ROWS`, compared the whole rule against it, and then destructured
+    /// `let Some((_, rows)) = pane` — **so the WORD and the AXIS IT MEASURES were written down in
+    /// two separate places.** A second word meant a second constant, a second branch, a second
+    /// destructure and a second sentence, with nothing making them agree.
+    ///
+    /// ⇒ [`Kept::of`] is what closes that: the word and the half of `(cols, rows)` it reads are one
+    /// value, so they cannot come apart. And [`Kept::ALL`] is what lets the door's refusal say
+    /// WHICH words this build knows rather than naming the only one it had.
+    ///
+    /// # ⚠⚠⚠ IT IS A DIMENSION AND NOT A DIRECTION, which is [`LoopKind::keeps`]'s own rule
+    ///
+    /// The same document is compiled into every checkout and `-h` is one launcher's grammar. *This
+    /// kind keeps its rows* is the fact behind it — true of a run driven by any surface, and the
+    /// one a door can check against a pane it did not open.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    pub enum Kept {
+        /// `cols` — **the delivery-confirmation axis**, register item 679. A run's prompt is
+        /// injected and read back off the pane's own screen; halving the width is what put a live
+        /// run's inner pane at 54 columns when a milestone checker opened beside it, against a
+        /// skill rule of *sixty at least* whose evidence is a first run that died outright at 38.
+        Cols,
+        /// `rows` — **item 765's axis**. A loop of this kind reads its own answers and their first
+        /// row is the label that says which answer it is, so halving the height halves the budget
+        /// that item counts: measured at 36 rows against a sibling's 73, in one daemon, the same
+        /// night.
+        Rows,
+    }
+}
+
+impl Kept {
+    /// The word a kind document spells this dimension with.
+    ///
+    /// ⚠ An exhaustive match and not a field, so a variant added to the set does not compile until
+    /// somebody writes down what an author types for it.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Cols => "cols",
+            Self::Rows => "rows",
+        }
+    }
+
+    /// The dimension that word names, or [`None`] for a word this build cannot apply.
+    ///
+    /// ⚠⚠ [`None`] is a REFUSAL at the door and never a pass — see [`LoopKind::keeps`], and this
+    /// workspace's rule 6. Derived from [`Self::ALL`] rather than matched by hand: a variant added
+    /// to the set is parseable the day it compiles, which a hand-written match is exactly what
+    /// forgets.
+    #[must_use]
+    pub fn of_word(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kept| kept.word() == word)
+    }
+
+    /// **THIS DIMENSION'S MEASUREMENT** out of a `(cols, rows)` pair.
+    ///
+    /// 🎯 The whole reason this type exists: the word and the half of the pair it reads are ONE
+    /// value. A door that destructured the tuple itself would be writing the axis down a second
+    /// time, and the two spellings would be free to disagree the day a word is added.
+    #[must_use]
+    pub const fn of(self, size: (u16, u16)) -> u16 {
+        match self {
+            Self::Cols => size.0,
+            Self::Rows => size.1,
+        }
+    }
+
+    /// What halving this dimension COSTS, in the words a refusal hands a person.
+    ///
+    /// ⚠ Beside the variant rather than at the door, so the two words cannot end up with one
+    /// sentence between them — which is what a door holding a single `format!` would produce.
+    #[must_use]
+    pub const fn costs(self) -> &'static str {
+        match self {
+            Self::Cols => {
+                "a run of this kind confirms every prompt by reading it back off that pane's own \
+                 screen, so the width is the axis that delivery is measured on"
+            }
+            Self::Rows => {
+                "a loop of this kind reads its own answers, and their first row is the label that \
+                 says which answer it is — halving the height halves the budget item 765 counts, \
+                 which was measured at 36 rows against a sibling's 73"
+            }
+        }
+    }
+
+    /// Every word this build knows, as a refusal lists them: `"cols", "rows"`.
+    ///
+    /// ⚠ Built from [`Self::ALL`], so the sentence a person is refused with cannot fall behind the
+    /// set — the failure the old door had, where it could only ever name the one word it held.
+    #[must_use]
+    pub fn words() -> String {
+        Self::ALL
+            .iter()
+            .map(|kept| format!("{:?}", kept.word()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 /// One loop kind's authored decisions, read off its own document.
 ///
 /// It holds the script SESSION rather than the values, for the reason `pump` re-reads the template
@@ -1043,6 +1151,12 @@ impl LoopKind {
     ///
     /// ⚠ [`None`] is the shipped state for a kind that says nothing, and it means **no check at
     /// all** rather than a check that passes.
+    /// ⚠⚠⚠ **THE RAW WORD AND NOT A [`Kept`]**, which is rule 6 and is deliberate. A parse here
+    /// would answer [`None`] for a word this build does not know, and [`None`] on this accessor
+    /// already means *this kind says nothing* — so a document that named a dimension nobody
+    /// implemented would read as a kind that asked for no check at all, and the run would start
+    /// under a rule nobody applied. The door parses it and REFUSES what it cannot apply; see
+    /// [`Kept::of_word`].
     #[must_use]
     pub fn keeps(&self) -> Option<String> {
         OuterLoop::authored_text_in(&self.script, &self.session, "keeps")

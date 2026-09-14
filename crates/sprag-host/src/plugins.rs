@@ -5522,9 +5522,19 @@ fn ai_loop_stands_where_it_works(
 /// build does not know is a REFUSAL there, never a pass — see that function.
 const STANDS_IN_ITS_TREES_WINDOW: &str = "tree";
 
-/// The word [`ai_loop_keeps_what_its_kind_keeps`] knows: *a run of this kind keeps its ROWS whole*
-/// — register item 772. A constant for [`STANDS_IN_ITS_TREES_WINDOW`]'s reason exactly.
-const KEEPS_ITS_ROWS: &str = "rows";
+/// ⚠ **THE WORDS [`ai_loop_keeps_what_its_kind_keeps`] KNOWS LIVE IN
+/// [`sprag_plugin::kind::Kept`]**, not here — register item 679.
+///
+/// This was a `const KEEPS_ITS_ROWS: &str = "rows"` beside [`STANDS_IN_ITS_TREES_WINDOW`], on that
+/// constant's reason: the document and this build must agree on the word, and a second spelling is
+/// how they come to disagree silently. That reason still holds and the constant still could not
+/// grow — the vocabulary reached two words and a bare `&str` has no `ALL` to enumerate, so the
+/// refusal could only ever name the one word it held, and the AXIS each word measures had to be
+/// written down separately at the door.
+///
+/// ⇒ The vocabulary moved to the crate that reads the document, as a closed set. It stays a
+/// constant HERE in the only sense that matters: nothing in this file spells either word.
+use sprag_plugin::kind::Kept;
 
 /// **A RUN DOES NOT START IN A PANE THAT LOST THE DIMENSION ITS KIND KEEPS** — register item 772,
 /// and [`ai_loop_stands_in_its_kinds_window`]'s sibling one axis in.
@@ -5582,35 +5592,47 @@ fn ai_loop_keeps_what_its_kind_keeps(
     // this workspace's rule 6. An unclassified value falling through to `Ok` would disarm the check
     // the first time somebody edits the document, and the run would start under a rule nobody
     // applied.
-    if rule != KEEPS_ITS_ROWS {
+    //
+    // ⚠⚠ AND THE REFUSAL NAMES EVERY WORD THIS BUILD KNOWS — register item 679. It used to name
+    // the ONE it held, because the vocabulary was a `const &str` and there was nothing to
+    // enumerate; an author told *this build knows only "rows"* cannot tell a build that is missing
+    // their word from a build that has one word by design.
+    let Some(kept) = Kept::of_word(rule) else {
         return Err(refused(format!(
             "this repository's loop-kind document says its runs keep their {rule:?}, and this build \
-             knows only {KEEPS_ITS_ROWS:?}. A rule nothing can apply is not one a run may be started \
-             under: teach this build the word, or change what the kind document says."
+             knows {}. A rule nothing can apply is not one a run may be started under: teach this \
+             build the word, or change what the kind document says.",
+            Kept::words(),
         )));
-    }
+    };
     // ⚠ A world that cannot size the pane is an ABSENCE of the fact, not a claim about it — the
     // same reading `pane_start_dir`'s `None` gets one check up.
-    let Some((_, rows)) = pane else {
+    let Some(pane) = pane else {
         return Ok(());
     };
     // ⚠⚠ AND A WORLD THAT CANNOT SAY WHAT IT OPENS A PANE AT IS THE SAME ABSENCE, read the same
     // way — register item 772's second round. It used to arrive here as a total `(u16, u16)` with a
     // fabricated 80×24 inside it, and this comparison had no way to tell that from a measurement.
-    let Some((_, opens)) = opens_at else {
+    let Some(opens_at) = opens_at else {
         return Ok(());
     };
+    // 🎯🎯🎯 THE AXIS COMES OFF THE WORD — register item 679. This used to be two hand-written
+    // destructures (`let Some((_, rows)) = …`) sitting under a comparison against one constant, so
+    // the word and the half of the pair it measures were written down separately and a second word
+    // would have had to keep them in step by attention. `Kept::of` is the one place that knows.
+    let (has, opens) = (kept.of(pane), kept.of(opens_at));
     // ⚠⚠ HALF, not *equal*. A divider costs a row and a client's arbitration moves both numbers, so
     // an equality here would refuse healthy panes on arithmetic nobody chose. What it must separate
-    // is the measured pair — 73 kept against 36 lost — and half separates those with room to spare.
-    if u32::from(rows) * 2 < u32::from(opens) {
+    // is the measured pair — 73 kept against 36 lost on the rows axis, and 110 kept against 54 lost
+    // on the cols one (register item 679's own observation) — and half separates both with room to
+    // spare.
+    if u32::from(has) * 2 < u32::from(opens) {
         return Err(refused(format!(
-            "this run's pane has {rows} row(s) where this daemon opens a pane at {opens}, so it was \
-             divided ACROSS the dimension its kind keeps. A loop of this kind reads its own answers, \
-             and their first row is the label that says which answer it is — halving the height \
-             halves the budget item 765 counts, which was measured at 36 rows against a sibling's \
-             73. Divide the window the other way (`split-window -h`), or say a different dimension \
-             in the kind document."
+            "this run's pane has {has} {word} where this daemon opens a pane at {opens}, so it was \
+             divided ACROSS the dimension its kind keeps. {costs}. Divide the window the other way, \
+             or say a different dimension in the kind document.",
+            word = kept.word(),
+            costs = kept.costs(),
         )));
     }
     Ok(())
@@ -18702,9 +18724,11 @@ mod tests {
              hand for the document",
         );
         assert_eq!(
-            rule, KEEPS_ITS_ROWS,
-            "⚠⚠ and it must be the word this build knows, or the arm below that refuses an unknown \
-             word is the one the SHIPPED document takes",
+            rule,
+            Kept::Rows.word(),
+            "⚠⚠ and it must be a word this build knows, or the arm below that refuses an unknown \
+             word is the one the SHIPPED document takes. ⚠ THIS repository keeps its rows; that is \
+             the document's choice and not this build's — see the sibling gate for the other word",
         );
 
         // ── THE CONTROL: a pane that kept the rows ──────────────────────────────────────────
@@ -18766,14 +18790,27 @@ mod tests {
             Some((337, 73)),
         )
         .expect_err("a dimension this build does not know must not be waved through");
+        let unknown = unknown
+            .reason()
+            .map(ToString::to_string)
+            .unwrap_or_default();
         assert!(
-            unknown
-                .reason()
-                .map(ToString::to_string)
-                .unwrap_or_default()
-                .contains("whatever fits"),
-            "⚠⚠ and it must name the word it could not honour: {unknown:?}",
+            unknown.contains("whatever fits"),
+            "⚠⚠ and it must name the word it could not honour: {unknown}",
         );
+        // 🎯🎯🎯 AND EVERY WORD THIS BUILD DOES KNOW — register item 679. The refusal used to name
+        // the single `const` it held, so an author was told *this build knows only "rows"* and had
+        // no way to tell a build missing their word from one that has a vocabulary of one. Asserted
+        // over `Kept::ALL` rather than against a literal pair, so a third word joins this sentence
+        // the day it compiles instead of the day somebody remembers.
+        for kept in Kept::ALL {
+            assert!(
+                unknown.contains(&format!("{:?}", kept.word())),
+                "⛔ ITEM 679: the refusal does not name {:?}, which this build can apply — an \
+                 author cannot choose a word they are not shown: {unknown}",
+                kept.word(),
+            );
+        }
 
         // ── AND THREE ABSENCES THAT ARE NOT CLAIMS ──────────────────────────────────────────
         ai_loop_keeps_what_its_kind_keeps(None, Some((338, 36)), Some((338, 73)))
@@ -18848,6 +18885,91 @@ mod tests {
             lock(&workspace).close(driven).is_some(),
             "the pane this gate opened was there to close",
         );
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE OTHER AXIS IS SAYABLE, AND IT MEASURES THE OTHER HALF OF THE PAIR** —
+    /// register item 679.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What could not be said
+    ///
+    /// The door held `const KEEPS_ITS_ROWS: &str = "rows"` and refused every other word, then read
+    /// the pair with `let Some((_, rows)) = pane` — so a kind that needed its WIDTH kept could not
+    /// say so at all, and the run would simply refuse to start. Item 679's dimension was
+    /// **unsayable**, in a check whose own neighbour documents both axes: *halving the WIDTH costs
+    /// the delivery-confirmation axis, and halving the HEIGHT costs item 765's*. Only the second
+    /// was ever built.
+    ///
+    /// # ⚠⚠⚠⚠⚠ THE SAME TWO PANES, OPPOSITE VERDICTS — and nothing weaker would do
+    ///
+    /// A gate that only checked *`cols` is accepted as a word* would pass against a
+    /// [`Kept::of`](sprag_plugin::kind::Kept::of) that returned the rows half for both. So the two
+    /// words are put to the SAME pair of sizes and must disagree: the pane halved in width is
+    /// refused under `cols` and accepted under `rows`, and the pane halved in height is the
+    /// reverse. That is the whole content of *the word carries its axis*.
+    #[test]
+    fn a_kind_that_keeps_its_width_is_checked_on_the_width() {
+        let opens_at = Some((110, 45));
+        // ⚠ The measured shapes, both off this register: 110 → 54 columns is item 679's own
+        // observation (a milestone checker's pane opening beside a run's), and 73 → 36 rows is
+        // item 772's. Neither number was chosen here.
+        let lost_its_width = Some((54, 45));
+        let lost_its_height = Some((110, 22));
+
+        let cols = Kept::Cols.word();
+        let rows = Kept::Rows.word();
+
+        let narrowed = ai_loop_keeps_what_its_kind_keeps(Some(cols), lost_its_width, opens_at)
+            .expect_err(
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 679: a kind that keeps its COLS must refuse a pane holding \
+                 54 of its window's 110 columns — that is the pane a milestone checker left a live \
+                 run in, and until this word existed the document could not even ask",
+            );
+        let said = narrowed
+            .reason()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        assert!(
+            said.contains("54") && said.contains("110") && said.contains(cols),
+            "⚠⚠ and it names both numbers AND the dimension, or a reader cannot tell which axis \
+             was lost: {said}",
+        );
+        assert!(
+            said.contains("delivery"),
+            "⚠⚠ and it says what halving THIS dimension costs — the cols sentence is not the rows \
+             sentence, and one `format!` serving both words would have hidden that: {said}",
+        );
+
+        // ⛔⛔⛔ THE DISCRIMINATOR. Same pane, other word: a run that keeps its rows does not care
+        // that the width was halved. Without this arm, `Kept::of` could read the rows half for
+        // both words and every assertion above would still pass.
+        ai_loop_keeps_what_its_kind_keeps(Some(rows), lost_its_width, opens_at).expect(
+            "⚠⚠⚠ THE CONTROL: a pane that lost only its WIDTH kept every row, so a kind that keeps \
+             its rows has nothing to refuse — and a check that refused it would be measuring the \
+             wrong half of the pair",
+        );
+        // And the mirror, so neither word is the one that always answers.
+        ai_loop_keeps_what_its_kind_keeps(Some(cols), lost_its_height, opens_at).expect(
+            "⚠⚠⚠ THE MIRROR: a pane that lost only its HEIGHT kept every column, so a kind that \
+             keeps its cols has nothing to refuse",
+        );
+        ai_loop_keeps_what_its_kind_keeps(Some(rows), lost_its_height, opens_at).expect_err(
+            "and the rows rule still refuses the rows loss, or this whole set has stopped applying",
+        );
+
+        // ⚠ THE VOCABULARY IS WHAT THE DOOR PARSES, asserted through the type rather than through
+        // two string literals: a word in the set that the door cannot apply would be a set nobody
+        // enforces, which is `closed_set!`'s own reason for existing.
+        for kept in Kept::ALL {
+            assert_eq!(
+                sprag_plugin::kind::Kept::of_word(kept.word()),
+                Some(kept),
+                "every word this set spells must parse back to it",
+            );
+            ai_loop_keeps_what_its_kind_keeps(Some(kept.word()), Some((110, 45)), opens_at).expect(
+                "and an undivided pane is accepted under EVERY word, or one of them is refusing on \
+                 arithmetic that has nothing to do with it",
+            );
+        }
     }
 
     /// ⛔⛔⛔⛔⛔ **A LAUNCH NOBODY AND NO DOCUMENT ANSWERED IS REFUSED, NAMING EVERY KEY THAT WOULD
