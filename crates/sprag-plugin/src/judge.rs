@@ -729,6 +729,211 @@ impl Waited {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **WHAT THE QUESTION A CHECK WAS PUT IN ACTUALLY NAMED** — register item 1107, and the
+/// one fact about a check's cost that the product knew on every run and wrote down on none.
+///
+/// # ⛔⛔⛔⛔⛔ The value existed. It lived in a test table, and a PERSON filled it in
+///
+/// `crate::outer::CHECK_READINGS` has carried this distinction since register item 1073 and carried
+/// it as a column somebody typed while transcribing a reading out of the loop's own store. Register
+/// item 1106 then measured what that costs: every check of this repository's own kind had been
+/// filed by hand as *a list of files* while the list was **nine DIRECTORIES covering 224 of 382
+/// tracked files**, so a gate asserted **1800% of room** for *the shape the product asks* while two
+/// real checks ran the 600 s bound out. **The driver knew which list it composed and the transcriber
+/// did not**, and the fold was in the instrument, which is why a failed bound had a green gate.
+///
+/// ⚠⚠⚠⚠⚠ **SO IT IS THE PRODUCT'S TYPE NOW, AND THE TABLE'S COLUMN IS THIS TYPE.** One value, one
+/// home — the *"two homes for one fact"* class register item 867 refuses by name. A reading
+/// transcribed by hand still is (register item 1107 forbids deriving that table from the store, and
+/// `CHECK_READINGS`' own doc holds the argument), but what the transcriber now copies is a word the
+/// run WROTE rather than a judgement they make about a document they may never open.
+///
+/// # ⚠⚠ Why what the entries ARE, rather than which clause they came from
+///
+/// The driver chooses between three lists — this round's moved files, `check_opens`, `progress_marks`
+/// — and recording that choice was the near-miss. The quantity this is measured against is LATENCY,
+/// and what a judge pays for is SEARCHING: a clause naming files and a clause naming directories
+/// differ by the 6x this whole chain is about, while two clauses naming files do not differ at all.
+/// A record keyed on the clause would pool the two shapes again the first time a kind authored
+/// `check_opens` as files — item 1106's fold, rebuilt one layer along.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuestionShape {
+    /// **THE QUESTION PLACED THE CHECKER NOWHERE** — it named neither a tree nor a list, so the
+    /// judge was shown an account of the work and nothing else.
+    ///
+    /// ⚠⚠ This is a real and reachable degradation, not a hedge: `crate::outer`'s sentence about
+    /// where the work is is written only when the surface can say where a pane was born, and the
+    /// file list is rendered INSIDE that sentence — so a host that cannot answer loses both. It is
+    /// its own arm rather than a spelling of [`Directory`](Self::Directory) because *pointed at a
+    /// tree* and *pointed at nothing* are the two sides of register item 710, and a run that has
+    /// fallen back to the second must not be counted as the first.
+    Unplaced,
+    /// Pointed at a directory and left to find its own way, with **no list at all** — every check
+    /// before register item 1072, and still what a kind authoring neither clause gets.
+    Directory,
+    /// Handed a list, and at least one entry is a **DIRECTORY** in the tree the checker stands in —
+    /// so the judge is searching a narrower tree rather than opening anything.
+    ///
+    /// ⚠⚠ This is not a degenerate case of the arm below; it is what this repository's own kind
+    /// asked on **every** run between register items 1074 and 1106, and the honest shape for a
+    /// DOCUMENT's list — a round of this loop pays one register item and which files that touches
+    /// differs every round, so the document cannot author them. That is a statement about what a
+    /// document can know, and the driver stands in a tree.
+    DirectoriesNamed,
+    /// Handed a list, and **no entry is a directory** in the tree the checker stands in — item
+    /// 1072's arm, and the one measured six times faster.
+    ///
+    /// ⚠ An entry that is not there at all reads as this arm, deliberately. What the third shape
+    /// costs is a SEARCH, and a judge told to open a path that does not exist does not search — it
+    /// fails to open one file. Whether a named file is present is what the checker finds out by
+    /// opening it, which is `crate::outer::OuterLoop::paths_a_check_can_open`'s stated rule.
+    FilesNamed,
+}
+
+impl QuestionShape {
+    /// Every arm, so the runs that produce them, the wire that carries them and the table that
+    /// prices them are one list — [`Silence::ALL`]'s rule, and this workspace's rule 6: a shape
+    /// nobody classified must not quietly leave a population.
+    pub const ALL: [Self; 4] = [
+        Self::Unplaced,
+        Self::Directory,
+        Self::DirectoriesNamed,
+        Self::FilesNamed,
+    ];
+
+    /// **THE WORD THIS SHAPE CROSSES A WIRE AND A LOG AS.**
+    ///
+    /// ⚠ A word and never an empty string, on [`Silence::wire_str`]'s measured reason.
+    #[must_use]
+    pub const fn wire_str(self) -> &'static str {
+        match self {
+            Self::Unplaced => "unplaced",
+            Self::Directory => "directory",
+            Self::DirectoriesNamed => "directories_named",
+            Self::FilesNamed => "files_named",
+        }
+    }
+
+    /// **THE ARM THAT WORD NAMES**, or [`None`] where nothing here is called that.
+    ///
+    /// ⚠ Derived from [`ALL`](Self::ALL) and never a second `match`, and an unknown word is
+    /// [`None`] rather than a default arm — [`Silence::named`]'s rules, for [`Silence::named`]'s
+    /// reasons.
+    #[must_use]
+    pub fn named(word: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|arm| arm.wire_str() == word)
+    }
+}
+
+/// **HOW THE CHECKS OF ONE SHAPE WENT** — register item 1107, [`CheckLatency`]'s three counts for a
+/// single [`QuestionShape`].
+///
+/// ⚠ A row rather than three parallel arrays, so a shape's answer count, its worst answer and its
+/// timeouts cannot be read out of step with one another.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Timed {
+    /// How many checks of this shape ended inside their bound.
+    pub answered: u32,
+    /// The longest any of those took, or [`None`] where none did.
+    pub slowest: Option<Duration>,
+    /// How many checks of this shape outran their bound.
+    pub outran: u32,
+}
+
+impl Timed {
+    /// **NOTHING OF THIS SHAPE WAS MEASURED.**
+    pub const NONE: Self = Self {
+        answered: 0,
+        slowest: None,
+        outran: 0,
+    };
+
+    /// Whether nothing of this shape has been measured at all.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.answered == 0 && self.outran == 0
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **A RUN'S LATENCIES, SPLIT BY WHAT THE QUESTION NAMED** — register item 1107.
+///
+/// # ⛔⛔⛔ A run's worst answer says nothing without the shape it was asked in
+///
+/// [`CheckLatency`] keeps a run's slowest answer and its count of timeouts, and a run asks several
+/// checks whose shapes differ — the first turn of a round has moved no files and falls to the
+/// document's list, and a later one does not. So *this run's worst check took 394 s* is a sentence
+/// about two populations that differ by the 6x [`QuestionShape`]'s doc is about, and the person
+/// transcribing it into `crate::outer::CHECK_READINGS` had to guess which.
+///
+/// ⚠⚠ **THE ROWS ARE PRIVATE AND THE WAY IN IS BY SHAPE** — [`SilentByKind`]'s rule: an index is a
+/// second spelling of the order [`QuestionShape::ALL`] happens to be in, and a caller that wrote one
+/// would be free to disagree with that array about which row is which.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LatencyByShape {
+    /// One row per [`QuestionShape::ALL`], in that array's order.
+    of: [Timed; QuestionShape::ALL.len()],
+}
+
+impl LatencyByShape {
+    /// **NO CHECK OF ANY SHAPE WAS MEASURED.**
+    pub const NONE: Self = Self {
+        of: [Timed::NONE; QuestionShape::ALL.len()],
+    };
+
+    /// Where `shape`'s row lives — the one place an index is derived, so [`QuestionShape::ALL`] is
+    /// the only authority on the order.
+    fn at(shape: QuestionShape) -> usize {
+        QuestionShape::ALL
+            .iter()
+            .position(|it| *it == shape)
+            .expect("QuestionShape::ALL is every shape")
+    }
+
+    /// **ONE MORE CHECK OF THIS SHAPE ENDED THIS WAY** — [`CheckLatency::record`]'s arithmetic, on
+    /// one row.
+    pub fn record(&mut self, shape: QuestionShape, waited: Waited) {
+        let row = &mut self.of[Self::at(shape)];
+        match waited {
+            Waited::Answered { took, .. } => {
+                row.answered = row.answered.saturating_add(1);
+                row.slowest = Some(row.slowest.map_or(took, |slowest| slowest.max(took)));
+            }
+            Waited::Outran { .. } => row.outran = row.outran.saturating_add(1),
+            Waited::Unmeasured => {}
+        }
+    }
+
+    /// **HOW THE CHECKS OF THIS SHAPE WENT** — the row a reading is transcribed out of.
+    #[must_use]
+    pub fn of(&self, shape: QuestionShape) -> Timed {
+        self.of[Self::at(shape)]
+    }
+
+    /// **PUT A ROW BACK AS IT WAS COUNTED ELSEWHERE** — for a reader rebuilding this table off a
+    /// wire or a log, where [`record`](Self::record) is for the run doing the counting.
+    ///
+    /// ⚠ Two doors rather than one, on [`SilentByKind::restore`]'s stated reason: they mean
+    /// different things, and a reader that incremented in a loop would be re-deriving somebody
+    /// else's total from its own arithmetic.
+    pub fn restore(&mut self, shape: QuestionShape, row: Timed) {
+        self.of[Self::at(shape)] = row;
+    }
+
+    /// Every row with its shape, in [`QuestionShape::ALL`]'s order — **including the empty ones**,
+    /// because a shape nothing was asked in and a shape nobody counted are different facts.
+    pub fn rows(&self) -> impl Iterator<Item = (QuestionShape, Timed)> + '_ {
+        QuestionShape::ALL
+            .into_iter()
+            .map(|shape| (shape, self.of(shape)))
+    }
+
+    /// Whether no row here has counted anything.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.of.iter().all(Timed::is_empty)
+    }
+}
+
 /// ⛔⛔⛔⛔⛔ **HOW LONG ONE RUN'S CHECKS TOOK** — register item 1073, [`Waited`] summed over a run.
 ///
 /// ⚠⚠ THE SLOWEST ANSWER AND NOT A LIST, for `crate::plugin::Checks::why_silent`'s reason: a run's
@@ -750,6 +955,22 @@ pub struct CheckLatency {
     /// the bound is a constant a later build may change: `outran: 3` says nothing without the
     /// length of time three checks failed to answer inside.
     pub bound: Option<Duration>,
+    /// ⛔⛔⛔⛔⛔ **AND THE SAME THREE COUNTS SPLIT BY WHAT THE QUESTION NAMED** — register item
+    /// 1107, and the column every reading above was transcribed WITHOUT.
+    ///
+    /// # ⚠⚠ Why the totals above stay, rather than being derived from these rows
+    ///
+    /// `crate::plugin::Checks` keeps exactly this pair — `silent` beside `silent_by` — and states
+    /// the reason: **a run restored from a log written before the split carries the total with no
+    /// rows beneath it, deliberately.** Deriving the totals would make every latency this loop has
+    /// already recorded unreadable, and those are the rows `crate::outer::CHECK_READINGS` is
+    /// transcribed from. What holds the two in step is the same thing that holds that pair in step
+    /// — **one function raises both** ([`record`](Self::record)), so there is no path that moves
+    /// one without the other.
+    ///
+    /// ⚠ An EMPTY split under a non-zero total is therefore *this run predates item 1107*, never
+    /// *its checks had no shape*.
+    pub by_shape: LatencyByShape,
 }
 
 impl CheckLatency {
@@ -759,15 +980,23 @@ impl CheckLatency {
         slowest: None,
         outran: 0,
         bound: None,
+        by_shape: LatencyByShape::NONE,
     };
 
-    /// **ONE MORE CHECK ENDED THIS WAY.**
+    /// **ONE MORE CHECK ENDED THIS WAY, ASKED IN THIS SHAPE.**
     ///
     /// ⚠ An [`Unmeasured`](Waited::Unmeasured) wait moves nothing, the bound included: the bound is
     /// recorded as the time a MEASURED check was given, and a check that never started was given
     /// none. ⚠ Saturating for `crate::plugin::Checks`' reason: a tally that wrapped would report a
     /// run's worst checker as its best.
-    pub fn record(&mut self, waited: Waited) {
+    ///
+    /// ⚠⚠ **THE SHAPE IS THE CALLER'S AND NOT THIS TYPE'S TO DERIVE** — register item 1107. What
+    /// the question named is known by the one party that composed it, and a second author here
+    /// would be a `judge` that re-derived an `outer` decision from nothing.
+    pub fn record(&mut self, waited: Waited, shape: QuestionShape) {
+        // ⚠⚠⚠ THE SPLIT FIRST AND THE TOTALS IMMEDIATELY AFTER, in ONE function — see
+        // [`by_shape`](Self::by_shape). Two call sites would be two counters over one population.
+        self.by_shape.record(shape, waited);
         match waited {
             Waited::Answered { took, within } => {
                 self.answered = self.answered.saturating_add(1);
@@ -2017,9 +2246,10 @@ mod tests {
             took: Duration::from_secs(secs),
             within: bound,
         };
+        let shape = QuestionShape::Directory;
 
         let mut tally = CheckLatency::NONE;
-        tally.record(Waited::Unmeasured);
+        tally.record(Waited::Unmeasured, shape);
         assert_eq!(
             tally,
             CheckLatency::NONE,
@@ -2034,22 +2264,17 @@ mod tests {
             answered(33),
             Waited::Outran { within: bound },
         ] {
-            tally.record(waited);
+            tally.record(waited, shape);
         }
         assert_eq!(
-            tally,
-            CheckLatency {
-                answered: 3,
-                slowest: Some(Duration::from_secs(185)),
-                outran: 1,
-                bound: Some(bound),
-            },
+            (tally.answered, tally.slowest, tally.outran, tally.bound),
+            (3, Some(Duration::from_secs(185)), 1, Some(bound)),
             "⛔⛔⛔⛔⛔ ITEM 1073: three answers with 185 s the worst, and one check that ran out — \
              counted beside the answers and never folded into the slowest",
         );
 
         let mut every_one_ran_out = CheckLatency::NONE;
-        every_one_ran_out.record(Waited::Outran { within: bound });
+        every_one_ran_out.record(Waited::Outran { within: bound }, shape);
         assert_eq!(
             (
                 every_one_ran_out.slowest,
@@ -2060,6 +2285,90 @@ mod tests {
             (None, 1, Some(bound), false),
             "⛔⛔⛔ AND A RUN WHOSE EVERY CHECK RAN OUT has no slowest answer and is NOT empty: a \
              maximum over answers alone would read it as a run whose checks were never slow",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE SAME READINGS, SPLIT BY WHAT THE QUESTION NAMED — AND THE TOTALS CANNOT
+    /// SEPARATE THEM** — register item 1107.
+    ///
+    /// # ⛔⛔⛔⛔⛔ What a run's worst answer could not say, and why it mattered
+    ///
+    /// Register item 1106 measured a gate reporting **1800% of room** for *the shape the product
+    /// asks* while two real checks of that shape ran the bound out, because the column saying which
+    /// shape a reading was taken in was typed by a person out of a record that did not carry it.
+    /// The arms below are therefore a pair: one run, two shapes, and the run's own TOTALS identical
+    /// to what they were before this split existed — so what this gate measures is the split and
+    /// not a change in the arithmetic.
+    #[test]
+    fn a_latency_tally_says_which_shape_of_question_each_reading_was_taken_in() {
+        let bound = Duration::from_secs(600);
+        let answered = |secs| Waited::Answered {
+            took: Duration::from_secs(secs),
+            within: bound,
+        };
+
+        let mut tally = CheckLatency::NONE;
+        // ⚠ A run really does ask in more than one shape: its first turn has moved no files and
+        // falls to the document's list, and a later one does not. That is the whole subject.
+        tally.record(answered(33), QuestionShape::FilesNamed);
+        tally.record(answered(394), QuestionShape::DirectoriesNamed);
+        tally.record(
+            Waited::Outran { within: bound },
+            QuestionShape::DirectoriesNamed,
+        );
+
+        assert_eq!(
+            (tally.answered, tally.slowest, tally.outran),
+            (2, Some(Duration::from_secs(394)), 1),
+            "⚠⚠⚠ THE CONTROL: the totals are exactly what item 1073 counted, so nothing below is \
+             bought by changing the arithmetic the bound has always been judged against",
+        );
+        assert_eq!(
+            (
+                tally.by_shape.of(QuestionShape::FilesNamed),
+                tally.by_shape.of(QuestionShape::DirectoriesNamed),
+            ),
+            (
+                Timed {
+                    answered: 1,
+                    slowest: Some(Duration::from_secs(33)),
+                    outran: 0,
+                },
+                Timed {
+                    answered: 1,
+                    slowest: Some(Duration::from_secs(394)),
+                    outran: 1,
+                },
+            ),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1107: the two shapes differ by the 6x this whole chain is \
+             about, and a tally that folds them hands a transcriber one number to file under a \
+             shape they have to guess. The guess is what item 1106 measured going wrong",
+        );
+        assert!(
+            tally.by_shape.of(QuestionShape::Directory).is_empty()
+                && tally.by_shape.of(QuestionShape::Unplaced).is_empty(),
+            "⚠⚠ AND A SHAPE NOTHING WAS ASKED IN MUST READ AS EMPTY rather than borrow a \
+             neighbour's readings: {:?}",
+            tally.by_shape,
+        );
+
+        // ── ⚠⚠⚠ AND A TOTAL WITH NO ROWS UNDER IT IS A RECORD OLDER THAN THIS SPLIT ───────────
+        //
+        // ⛔ `Checks::silent` beside `silent_by` states this asymmetry and it reaches here for the
+        // same reason: the latencies `crate::outer::CHECK_READINGS` is transcribed from were
+        // written by builds that could not say, and a reader that refused them would throw away
+        // every reading this loop has ever recorded.
+        let older_than_the_split = CheckLatency {
+            answered: 5,
+            slowest: Some(Duration::from_secs(394)),
+            outran: 2,
+            bound: Some(bound),
+            by_shape: LatencyByShape::NONE,
+        };
+        assert!(
+            !older_than_the_split.is_empty() && older_than_the_split.by_shape.is_empty(),
+            "⚠⚠⚠ a run restored from a log written before item 1107 carries its counts with no \
+             rows beneath them — *nobody wrote the shape down*, never *its checks had no shape*",
         );
     }
 

@@ -99,7 +99,7 @@ use crate::act::Does;
 use crate::completion::{Completion, DoneWhen, Over, Quiet, Turn};
 use crate::consent::Unanswered;
 use crate::deliver::{Delivered, Delivery, SubmittedWhen, deliver};
-use crate::judge::Silence;
+use crate::judge::{QuestionShape, Silence};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
 use crate::run::{RunContext, Waited, park_until, poll_until};
 use crate::screen::{Malformed, Refused, ScreenRule, ScreenRules, Screened};
@@ -1171,6 +1171,11 @@ struct Reading {
     /// What judged it — the judge is part of the reading.
     judge: JudgeModel,
     /// What it was asked — register item 1072 changed that, so it is part of the reading too.
+    ///
+    /// ⭐⭐⭐⭐⭐ **AND IT IS THE PRODUCT'S OWN TYPE SINCE REGISTER ITEM 1107**, filled from a word
+    /// the RUN wrote (`CheckLatency::by_shape`) rather than from a judgement the transcriber makes.
+    /// Item 1106 measured what that judgement costs when it is wrong, and this column is where it
+    /// was wrong.
     shape: QuestionShape,
     /// Where the reading came from, for the person a red names it to.
     whence: &'static str,
@@ -1236,44 +1241,6 @@ enum JudgeModel {
     Default,
     /// A cheap model named for speed (`--model haiku`).
     Cheap,
-}
-
-/// **WHAT THE JUDGE WAS ASKED** — register item 1072 changed it, which is why it is a field.
-///
-/// # ⛔⛔⛔⛔⛔ Two values could not hold the difference the 6x is ABOUT
-///
-/// The field was `Directory | FilesNamed`, and `FilesNamed` meant *the clause was written* — not
-/// *the clause named files*. Those came apart the moment this repository's own kind authored
-/// [`CHECK_OPENS_KEY`]: it names nine **directories**, re-derived 2026-09-14 as **224 of the tree's
-/// 382 tracked files — 58% of it**. A judge told to open 58% of a tree is still searching; the
-/// reading that priced this arm at 33.3 s named **five files**.
-///
-/// ⛔ So the two populations whose latencies differ by an order of magnitude were **one value**, and
-/// the gate below asserted a 1800% margin for *the shape the product asks* off a single reading of
-/// a shape this kind has never once been asked. Measured against the loop's own store the same
-/// week: seven runs of the directories-named shape answered at **177.3 / 215.3 / 283.4 / 319.3 /
-/// 342.6 / 358.2 / 394.2 s** and **two ran the 600 s bound out** — while the table said 1800%.
-///
-/// ⚠⚠ The lesson is [`Cleared`](crate::readiness::Cleared)'s, one type over and the same week: a
-/// value that folds facts which differ cannot be asked the question it exists to answer. Here the
-/// fold was in the INSTRUMENT, so it made a bound's own gate green about a bound that had failed.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum QuestionShape {
-    /// Pointed at a directory and left to find its own way around, with **no list at all** — every
-    /// check before item 1072, and still what a kind authoring neither clause gets.
-    Directory,
-    /// Handed a list, and its entries are **DIRECTORIES** — so the judge is searching a narrower
-    /// tree rather than opening anything.
-    ///
-    /// ⚠⚠ This is not a degenerate case of the arm below; it is what this repository's own kind
-    /// asks on **every** run, and the honest shape for it — a round of this loop pays one register
-    /// item and which files that touches differs every round, so the document cannot author them.
-    /// That is a statement about what a DOCUMENT can know, and the driver stands in a tree.
-    DirectoriesNamed,
-    /// Handed a list, and its entries are **FILES to open** — item 1072's arm, and the one
-    /// measured six times faster.
-    FilesNamed,
 }
 
 /// **HOW MUCH ROOM A BOUND HAS OVER A SET OF READINGS** — register item 1073's four answers.
@@ -15784,7 +15751,7 @@ impl OuterLoop {
         // before the checker was even spawned, and a name that lived past this function would keep
         // one per check. The check happens below, inside this scope, which is exactly the lifetime
         // this wants.
-        let (_copy, standing_in, question) = self.a_check_to_put(panes, &produced);
+        let (_copy, standing_in, question, shape) = self.a_check_to_put(panes, &produced);
         // ⚠⚠⚠⚠⚠ **COUNTED HERE AND NOWHERE ELSE** — register item 601. This is the one place a
         // claim is really put to an independent process: past the `said` guard and past the empty
         // argv, so the tally counts CHECKS ASKED rather than judging edges walked. A counter one
@@ -15805,10 +15772,16 @@ impl OuterLoop {
         // took a measurable time, and a wait that ran out is the one observation the margin in
         // `CHECK_READINGS` most needs and never had. Recording it per arm would be three sites
         // free to disagree about one fact.
+        //
+        // ⛔⛔⛔⛔⛔ **AND IT IS FILED UNDER THE SHAPE IT WAS ASKED IN** — register item 1107. The
+        // shape comes from `a_check_to_put`, which composed the sentence; until this argument
+        // existed the run wrote down how long a check took and never what it had been asked, so
+        // every reading in `CHECK_READINGS` was classified by the person transcribing it — and
+        // item 1106 measured a whole arm of that table classified wrong.
         self.checks
             .latency
             .get_or_insert(crate::judge::CheckLatency::NONE)
-            .record(asked.waited);
+            .record(asked.waited, shape);
         match asked.said {
             // ⚠⚠ THE WORDS TRAVEL WITH BOTH VERDICTS, not only the refusal. A reader deciding what
             // an AGREEMENT is worth needs them for the same reason register item 428 needs the
@@ -15911,7 +15884,8 @@ impl OuterLoop {
         }
     }
 
-    /// **THE COPY, THE DIRECTORY, AND THE QUESTION — ONE ANSWER** — registers 710, 705 and 1072.
+    /// **THE COPY, THE DIRECTORY, THE QUESTION AND ITS SHAPE — ONE ANSWER** — registers 710, 705,
+    /// 1072 and 1107.
     ///
     /// # ⛔⛔⛔⛔⛔ Why the three come back together
     ///
@@ -15928,6 +15902,13 @@ impl OuterLoop {
     /// The reduction runs against `work_is_in` — the tree the paths were AUTHORED against and the
     /// one `progress_reading` places the marks in — precisely so what is named is true of the copy
     /// too. See [`paths_a_check_can_open`](Self::paths_a_check_can_open).
+    ///
+    /// ⛔⛔⛔⛔⛔ **AND THE FOURTH IS WHAT THE QUESTION ENDED UP NAMING** — register item 1107. The
+    /// shape is not a property of the tier that won, it is a property of the SENTENCE, and this is
+    /// the only place holding both the list and the tree it was reduced against. Handed back rather
+    /// than recomputed by the caller, on the same argument as the three above: a second author
+    /// would be free to file a reading under a shape the check was not asked in, which is exactly
+    /// the fold item 1106 measured. See [`shape_asked`](Self::shape_asked).
     ///
     /// ⚠⚠⚠⚠ **AND IT EXISTS SO A GATE CAN DRIVE THE PRODUCT'S OWN RESOLUTION.** The first form of
     /// item 705's gate rebuilt these three steps in the test and asserted on its own copy — a
@@ -15951,6 +15932,7 @@ impl OuterLoop {
         Option<Box<dyn crate::access::CutCheckout>>,
         Option<std::path::PathBuf>,
         String,
+        QuestionShape,
     ) {
         let work_is_in = panes
             .origin()
@@ -16035,7 +16017,61 @@ impl OuterLoop {
             .map(|cut| cut.path().to_path_buf())
             .or(work_is_in);
         let question = self.check_question(produced, standing_in.as_deref(), &to_open);
-        (copy, standing_in, question)
+        // ⛔⛔⛔⛔⛔ **AND WHAT THE QUESTION ENDED UP NAMING, SAID BY THE ONE PARTY THAT KNOWS** —
+        // register item 1107. Resolved HERE, beside the three above, on this function's own
+        // argument: it is the same decision, and a shape derived anywhere else would be a second
+        // author free to disagree with the sentence that was actually put.
+        let shape = Self::shape_asked(standing_in.as_deref(), &to_open);
+        (copy, standing_in, question, shape)
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHAT THE QUESTION JUST COMPOSED ACTUALLY NAMED** — register item 1107, as the
+    /// type the readings table is priced in.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The driver knew this every run and nothing wrote it down
+    ///
+    /// [`crate::judge::QuestionShape`] holds what the fold cost: every check of this repository's
+    /// own kind was transcribed by hand as *a list of files* while the list was nine DIRECTORIES,
+    /// and the gate over `CHECK_READINGS` reported **1800% of room** for a shape two real checks
+    /// had run the bound out in. The shape is a fact about the sentence this function just put, and
+    /// this is the only place that holds both halves of it.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why it asks the TREE, where [`paths_a_check_can_open`](Self::paths_a_check_can_open)
+    /// deliberately does not
+    ///
+    /// That function refuses to `stat`, and the refusal is about a different question. It decides
+    /// **which paths may be NAMED** — a filter, whose only available tree is the original while the
+    /// sentence is about a copy, so a filter resting on it would be this crate's oldest class (two
+    /// readers of one thing, free to disagree). This decides **what the judge will MEET**, and it
+    /// asks the tree the judge is actually sent to, at the moment the copy exists. It changes
+    /// nothing about the question: every path named is named either way, and what is read here is
+    /// read after the sentence is composed.
+    ///
+    /// ⚠⚠ **AND WHAT IT ASKS IS *is this a directory*, because a SEARCH is the whole cost.** A
+    /// judge handed a directory lists it and hunts; a judge handed a file opens it. A path that is
+    /// not there is not a search either, so it reads as
+    /// [`FilesNamed`](crate::judge::QuestionShape::FilesNamed) — that arm's own doc says so, and
+    /// whether a named file is present is what the checker finds out by opening it.
+    ///
+    /// ⚠ **`ANY` AND NOT `ALL`**: one directory in a list of five files is a judge that searches,
+    /// and the reading such a check produces belongs with the searches.
+    fn shape_asked(standing_in: Option<&std::path::Path>, to_open: &[String]) -> QuestionShape {
+        // ⛔⛔ A SURFACE THAT CANNOT SAY WHERE THE WORK IS NAMES NO LIST EITHER, and that is the
+        // product's own arrangement rather than an assumption made here: `check_question` renders
+        // the file clause INSIDE the sentence about where the tree is, so a run that lost the one
+        // lost the other. Reporting such a check as `Directory` would credit it with a tree it was
+        // never given.
+        let Some(tree) = standing_in else {
+            return QuestionShape::Unplaced;
+        };
+        if to_open.is_empty() {
+            return QuestionShape::Directory;
+        }
+        if to_open.iter().any(|named| tree.join(named).is_dir()) {
+            QuestionShape::DirectoriesNamed
+        } else {
+            QuestionShape::FilesNamed
+        }
     }
 
     /// ⛔⛔⛔⛔⛔ **WHICH OF THE PATHS A DOCUMENT AUTHORED MAY BE NAMED TO A CHECKER STANDING IN A
@@ -26157,7 +26193,7 @@ mod tests {
             let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
             let loops = bounded_at(lua, pane, Duration::from_secs(20))
                 .expect("the document's four authored strings");
-            let (_copy, _where, question) = loops.a_check_to_put(panes, &produced);
+            let (_copy, _where, question, _shape) = loops.a_check_to_put(panes, &produced);
             question
         };
 
@@ -26279,7 +26315,7 @@ mod tests {
                 "⚠⚠⚠⚠⚠ THE PLANT DID NOT SURVIVE THE DATAMODEL, so nothing below is about a run \
                  that names marks at all",
             );
-            let (_copy, _where, question) = loops.a_check_to_put(panes, produced);
+            let (_copy, _where, question, _shape) = loops.a_check_to_put(panes, produced);
             question
         };
 
@@ -26599,7 +26635,7 @@ mod tests {
                         "⚠⚠⚠⚠⚠ THE PLANT OF `{key}` DID NOT SURVIVE THE DATAMODEL",
                     );
                 }
-                let (_copy, _where, question) = loops.a_check_to_put(panes, &silent);
+                let (_copy, _where, question, _shape) = loops.a_check_to_put(panes, &silent);
                 question
             };
 
@@ -26772,7 +26808,7 @@ mod tests {
                 .start_ready(panes, &RunContext::uncancellable())
                 .expect("a barrier with no condition is down");
             let began = loops.began_at.clone();
-            let (_copy, _where, question) = loops.a_check_to_put(panes, &silent);
+            let (_copy, _where, question, _shape) = loops.a_check_to_put(panes, &silent);
             (began, question)
         };
 
@@ -26875,6 +26911,192 @@ mod tests {
         );
 
         knows.lifecycle().expect("lifecycle").close(pane);
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A CHECK'S READING IS RECORDED WEARING THE SHAPE OF QUESTION IT WAS ASKED IN** —
+    /// register item 1107.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The run knew, wrote down everything except this, and the gap was filled by hand
+    ///
+    /// A run records `{answered, slowest, outran, bound}` and nothing about WHAT each of those
+    /// checks was asked. `CHECK_READINGS` is transcribed out of exactly that record, and its shape
+    /// column was therefore a judgement the transcriber made — about a document they had to go and
+    /// open, for a tier the driver chose without telling anybody. **Register item 1106 measured
+    /// that judgement wrong for a whole arm**: nine DIRECTORIES filed as *a list of files*, and the
+    /// gate over this table asserting **1800% of room** while two real checks of that shape ran the
+    /// 600 s bound out. The fold was in the instrument, so a failed bound had a green gate.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Why the two arms differ ONLY in which tier won
+    ///
+    /// Both runs below are handed the same `check_opens` — one real directory — and the same tree.
+    /// What separates them is whether the driver could read the round's own moved files, which is
+    /// the tier register item 1106 added. So a shape that did not follow the tier leaves one arm
+    /// looking like the other, and the mutation this item names — swapping the tier arms in
+    /// [`a_check_to_put`](OuterLoop::a_check_to_put) — turns the pair red rather than one of them.
+    ///
+    /// # ⛔⛔⛔ And it goes through [`checked`](OuterLoop::checked), not through the resolver alone
+    ///
+    /// `a_check_to_put` hands the shape back and `checked` files it — *a call and an argument,
+    /// believed because it compiles*, which is the sentence register item 705's last gate was
+    /// written for. A driver that resolved the shape perfectly and then recorded a constant passes
+    /// every other gate in this item and fails only here.
+    #[test]
+    fn a_checks_reading_is_recorded_wearing_the_shape_it_was_asked_in() {
+        let repo = a_directory_this_gate_owns("1107-the-shape-it-was-asked-in");
+        // ⚠⚠ **A REAL DIRECTORY AND A REAL FILE, INSIDE THE COPY** — the shape is read off the tree
+        // the checker is SENT to, so a fixture that only named paths would be asking about a tree
+        // that is not there and both arms would answer alike.
+        let copy = repo.join("a-copy-nobody-else-is-in");
+        let a_directory = copy.join("crates/sprag-plugin/src");
+        std::fs::create_dir_all(&a_directory).expect("the directory a document can author");
+        let a_file = a_directory.join("outer.rs");
+        std::fs::write(&a_file, "// what this round moved\n").expect("the file a round moved");
+
+        // ⚠ The checker answers and exits, which is all this gate needs from it: a reading is
+        // `Answered` because the wait ended, whatever the reply then turned out to say.
+        let script = repo.join("checker.sh");
+        std::fs::write(&script, "echo YES it holds\n").expect("the stand-in checker");
+
+        let (workspace, pane) = pane_born_in(&repo);
+        let surface = |at: Option<&str>| Isolating {
+            inner: WorkspacePaneAccess::new(Arc::clone(&workspace)),
+            copy: copy.clone(),
+            at: at.map(ToOwned::to_owned),
+            // ⚠ A path relative to the tree, and a real FILE in the copy — see above.
+            moved: vec!["crates/sprag-plugin/src/outer.rs".to_owned()],
+        };
+
+        // ⚠⚠⚠⚠⚠ THROUGH THE PRODUCT'S OWN DOORS, on the 705 gate's measured lesson: `start_ready`
+        // is where a base is taken, `checked` is where the question is put and the reading filed.
+        let asked = |panes: &Isolating| -> (crate::judge::CheckLatency, String) {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let mut loops = bounded_at(lua, pane, Duration::from_secs(20))
+                .expect("the document's four authored strings");
+            assert_eq!(
+                loops.brief(&Brief {
+                    north_star: "a reading says what it was asked".to_string(),
+                    milestone: "reach it".to_string(),
+                    reference: String::new(),
+                    closing_rules: None,
+                    working_rules: None,
+                    unverified_rules: None,
+                    context_ceiling: None,
+                    reflect_after_refusals: None,
+                    reaim_max: None,
+                    stall_after_steps: None,
+                    progress_marks: None,
+                    // ⚠⚠ THE SAME LIST IN BOTH ARMS, and it is a DIRECTORY — which is the shape
+                    // this repository's own kind really authors, and the one item 1106 measured.
+                    check_opens: Some(vec!["crates/sprag-plugin/src".to_owned()]),
+                    milestone_check: Some(format!("/bin/sh {}", script.display())),
+                    successor_check: None,
+                    order_check: None,
+                    reask_max: None,
+                    service: None,
+                    max_turns: Some(Counted::Of(40)),
+                    reflect_every: Some(99),
+                    screen_rules: None,
+                    may_answer: None,
+                    await_person_ms: Some(0),
+                    handback_still_ms: None,
+                    hold_within_ms: None,
+                    ready_timeout_ms: None,
+                    turn_within_ms: None,
+                }),
+                Briefed::Took,
+                "the parts must be held",
+            );
+            let run = RunContext::uncancellable();
+            loops
+                .start_ready(panes, &run)
+                .expect("a barrier with no condition is down");
+            let (_copy, _where, question, _shape) =
+                loops.a_check_to_put(panes, &Produced::Stated(String::new()));
+            loops.checked(panes, &run, Heard::Said(Evidence::Statement));
+            (
+                loops
+                    .checks
+                    .latency
+                    .expect("a check that ran leaves a latency behind"),
+                question,
+            )
+        };
+
+        // ── ⭐ THE CLAIM: a run fed THIS ROUND'S FILES files its reading under `FilesNamed` ─────
+        let (mine, named_a_file) = asked(&surface(Some("ROUND-BASE")));
+        assert!(
+            named_a_file.contains("crates/sprag-plugin/src/outer.rs"),
+            "⚠⚠⚠⚠⚠ THE PREMISE OF THE CLAIM ARM: the question did not name this round's file at \
+             all, so what its shape says below is about some other question: {named_a_file}",
+        );
+        assert_eq!(
+            (
+                mine.answered,
+                mine.by_shape.of(QuestionShape::FilesNamed).answered,
+                mine.by_shape.of(QuestionShape::DirectoriesNamed).answered,
+            ),
+            (1, 1, 0),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1107: this run's check was handed a FILE to open and its \
+             reading was not filed as one. That column is what `CHECK_READINGS` is transcribed \
+             from, and while the run did not carry it a person judged it — which item 1106 \
+             measured going wrong for every check this repository's own kind has ever asked",
+        );
+
+        // ── ⛔ THE CONTROL: the SAME list, the SAME tree, and only the tier differs ────────────
+        //
+        // ⚠⚠⚠ This is what makes the arm above a measurement rather than a description of a
+        // fixture: a driver that recorded a constant, or one that read the shape off the clause
+        // rather than off what the clause NAMES, passes one of these two and fails the other.
+        let (document, named_a_directory) = asked(&surface(None));
+        assert!(
+            named_a_directory.contains("crates/sprag-plugin/src")
+                && !named_a_directory.contains("crates/sprag-plugin/src/outer.rs"),
+            "⚠⚠⚠⚠⚠ THE PREMISE OF THE CONTROL: this arm must fall to the document's list, or the \
+             two arms are one arm wearing two names: {named_a_directory}",
+        );
+        assert_eq!(
+            (
+                document.answered,
+                document
+                    .by_shape
+                    .of(QuestionShape::DirectoriesNamed)
+                    .answered,
+                document.by_shape.of(QuestionShape::FilesNamed).answered,
+            ),
+            (1, 1, 0),
+            "⛔⛔⛔⛔⛔ REGISTER ITEMS 1106 AND 1107: a judge handed a DIRECTORY is searching, and \
+             the two populations differ by the 6x this whole chain is about. A record that files \
+             both under one shape is the fold that let a bound's own gate report 1800% of room \
+             while two real checks of this very shape ran it out",
+        );
+        assert_ne!(
+            mine.by_shape, document.by_shape,
+            "⛔⛔⛔⛔⛔ THE PAIR, SAID AS A PAIR: the two runs were given the same clause and the \
+             same tree and differ only in which tier the driver could reach. If their records \
+             agree, the shape is not being read from what the question NAMED and every reading \
+             this store holds is back to being classified by hand",
+        );
+
+        // ── ⚠⚠ AND THE SHAPE A SURFACE THAT CANNOT PLACE THE CHECKER GETS ─────────────────────
+        //
+        // ⛔ `check_question` renders the file clause INSIDE the sentence about where the tree is,
+        // so a host that cannot say where a pane was born names neither. Reporting that as
+        // `Directory` would credit such a run with a tree it was never given — and this arm is
+        // asked of the product's own resolver, because no surface in this crate can both cut a
+        // copy and fail to place it.
+        assert_eq!(
+            (
+                OuterLoop::shape_asked(None, &["crates/sprag-plugin/src".to_owned()]),
+                OuterLoop::shape_asked(Some(&copy), &[]),
+            ),
+            (QuestionShape::Unplaced, QuestionShape::Directory),
+            "⚠⚠⚠ *placed at a tree with no list* and *placed nowhere at all* are the two sides of \
+             register item 710, and a run that has fallen back to the second must not be counted \
+             as the first",
+        );
+
+        surface(None).lifecycle().expect("lifecycle").close(pane);
         let _ = std::fs::remove_dir_all(&repo);
     }
 
@@ -30916,9 +31138,12 @@ mod tests {
     /// the checks that ran out, and cannot be satisfied by a table that quietly changed under it.
     #[test]
     fn the_milestone_checks_bound_is_read_against_the_latencies_that_were_timed() {
-        let of = |keep: fn(&Reading) -> bool| -> Vec<Reading> {
+        // ⚠ A generic `fn` rather than a closure since register item 1107: the shape populations
+        // below are selected by a value from `QuestionShape::ALL`, and a `fn` pointer cannot
+        // capture it — which is what forced them to be written out one filter per shape.
+        fn of(keep: impl Fn(&Reading) -> bool) -> Vec<Reading> {
             CHECK_READINGS.iter().copied().filter(keep).collect()
-        };
+        }
         let answered = of(|reading| matches!(reading.took, Took::Answered(_)));
         let ran_out = of(|reading| matches!(reading.took, Took::Outran(_)));
 
@@ -30969,20 +31194,32 @@ mod tests {
         // ⚠⚠ The `FilesNamed` line is KEPT at 1800% deliberately, and it is now a statement about
         // a shape **this kind has never once been asked**: one reading, five files, 33.3 s. It is
         // the control for the claim beside it — the remedy is real and it is not what is being fed.
-        let directory = of(|reading| reading.shape == QuestionShape::Directory);
-        let dirs_named = of(|reading| reading.shape == QuestionShape::DirectoriesNamed);
-        let files_named = of(|reading| reading.shape == QuestionShape::FilesNamed);
+        //
+        // ⚠⚠⚠⚠⚠ **AND THE POPULATIONS ARE DERIVED FROM [`QuestionShape::ALL`]** — register item
+        // 1107 and this workspace's rule 6. Three named filters were three places that could
+        // silently know one shape fewer than the product publishes, and a shape whose readings
+        // nothing compared would be an unclassified population reading as a pass. Listed this way,
+        // a fifth arm fails this line until somebody prices it.
+        let by_shape: Vec<(QuestionShape, Headroom)> = QuestionShape::ALL
+            .into_iter()
+            .map(|shape| {
+                (
+                    shape,
+                    check_headroom(&of(|reading| reading.shape == shape), CHECK_WITHIN),
+                )
+            })
+            .collect();
         assert_eq!(
-            (
-                check_headroom(&directory, CHECK_WITHIN),
-                check_headroom(&dirs_named, CHECK_WITHIN),
-                check_headroom(&files_named, CHECK_WITHIN),
-            ),
-            (
-                Headroom::Outrun(7),
-                Headroom::Outrun(2),
-                Headroom::Clears(1800)
-            ),
+            by_shape,
+            vec![
+                // ⚠⚠ NOBODY HAS TIMED A CHECK THAT NAMED NOTHING AT ALL, and *unmeasured* is the
+                // only honest entry for it — a run whose host cannot say where a pane was born
+                // loses the tree and the list together, and no reading here came from one.
+                (QuestionShape::Unplaced, Headroom::Unmeasured),
+                (QuestionShape::Directory, Headroom::Outrun(7)),
+                (QuestionShape::DirectoriesNamed, Headroom::Outrun(2)),
+                (QuestionShape::FilesNamed, Headroom::Clears(1800)),
+            ],
             "⛔⛔⛔⛔⛔ REGISTER ITEMS 1072, 1073 AND 1074: the arm measured at 6x is ON for this \
              repository's own kind and is fed DIRECTORIES, and that arm has now outrun this bound \
              twice. A margin over shapes at once describes none of them — and a shape that folds \

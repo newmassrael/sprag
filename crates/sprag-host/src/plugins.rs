@@ -7126,13 +7126,39 @@ pub const RUN_CHECK_LATENCY_KEY: &str = "latency";
 
 /// [`sprag_plugin::judge::CheckLatency`] as it crosses: counts, and durations as whole milliseconds
 /// or `null`.
+///
+/// ⛔ **AND THE SPLIT BY WHAT THE QUESTION NAMED** — register item 1107, under its own key beside
+/// the totals rather than replacing them: the totals are what every reader of this table already
+/// asks for, and the split is what says which shape each of them was taken in.
 fn check_latency_json(latency: sprag_plugin::judge::CheckLatency) -> Value {
     json!({
         "answered": latency.answered,
         "slowest_ms": latency.slowest.map(millis_of),
         "outran": latency.outran,
         "bound_ms": latency.bound.map(millis_of),
+        "by_shape": latency_by_shape_json(latency.by_shape),
     })
+}
+
+/// **EVERY QUESTION SHAPE WITH ITS LATENCY ROW**, keyed by the shape's own word — register item
+/// 1107, on [`silent_by_kind_json`]'s rule one function down.
+///
+/// ⚠ Every row travels, including the empty ones, for that function's reason: a shape nothing was
+/// asked in and a shape nobody counted are different facts, and a table that omitted its empties
+/// would make them the same on the far side.
+fn latency_by_shape_json(by_shape: sprag_plugin::judge::LatencyByShape) -> Value {
+    let mut out = serde_json::Map::new();
+    for (shape, row) in by_shape.rows() {
+        out.insert(
+            shape.wire_str().to_owned(),
+            json!({
+                "answered": row.answered,
+                "slowest_ms": row.slowest.map(millis_of),
+                "outran": row.outran,
+            }),
+        );
+    }
+    Value::Object(out)
 }
 
 /// A duration as whole milliseconds, saturating rather than wrapping.
@@ -7165,7 +7191,52 @@ fn check_latency_in(tally: &Value) -> Option<sprag_plugin::judge::CheckLatency> 
         slowest: millis("slowest_ms")?,
         outran: small(table.get("outran"))?,
         bound: millis("bound_ms")?,
+        // ⛔⛔⛔ REGISTER ITEM 1107, AND IT IS THE ONE ENTRY HERE WHOSE ABSENCE IS NOT A REFUSAL —
+        // `scoring`'s exception two blocks up, taken for the same reason. A daemon older than the
+        // split cannot say which shape its checks were asked in, and that absence is already a
+        // reading: an empty split under a non-zero total is *nobody wrote the shape down*. Refusing
+        // the whole table over it would throw away item 1073's counts to say something this column
+        // says by itself.
+        //
+        // ⚠⚠ A split that is PRESENT and unreadable is a different fact and does refuse — see
+        // [`latency_by_shape_in`].
+        by_shape: latency_by_shape_in(table)?,
     })
+}
+
+/// ⛔⛔⛔⛔⛔ **THE LATENCY SPLIT, READ BACK** — register item 1107, [`latency_by_shape_json`]'s
+/// reader.
+///
+/// ⚠⚠ **ABSENT IS EMPTY AND PRESENT-BUT-BROKEN IS [`None`]**, and the two are not the same claim. A
+/// daemon older than this column never wrote one, and an empty split beside a non-zero total says
+/// exactly that. A daemon that wrote one this build cannot read is publishing a vocabulary or a
+/// shape of row this one does not have, and filling in zeros there would answer *none of its checks
+/// was asked about a directory* on its behalf — the reassuring reading of a number nobody measured,
+/// which is what [`silent_by_kind_in`] refuses a table over.
+fn latency_by_shape_in(table: &Value) -> Option<sprag_plugin::judge::LatencyByShape> {
+    let Some(rows) = table.get("by_shape") else {
+        return Some(sprag_plugin::judge::LatencyByShape::NONE);
+    };
+    let rows = rows.as_object()?;
+    let mut by_shape = sprag_plugin::judge::LatencyByShape::NONE;
+    for (word, row) in rows {
+        // ⚠ An unknown word refuses the split rather than being skipped, on `silent_by_kind_in`'s
+        // rule: a newer daemon reporting a fifth shape is one this build cannot total honestly.
+        let shape = sprag_plugin::judge::QuestionShape::named(word)?;
+        let slowest = match row.get("slowest_ms")? {
+            Value::Null => None,
+            value => Some(std::time::Duration::from_millis(value.as_u64()?)),
+        };
+        by_shape.restore(
+            shape,
+            sprag_plugin::judge::Timed {
+                answered: small(row.get("answered"))?,
+                slowest,
+                outran: small(row.get("outran"))?,
+            },
+        );
+    }
+    Some(by_shape)
 }
 
 /// **EVERY KIND OF CHECKER SILENCE WITH ITS COUNT**, keyed by the arm's own word — register item
@@ -10748,12 +10819,23 @@ mod tests {
             .expect("a run with unverified claims prints a row")
         };
         let measured = |outran| {
-            Some(sprag_plugin::judge::CheckLatency {
-                answered: 1,
-                slowest: Some(std::time::Duration::from_secs(48)),
-                outran,
-                bound: Some(std::time::Duration::from_secs(600)),
-            })
+            let mut latency = sprag_plugin::judge::CheckLatency::NONE;
+            latency.record(
+                sprag_plugin::judge::Waited::Answered {
+                    took: std::time::Duration::from_secs(48),
+                    within: std::time::Duration::from_secs(600),
+                },
+                sprag_plugin::judge::QuestionShape::Directory,
+            );
+            for _ in 0..outran {
+                latency.record(
+                    sprag_plugin::judge::Waited::Outran {
+                        within: std::time::Duration::from_secs(600),
+                    },
+                    sprag_plugin::judge::QuestionShape::Directory,
+                );
+            }
+            Some(latency)
         };
 
         let ran_out = of(measured(2));
@@ -10780,6 +10862,111 @@ mod tests {
                 quiet.contains("3 of 4"),
                 "⚠ AND THE ROW STILL SAYS HOW MUCH WENT UNVERIFIED ({why}), which is what makes \
                  the arm above a control rather than a row that stopped reporting.\n  got {quiet}",
+            );
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHAT EACH CHECK WAS ASKED CROSSES THE WIRE, AND AN OLDER DAEMON'S TABLE STILL
+    /// READS** — register item 1107.
+    ///
+    /// # ⛔⛔⛔ A driver in another process is where this record is READ from
+    ///
+    /// Register item 606 measured that every run anybody reads has been through a restore, and the
+    /// readings `sprag_plugin::outer::CHECK_READINGS` is transcribed from come out of the loop's
+    /// own store — on the far side of this codec. So a split that reached the daemon and not the
+    /// wire would leave the transcriber exactly where item 1106 found them: judging a reading's
+    /// shape out of a document rather than reading the word the run wrote.
+    ///
+    /// # ⚠⚠⚠⚠⚠ And the two absences are different claims, which is the sharp half
+    ///
+    /// A table with NO split is a daemon older than this column, and refusing it would throw away
+    /// item 1073's counts — every latency this loop has already recorded is such a table. A table
+    /// whose split this build cannot read is a daemon speaking a vocabulary this one does not have,
+    /// and filling in zeros there would answer *none of its checks was asked about a directory* on
+    /// its behalf. That is the reassuring reading of a number nobody measured, which is what
+    /// `silent_by_kind_in` refuses a whole tally over.
+    #[test]
+    fn what_each_check_was_asked_crosses_the_wire_and_an_older_table_still_reads() {
+        let bound = std::time::Duration::from_secs(600);
+        // ⚠⚠⚠ BUILT THROUGH THE PRODUCT'S OWN DOOR, never by filling fields in: a fixture typed by
+        // hand can hold a total its own split disagrees with, and then this gate would be holding
+        // a shape no run can produce.
+        let mut live = sprag_plugin::judge::CheckLatency::NONE;
+        for (waited, shape) in [
+            (
+                sprag_plugin::judge::Waited::Answered {
+                    took: std::time::Duration::from_millis(33_330),
+                    within: bound,
+                },
+                sprag_plugin::judge::QuestionShape::FilesNamed,
+            ),
+            (
+                sprag_plugin::judge::Waited::Answered {
+                    took: std::time::Duration::from_millis(394_232),
+                    within: bound,
+                },
+                sprag_plugin::judge::QuestionShape::DirectoriesNamed,
+            ),
+            (
+                sprag_plugin::judge::Waited::Outran { within: bound },
+                sprag_plugin::judge::QuestionShape::DirectoriesNamed,
+            ),
+        ] {
+            live.record(waited, shape);
+        }
+        let crossed = |table: Value| check_latency_in(&json!({ RUN_CHECK_LATENCY_KEY: table }));
+
+        // ── ⭐ THE CLAIM: the split survives the crossing, row for row ────────────────────────
+        assert_eq!(
+            crossed(check_latency_json(live)),
+            Some(live),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1107: which shape of question each of this run's checks was \
+             put in did not cross the process boundary. That column is what a person transcribes \
+             a reading's shape out of, and item 1106 measured what they do without it — a whole \
+             arm of `CHECK_READINGS` filed under a shape its checks were never asked in, with the \
+             bound's own gate reporting 1800% of room over checks that had run it out",
+        );
+
+        // ── ⚠⚠ THE CONTROL: a daemon older than the split keeps its counts ───────────────────
+        let older = crossed(json!({
+            "answered": 2,
+            "slowest_ms": 394_232,
+            "outran": 1,
+            "bound_ms": 600_000,
+        }))
+        .expect("a table with no split is a daemon that could not say, not a broken one");
+        assert_eq!(
+            (older.answered, older.outran, older.by_shape.is_empty()),
+            (2, 1, true),
+            "⚠⚠⚠ A DAEMON OLDER THAN ITEM 1107 MUST KEEP ITEM 1073's COUNTS. An empty split under \
+             a non-zero total is *nobody wrote the shape down*; refusing the table would answer \
+             *nothing measured* about a run that measured, and every reading this store already \
+             holds arrived exactly like this",
+        );
+
+        // ── ⛔ AND A SPLIT THIS BUILD CANNOT READ REFUSES, where an ABSENT one does not ───────
+        for (why, broken) in [
+            (
+                "a shape word this build does not have",
+                json!({ "a_fifth_shape": { "answered": 1, "slowest_ms": null, "outran": 0 } }),
+            ),
+            (
+                "a row missing one of its counts",
+                json!({ "files_named": { "answered": 1, "slowest_ms": null } }),
+            ),
+        ] {
+            assert_eq!(
+                crossed(json!({
+                    "answered": 2,
+                    "slowest_ms": 394_232,
+                    "outran": 1,
+                    "bound_ms": 600_000,
+                    "by_shape": broken,
+                })),
+                None,
+                "⛔⛔⛔ A SPLIT THAT IS PRESENT AND UNREADABLE IS NOT AN ABSENT ONE ({why}): the \
+                 daemon that wrote it DID classify its checks, and zeros filled in here would \
+                 publish a classification nobody made",
             );
         }
     }
@@ -24407,6 +24594,34 @@ mod tests {
                                 slowest: Some(std::time::Duration::from_millis(33_330)),
                                 outran: 8,
                                 bound: Some(std::time::Duration::from_secs(600)),
+                                // ⛔⛔⛔⛔⛔ AND THE SPLIT CROSSES TOO — register item 1107, on
+                                // this gate's own terms. It is NOT empty and its rows are NOT
+                                // equal: an empty split is exactly what a transport that dropped
+                                // the key produces, and a split whose rows agree would let one
+                                // crossing into another's slot still pass. The two shapes here
+                                // are the two the 6x is measured between.
+                                by_shape: {
+                                    let mut rows = sprag_plugin::judge::LatencyByShape::NONE;
+                                    rows.restore(
+                                        sprag_plugin::judge::QuestionShape::DirectoriesNamed,
+                                        sprag_plugin::judge::Timed {
+                                            answered: 5,
+                                            slowest: Some(std::time::Duration::from_millis(
+                                                394_232,
+                                            )),
+                                            outran: 8,
+                                        },
+                                    );
+                                    rows.restore(
+                                        sprag_plugin::judge::QuestionShape::FilesNamed,
+                                        sprag_plugin::judge::Timed {
+                                            answered: 7,
+                                            slowest: Some(std::time::Duration::from_millis(33_330)),
+                                            outran: 0,
+                                        },
+                                    );
+                                    rows
+                                },
                             }),
                         },
                         driving: Some(pane),

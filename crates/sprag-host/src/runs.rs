@@ -3689,6 +3689,36 @@ pub struct PersistedCheckLatency {
     pub outran: u32,
     /// [`sprag_plugin::judge::CheckLatency::bound`], in milliseconds.
     pub bound_ms: Option<u64>,
+    /// ⛔⛔⛔⛔⛔ [`sprag_plugin::judge::CheckLatency::by_shape`] — register item 1107, keyed by
+    /// `sprag_plugin::judge::QuestionShape::wire_str`.
+    ///
+    /// # ⛔⛔⛔ This is the column `crate::outer::CHECK_READINGS` is transcribed OUT OF
+    ///
+    /// The three counts above are what a person reads out of this store and types into that table,
+    /// and until this column existed the one thing they could not read was **which shape of
+    /// question the reading was taken in** — so they judged it, from a document they had to go and
+    /// open. Register item 1106 measured a whole arm judged wrong: nine directories filed as *a
+    /// list of files*, and a gate reporting 1800% of room over a bound two real checks had run out.
+    ///
+    /// ⚠⚠ `default` HERE WHERE THE WIRE REFUSES A BROKEN TABLE, on `silent_by`'s stated asymmetry:
+    /// a STORED row written before this column is a fact from another build, and an empty split
+    /// under a non-zero total reads as *nobody wrote the shape down*. Every latency this loop has
+    /// already recorded is such a row, and refusing them would throw away the readings the table
+    /// exists to hold.
+    #[serde(default)]
+    pub by_shape: std::collections::BTreeMap<String, PersistedTimed>,
+}
+
+/// **THE STORED SHAPE OF [`sprag_plugin::judge::Timed`]** — register item 1107: one row of
+/// [`PersistedCheckLatency::by_shape`], in milliseconds for that type's reason.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PersistedTimed {
+    /// [`sprag_plugin::judge::Timed::answered`].
+    pub answered: u32,
+    /// [`sprag_plugin::judge::Timed::slowest`], in milliseconds.
+    pub slowest_ms: Option<u64>,
+    /// [`sprag_plugin::judge::Timed::outran`].
+    pub outran: u32,
 }
 
 impl From<sprag_plugin::judge::CheckLatency> for PersistedCheckLatency {
@@ -3698,6 +3728,22 @@ impl From<sprag_plugin::judge::CheckLatency> for PersistedCheckLatency {
             slowest_ms: live.slowest.map(millis),
             outran: live.outran,
             bound_ms: live.bound.map(millis),
+            // ⚠ THE SHAPE'S OWN WORD, never a spelling of the arms here — `silent_by`'s rule two
+            // types up, and the reason a fifth shape travels without this file being edited.
+            by_shape: live
+                .by_shape
+                .rows()
+                .map(|(shape, row)| {
+                    (
+                        shape.wire_str().to_owned(),
+                        PersistedTimed {
+                            answered: row.answered,
+                            slowest_ms: row.slowest.map(millis),
+                            outran: row.outran,
+                        },
+                    )
+                })
+                .collect(),
         }
     }
 }
@@ -3709,6 +3755,26 @@ impl From<PersistedCheckLatency> for sprag_plugin::judge::CheckLatency {
             slowest: stored.slowest_ms.map(std::time::Duration::from_millis),
             outran: stored.outran,
             bound: stored.bound_ms.map(std::time::Duration::from_millis),
+            // ⚠⚠ An unknown word is DROPPED here where the wire refuses the table — `silent_by`'s
+            // own rule, for `silent_by`'s own reason: a log written by a newer build is not a skew
+            // this reader can act on, and refusing it would throw away every row that build DID
+            // share a vocabulary for.
+            by_shape: stored.by_shape.iter().fold(
+                sprag_plugin::judge::LatencyByShape::NONE,
+                |mut rows, (word, row)| {
+                    if let Some(shape) = sprag_plugin::judge::QuestionShape::named(word) {
+                        rows.restore(
+                            shape,
+                            sprag_plugin::judge::Timed {
+                                answered: row.answered,
+                                slowest: row.slowest_ms.map(std::time::Duration::from_millis),
+                                outran: row.outran,
+                            },
+                        );
+                    }
+                    rows
+                },
+            ),
         }
     }
 }
@@ -12239,6 +12305,29 @@ mod tests {
                     slowest_ms: Some(185_200),
                     outran: 3,
                     bound_ms: Some(600_000),
+                    // ⛔ REGISTER ITEM 1107, ON THE SAME TERMS: a split that was empty here is
+                    // exactly what a column dropped in the round trip produces, and its two rows
+                    // disagree in every number so a row crossing into the other's slot is a red.
+                    by_shape: [
+                        (
+                            "directories_named".to_owned(),
+                            PersistedTimed {
+                                answered: 8,
+                                slowest_ms: Some(394_232),
+                                outran: 3,
+                            },
+                        ),
+                        (
+                            "files_named".to_owned(),
+                            PersistedTimed {
+                                answered: 3,
+                                slowest_ms: Some(33_330),
+                                outran: 0,
+                            },
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
                 }),
             }),
             cost: None,
@@ -12352,12 +12441,7 @@ mod tests {
                 // ⛔ REGISTER ITEM 1073: a latency table on the LIVE value, so the round trip below
                 // goes through both conversions and the log. Every field distinct, for this
                 // fixture's own reason.
-                latency: Some(sprag_plugin::judge::CheckLatency {
-                    answered: 9,
-                    slowest: Some(std::time::Duration::from_millis(118_200)),
-                    outran: 4,
-                    bound: Some(std::time::Duration::from_secs(600)),
-                }),
+                latency: Some(a_latency_with_two_shapes()),
                 ..sprag_plugin::Checks::NONE
             },
             ..an_outcome()
@@ -12397,15 +12481,13 @@ mod tests {
         // mutation that dropped the table in the first of them left every other gate here green.
         assert_eq!(
             outcome.checks.latency,
-            Some(sprag_plugin::judge::CheckLatency {
-                answered: 9,
-                slowest: Some(std::time::Duration::from_millis(118_200)),
-                outran: 4,
-                bound: Some(std::time::Duration::from_secs(600)),
-            }),
+            Some(a_latency_with_two_shapes()),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 1073: how long this run's checks took, and how many ran out \
              of time, did not survive a restart. Every run anybody reads has been through a \
-             restore, so a table that stops at the daemon is a table nobody reads.",
+             restore, so a table that stops at the daemon is a table nobody reads.\n⛔⛔⛔ AND \
+             REGISTER ITEM 1107 RIDES ON THE SAME ROAD: the split by what each check was ASKED is \
+             what a person transcribes a reading's shape out of, and a split that stopped at the \
+             daemon would put them back to judging it by hand.",
         );
         assert_eq!(
             (
@@ -13728,6 +13810,40 @@ mod tests {
              an ending's reader reads the outcome — a restore that filled one slot would be green \
              against whichever reader a gate happened to choose, and silent for the other",
         );
+    }
+
+    /// ⛔⛔⛔ **A LATENCY TABLE A REAL ROUND WOULD PRODUCE** — register items 1073 and 1107: a run
+    /// that asked in TWO shapes, built through the product's own [`record`] rather than by filling
+    /// fields in, so a fixture cannot hold a total its own split disagrees with.
+    ///
+    /// ⚠ Every number distinct from its neighbours, on the round-trip fixtures' stated rule: a
+    /// crossing that swapped two counts or two shapes passes a table whose rows agree.
+    ///
+    /// [`record`]: sprag_plugin::judge::CheckLatency::record
+    fn a_latency_with_two_shapes() -> sprag_plugin::judge::CheckLatency {
+        let bound = std::time::Duration::from_secs(600);
+        let answered = |ms| sprag_plugin::judge::Waited::Answered {
+            took: std::time::Duration::from_millis(ms),
+            within: bound,
+        };
+        let mut latency = sprag_plugin::judge::CheckLatency::NONE;
+        for (waited, shape) in [
+            (
+                answered(33_330),
+                sprag_plugin::judge::QuestionShape::FilesNamed,
+            ),
+            (
+                answered(118_200),
+                sprag_plugin::judge::QuestionShape::DirectoriesNamed,
+            ),
+            (
+                sprag_plugin::judge::Waited::Outran { within: bound },
+                sprag_plugin::judge::QuestionShape::DirectoriesNamed,
+            ),
+        ] {
+            latency.record(waited, shape);
+        }
+        latency
     }
 
     /// An outcome for a run whose ending is not what the gate is about.
