@@ -34,9 +34,9 @@ use sprag_host::wire::{
 use sprag_host::{CellFrame, mux_action_path, pane_input_path};
 use sprag_input::Modifiers;
 use sprag_plugin::{
-    Attended, Delivered, Delivery, Driver, Guardrails, Interruption, KeyStroke, OrchestrationSpec,
-    Orchestrator, OutcomeState, PaneAccess, PaneError, PaneLifecycle, Reached, Readiness,
-    ReadyWhen, RunContext, Written, deliver,
+    Attended, Cleared, Delivered, Delivery, Driver, Guardrails, Interruption, KeyStroke,
+    OrchestrationSpec, Orchestrator, OutcomeState, PaneAccess, PaneError, PaneLifecycle, Reached,
+    Readiness, ReadyWhen, RunContext, Written, deliver,
 };
 use sprag_rpc::{
     CLIENT_ATTACH_METHOD, CLIENT_BUILD_PARAM, CLIENT_HELLO_METHOD, CLIENT_PARAM,
@@ -11617,7 +11617,9 @@ fn a_remote_barrier_refuses_the_marker_the_driver_typed_and_takes_the_one_the_sh
     let reached = printed_barrier.reached(&remote, pane, &run);
     assert_eq!(
         reached,
-        Ok(Reached::Yes),
+        Ok(Reached::Yes(Cleared::Saw(ReadyWhen::Prints(
+            "SAIDMARK".to_owned()
+        )))),
         "⚠⚠⚠⚠ THE CONTROL: a marker the SHELL printed must clear the barrier. Without this arm \
          the refusal above passes on a barrier that never clears at all — and an `input_echo` \
          hard-wired to answer the whole SCREEN would fail exactly here, because it would report \
@@ -11785,7 +11787,7 @@ fn a_remote_barrier_asks_who_holds_the_pane_and_names_it_when_it_gives_up() {
     );
     assert_eq!(
         runs.reached(&remote, pane, &run),
-        Ok(Reached::Yes),
+        Ok(Reached::Yes(Cleared::Saw(ReadyWhen::Runs("sh".to_owned())))),
         "⚠⚠⚠⚠ the barrier the address exists for must actually CLEAR over the wire — the read \
          above proves the JSON and this proves the consumer",
     );
@@ -12072,7 +12074,9 @@ fn a_remote_barrier_sees_the_person_who_reached_in_and_not_the_driver_that_is_ty
     let cleared = barrier.reached(&remote, pane, &run);
     assert_eq!(
         cleared,
-        Ok(Reached::Yes),
+        Ok(Reached::Yes(Cleared::Saw(ReadyWhen::Prints(
+            "PROGRAMMARK".to_owned()
+        )))),
         "⚠⚠⚠⚠ THE CONTROL: the driver wrote into this pane twice and NONE of it is a person. A \
          `hands` address that counted every write would answer `Interrupted` here, and a run that \
          stopped for its own keystroke would never take one turn. The pane was showing:\n{}",

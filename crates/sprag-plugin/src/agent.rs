@@ -941,8 +941,12 @@ impl Plugin for Agent {
         // ⚠⚠ NOT ONE BYTE UNTIL THE PANE IS THE TOOL — see [`AgentSpec::ready_when`], which is
         // where the measured failure is written down. Latched, so it costs nothing after the first
         // step (and this adapter is one-shot anyway).
-        match self.ready.reached(panes, self.pane, run)? {
-            Reached::Yes => {}
+        // ⚠⚠⚠ AND A PASS IS KEPT RATHER THAN DROPPED — see [`Cleared::news`], which owns the rule
+        // all three injecting plugins follow. Sharpest here of the three: this adapter publishes
+        // what comes back AS THE MODEL'S ANSWER, so *what convinced the barrier that the pane was
+        // the tool* is part of the provenance of the reply, and it used to be nowhere.
+        let opened = match self.ready.reached(panes, self.pane, run)? {
+            Reached::Yes(cleared) => cleared.news(),
             Reached::RunEnded(why) => {
                 return Ok(Step::new(Cost::Bytes(0), Verdict::Continue).noting(format!(
                     "the run ended while waiting for the pane to be ready; nothing was asked: \
@@ -993,7 +997,7 @@ impl Plugin for Agent {
             Reached::HandedBack(handover) => {
                 return Ok(Step::new(Cost::Bytes(0), Verdict::Continue).noting(handover.describe()));
             }
-        }
+        };
 
         // ⚠⚠⚠ THE PROMPT IS SENT ONCE PER TURN, and a turn survives a step that could not finish
         // it. When this adapter's peer stops to ask, the step below suspends the turn instead of
@@ -1163,6 +1167,14 @@ impl Plugin for Agent {
         if let Some(caveat) = prompt_caveat {
             note.push_str(caveat);
         }
+        // ⚠ AND WHAT LET THE PROMPT GO IN AT ALL, ahead of what came back — on the one step that
+        // has it. This adapter is one-shot, so that step is usually the only step, and *the
+        // barrier came down on this look: the pane settled as "claude"* is the provenance of the
+        // reply below it. The latch has no news, so a run that took several steps says it once.
+        let note = match opened {
+            Some(opened) => format!("{opened}; {note}"),
+            None => note,
+        };
         self.response = Some(text);
 
         // One-shot: one prompt, one captured reply, then converge. The Driver's

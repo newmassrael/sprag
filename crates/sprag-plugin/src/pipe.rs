@@ -197,8 +197,12 @@ impl Plugin for Pipe {
         // is still newly-damaged when the wait ends, so a relay that had to wait for its
         // destination delivers what arrived meanwhile rather than losing it — reading first would
         // consume those rows against a destination not ready to be given them.
-        match self.ready.reached(panes, self.dst, run)? {
-            Reached::Yes => {}
+        // ⚠⚠⚠ AND A PASS IS KEPT RATHER THAN DROPPED — see [`Cleared::news`], which owns the rule
+        // all three injecting plugins follow. A relay's destination is a pane SOMEBODY ELSE
+        // prepared, so *what convinced this run that it was ready* is the one fact about it this
+        // plugin ever established, and it used to end at the `match`.
+        let opened = match self.ready.reached(panes, self.dst, run)? {
+            Reached::Yes(cleared) => cleared.news(),
             Reached::RunEnded(why) => {
                 return Ok(Step::new(Cost::Bytes(0), Verdict::Continue).noting(format!(
                     "the run ended while waiting for the destination to be ready: {why}"
@@ -241,7 +245,7 @@ impl Plugin for Pipe {
             Reached::HandedBack(handover) => {
                 return Ok(Step::new(Cost::Bytes(0), Verdict::Continue).noting(handover.describe()));
             }
-        }
+        };
 
         // ⚠⚠ WHAT THE SOURCE PRODUCED, BY LINE NUMBER — not what its grid looks like. A row is
         // where the terminal broke a line at the width it had; a LOGICAL line is what the child
@@ -329,6 +333,13 @@ impl Plugin for Pipe {
             String::new()
         } else {
             format!("; {lost} EARLIER LINES WERE LOST — the source outran the retained history")
+        };
+        // ⚠ WHAT LET THE FIRST LINE GO IN AT ALL, ahead of what the destination did with it — on
+        // the one step that has it. Every later step relays off the latch, which has no news, so
+        // this cannot grow with the run and push the lines that say something out of the journal.
+        let gap = match opened {
+            Some(opened) => format!("{opened}{gap}; "),
+            None => gap,
         };
         // The pipe never self-terminates; the Driver's guardrails bind it.
         Ok(Step::new(Cost::Bytes(cost), Verdict::Continue).noting(

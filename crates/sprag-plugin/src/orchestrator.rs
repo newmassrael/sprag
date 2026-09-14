@@ -530,8 +530,13 @@ impl Plugin for Orchestrator {
         // against one variant, so a barrier that learned a new answer would have been IGNORED by
         // every one of them and fallen through to the keystroke — which is how `Asking` was added
         // and compiled clean. Exhaustive here means a fourth answer cannot reach a pane unread.
-        match self.ready.reached(panes, self.pane, run)? {
-            Reached::Yes => {}
+        // ⚠⚠⚠ AND A PASS IS KEPT RATHER THAN DROPPED. Every arm below puts WHY it stopped into the
+        // run's journal; the arm that goes on to type used to put nothing, so a reader of a
+        // finished run could see what refused a keystroke and never what permitted one. It is news
+        // on the step the barrier came down on and silence afterwards — see [`Cleared::news`], which
+        // owns that rule so all three injecting plugins cannot spell it differently.
+        let opened = match self.ready.reached(panes, self.pane, run)? {
+            Reached::Yes(cleared) => cleared.news(),
             // Nothing was injected, so nothing is charged; the Driver's loop top says which of the
             // two ways the run ended it was.
             // ⚠⚠⚠ AND IT SAYS WHAT IT WAS WAITING FOR. The note said only that a barrier was in the
@@ -587,7 +592,7 @@ impl Plugin for Orchestrator {
             Reached::HandedBack(handover) => {
                 return Ok(Step::new(Cost::Bytes(0), Verdict::Continue).noting(handover.describe()));
             }
-        }
+        };
 
         // Baseline before acting, so observe() waits for this step's reply.
         //
@@ -749,6 +754,15 @@ impl Plugin for Orchestrator {
                 format!("the peer answered; no sentinel yet: {spoke:?}")
             }
             _ => "the peer answered; no sentinel yet".to_string(),
+        };
+        // ⚠ WHAT LET THIS STEP TYPE AT ALL, ahead of what it then found — on the one step that has
+        // it. A run whose first step reads *the barrier came down on this look: the pane ran
+        // "claude"* is one whose permission to speak can be checked; every step after it says
+        // nothing here, because the latch has no news and a note repeated for a whole run pushes
+        // the ones that said something out of the journal.
+        let note = match opened {
+            Some(opened) => format!("{opened}; {note}"),
+            None => note,
         };
         Ok(Step::new(Cost::Bytes(cost), verdict).noting(note))
     }
@@ -1785,8 +1799,13 @@ mod tests {
             .expect("a pane opened running the program is ready for it");
         assert_eq!(
             reached,
-            crate::readiness::Reached::Yes,
-            "the pane IS the program — the barrier confirms it rather than waiting for it",
+            crate::readiness::Reached::Yes(crate::readiness::Cleared::Saw(
+                drive_the_silent_program()
+                    .ready_when
+                    .expect("this spec declares a readiness condition")
+            )),
+            "the pane IS the program — the barrier confirms it rather than waiting for it, and it \
+             names the condition it confirmed",
         );
 
         let mut orch = Orchestrator::new(pane, drive_the_silent_program());

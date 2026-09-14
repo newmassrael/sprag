@@ -44,8 +44,8 @@ use std::time::{Duration, Instant};
 
 use sprag_plugin::access::WorkspacePaneAccess;
 use sprag_plugin::{
-    Attended, Completion, Delivered, Delivery, DoneWhen, KeyStroke, Over, PaneAccess, Reached,
-    Readiness, ReadyWhen, RunContext, SubmittedWhen, deliver,
+    Attended, Cleared, Completion, Delivered, Delivery, DoneWhen, KeyStroke, Over, PaneAccess,
+    Reached, Readiness, ReadyWhen, RunContext, SubmittedWhen, deliver,
 };
 use sprag_terminal::{CommandBuilder, Pane, PaneId, Workspace};
 
@@ -475,6 +475,22 @@ fn step(began: Instant, what: &str) {
     println!("[{:>7.2}s] {what}", began.elapsed().as_secs_f64());
 }
 
+/// **WHAT A FRESH BARRIER OVER A LIVE AGENT'S PANE MUST ANSWER** — the agent settled, on the look
+/// that asked.
+///
+/// # ⚠⚠⚠ Why these gates spell the reason out instead of accepting any pass
+///
+/// A [`Reached::Yes`] carries WHAT lowered the barrier, and the three answers are three different
+/// findings about a pane. **`Cleared::Latched` is R379's defect wearing a pass**: a barrier whose
+/// latch came from a pane that is gone reports *already ready* about a program that has existed for
+/// milliseconds, and a gate that asked only *did it pass* said yes to it. These are the only
+/// measurements in this workspace taken against a real agent's startup — a stand-in's own fixture
+/// clears the barrier the product is being asked about — so this is the one place where that has to
+/// be a failure.
+fn settled(agent: &str) -> Reached {
+    Reached::Yes(Cleared::Saw(ReadyWhen::Settles(agent.to_string())))
+}
+
 /// **WHAT A LIVE RUN'S OWN DOCUMENT RAISED THAT NOTHING WAS LEFT TO ANSWER, AND WHETHER IT FAULTED**
 /// — register item 511, asked of every live run this module carries to an ending.
 ///
@@ -567,7 +583,7 @@ fn a_live_agents_turn_is_ended_by_the_contract_rather_than_by_the_clock() {
     step(began, &format!("screen: {}", live.tail(3)));
     assert_eq!(
         reached,
-        Reached::Yes,
+        settled(&live.agent),
         "⚠⚠⚠ the barrier never cleared for a LIVE {:?}. This is the first thing debt 64c asks and \
          the first thing no stand-in could answer: a fixture's observation is whatever the fixture \
          wrote, and this one comes from `sprag-detect` reading the program's own screen and title. \
@@ -3210,7 +3226,7 @@ fn what_a_live_agent_asks_while_it_works() {
         .expect("the pane must stay readable");
         assert_eq!(
             reached,
-            Reached::Yes,
+            settled(&live.agent),
             "{label}: the agent must be up and at rest before it is spoken to: {}",
             live.tail(3),
         );
@@ -3487,7 +3503,7 @@ fn what_a_key_does_to_a_live_agents_permission_dialog() {
         .expect("the pane must stay readable");
         assert_eq!(
             reached,
-            Reached::Yes,
+            settled(&live.agent),
             "{key}: the agent must be up and at rest before it is spoken to: {}",
             live.tail(3),
         );
@@ -3873,7 +3889,7 @@ fn a_minted_session_identity_names_the_record_a_live_agent_writes() {
     step(began, &format!("barrier: {reached:?}"));
     assert_eq!(
         reached,
-        Reached::Yes,
+        settled(&live.agent),
         "⚠⚠⚠ the agent did not come up with `--session-id` on its command line. That is the FIRST \
          thing this gate asks — an identity the run chose must not cost it a session — and it is a \
          finding about the flag rather than about the record. Screen: {}",
@@ -3990,7 +4006,7 @@ fn a_replacement_reuses_the_argument_that_named_the_session_it_replaces() {
     step(began, &format!("first session barrier: {reached:?}"));
     assert_eq!(
         reached,
-        Reached::Yes,
+        settled(&live.agent),
         "⚠⚠ the FIRST session must come up, or this gate is measuring a broken launch rather than a \
          broken replacement. Screen: {}",
         live.tail(6),
@@ -4102,7 +4118,7 @@ fn a_replacement_is_named_afresh_and_both_records_can_be_found() {
         barrier
             .reached(&live.access, live.pane, &run)
             .expect("the pane must stay readable"),
-        Reached::Yes,
+        settled(&live.agent),
         "⚠⚠ the FIRST session must come up. Screen: {}",
         live.tail(6),
     );
@@ -4149,7 +4165,7 @@ fn a_replacement_is_named_afresh_and_both_records_can_be_found() {
     );
     assert_eq!(
         came_up,
-        Reached::Yes,
+        settled(&live.agent),
         "⚠⚠ the replacement did not come up, and not because of a reused name. Screen: {tail}",
     );
     assert_eq!(
@@ -4467,7 +4483,7 @@ fn what_a_live_agent_asks_when_the_decision_is_a_design_one() {
         .expect("the pane must stay readable");
         assert_eq!(
             reached,
-            Reached::Yes,
+            settled(&live.agent),
             "{label}: the agent must be up and at rest before it is spoken to: {}",
             live.tail(3),
         );
@@ -5070,7 +5086,7 @@ fn does_an_agent_ask_the_person_about_an_architecture_decision() {
         )
         .reached(&live.access, live.pane, &run)
         .expect("the pane must stay readable");
-        assert_eq!(reached, Reached::Yes, "{label}: {}", live.tail(3));
+        assert_eq!(reached, settled(&live.agent), "{label}: {}", live.tail(3));
 
         let mut done = Completion::new(DoneWhen::Settles);
         done.begin(&live.access, live.pane);
@@ -5228,7 +5244,7 @@ fn what_a_live_agents_report_looks_like_to_a_reader() {
     .expect("the pane must stay readable");
     assert_eq!(
         reached,
-        Reached::Yes,
+        settled(&live.agent),
         "the agent must be up and at rest before it is spoken to: {}",
         live.tail(3),
     );
@@ -5384,7 +5400,7 @@ fn a_reply_that_never_scrolled_is_still_readable_since_the_mark() {
     .expect("the pane must stay readable");
     assert_eq!(
         reached,
-        Reached::Yes,
+        settled(&live.agent),
         "the agent must be up and at rest before it is spoken to: {}",
         live.tail(3),
     );
@@ -5535,7 +5551,7 @@ fn a_reply_read_off_a_pane_the_previous_turn_filled_is_still_there() {
     .expect("the pane must stay readable");
     assert_eq!(
         reached,
-        Reached::Yes,
+        settled(&live.agent),
         "the agent must be up and at rest before it is spoken to: {}",
         live.tail(3),
     );
@@ -5797,7 +5813,7 @@ fn a_prompt_whose_confirmation_was_already_on_the_screen_still_starts_a_turn() {
         .expect("the pane must stay readable");
         assert_eq!(
             reached,
-            Reached::Yes,
+            settled(&live.agent),
             "{shape}: the agent must be up and at rest before it is spoken to: {}",
             live.tail(3),
         );
@@ -5963,7 +5979,7 @@ fn what_a_live_agent_does_with_a_submit_it_was_never_given() {
     .expect("the pane must stay readable");
     assert_eq!(
         reached,
-        Reached::Yes,
+        settled(&live.agent),
         "the agent must be up and at rest before it is spoken to: {}",
         live.tail(3),
     );
@@ -6165,7 +6181,7 @@ fn what_makes_a_live_agents_composer_fold_the_prompt_away() {
         .expect("the pane must stay readable");
         assert_eq!(
             reached,
-            Reached::Yes,
+            settled(&live.agent),
             "⚠ THE PREMISE OF EVERY READING: the composer must be up and at rest before anything is \
              typed into it, or this measures a swallowed write rather than a fold. {}",
             live.tail(3),
@@ -6262,7 +6278,7 @@ fn what_makes_a_live_agents_composer_fold_the_prompt_away() {
         )
         .reached(&live.access, live.pane, &run)
         .expect("the pane must stay readable"),
-        Reached::Yes,
+        settled(&live.agent),
         "the composer must be up before it is delivered into: {}",
         live.tail(3),
     );
@@ -6393,7 +6409,7 @@ fn what_a_second_write_into_a_composer_already_holding_one_does() {
             )
             .reached(&live.access, live.pane, &run)
             .expect("the pane must stay readable"),
-            Reached::Yes,
+            settled(&live.agent),
             "⚠ THE PREMISE OF EVERY READING: the composer must be up and at rest before anything \
              is written into it, or this measures a swallowed write rather than a second one. {}",
             live.tail(3),

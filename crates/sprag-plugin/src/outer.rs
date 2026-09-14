@@ -12424,7 +12424,14 @@ impl OuterLoop {
         run: &RunContext,
     ) -> Result<Option<Reached>, PaneError> {
         match self.driving.ready.reached(panes, self.driving.pane, run)? {
-            Reached::Yes => Ok(None),
+            // ⚠⚠ THE REASON IS RECEIVED AND NOT REPORTED HERE, and that is a boundary rather than a
+            // shrug. This machine's record of a pass is a [`Pumped::Moved`] transition, which says
+            // WHERE it went and what it spent; the three injecting plugins put the barrier's reason
+            // into a step's note because a note is what they have. Giving a loop's transition a
+            // readiness clause is a change to what every run of this machine publishes, and it is
+            // not this door's to make alone. What matters is that the fact now ARRIVES — see
+            // [`Cleared`], whose whole point is that a pass stopped being one word.
+            Reached::Yes(_) => Ok(None),
             Reached::RunEnded(why) => Err(why),
             other => Ok(Some(other)),
         }
@@ -12459,7 +12466,9 @@ impl OuterLoop {
     ) -> Result<Option<AiLoopEvent>, PaneError> {
         Ok(
             match self.driving.ready.reached(panes, self.driving.pane, run)? {
-                Reached::Yes => None,
+                // Nothing for the machine to hear — see [`OuterLoop::start_ready`] for why the
+                // reason this carries stops at this boundary rather than becoming an event.
+                Reached::Yes(_) => None,
                 // A PERSON TOOK THE PANE. R372's product half, reaching the machine at last.
                 Reached::Interrupted(who) => {
                     self.noticed = Some(Noticed::Interrupted(who));
@@ -14399,7 +14408,13 @@ impl OuterLoop {
     fn resume(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Result<Raise, PaneError> {
         Ok(
             match self.driving.ready.reached(panes, self.driving.pane, run)? {
-                Reached::Yes => AiLoopEvent::SessionReady.into(),
+                // ⚠⚠⚠ AND THE REASON A REPLACEMENT SESSION READS AS READY IS EXACTLY WHERE R379's
+                // defect lived: a barrier whose latch was carried onto the fresh pane answered
+                // *already ready* about a program ten milliseconds old. [`Readiness::rearmed`] is
+                // what forbids that copy, and [`Cleared::Latched`] is now what a run WOULD say if
+                // one were ever reintroduced — which is why this arm is worth reading twice even
+                // though, like the two doors above, it raises the same event either way.
+                Reached::Yes(_) => AiLoopEvent::SessionReady.into(),
                 Reached::RunEnded(_) => AiLoopEvent::Cancel.into(),
                 Reached::Asking(unanswered) => {
                     self.noticed = Some(Noticed::Asking(unanswered));

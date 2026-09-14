@@ -262,7 +262,12 @@ impl Plugin for Answer {
             // at the top of this method. These are the only two places this plugin converges, and
             // naming the ending at each is what makes *nothing was asking* reach a row rather than
             // stopping at a note nobody parses.
-            Reached::Yes => {
+            // ⚠ AND THE READINESS REASON IS DELIBERATELY NOT SPELLED HERE, where the other three
+            // injecting plugins do spell it. This plugin's barrier is built with NO condition, so
+            // [`Cleared`] can only ever say *nothing was asked* — a sentence the note below already
+            // makes, about the door this plugin is actually for. Two spellings of one fact in one
+            // line is the noise [`Cleared::news`] exists to keep out of a journal.
+            Reached::Yes(_) => {
                 self.closed = Some(Closed::NothingToAnswer);
                 Ok(
                     Step::new(Cost::Bytes(0), Verdict::Converged).noting(format!(

@@ -688,6 +688,121 @@ impl Handover {
     }
 }
 
+/// **WHAT LOWERED THE BARRIER** — the terms a bare *yes* threw away.
+///
+/// # ⚠⚠⚠ Why a pass needs a reason at all, when only failures used to have one
+///
+/// Every other ending of this wait carries its evidence: [`Reached::RunEnded`] carries the refusal
+/// it is not, [`Reached::Asking`] the peer's question, [`Reached::Interrupted`] how much a person
+/// wrote. The pass carried NOTHING, and it is reached three different ways — *there was never a
+/// condition*, *an earlier look brought it down*, *this look brought it down* — so **the barrier
+/// having worked and there having been nothing to ask were one value.** An operator reading a
+/// finished run could not tell them apart, and neither could a gate.
+///
+/// ⚠⚠ It is the same defect [`Wanting`](crate::completion::Wanting) closed one type over, and this
+/// type's own [`RunEnded`](Reached::RunEnded) states the principle: *a run that says what it was
+/// still waiting for is the instrument, and it is the product's to say rather than a note in a
+/// file.* That was applied to the failing side and not to the passing one; this is the other half.
+///
+/// # ⚠⚠⚠⚠⚠ What it is FOR — the hazard [`ReadyWhen::Prints`] spends a page warning about
+///
+/// A marker can be satisfied by the pane's own ECHO of the command line that started the program,
+/// and the barrier then clears against a shell the run proceeds to spend its turns on. The
+/// defences are in [`ReadyWhen`] and they are real, but a run that passed left no trace of WHICH
+/// text at WHICH look let it through — so the warning could be read afterwards and never CHECKED
+/// against a run. Carrying the condition that cleared it is what makes that checkable.
+///
+/// ⚠ And the [`Latched`](Self::Latched) arm is R379's defect wearing its own name: a barrier whose
+/// latch is carried onto a REPLACEMENT pane reports *already ready* about a program that has
+/// existed for ten milliseconds. A reader who sees `latched` against a pane that was just opened
+/// is looking straight at it — see [`Readiness::rearmed`], which is why that copy is not a `Clone`.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Cleared {
+    /// **NOTHING WAS EVER ASKED** — the caller declared no condition, saying the pane is already
+    /// running what they mean to drive.
+    ///
+    /// ⚠ This is not the barrier passing; it is the barrier never having had a question. The two
+    /// read alike in a journal that says only *ready*, and they are opposite findings: one is
+    /// evidence about the pane, the other is the absence of any.
+    NothingAsked,
+    /// **THIS LOOK BROUGHT IT DOWN** — the condition the caller declared was met on the very call
+    /// that returned this, and here is the condition.
+    ///
+    /// ⚠ The one answer of the three that is EVIDENCE ABOUT THE PANE, and the only one a run gets
+    /// once: the latch below answers every later look.
+    Saw(ReadyWhen),
+    /// **AN EARLIER LOOK BROUGHT IT DOWN** — the latch, carrying what cleared it then, and [`None`]
+    /// when nothing was ever asked.
+    ///
+    /// ⚠⚠ The `Option` is not a shrug. It keeps the distinction the arms above draw alive for the
+    /// whole life of the barrier: a run whose every step reads `latched` still says whether there
+    /// was ever a question, which is the difference between *this pane was checked once* and *this
+    /// pane was never checked*.
+    Latched(Option<ReadyWhen>),
+}
+
+impl Cleared {
+    /// THE SAME FACT, TOLD BY A LATER LOOK at a barrier that is already down.
+    ///
+    /// ⚠ Idempotent, because a barrier is asked once per pump for the life of a run and each of
+    /// those looks is the same later look. What it must NOT do is forget the condition, which is
+    /// the whole of what the latch used to lose.
+    #[must_use]
+    pub fn latched(&self) -> Self {
+        match self {
+            Self::NothingAsked => Self::Latched(None),
+            Self::Saw(when) => Self::Latched(Some(when.clone())),
+            Self::Latched(when) => Self::Latched(when.clone()),
+        }
+    }
+
+    /// The line a run's journal carries for why it was allowed to type into this pane.
+    ///
+    /// Past tense and about the PANE, the way [`ReadyWhen::describe`] is — these sentences are read
+    /// beside each other in one journal, and the six sibling payloads of [`Reached`] all spell
+    /// theirs this way.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Self::NothingAsked => "the barrier was down from the start: this run declared no \
+                                   readiness condition, so the pane was taken to be running what \
+                                   it means to drive"
+                .to_string(),
+            Self::Saw(when) => format!(
+                "the barrier came down on this look: the pane {}",
+                when.describe()
+            ),
+            Self::Latched(Some(when)) => format!(
+                "the barrier was already down: an earlier look saw that the pane {}",
+                when.describe()
+            ),
+            Self::Latched(None) => "the barrier was already down, and nothing was ever asked of \
+                                    this pane"
+                .to_string(),
+        }
+    }
+
+    /// The same sentence, and [`None`] on every look after the one that answered it.
+    ///
+    /// # ⚠⚠ Why the latch says nothing rather than saying itself again
+    ///
+    /// [`Step::note`](crate::plugin::Step::note) is retained for the last
+    /// [`JOURNAL_LIMIT`](crate::driver::JOURNAL_LIMIT) steps of a run, so a note repeated on every
+    /// step does not merely add noise — **it PUSHES OUT the steps that said something.** The
+    /// barrier comes down once and answers every later look off the latch; the fact is news exactly
+    /// on the step that produced it.
+    ///
+    /// ⚠ A caller who wants the reason on EVERY step has [`describe`](Self::describe), which never
+    /// declines to answer. This is the one to reach for when the answer goes into a journal.
+    #[must_use]
+    pub fn news(&self) -> Option<String> {
+        match self {
+            Self::NothingAsked | Self::Saw(_) => Some(self.describe()),
+            Self::Latched(_) => None,
+        }
+    }
+}
+
 /// How a [`Readiness`] wait ended, for the endings that are not an error.
 /// ⚠ NOT `Copy` since two arms carry the peer's question — [`Verdict`]'s reason, and the same one:
 /// an answer that cannot say WHAT the peer is asking is not worth returning.
@@ -695,8 +810,12 @@ impl Handover {
 /// [`Verdict`]: crate::plugin::Verdict
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Reached {
-    /// The pane is ready. Drive it.
-    Yes,
+    /// The pane is ready. Drive it — and [`Cleared`] says WHAT let it.
+    ///
+    /// ⚠⚠ The payload is not decoration. The three ways a barrier comes down are three different
+    /// findings about a pane, and until this carried one they were the same value — see
+    /// [`Cleared`], which holds why that mattered and to whom.
+    Yes(Cleared),
     /// THE RUN ended while waiting — cancelled, or out of time. **Nothing was injected**, so
     /// nothing is charged; which of the two it was is the [`RunContext`]'s to answer.
     ///
@@ -1066,8 +1185,16 @@ pub struct Readiness {
     /// [`satisfied`](Self::satisfied): a generation says a row was REPAINTED, and a resize repaints
     /// every one of them.
     armed_at: Option<usize>,
-    /// Whether the marker has been seen. Latched.
-    seen: bool,
+    /// WHAT BROUGHT THIS BARRIER DOWN, and `None` until a look does. Latched.
+    ///
+    /// ⚠⚠ It used to be a `bool`, and the bool is why a pass could not be questioned: the moment
+    /// it was set, *which* of the three ways the barrier came down was gone, and every later look
+    /// answered a fact it no longer held. See [`Cleared`] — the terms are kept here so the answer
+    /// can carry them for the whole life of the run, not just on the look that found them.
+    ///
+    /// ⚠⚠⚠ AND IT IS `None` AT CONSTRUCTION EVEN WITH NO CONDITION, where the bool was `true`.
+    /// Pre-answering the latch is what hid the third reading: see [`Readiness::new`].
+    cleared: Option<Cleared>,
     /// WHAT THIS RUN MAY ANSWER when the peer stops to ask — `None` for a run that may answer
     /// nothing, which is the default and what every run did before the contract existed.
     ///
@@ -1132,7 +1259,16 @@ impl Readiness {
         attended: Attended,
     ) -> Self {
         Self {
-            seen: when.is_none(),
+            // ⚠⚠⚠ NOTHING IS LATCHED AT CONSTRUCTION, not even for a barrier with no condition —
+            // and that is a CHANGE, made because the old `seen: when.is_none()` is what made *there
+            // was never a question* unaskable. It pre-answered the latch, so the first look at such
+            // a barrier came back off it and the arm that says *no condition was declared* could
+            // never run: both readings arrived as one word, which is the whole of register item
+            // 1103. The decision now happens where it is taken — at the first look, in `reached`.
+            //
+            // ⚠ Behaviour is unchanged: that look still answers immediately, still waits for
+            // nothing and still arms nothing. What changed is that it SAYS which of the three it is.
+            cleared: None,
             when,
             within: within.unwrap_or(DEFAULT_READY_TIMEOUT),
             armed_at: None,
@@ -1770,18 +1906,25 @@ impl Readiness {
                 decided => Ok(decided),
             };
         }
-        if self.seen {
-            return Ok(Reached::Yes);
+        // ⚠⚠ THE LATCH ANSWERS WITH WHAT IT LATCHED ON, never with a bare yes. Every step after
+        // the first lands here, so this is the arm an operator reads most of — and *an earlier
+        // look saw the pane print `>>> `* and *nothing was ever asked of this pane* are the two
+        // findings that used to arrive as one word. See [`Cleared::latched`].
+        if let Some(cleared) = &self.cleared {
+            return Ok(Reached::Yes(cleared.latched()));
         }
-        // ⚠ A BARRIER WITH NO CONDITION IS ALREADY DOWN, and saying so HERE is what keeps the
-        // failure below honest. `seen` is set from `when.is_none()` at construction, so this arm is
-        // unreachable in practice — but taking the condition out of the `Option` now means the
-        // `NeverReady` error cannot be constructed without one. The alternative was a fabricated
-        // empty marker for a case that cannot happen, which is a false sentence waiting for a
-        // refactor to make it reachable.
+        // ⚠⚠⚠ A BARRIER WITH NO CONDITION IS ALREADY DOWN, AND THIS IS WHERE IT SAYS SO — the arm
+        // that used to be unreachable. `seen` was set from `when.is_none()` at CONSTRUCTION, which
+        // pre-answered the latch above and left this dead; taking the condition out of the `Option`
+        // was then its only remaining job, so that the `NeverReady` error below cannot be built
+        // without one. It now also answers the question it was always the right place to answer.
+        //
+        // ⚠ Reaching here is not a pass the way the arm below is. Nothing looked at this pane and
+        // nothing needed to: the caller declared the pane is already running what they mean to
+        // drive, and [`Cleared::NothingAsked`] is that sentence rather than a yes.
         let Some(when) = self.when.clone() else {
-            self.seen = true;
-            return Ok(Reached::Yes);
+            self.cleared = Some(Cleared::NothingAsked);
+            return Ok(Reached::Yes(Cleared::NothingAsked));
         };
         // ⚠ ARM BEFORE THE FIRST LOOK, never before. Every occurrence of the marker on the screen
         // at this instant is one `Prints` refuses to count, and this is the first moment a pane is
@@ -1829,8 +1972,12 @@ impl Readiness {
                         decided => Ok(decided),
                     };
                 }
-                self.seen = true;
-                Ok(Reached::Yes)
+                // ⚠⚠ THE CONDITION IS WHAT IS KEPT, not the fact that there was one. This is the
+                // one look in a run's life that is evidence ABOUT THE PANE, and the latch above
+                // hands it on to every look after it.
+                let cleared = Cleared::Saw(when);
+                self.cleared = Some(cleared.clone());
+                Ok(Reached::Yes(cleared))
             }
             // ⚠⚠⚠ THE SAME DIAGNOSIS AS THE ARM BELOW, and that is the point — see
             // [`Reached::RunEnded`]. Which of these two arms a caller lands in is decided by
@@ -2123,7 +2270,9 @@ mod tests {
                 Attended::NoOne
             )
             .reached(&access, pane, &RunContext::uncancellable()),
-            Ok(Reached::Yes),
+            Ok(Reached::Yes(Cleared::Saw(ReadyWhen::Runs(
+                "tr".to_string()
+            )))),
             "the program owns the terminal — so this gate is about the DIFFERENCE between the two \
              questions, not about a pane that never came up",
         );
@@ -2165,7 +2314,9 @@ mod tests {
         *reported.lock().unwrap() = (AgentState::Idle, Some("claude".to_string()));
         assert_eq!(
             settled(&access),
-            Ok(Reached::Yes),
+            Ok(Reached::Yes(Cleared::Saw(ReadyWhen::Settles(
+                "claude".to_string()
+            )))),
             "the agent the caller named is at rest and waiting for input — NOW drive it",
         );
     }
@@ -2252,12 +2403,161 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **A PASS IS THREE DIFFERENT FINDINGS ABOUT A PANE, AND THEY ARRIVED AS ONE WORD** —
+    /// register item 1103.
+    ///
+    /// # ⛔⛔⛔ What the one word cost
+    ///
+    /// [`Reached::Yes`] is produced at three places in [`Readiness::reached`] and they say
+    /// different things: *the caller declared no condition*, *this look met the condition*, *an
+    /// earlier look met it and this is the latch*. Folded into one value, **the barrier having
+    /// worked and there having been nothing to ask are indistinguishable** — so an operator reading
+    /// a finished run cannot ask why it was allowed to type, and the hazard
+    /// [`ReadyWhen::Prints`] spends a page on (a pane's own ECHO clearing a barrier) can be warned
+    /// about but never checked against a run that passed.
+    ///
+    /// ⚠⚠ The six sibling variants all carry their evidence, and [`Reached::RunEnded`] states the
+    /// principle this applies to the other side: *a run that says what it was still waiting for is
+    /// the instrument, and it is the product's to say rather than a note in a file.*
+    ///
+    /// # ⚠⚠⚠ THE CONTRAST IS THE GATE, and it is why three values are asserted and then compared
+    ///
+    /// Asserting each arm alone would be satisfied by a type whose three answers were equal, which
+    /// is precisely the defect. The `assert_ne!`s below are the claim: **no two of the three ways
+    /// out of this barrier may be the same value.** Rewire any producing site to another's answer
+    /// and one of them goes red.
+    ///
+    /// ⚠ And the pair at the end holds the LATCH's own distinction: a barrier latched on a marker
+    /// and a barrier that was never asked anything both answer *already down*, and a reader must
+    /// still be able to tell *this pane was checked once* from *this pane was never checked*.
+    #[test]
+    fn a_pass_says_which_of_the_three_ways_the_barrier_came_down() {
+        let workspace = Arc::new(Mutex::new(Workspace::new((40, 8))));
+        let mut command = CommandBuilder::new("sh");
+        command.arg("-c");
+        command.arg("printf 'BANNER\\n'; exec cat");
+        let pane = workspace
+            .lock()
+            .unwrap()
+            .spawn(command, "sh".to_string(), 40, 8)
+            .expect("spawn pane");
+        let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
+        crate::testing::screen_showing(&access, pane, "BANNER");
+        let run = RunContext::uncancellable();
+        let marker = || ReadyWhen::Shows("BANNER".to_string());
+        let asking = |when: Option<ReadyWhen>| {
+            Readiness::new(when, Some(Duration::from_secs(5)), None, Attended::NoOne)
+        };
+
+        // ── ① NOTHING WAS ASKED: the caller declared no condition, so no look ever happened ──
+        let mut silent = asking(None);
+        let nothing_asked = silent
+            .reached(&access, pane, &run)
+            .expect("a barrier with no condition is down");
+        assert_eq!(
+            nothing_asked,
+            Reached::Yes(Cleared::NothingAsked),
+            "⛔ a barrier with no condition must say that nothing was asked of this pane, not that \
+             the pane satisfied something",
+        );
+
+        // ── ② THIS LOOK SAW IT: the condition the caller declared was met on this call ──
+        let mut watching = asking(Some(marker()));
+        let saw = watching
+            .reached(&access, pane, &run)
+            .expect("the marker is on the pane");
+        assert_eq!(
+            saw,
+            Reached::Yes(Cleared::Saw(marker())),
+            "⛔ the one answer of the three that is EVIDENCE about the pane must name the condition \
+             it met. The pane was showing: {:?}",
+            access.pane_collapsed(pane).unwrap_or_default(),
+        );
+
+        // ── ③ AN EARLIER LOOK SAW IT: the same barrier, one pump later ──
+        let latched = watching
+            .reached(&access, pane, &run)
+            .expect("a latched barrier answers without looking");
+        assert_eq!(
+            latched,
+            Reached::Yes(Cleared::Latched(Some(marker()))),
+            "⛔ the latch must hand the condition ON. Forgetting it here is the whole of what the \
+             `bool` did, one step later",
+        );
+
+        // ── ⛔ THE CONTRAST: no two of the three may be one value ──
+        assert_ne!(
+            nothing_asked, saw,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1103 ITSELF: a barrier that was NEVER ASKED ANYTHING and a \
+             barrier the pane SATISFIED must not answer the same thing. Equal here, a run's \
+             readiness is unaskable and this whole type is decoration",
+        );
+        assert_ne!(
+            saw, latched,
+            "⛔⛔⛔ and *this look saw it* is not *an earlier look did* — that difference is R379: \
+             a latch carried onto a fresh pane reports ready about a program ten milliseconds old, \
+             and a reader has to be able to see which they are holding",
+        );
+        assert_ne!(
+            nothing_asked, latched,
+            "⛔⛔ and neither collapses into the latch",
+        );
+
+        // ── ⚠ AND THE LATCH KEEPS THE DISTINCTION ALIVE for the life of the barrier ──
+        let never_checked = silent
+            .reached(&access, pane, &run)
+            .expect("a barrier with no condition stays down");
+        assert_eq!(
+            never_checked,
+            Reached::Yes(Cleared::Latched(None)),
+            "⚠ a second look at a barrier that was never asked anything is the latch, and it says \
+             so with nothing in it",
+        );
+        assert_ne!(
+            never_checked, latched,
+            "⚠⚠ *this pane was checked once* and *this pane was never checked* are still different \
+             on every step after the first — which is what the `Option` in `Latched` is for",
+        );
+
+        // ── ⚠⚠ AND A RUN'S JOURNAL GETS THE FACT ONCE, not on every step until the run ends ──
+        for (cleared, why) in [
+            (Cleared::NothingAsked, "nothing was asked"),
+            (Cleared::Saw(marker()), "this look saw it"),
+        ] {
+            assert_eq!(
+                cleared.news().as_deref(),
+                Some(cleared.describe().as_str()),
+                "⚠ the look that answers is news: {why}",
+            );
+        }
+        for cleared in [Cleared::Latched(Some(marker())), Cleared::Latched(None)] {
+            assert_eq!(
+                cleared.news(),
+                None,
+                "⚠⚠ and the latch is not. `Step::note` is retained for the last JOURNAL_LIMIT \
+                 steps, so a reason repeated on every step PUSHES OUT the steps that said \
+                 something: {}",
+                cleared.describe(),
+            );
+        }
+        assert!(
+            Cleared::Saw(marker()).describe().contains("BANNER")
+                && Cleared::Latched(Some(marker()))
+                    .describe()
+                    .contains("BANNER"),
+            "⚠⚠⚠ and the sentence a person reads carries the MARKER — a reason that says only \
+             *the barrier came down* is the bare `Yes` in a longer spelling",
+        );
+
+        access.lifecycle().expect("lifecycle").close(pane);
+    }
+
     /// ⚠⚠⚠ **A BARRIER OVER A REPLACED PANE HAS FORGOTTEN THE PANE IT LATCHED ON** —
     /// [`Readiness::rearmed`], and the one thing that makes a loop's session replacement safe.
     ///
     /// # ⚠⚠⚠ Why this cannot be left to the caller remembering
     ///
-    /// `seen` LATCHES, deliberately: it is what makes the barrier cost one look per pump after the
+    /// The latch is DELIBERATE: it is what makes the barrier cost one look per pump after the
     /// first, on a run that pumps hundreds of times. So a driver that closed its pane, opened a fresh
     /// one and kept its barrier would be told *already ready* about a program that had existed for ten
     /// milliseconds — and would type its first prompt into it. That is R379's measured defect (the
@@ -2303,9 +2603,10 @@ mod tests {
             ready
                 .reached(&access, first, &RunContext::uncancellable())
                 .expect("a pane that prints the marker clears this barrier"),
-            Reached::Yes,
+            Reached::Yes(Cleared::Saw(ReadyWhen::Shows("BANNER".to_string()))),
             "the control: this barrier must really have LATCHED, or what follows is about a barrier \
-             that never cleared",
+             that never cleared — and it must say the marker it latched ON, which is what makes the \
+             claim below readable at all",
         );
 
         // ⚠ The replacement, standing in for what `restarting` opens: a pane that never prints the
@@ -2315,10 +2616,14 @@ mod tests {
             ready
                 .reached(&access, replacement, &RunContext::uncancellable())
                 .expect("the latched barrier answers without looking"),
-            Reached::Yes,
+            Reached::Yes(Cleared::Latched(Some(ReadyWhen::Shows(
+                "BANNER".to_string()
+            )))),
             "⚠⚠ THE CONTROL FOR THE CLAIM BELOW: carried over, the barrier says a pane it has never \
              looked at is ready — which is exactly the answer a loop must not get about a session it \
-             has just opened",
+             has just opened. ⚠⚠⚠ AND IT NOW SAYS SO IN THE ANSWER: `Latched` naming a marker this \
+             pane never showed is the defect legible in one value, where a bare `Yes` was \
+             indistinguishable from the honest pass above it",
         );
 
         let mut afresh = ready.rearmed();
@@ -2330,7 +2635,7 @@ mod tests {
             &ReadyWhen::Shows("BANNER".to_string()),
             "cat",
             "⚠⚠⚠ a re-armed barrier must ASK AGAIN on the pane that replaced the old one — a loop \
-             that inherits `seen` types its first prompt into a program that is still starting",
+             that inherits `cleared` types its first prompt into a program that is still starting",
         );
         let lifecycle = <WorkspacePaneAccess as PaneAccess>::lifecycle(&access).expect("lifecycle");
         lifecycle.close(first);
@@ -2603,7 +2908,9 @@ mod tests {
         .reached(&panes, PaneId(1), &RunContext::uncancellable());
         assert_eq!(
             reached,
-            Ok(Reached::Yes),
+            Ok(Reached::Yes(Cleared::Saw(ReadyWhen::Prints(
+                "BANNER".to_string()
+            )))),
             "⛔⛔⛔⛔⛔ THE BASELINE WAS NOT TAKEN ON THE FIRST COLLAPSED READ, so a marker printed \
              the moment that read returns is one this barrier has ALREADY counted and can never \
              rise above. Register item 610's fixture publishes its arming fact exactly there, so a \
@@ -2705,13 +3012,17 @@ mod tests {
 
         assert_eq!(
             asks("shim", Duration::from_secs(5)),
-            Ok(Reached::Yes),
+            Ok(Reached::Yes(Cleared::Saw(ReadyWhen::Runs(
+                "shim".to_string()
+            )))),
             "the name the caller LAUNCHED it under answers — this is the arm that carries macOS, \
              where the shell a pane is spawned as is not the file the kernel names",
         );
         assert_eq!(
             asks("cat", Duration::from_millis(400)),
-            Ok(Reached::Yes),
+            Ok(Reached::Yes(Cleared::Saw(ReadyWhen::Runs(
+                "cat".to_string()
+            )))),
             "and so does the kernel's, for a caller who read it off `ps` — accepting only one of \
              the two would make the answer depend on which they had looked at",
         );
@@ -2784,7 +3095,9 @@ mod tests {
                 Attended::NoOne
             )
             .reached(&access, pane, &RunContext::uncancellable()),
-            Ok(Reached::Yes),
+            Ok(Reached::Yes(Cleared::Saw(ReadyWhen::Shows(
+                "TOOL UP".to_string()
+            )))),
             "the marker is on the pane; that the terminal broke the line inside it is the \
              terminal's business and not the caller's",
         );
@@ -3013,7 +3326,7 @@ mod tests {
             .reached(&access, pane, &run)
             .expect("a blocked peer is not an error");
         assert!(
-            matches!(first, Reached::Answered { .. } | Reached::Yes),
+            matches!(first, Reached::Answered { .. } | Reached::Yes(_)),
             "⚠⚠ the control's own premise: a clause authorising `Yes` must answer this dialog, or \
              nothing below is about a dialog that was answered at all: {first:?}",
         );
@@ -4785,14 +5098,18 @@ mod tests {
             "the first step spends itself on the answer",
         );
         let start = std::time::Instant::now();
+        // ⚠ `NothingAsked` and not the latch: this barrier holds NO readiness condition, and the
+        // first look that gets past the dialog is the first look at all. The latch is set BY that
+        // look rather than by the constructor — see [`Readiness::new`], where pre-setting it is
+        // what used to make this reading unsayable.
+        let ready = Ok(Reached::Yes(Cleared::NothingAsked));
         let mut second = barrier.reached(&access, pane, &RunContext::uncancellable());
-        while start.elapsed() < Duration::from_secs(5) && second != Ok(Reached::Yes) {
+        while start.elapsed() < Duration::from_secs(5) && second != ready {
             std::thread::sleep(Duration::from_millis(20));
             second = barrier.reached(&access, pane, &RunContext::uncancellable());
         }
         assert_eq!(
-            second,
-            Ok(Reached::Yes),
+            second, ready,
             "and the NEXT one drives the pane the answer freed — an answer that left the barrier \
              shut would be a loop that stops on every dialog it is allowed to answer",
         );

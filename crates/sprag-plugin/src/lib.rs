@@ -271,7 +271,7 @@ pub use plugin::{
     Scoring, StandingOrder, Step, Verdict,
 };
 pub use readiness::{
-    Attended, Attention, DEFAULT_READY_TIMEOUT, Handback, Handover, Interruption, Reached,
+    Attended, Attention, Cleared, DEFAULT_READY_TIMEOUT, Handback, Handover, Interruption, Reached,
     Readiness, ReadyWhen,
 };
 pub use reply::{AgentReply, parse_claude_json};
