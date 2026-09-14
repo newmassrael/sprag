@@ -48,15 +48,79 @@ const PROGRESS_MARKS: &str = "progress_marks";
 ///   | sed 's#\(^[^/]*/[^/]*/[^/]*\).*#\1#' | sort | uniq -c | sort -rn
 /// ```
 ///
-/// Over the 200 commits before 2026-09-12 that produced 702 changed paths, and the document names
-/// every directory taking at least **a twentieth** of them and nothing else. The five held 80.1% of
-/// the changed paths while being 196 of the tree's 367 tracked files.
+/// ⛔⛔⛔⛔⛔ **AND THIS GATE NOW RE-RUNS IT** — register item 1104, which is what the sentence
+/// this doc used to carry cost.
 ///
-/// ⚠ This gate does not re-run that command. What it holds is the part that ROTS — a named
-/// directory that stopped existing, and the two lists collapsing back into one — because a
-/// percentage measured on a moving window is a number to re-take by hand, while a dead path is a
-/// checker being sent somewhere there is nothing to read.
-const DERIVATION: &str = "at least a twentieth of the paths 200 commits changed";
+/// It used to end: *"This gate does not re-run that command … a percentage measured on a moving
+/// window is a number to re-take by hand."* **Nobody re-took it.** Measured 2026-09-14, the window
+/// had moved from 702 changed paths to 612, the five named directories had fallen from the claimed
+/// 80.1% to **73.4%**, and one of them no longer cleared the twentieth it was chosen by — while the
+/// kind document went on stating the old figure with its own authority. A number a document asserts
+/// and no gate re-takes is this workspace's rule 10 met in a comment: **prose nobody measures.**
+///
+/// ⚠⚠ The threshold asserted is the COVERAGE, not the per-directory heuristic that picked the
+/// list. *A twentieth each* was a way of guessing at what matters and it guesses badly both ways —
+/// it drops `crates/sprag-mcp/src` (one tracked file, 11 changed paths) and would admit
+/// `crates/sprag-gui/src` (34 files, 10). What a checker needs is that the round it judges landed
+/// somewhere it was told to open, and coverage says exactly that.
+const COVERAGE_FLOOR_PERCENT: usize = 80;
+
+/// How far back the coverage is measured — the window the kind document's own derivation names.
+const WINDOW: usize = 200;
+
+/// How the list is derived, as a command — the thing an XML comment cannot hold, which is why the
+/// kind document points here for it:
+///
+/// ```text
+/// git log -200 --name-only --pretty=format: | grep -v '^$' \
+///   | sed 's#\(^[^/]*/[^/]*/[^/]*\).*#\1#' | sort | uniq -c | sort -rn
+/// ```
+const DERIVATION: &str = "at least 80% of the paths the last 200 commits changed";
+
+/// Every path the last [`WINDOW`] commits changed, as this repository's own VCS answers.
+///
+/// ⛔ **A READING THAT DID NOT HAPPEN IS A PANIC, NEVER AN EMPTY LIST** — rule 6, and the one
+/// failure mode a gate that shells out is most likely to have. An empty answer would make the
+/// coverage claim below vacuously satisfiable at 0 named directories.
+fn paths_the_window_changed() -> Vec<String> {
+    // ⛔⛔ THROUGH `ambient::git_in`, NEVER `Command::new("git")` — register item 965. `pre-commit`
+    // runs this suite, so a bare child inherits an ABSOLUTE `GIT_INDEX_FILE` naming the index git
+    // is about to commit, and that outranks `current_dir`. This constructor cuts it.
+    let out = sprag_gate::ambient::git_in(&workspace_root())
+        .args([
+            "log",
+            &format!("-{WINDOW}"),
+            "--name-only",
+            "--pretty=format:",
+        ])
+        .output()
+        .unwrap_or_else(|why| {
+            panic!(
+                "⛔ REGISTER ITEM 1104: this gate re-derives `{CHECK_OPENS}` from the history and \
+                 could not run git: {why}. It must not pass here — an unreadable instrument \
+                 answering *clean* is the one conclusion rule 6 forbids"
+            )
+        });
+    assert!(
+        out.status.success(),
+        "⛔ REGISTER ITEM 1104: `git log -{WINDOW}` failed in {}: {}",
+        workspace_root().display(),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let paths: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        !paths.is_empty(),
+        "⛔ REGISTER ITEM 1104: the last {WINDOW} commits changed no paths, which cannot be true of \
+         a tree this gate is running inside — a shallow clone answers this way, and the coverage \
+         claim would then be satisfied by naming nothing",
+    );
+    paths
+}
 
 fn document() -> String {
     let path = workspace_root().join(KIND_DOCUMENT);
@@ -102,6 +166,74 @@ fn every_path_the_kind_sends_a_checker_to_is_one_this_tree_has() {
          says *its work lands in these* with the document's own authority, so a dead name tells a \
          judge there is nothing to look at rather than that the list is stale. Re-derive it — \
          {DERIVATION} — and write the new list into `{KIND_DOCUMENT}`",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **A ROUND OF THIS KIND LANDS SOMEWHERE THE CHECKER WAS TOLD TO OPEN** — register item
+/// 1104, and the claim the kind document used to make in prose that nothing re-took.
+///
+/// # ⚠⚠⚠⚠⚠ Why coverage, and why it is measured here rather than asserted there
+///
+/// Naming files is the one remedy anybody has TIMED for a checker going silent (item 1072: 33.3 s
+/// against a 185.2 s worst case). It buys that only for work that lands INSIDE the names — a round
+/// whose whole commit fell outside them leaves the judge searching exactly as if the clause were
+/// empty, while the document goes on saying *these are where the work lands*. That is worse than
+/// silence, for the reason the existence claim above states.
+///
+/// So the number is re-taken from the history on every run. The window moves under it by
+/// construction — that is not noise, it is the fact the old comment could not survive: it asserted
+/// **80.1%** and was at **73.4%** two days later, having named the same five directories the whole
+/// time.
+///
+/// ⚠⚠ The floor is a DECLARED number and the reading is a MEASURED one, which is the shape this
+/// workspace keeps arriving at (register item 1056, one crate over: compare against something the
+/// alternative cannot cross rather than against a figure an afternoon can move). A list that drifts
+/// under the floor is a list to re-derive, and the refusal below carries the table to re-derive it
+/// from — so the remedy is in the sentence rather than in somebody's memory of a command.
+#[test]
+fn what_the_checker_is_told_to_open_covers_where_this_kind_actually_works() {
+    let opens = named(&document(), CHECK_OPENS);
+    let changed = paths_the_window_changed();
+    let covered = changed
+        .iter()
+        .filter(|path| {
+            opens
+                .iter()
+                .any(|open| path.starts_with(&format!("{open}/")))
+        })
+        .count();
+    // ⚠ Integer arithmetic, and the multiplication first: `covered / total * 100` is zero for every
+    // input a gate can have.
+    let percent = covered * 100 / changed.len();
+
+    // ⚠⚠ THE TABLE IS BUILT WHETHER OR NOT IT IS PRINTED, because a refusal that said only *you are
+    // at 73%* would send the next reader back to a shell to find out which directories to add —
+    // which is the step the old comment's "re-take it by hand" asked for and nobody took.
+    let mut missed: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for path in &changed {
+        if opens
+            .iter()
+            .any(|open| path.starts_with(&format!("{open}/")))
+        {
+            continue;
+        }
+        let head: Vec<&str> = path.split('/').take(3).collect();
+        *missed.entry(head.join("/")).or_default() += 1;
+    }
+    let mut ranked: Vec<(&String, &usize)> = missed.iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+
+    assert!(
+        percent >= COVERAGE_FLOOR_PERCENT,
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 1104: this kind tells its checker to open {} \
+         director(ies), and they hold only {percent}% of the {} paths the last {WINDOW} commits \
+         changed — the floor is {COVERAGE_FLOOR_PERCENT}%. A round landing outside them leaves the \
+         judge searching exactly as if the clause were empty, while the document says *this is \
+         where the work lands*. Derivation: {DERIVATION}. Biggest uncovered, most changed first: \
+         {:?}",
+        opens.len(),
+        changed.len(),
+        ranked.iter().take(8).collect::<Vec<_>>(),
     );
 }
 

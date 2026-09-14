@@ -1417,20 +1417,32 @@
       touches is different every round — a static list of files would be wrong
       on almost every run, and a judge told to open the wrong five files is
       worse off than one told to search. What IS stable is where the work lands,
-      and that is a measurement rather than a guess: over the 200 commits before
-      2026-09-12 (702 changed paths), every directory taking at least a
-      TWENTIETH of them is named below and nothing else is. The five hold
-      **80.1%** of the changed paths while being 196 of the tree's 367 tracked
-      files, so a judge that opens these and stops has missed a fifth of what a
-      round of this kind has ever moved.
+      and that is a measurement rather than a guess.
 
-      ⚠⚠⚠ THE THRESHOLD IS WRITTEN DOWN BECAUSE IT IS THE ONLY THING THAT MAKES
-      THIS LIST RE-DERIVABLE. A list chosen by eye is a list nobody can check
-      and nobody can update. The word *a twentieth* is what the next reader
-      measures against, the exact command that produces the table is in the doc
-      of `the_debt_kind_sends_a_checker_somewhere_other_than_its_own_reflog`
-      (an XML comment cannot hold a git flag), and that gate is also what
-      refuses a name here that has stopped existing.
+      ⛔⛔⛔⛔⛔ AND THE MEASUREMENT WENT STALE, WHICH IS WHY THE RULE CHANGED —
+      register item 1104. This clause used to name every directory taking at
+      least a TWENTIETH of the paths 200 commits changed, and claimed the five
+      that produced held 80.1% of them. Re-taken 2026-09-14 over the window as
+      it stands (612 changed paths): those five hold **73.4%**, and one of them
+      — `crates/sprag-host/tests`, 17 paths — no longer clears the twentieth it
+      was chosen by. The list had not moved; the window had.
+
+      ⚠⚠⚠⚠⚠ SO THE RULE IS NOW THE COVERAGE ITSELF, AND NOT THE HEURISTIC THAT
+      PICKED IT. *A twentieth per directory* was only ever a way of GUESSING at
+      the thing that matters, and it guesses badly in both directions: it drops
+      `crates/sprag-mcp/src`, which is ONE tracked file carrying 11 changed
+      paths, while it would admit `crates/sprag-gui/src` — 34 files for 10. What
+      a checker actually needs is that the round it is judging LANDED in
+      something it was told to open, so that is what is asserted:
+
+          the directories below cover at least 80% of the paths the last 200
+          commits changed
+
+      and the nine named hold **81.7%** while being 224 of the tree's 382
+      tracked files. The gate named below RE-RUNS that measurement rather than
+      trusting this comment — which is the whole of item 1104, because the
+      sentence you are reading is exactly the kind that was false for two days
+      and could not have been noticed.
 
       ⚠⚠ THE REGISTER IS DELIBERATELY ABSENT, though it is a mark above and
       though a round writes in it. The checker stands in a COPY and mutates what
@@ -1446,10 +1458,14 @@
     <data id="check_opens"
           expr="[
             'crates/sprag-plugin/src',
-            'crates/sprag-host/src',
             'crates/sprag-gate/src',
+            'crates/sprag-host/src',
             'crates/sprag-gate/tests',
-            'crates/sprag-host/tests'
+            'crates/sprag-tui/tests',
+            'crates/sprag-host/tests',
+            'crates/sprag-rpc/src',
+            'crates/sprag-mcp/src',
+            'crates/sprag-client/tests'
           ]"/>
 
     <!--
