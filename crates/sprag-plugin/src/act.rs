@@ -540,11 +540,20 @@ pub enum Does {
     Attend,
     /// `redirect` — the work needs pointing somewhere else.
     Redirect,
+    /// `widen` — a judged rule said this dialog is a PERMISSION, and named the option that grants it
+    /// for the longest. Press that one.
+    ///
+    /// ⚠⚠ THE ONE ACT IN THIS VOCABULARY THAT GRANTS. Every other road out of a blocked turn either
+    /// refuses, waits, or hands the pane to a person; this one answers YES on the run's behalf, and
+    /// it exists because a loop that stops at every permission dialog is not unattended. What keeps
+    /// it bounded is that the WORD is the kind document's (`judged_rules`' `does`) and the OPTION is
+    /// the judge's — neither this driver nor the template picks either.
+    Widen,
 }
 
 impl Does {
     /// Every effect a pass may be for.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Ready,
         Self::Sent,
         Self::Watch,
@@ -557,6 +566,7 @@ impl Does {
         Self::Resume,
         Self::Attend,
         Self::Redirect,
+        Self::Widen,
     ];
 
     /// The word a document writes for it.
@@ -575,6 +585,7 @@ impl Does {
             Self::Resume => "resume",
             Self::Attend => "attend",
             Self::Redirect => "redirect",
+            Self::Widen => "widen",
         }
     }
 

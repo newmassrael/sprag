@@ -230,6 +230,10 @@ const DRIVER_ARMS: &[(&str, usize)] = &[
     ("screening", 0),
     ("service_down", 0),
     ("standing", 0),
+    // ⚠ The approving twin of `redirecting`, and a zero for its reason: both states hand the whole
+    // decision to the document — WHICH act runs is the kind's `does` word and WHICH option is the
+    // judge's, so this driver arms nothing of its own in either.
+    ("widening", 0),
     // ⚠ NINE since 2026-08-22, and the ninth is a READER rather than a decision — register item
     // 605. `OuterLoop::standing_down` answers *has the machine heard a stand-down*, which nothing
     // could ask before: `sprag-host` publishes only its own flag, which says a person SPOKE. No
@@ -458,7 +462,10 @@ const DECLARED_ACTS: usize = 15;
 /// per arm of a branch — the ordinary reflection question, and the one that carries a refused
 /// proposal's own words back to the agent it asks again. ⚠ No [`DRIVER_ARMS`] row fell with it
 /// either: which sentence goes out is a branch in the document, and it never lived in the driver.
-const SERVED_ACTS: usize = 45;
+/// ⚠ 46 SINCE `widen`: the document gained a `pass` arm for `widening`, which is one more act it
+/// asks this host to perform. ⛔ No [`DRIVER_ARMS`] row fell with it — the act is NEW rather than
+/// traded, because approving a dialog is a thing this loop could not do at all before.
+const SERVED_ACTS: usize = 46;
 
 fn document() -> String {
     let path = workspace_root().join(DOCUMENT);

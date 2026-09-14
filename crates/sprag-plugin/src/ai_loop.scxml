@@ -3584,6 +3584,21 @@
       <param name="does" expr="'redirect'"/>
     </send>
   </transition>
+  <!--
+    ⚠ THE APPROVING TWIN OF THE PASS ABOVE, and it carries the SAME parameters for the same reason:
+    what differs between these two states is which key the driver presses, and every bound around
+    that press is the caller's as it always was. A pass that trimmed its parameters here would make
+    an approval answer to different timings than a refusal on the identical screen.
+  -->
+  <transition event="pass" cond="In('widening')">
+    <send type="x-sprag-host" event="pass.do">
+      <param name="within" expr="ready_timeout_ms"/>
+      <param name="awaits" expr="await_person_ms"/>
+      <param name="stills" expr="handback_still_ms"/>
+      <param name="answers" expr="may_answer"/>
+      <param name="does" expr="'widen'"/>
+    </send>
+  </transition>
 
   <!--
     ⚠⚠⚠⚠⚠ CAN THIS STATE'S AGENT BE ASKED WHERE THE RUN GOT TO?
@@ -3611,8 +3626,8 @@
   -->
   <transition event="account"
               cond="In('priming') || In('working') || In('judging')
-                    || In('screening') || In('redirecting') || In('disputing')
-                    || In('closing') || In('stopping')">
+                    || In('screening') || In('redirecting') || In('widening')
+                    || In('disputing') || In('closing') || In('stopping')">
     <!-- A turn is in flight or one has just landed, so the latch reaches
          `judging` on the very next judgement. `closing` and `stopping` are in
          this list and are already asking their own question; the flag changes
@@ -4628,6 +4643,24 @@
     <transition event="turn.blocked" cond="_event.data.service" target="service_down">
       <assign location="service_resumes_itself" expr="false"/>
     </transition>
+    <!--
+      ⛔⛔⛔⛔⛔ ABOVE THE REFUSING EDGE, AND THE ORDER IS THE WHOLE OF IT. Both edges are about a
+      dialog a judge CLAIMED; this one is the single act in this document that GRANTS, so it is
+      keyed on a word the driver publishes and not on the boolean beside it. A run whose kind wrote
+      no `widen` rule never sets the word and falls through to `redirecting` exactly as before.
+
+      ⚠⚠ KEYED ON `does` AND NOT ON `rule`, and that is structural rather than a preference. The
+      note below this pair offers a fork per decision, keyed on the matched rule's NAME — and NO
+      KIND DOCUMENT CAN WRITE ONE. A kind supplies the datamodel and this template supplies the
+      states, so the flow lives here and the names live there: a `cond` naming a rule would be this
+      file knowing a word only the adopting repository has. `does` is the template's OWN closed
+      vocabulary, so this line compiles the same into every checkout — `keeps`' shape, item 772.
+
+      ⚠ AND THE ACT IS THE AUTHOR'S, NEVER THIS DOCUMENT'S. What may be granted is decided by the
+      kind that wrote `does: widen` beside a criterion; WHICH option is granted is the judge's, named
+      in the same call that claimed the dialog. This edge picks neither — it routes.
+    -->
+    <transition event="turn.blocked" cond="_event.data.does == 'widen'" target="widening"/>
     <transition event="turn.blocked" cond="_event.data.judged" target="redirecting"/>
     <transition event="turn.blocked" target="screening"/>
 
@@ -7257,6 +7290,35 @@
     business, as it is on `screen.none`; naming them is not counting them.
   -->
   <state id="redirecting">
+    <transition event="redirect.done" target="working">
+      <assign location="redirected" expr="redirected + 1"/>
+    </transition>
+    <transition event="redirect.none" target="awaiting_human"/>
+    <transition event="fail" target="failed"/>
+    <transition event="cancel" target="cancelled"/>
+    <transition event="peer.gone" target="peer_gone"/>
+  </state>
+
+  <!--
+    ⛔⛔⛔⛔⛔ THE ONE STATE THAT ANSWERS A DIALOG **YES**.
+
+    A judged rule whose `does` is `widen` said this dialog is a PERMISSION and named the option that
+    grants it for the LONGEST — both in ONE model call, which is why nothing here asks a second
+    question. The driver presses that option and watches until the peer leaves the question.
+
+    ⚠⚠ IT SHARES `redirecting`'s EVENTS ON PURPOSE. `redirect.done` is *the dialog is gone and the
+    peer is working again*, which is true of an answer exactly as it is of a refusal, and
+    `redirect.none` is *it is still up and this run did not answer it*. Two words for one pair of
+    facts would make a reader ask which vocabulary they are in; the STATE already says which act
+    happened, and a run's own account carries the rule that decided.
+
+    ⚠⚠⚠ AND `redirect.none` GOES TO `awaiting_human`, WHICH IS THE SAFETY. Every way a widening can
+    fail to name an option it can press — a judge that claimed the dialog and named no number, a
+    number the screen does not offer, a peer that went on asking, a run that stopped mid-press —
+    ends with the dialog untouched and a PERSON asked. **A widening that cannot say which option
+    must not press one**, and the document says so by having no third edge.
+  -->
+  <state id="widening">
     <transition event="redirect.done" target="working">
       <assign location="redirected" expr="redirected + 1"/>
     </transition>
