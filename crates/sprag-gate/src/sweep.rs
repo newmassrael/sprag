@@ -113,9 +113,202 @@ pub fn unreported(members: &[String], log: &str) -> Vec<String> {
         .collect()
 }
 
+/// **WHAT ONE TEST DID, ACROSS EVERY SWEEP THIS TREE HAS A LOG OF** — register item 1109.
+///
+/// # ⛔⛔⛔⛔⛔ The archive was write-only, and a whole register item was built out of anecdotes
+///
+/// This workspace keeps every run's log under `target/bx-logs/`, and **nothing has ever read one as
+/// data**: `bx-logs` appears in this tree only inside prose. Measured 2026-09-15 over that archive
+/// for register item 683's three members — **3,146 recorded outcomes**, of which 73 are failures.
+/// The item was assembled from the two or three somebody happened to be watching, and its central
+/// claim — *these shake on a BUSY runner* — is refuted by the record it was drawn from:
+///
+/// | before 2026-09-03 | runs | red | rate |
+/// |---|---|---|---|
+/// | `RUST_TEST_THREADS >= 26` | 1,245 | 29 | **2.33%** |
+/// | `RUST_TEST_THREADS < 26` | 592 | 24 | **4.05%** |
+///
+/// **The quiet band failed more often.** Three weeks of rounds read *"only on a busy runner"* off
+/// the item and none of them could have known, because asking the record meant writing a script
+/// nobody had written.
+///
+/// # ⚠⚠⚠ Why this is a READING and not a gate
+///
+/// The archive is this machine's: a clone has none, and a gate that demanded one would be red
+/// everywhere but here — which is [`crate::north_star`]'s own placement argument for a table of
+/// readings. What this buys is that *how often does it really shake* is a command rather than an
+/// afternoon, so a claim about a flake can be put to the record on the day it is made.
+///
+/// ⚠⚠ **A LOG SAYS `ok` AND `FAILED` AND NOTHING ELSE ABOUT A TEST.** A run that never reached the
+/// test leaves no line at all, which is exactly right: this counts what was OBSERVED and never
+/// infers a pass from silence — the confusion [`unreported`] one function up exists to catch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Outcomes {
+    /// How many times this test was seen to pass.
+    pub passed: usize,
+    /// How many times it was seen to fail.
+    pub failed: usize,
+}
+
+impl Outcomes {
+    /// How often it failed, per ten thousand runs — [`None`] when it was never seen at all.
+    ///
+    /// ⚠ Per ten thousand rather than a float, for [`crate::north_star`]'s reason about percentages:
+    /// the interesting movement here is fractional (2.33% against 4.05%) and an integer percent
+    /// renders both as `2` and `4` while a rate of 0.4% and one of 0 render alike.
+    #[must_use]
+    pub fn per_myriad(&self) -> Option<u64> {
+        let seen = self.passed + self.failed;
+        (seen > 0).then(|| (self.failed as u64 * 10_000) / seen as u64)
+    }
+
+    /// The two counts of `other`, added to these.
+    #[must_use]
+    pub const fn and(self, other: Self) -> Self {
+        Self {
+            passed: self.passed + other.passed,
+            failed: self.failed + other.failed,
+        }
+    }
+}
+
+/// **WHAT `test` DID IN `log`** — counted over one run's output.
+///
+/// ⚠⚠ The needle is the harness's own line, `test <name> ... ok|FAILED`, anchored on BOTH sides.
+/// A bare `contains(name)` would count the name where it appears in a failure MESSAGE — every one
+/// of item 683's members is named in the very assertion text it prints — so a red would be counted
+/// as several, and a run naming it in prose as a pass.
+///
+/// ⚠ The name may arrive with or without its module path (`ai_loop::tests::x` in a lib target,
+/// bare `x` in an integration one), so the match is on the name's own end of the line.
+#[must_use]
+pub fn outcomes_of(test: &str, log: &str) -> Outcomes {
+    let mut seen = Outcomes::default();
+    for line in log.lines() {
+        let Some(rest) = line.strip_prefix("test ") else {
+            continue;
+        };
+        let Some((named, verdict)) = rest.split_once(" ... ") else {
+            continue;
+        };
+        // ⚠ `ends_with` and then the boundary, so `a_person_keeps_the_pane` cannot be counted for
+        // `keeps_the_pane`. A path separator or the whole name are the only two ways it may end.
+        let mine = named == test
+            || (named.ends_with(test) && named[..named.len() - test.len()].ends_with("::"));
+        if !mine {
+            continue;
+        }
+        match verdict.trim() {
+            "ok" => seen.passed += 1,
+            "FAILED" => seen.failed += 1,
+            // ⚠ `ignored` and anything a later harness prints are neither, and saying so is the
+            // point: an ignored run is not evidence about whether this test shakes.
+            _ => {}
+        }
+    }
+    seen
+}
+
+/// **HOW MANY THREADS THE HARNESS WAS GIVEN**, or [`None`] for a log that does not say.
+///
+/// ⚠⚠ It is what the WRAPPER decided, printed once per run, and it is the axis register item 683
+/// rests its whole claim on — so a reading that could not recover it could not have refuted that
+/// claim. [`None`] is *this log does not say*, never *one thread*.
+#[must_use]
+pub fn threads_in(log: &str) -> Option<u32> {
+    log.split("RUST_TEST_THREADS=").skip(1).find_map(|rest| {
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ⛔⛔⛔⛔⛔ **ONE TEST'S HISTORY IS COUNTED OFF THE HARNESS'S OWN LINE** — register item 1109.
+    ///
+    /// # ⚠⚠⚠ The arm that matters is the one that must NOT count
+    ///
+    /// Every member of register item 683 prints its own name inside the assertion text it fails
+    /// with, so a reader written as `log.contains(name)` counts one red several times and reads a
+    /// run that merely mentioned the test as a pass. That is not a corner: it is the shape of every
+    /// log this archive holds, and it would have made the rate this reading exists to produce
+    /// wrong in both directions at once.
+    #[test]
+    fn a_tests_history_is_read_off_the_verdict_line_and_not_off_its_own_name() {
+        let log = "\
+running 3 tests
+test a_person_keeps_the_pane ... ok
+test tui::tests::a_person_keeps_the_pane ... FAILED
+test a_person_keeps_the_pane_and_more ... FAILED
+test keeps_the_pane ... ok
+test something_else ... ignored
+
+failures:
+
+---- a_person_keeps_the_pane stdout ----
+thread 'a_person_keeps_the_pane' panicked at x.rs:1:1:
+a_person_keeps_the_pane ... FAILED is quoted right here in the message
+";
+        assert_eq!(
+            outcomes_of("a_person_keeps_the_pane", log),
+            Outcomes {
+                passed: 1,
+                failed: 1
+            },
+            "⛔⛔⛔⛔⛔ the bare name and the module-qualified one are the SAME test and both count; \
+             a longer name that merely starts with it is a different test; and the name quoted in \
+             a panic message is not a verdict at all",
+        );
+        assert_eq!(
+            outcomes_of("keeps_the_pane", log),
+            Outcomes {
+                passed: 1,
+                failed: 0
+            },
+            "⚠⚠⚠ AND A SUFFIX IS NOT A MATCH: `a_person_keeps_the_pane` ends with this name and is \
+             not it. Without the `::` boundary one test's reds are filed against another's rate, \
+             which is the arithmetic this reading exists to make trustworthy",
+        );
+        assert_eq!(
+            outcomes_of("never_ran", log).per_myriad(),
+            None,
+            "⚠⚠ A TEST NOBODY RAN HAS NO RATE, and it must not read as a perfect one: silence is \
+             the absence of evidence, which is `unreported`'s rule one function up",
+        );
+        assert_eq!(
+            Outcomes {
+                passed: 97,
+                failed: 3
+            }
+            .per_myriad(),
+            Some(300),
+            "⚠ per ten thousand, because 0.4% and 0% render alike as an integer percent",
+        );
+    }
+
+    /// ⚠⚠ **THE LOAD AXIS IS RECOVERABLE**, or register item 683's claim could not have been put to
+    /// the record at all — see [`Outcomes`], where the refutation is.
+    #[test]
+    fn the_thread_count_a_run_was_given_is_read_back_out_of_its_log() {
+        assert_eq!(
+            threads_in("bx: remote: 30 free core(s) -> RUST_TEST_THREADS=30\nrunning\n"),
+            Some(30),
+        );
+        assert_eq!(
+            threads_in("RUST_TEST_THREADS=2 and later RUST_TEST_THREADS=29"),
+            Some(2),
+            "the FIRST is what the run was given; a later line is another run's or an echo",
+        );
+        assert_eq!(
+            threads_in("a log that never says"),
+            None,
+            "⚠ `None` is *this log does not say*, never *one thread* — a band chosen off a \
+             fabricated 1 would file every silent log in the quiet band and invent the very \
+             correlation this axis is being asked about",
+        );
+    }
 
     /// The derivation reads THIS workspace's real manifest and finds every crate that is there.
     ///

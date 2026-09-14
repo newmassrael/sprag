@@ -68,3 +68,10 @@ path = "src/bin/doc-attachment.rs"
 [[bin]]
 name = "loop-promotion-stand-in"
 path = "src/bin/loop-promotion-stand-in.rs"
+
+# Register item 1109: how often a test has actually failed, asked of this tree's own log archive.
+# ⚠ NOT a gate binary — it is a READING, like `north-star`, and it exits 0 whatever it finds: the
+# archive is one machine's, so a verdict off it would be red everywhere but here.
+[[bin]]
+name = "flake-rate"
+path = "src/bin/flake-rate.rs"
