@@ -229,7 +229,10 @@ fn main() -> ExitCode {
         }
         Err(error) => {
             eprintln!("FAIL  the smoke could not boot: {error}");
-            report.failed.push("boot".to_owned());
+            // ⚠ Through the same door as every other check since register item 1121 — a failure
+            // pushed straight onto the list is one no shape applies to, and this is the one a
+            // register would most want to hold: it stands for the whole run.
+            report.checked("the smoke could not boot", &error.to_string(), false);
         }
     }
     report.finish()
@@ -308,7 +311,7 @@ fn check_a_burst_of_keys_arrives_as_one_delivery(smoke: &mut Smoke, report: &mut
     // here for the first time. ⚠ The arms below still compare RATIOS, because the burst claim is a
     // ratio and stays true whatever the unit is; these two checks own the absolute values.
     let read_cost = smoke.key_deliveries_opened().unwrap_or(idle_a) - idle_a;
-    report.check(
+    report.describing(
         &format!(
             "a read of `scene/input_state` opens NO delivery — it is side-effect-free, which is \
              the regression PINION-PR91 reported and R1760 fixed ({read_cost})"
@@ -320,19 +323,19 @@ fn check_a_burst_of_keys_arrives_as_one_delivery(smoke: &mut Smoke, report: &mut
     let one_key = smoke.press(pane, "ArrowLeft", false).is_ok();
     let after_one = smoke.key_deliveries_opened().unwrap_or(base);
     let unit = after_one.saturating_sub(base + read_cost);
-    report.check(
+    report.describing(
         &format!("one key in one request opens EXACTLY ONE delivery ({unit})"),
         one_key && unit == 1,
     );
 
     let burst = smoke.press_burst(pane, &["ArrowLeft", "ArrowLeft", "ArrowLeft"]);
-    report.check(
+    report.describing(
         &format!("a burst of three named keys is accepted in one request ({burst:?})"),
         burst.is_ok(),
     );
     let after_burst = smoke.key_deliveries_opened().unwrap_or(after_one);
     let burst_cost = after_burst.saturating_sub(after_one + read_cost);
-    report.check(
+    report.describing(
         &format!(
             "THREE keys in one request arrive TOGETHER — the same cost as ONE key in one request \
              ({burst_cost} vs {unit})"
@@ -348,7 +351,7 @@ fn check_a_burst_of_keys_arrives_as_one_delivery(smoke: &mut Smoke, report: &mut
     report.check("three separate key requests are accepted", separate);
     let after_separate = smoke.key_deliveries_opened().unwrap_or(after_burst);
     let separate_cost = after_separate.saturating_sub(after_burst + read_cost);
-    report.check(
+    report.describing(
         &format!(
             "three keys in THREE requests arrive SEPARATELY — three times the unit \
              ({separate_cost} vs {unit} x 3)"
@@ -388,7 +391,7 @@ fn check_the_palette_opens_over_rpc(smoke: &mut Smoke, report: &mut Report) {
     let painted = match smoke.wait_for_tag("sprag_palette_panel") {
         Ok(tags) => tags,
         Err(error) => {
-            report.check(&format!("the palette panel paints: {error}"), false);
+            report.describing(&format!("the palette panel paints: {error}"), false);
             return;
         }
     };
@@ -400,12 +403,12 @@ fn check_the_palette_opens_over_rpc(smoke: &mut Smoke, report: &mut Report) {
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as usize;
     let drawn = rows.min(MAX_VISIBLE_ROWS);
-    report.check(&format!("the frozen catalog has rows ({rows})"), rows > 0);
+    report.describing(&format!("the frozen catalog has rows ({rows})"), rows > 0);
 
     // RECTS, not just tags: a node can exist at h=0, and the content sizing is the claim.
     let panel = painted.get("sprag_palette_panel").and_then(|n| n.rect);
     let want_h = PANEL_PADDING * 2 + FIELD_H + ROW_GAP + drawn as u32 * (ROW_H + ROW_GAP);
-    report.check(
+    report.describing(
         &format!("the panel measures {PANEL_W}x{want_h} for {drawn} painted rows (got {panel:?})"),
         panel == Some((PANEL_W, want_h)),
     );
@@ -414,7 +417,7 @@ fn check_the_palette_opens_over_rpc(smoke: &mut Smoke, report: &mut Report) {
         PANEL_W - PANEL_PADDING * 2,
         drawn as u32 * ROW_H + (drawn as u32 - 1) * ROW_GAP,
     );
-    report.check(
+    report.describing(
         &format!("the rows container measures {want_rows:?} (got {box_rect:?})"),
         box_rect == Some(want_rows),
     );
@@ -457,7 +460,7 @@ fn check_the_palette_opens_over_rpc(smoke: &mut Smoke, report: &mut Report) {
             node["role"] == "listbox" && node["name"] == json!("Matching commands")
         }),
     );
-    report.check(
+    report.describing(
         &format!("one accessible option per PAINTED row ({drawn})"),
         access.values().filter(|n| n["role"] == "option").count() == drawn,
     );
@@ -490,7 +493,7 @@ fn check_a_command_runs_from_a_palette_row(smoke: &mut Smoke, report: &mut Repor
                 !tags.contains_key("sprag_palette_panel"),
             );
         }
-        Err(error) => report.check(
+        Err(error) => report.describing(
             &format!("the find bar the command opens paints: {error}"),
             false,
         ),
@@ -543,7 +546,7 @@ fn check_a_pane_fills_the_window_from_a_row_and_a_key(smoke: &mut Smoke, report:
         return;
     };
     if before.len() < 2 {
-        report.check(
+        report.describing(
             &format!(
                 "a zoom needs a window of more than one pane (found {})",
                 before.len()
@@ -571,7 +574,7 @@ fn check_a_pane_fills_the_window_from_a_row_and_a_key(smoke: &mut Smoke, report:
         let panes = s.docked_panes().ok()?;
         (panes == vec![target]).then_some(panes)
     });
-    report.check(
+    report.describing(
         &format!("the palette row left ONE pane painted, and it is the focused one ({filled:?})"),
         filled.is_ok(),
     );
@@ -583,7 +586,7 @@ fn check_a_pane_fills_the_window_from_a_row_and_a_key(smoke: &mut Smoke, report:
         let daemon = smoke
             .attached_session()
             .map(|session| smoke.cli(&["layout", "-t", &session]));
-        report.check(
+        report.describing(
             &format!("...and the DAEMON's own reading says which half failed: {daemon:?}"),
             false,
         );
@@ -593,7 +596,7 @@ fn check_a_pane_fills_the_window_from_a_row_and_a_key(smoke: &mut Smoke, report:
         .tags()
         .ok()
         .and_then(|tags| tags.get(&format!("sprag_gui.pane.{target}"))?.rect);
-    report.check(
+    report.describing(
         &format!("...and that pane GREW to fill the window ({was:?} -> {now:?})"),
         match (was, now) {
             (Some((was_w, was_h)), Some((now_w, now_h))) => {
@@ -617,7 +620,7 @@ fn check_a_pane_fills_the_window_from_a_row_and_a_key(smoke: &mut Smoke, report:
         let panes = s.docked_panes().ok()?;
         (panes == before).then_some(panes)
     });
-    report.check(
+    report.describing(
         &format!("`prefix z` gave the arrangement back ({restored:?})"),
         restored.is_ok(),
     );
@@ -632,7 +635,7 @@ fn check_a_pane_fills_the_window_from_a_row_and_a_key(smoke: &mut Smoke, report:
         let daemon = smoke
             .attached_session()
             .map(|session| smoke.cli(&["layout", "-t", &session]));
-        report.check(
+        report.describing(
             &format!(
                 "...focus was {focused:?}, the client traced {chords} chord(s) of which {zooms} \
                  zoom, and the daemon reads {daemon:?}"
@@ -662,7 +665,7 @@ fn check_a_pane_can_be_created_and_closed(smoke: &mut Smoke, report: &mut Report
         );
         return;
     };
-    report.check(
+    report.describing(
         &format!("the window starts with {before} pane(s)"),
         before > 0,
     );
@@ -686,7 +689,7 @@ fn check_a_pane_can_be_created_and_closed(smoke: &mut Smoke, report: &mut Report
         let count = s.pane_count().ok()?;
         (count > before).then_some(count)
     });
-    report.check(
+    report.describing(
         &format!("the split reached the client's tiling ({grown:?})"),
         grown.is_ok(),
     );
@@ -702,7 +705,7 @@ fn check_a_pane_can_be_created_and_closed(smoke: &mut Smoke, report: &mut Report
         .query("sprag_confirm", "prompt")
         .ok()
         .and_then(|v| v.as_str().map(str::to_owned));
-    report.check(
+    report.describing(
         &format!("a kill row asks before it acts (prompt: {prompt:?})"),
         prompt.is_some_and(|p| p.contains('?')),
     );
@@ -719,7 +722,7 @@ fn check_a_pane_can_be_created_and_closed(smoke: &mut Smoke, report: &mut Report
         let count = s.pane_count().ok()?;
         (count == before).then_some(count)
     });
-    report.check(
+    report.describing(
         &format!("answering it closed the pane ({shrunk:?})"),
         shrunk.is_ok(),
     );
@@ -743,7 +746,7 @@ fn check_a_confirmed_row_leaves_the_focus_stack_clean(smoke: &mut Smoke, report:
     // Read BEFORE opening anything. A leaked scope IS the active enumeration, so opening the
     // palette here would install a fresh trap over the very state under test.
     let focusables = smoke.focusables();
-    report.check(
+    report.describing(
         &format!("the focus enumeration is the app's own again ({focusables:?})"),
         focusables
             .iter()
@@ -758,7 +761,7 @@ fn check_a_confirmed_row_leaves_the_focus_stack_clean(smoke: &mut Smoke, report:
         report.check("a docked pane to put the keyboard back on", false);
         return;
     };
-    report.check(
+    report.describing(
         &format!("a pane still takes the keyboard after a confirmation (pane {pane})"),
         smoke.focus_pane(pane),
     );
@@ -772,7 +775,7 @@ fn check_a_confirmed_row_leaves_the_focus_stack_clean(smoke: &mut Smoke, report:
         return;
     }
     let offered = smoke.row_titles();
-    report.check(
+    report.describing(
         &format!("the palette still offers its pane-scoped rows ({offered:?})"),
         offered.iter().any(|title| title == "Kill pane"),
     );
@@ -803,7 +806,7 @@ fn check_a_window_closes_under_a_live_client(smoke: &mut Smoke, report: &mut Rep
         );
         return;
     };
-    report.check(
+    report.describing(
         &format!("the strip has a tab to start from ({before:?})"),
         !before.is_empty(),
     );
@@ -818,7 +821,7 @@ fn check_a_window_closes_under_a_live_client(smoke: &mut Smoke, report: &mut Rep
         report.check("the new window reaches the client's tab strip", false);
         return;
     };
-    report.check(
+    report.describing(
         &format!("the new window painted its own tab ({grown:?})"),
         true,
     );
@@ -854,7 +857,7 @@ fn check_a_window_closes_under_a_live_client(smoke: &mut Smoke, report: &mut Rep
         let tabs = s.tabs().ok()?;
         (!tabs.contains(&born)).then_some(tabs)
     });
-    report.check(
+    report.describing(
         &format!("the closed window left the live client's strip ({shrunk:?})"),
         shrunk.is_ok_and(|tabs| tabs == before),
     );
@@ -897,7 +900,7 @@ fn check_a_tab_click_moves_a_live_client(smoke: &mut Smoke, report: &mut Report)
     let Some(before) = smoke.chrome_current_window() else {
         // ⚠ An absent claim is its own finding — see `chrome_current_window`. Without it there is
         // nothing to compare a click against, and reporting THAT is more use than a bare failure.
-        report.check(
+        report.describing(
             &format!("the strip says which window this client is on ({tabs:?})"),
             false,
         );
@@ -916,7 +919,7 @@ fn check_a_tab_click_moves_a_live_client(smoke: &mut Smoke, report: &mut Report)
         .filter(|(_, name)| **name != before)
         .map(|(i, _)| i)
         .collect();
-    report.check(
+    report.describing(
         &format!("the strip holds a tab this client is NOT on ({tabs:?}, on {before})"),
         !elsewhere.is_empty(),
     );
@@ -929,7 +932,7 @@ fn check_a_tab_click_moves_a_live_client(smoke: &mut Smoke, report: &mut Report)
                 json!("KeyboardActivate"),
             )
             .is_ok();
-        report.check(&format!("tab {at} ({want}) activates"), pressed);
+        report.describing(&format!("tab {at} ({want}) activates"), pressed);
         if !pressed {
             continue;
         }
@@ -937,7 +940,7 @@ fn check_a_tab_click_moves_a_live_client(smoke: &mut Smoke, report: &mut Report)
             let now = s.chrome_current_window()?;
             (now == want).then_some(now)
         });
-        report.check(
+        report.describing(
             &format!(
                 "⛔⛔⛔⛔⛔ clicking tab {at} moved the client onto {want} (strip {tabs:?}) — the \
                  owner pressed tabs 3, 4 and 5 dozens of times and nothing happened, and every \
@@ -959,7 +962,7 @@ fn check_a_tab_click_moves_a_live_client(smoke: &mut Smoke, report: &mut Report)
         .lines()
         .filter(|line| line.contains("tab_click"))
         .collect();
-    report.check(
+    report.describing(
         &format!(
             "the clicks above each wrote a tab_click verdict a person can read \
              ({} lines for {} clicks)",
@@ -976,7 +979,7 @@ fn check_a_tab_click_moves_a_live_client(smoke: &mut Smoke, report: &mut Report)
     // `verdict\x1b[0m\x1b[2m=\x1b[0m"landed"` and the obvious substring never matches. The first
     // draft of this check asserted it and went red against a product that was right — the same
     // lesson this round already paid for once, written down where it happened.
-    report.check(
+    report.describing(
         &format!("and every one of them says the click landed ({verdicts:?})"),
         !verdicts.is_empty()
             && verdicts.iter().all(|line| {
@@ -990,7 +993,7 @@ fn check_a_tab_click_moves_a_live_client(smoke: &mut Smoke, report: &mut Report)
     // not asked for. A check that proves a gesture works by leaving the gesture applied is a check
     // that makes its neighbours assert about its leftovers.
     let Some(home) = tabs.iter().position(|name| *name == before) else {
-        report.check(
+        report.describing(
             &format!("the tab this client started on is still in the strip ({tabs:?})"),
             false,
         );
@@ -1001,7 +1004,7 @@ fn check_a_tab_click_moves_a_live_client(smoke: &mut Smoke, report: &mut Report)
         "send",
         json!("KeyboardActivate"),
     );
-    report.check(
+    report.describing(
         &format!("the tab check put the client back on {before}"),
         smoke
             .wait_for(|s| {
@@ -1063,7 +1066,7 @@ fn check_a_tab_click_that_lands_nowhere_says_so(smoke: &mut Smoke, report: &mut 
         return;
     };
     let Some(before) = smoke.chrome_current_window() else {
-        report.check(
+        report.describing(
             &format!("the strip says which window this client is on ({tabs:?})"),
             false,
         );
@@ -1073,7 +1076,7 @@ fn check_a_tab_click_that_lands_nowhere_says_so(smoke: &mut Smoke, report: &mut 
     // assumed: a strip painting every registered button has no such tag, and that is a finding about
     // the fixture (too many windows), not a defect in the product.
     let ghost = tabs.len();
-    report.check(
+    report.describing(
         &format!(
             "the strip paints fewer tabs than it registers, so tab {ghost} routes to no window \
              ({tabs:?})"
@@ -1093,12 +1096,12 @@ fn check_a_tab_click_that_lands_nowhere_says_so(smoke: &mut Smoke, report: &mut 
         let tags = s.tags().ok()?;
         (!tags.contains_key("sprag_message_strip")).then_some(())
     });
-    report.check(
+    report.describing(
         &format!("the message strip is clear before the pair is fired ({quiet_first:?})"),
         quiet_first.is_ok(),
     );
     let Some(at) = tabs.iter().position(|name| *name != before) else {
-        report.check(
+        report.describing(
             &format!("the strip holds a tab this client is NOT on ({tabs:?}, on {before})"),
             false,
         );
@@ -1118,7 +1121,7 @@ fn check_a_tab_click_that_lands_nowhere_says_so(smoke: &mut Smoke, report: &mut 
                 (now == want).then_some(now)
             })
             .is_ok();
-    report.check(
+    report.describing(
         &format!("a tab click that LANDS moves the client onto {want} ({tabs:?})"),
         landed,
     );
@@ -1144,7 +1147,7 @@ fn check_a_tab_click_that_lands_nowhere_says_so(smoke: &mut Smoke, report: &mut 
         "send",
         json!("KeyboardActivate"),
     );
-    report.check(
+    report.describing(
         &format!("the unpainted tab {ghost} is a button a person can press ({pressed:?})"),
         pressed.is_ok(),
     );
@@ -1159,7 +1162,7 @@ fn check_a_tab_click_that_lands_nowhere_says_so(smoke: &mut Smoke, report: &mut 
         .and_then(|tags| tags.get("sprag_message_strip"))
         .map(|painted| painted.text.join("\u{1f}"))
         .unwrap_or_default();
-    report.check(
+    report.describing(
         &format!(
             "⛔⛔⛔⛔⛔ a tab click that addresses no window RAISES the strip ({}) — the owner \
              pressed tabs dozens of times against a build whose reducer dropped this report, and a \
@@ -1170,14 +1173,14 @@ fn check_a_tab_click_that_lands_nowhere_says_so(smoke: &mut Smoke, report: &mut 
         ),
         shown.is_ok(),
     );
-    report.check(
+    report.describing(
         &format!("...and the strip says there was no window to select ({said:?})"),
         said.contains("no window to select"),
     );
     // ⚠ NOT `window_gone`'s sentence. The two silent outcomes have OPPOSITE prescriptions — this one
     // sends a reader to what the daemon publishes, `gone` to the window list — so a check that
     // accepted either would re-merge exactly what R852 split.
-    report.check(
+    report.describing(
         &format!(
             "...and NOT the far sentence, which would send a reader to the wrong place ({said:?})"
         ),
@@ -1191,11 +1194,11 @@ fn check_a_tab_click_that_lands_nowhere_says_so(smoke: &mut Smoke, report: &mut 
         .filter(|line| line.contains("tab_click"))
         .skip(before_lines)
         .collect();
-    report.check(
+    report.describing(
         &format!("...and the log gained a verdict for it ({fresh:?})"),
         !fresh.is_empty(),
     );
-    report.check(
+    report.describing(
         &format!("...and that verdict is `unaddressed`, not `landed` ({fresh:?})"),
         !fresh.is_empty()
             && fresh
@@ -1203,7 +1206,7 @@ fn check_a_tab_click_that_lands_nowhere_says_so(smoke: &mut Smoke, report: &mut 
                 .all(|line| line.contains("unaddressed") && !line.contains("landed")),
     );
     // A click that addressed nothing must MOVE nothing — the other half of "it did nothing".
-    report.check(
+    report.describing(
         &format!("...and the client is still on {want}, because nothing was selected"),
         smoke.chrome_current_window().as_deref() == Some(want.as_str()),
     );
@@ -1211,7 +1214,7 @@ fn check_a_tab_click_that_lands_nowhere_says_so(smoke: &mut Smoke, report: &mut 
     // ⚠⚠⚠⚠⚠ LEAVE THE CLIENT WHERE IT WAS FOUND — this file's standing discipline: moving the
     // client changes which panes are painted, and the checks below would assert on leftovers.
     let Some(home) = tabs.iter().position(|name| *name == before) else {
-        report.check(
+        report.describing(
             &format!("the tab this client started on is still in the strip ({tabs:?})"),
             false,
         );
@@ -1222,7 +1225,7 @@ fn check_a_tab_click_that_lands_nowhere_says_so(smoke: &mut Smoke, report: &mut 
         "send",
         json!("KeyboardActivate"),
     );
-    report.check(
+    report.describing(
         &format!("the nowhere-click check put the client back on {before}"),
         smoke
             .wait_for(|s| {
@@ -1271,7 +1274,7 @@ fn check_the_sole_docked_pane_locks_its_tear_off(smoke: &mut Smoke, report: &mut
         return;
     };
     let movability: Vec<Option<bool>> = docked.iter().map(|&i| smoke.panel_is_movable(i)).collect();
-    report.check(
+    report.describing(
         &format!("both docked panes start out movable ({movability:?})"),
         movability.iter().all(|m| *m == Some(true)),
     );
@@ -1281,7 +1284,7 @@ fn check_the_sole_docked_pane_locks_its_tear_off(smoke: &mut Smoke, report: &mut
     // from the paint below, because that is the routing the lock is computed from.
     let focused = smoke.focus_pane(docked[1]);
     let focusables = smoke.focusables();
-    report.check(
+    report.describing(
         &format!(
             "pane {} can be focused to be floated (focusable: {focusables:?})",
             docked[1]
@@ -1308,11 +1311,11 @@ fn check_the_sole_docked_pane_locks_its_tear_off(smoke: &mut Smoke, report: &mut
     let locked = smoke
         .wait_for(|s| (s.panel_is_movable(remaining) == Some(false)).then_some(()))
         .is_ok();
-    report.check(
+    report.describing(
         &format!("the sole docked pane (pane {remaining}) locks its tear-off live"),
         locked,
     );
-    report.check(
+    report.describing(
         &format!("and the floated pane (pane {floated}) stays movable"),
         smoke.panel_is_movable(floated) == Some(true),
     );
@@ -1373,7 +1376,7 @@ fn check_focus_survives_a_window_change(smoke: &mut Smoke, report: &mut Report) 
         report.check("a docked pane to park the focus ring on", false);
         return;
     };
-    report.check(
+    report.describing(
         &format!("the ring parks on the highest docked pane (pane {parked} of {docked:?})"),
         smoke.focus_pane(parked) && parked > 0,
     );
@@ -1404,7 +1407,7 @@ fn check_focus_survives_a_window_change(smoke: &mut Smoke, report: &mut Report) 
         let index: usize = focused.strip_prefix("sprag_gui.pane.")?.parse().ok()?;
         s.docked_panes().ok()?.contains(&index).then_some(focused)
     });
-    report.check(
+    report.describing(
         &format!("a live pane still holds the keyboard in the new window ({landed:?})"),
         landed.is_ok(),
     );
@@ -1415,7 +1418,7 @@ fn check_focus_survives_a_window_change(smoke: &mut Smoke, report: &mut Report) 
         report.check("the home window still has a tab to come back to", false);
         return;
     };
-    report.check(
+    report.describing(
         &format!("the home tab activates ({at})"),
         smoke
             .invoke(
@@ -1431,7 +1434,7 @@ fn check_focus_survives_a_window_change(smoke: &mut Smoke, report: &mut Report) 
         let panes = s.docked_panes().ok()?;
         (panes.contains(&index) && panes.len() == docked.len()).then_some(focused)
     });
-    report.check(
+    report.describing(
         &format!("and coming home leaves a live pane holding it too ({back:?})"),
         back.is_ok(),
     );
@@ -1445,7 +1448,7 @@ fn check_focus_survives_a_window_change(smoke: &mut Smoke, report: &mut Report) 
     // palette's field, read it as "a live widget holds the caret", and asked for nothing. Asserted
     // rather than reasoned about, because both halves of that — what the shell does with two
     // requests, and whether sprag files the second — read as certain and were not.
-    report.check(
+    report.describing(
         &format!("the ring parks on pane {parked} again for the palette path"),
         smoke.focus_pane(parked),
     );
@@ -1457,7 +1460,7 @@ fn check_focus_survives_a_window_change(smoke: &mut Smoke, report: &mut Report) 
         let index: usize = focused.strip_prefix("sprag_gui.pane.")?.parse().ok()?;
         s.docked_panes().ok()?.contains(&index).then_some(focused)
     });
-    report.check(
+    report.describing(
         &format!("a live pane holds the keyboard after a PALETTE window change ({after:?})"),
         after.is_ok(),
     );
@@ -1583,14 +1586,14 @@ fn check_a_window_switch_moves_the_painted_panes(smoke: &mut Smoke, report: &mut
             (tabs.len() > before.len()).then_some(tabs)
         });
         let Ok(grown) = grown else {
-            report.check(
+            report.describing(
                 &format!("the + button opened a window (was {before:?})"),
                 false,
             );
             return None;
         };
         let born = grown.iter().find(|name| !before.contains(name)).cloned();
-        report.check(
+        report.describing(
             &format!("the new window carries a tab name of its own ({born:?} in {grown:?})"),
             born.is_some(),
         );
@@ -1620,7 +1623,7 @@ fn check_a_window_switch_moves_the_painted_panes(smoke: &mut Smoke, report: &mut
     };
     let first_ids = daemon_panes(&mut daemon, &session);
     let Some(&home_pane) = first_ids.first() else {
-        report.check(
+        report.describing(
             &format!("the window this check made has a pane to mark ({first_tab})"),
             false,
         );
@@ -1649,10 +1652,11 @@ fn check_a_window_switch_moves_the_painted_panes(smoke: &mut Smoke, report: &mut
             seen
         })
         .unwrap_or_default();
-    report.check(
+    report.checked(
+        "this window's pane paints its own marker",
         &format!(
-            "this window's pane paints its own marker (drove pane {home_pane} of daemon \
-             {home_ids:?}, drive {drove:?}, painted {painted_now:?})"
+            "drove pane {home_pane} of daemon {home_ids:?}, drive {drove:?}, \
+             painted {painted_now:?}"
         ),
         home_painted.is_ok(),
     );
@@ -1668,7 +1672,7 @@ fn check_a_window_switch_moves_the_painted_panes(smoke: &mut Smoke, report: &mut
     // defect, seen from the other side — and it is asserted separately so a red says WHICH swap
     // failed rather than leaving both under one sentence.
     let left = smoke.wait_for(|s| (!painted(s, HOME_MARK)).then_some(()));
-    report.check(
+    report.describing(
         &format!("opening a window paints ITS panes and not the ones that were there ({grown:?})"),
         left.is_ok(),
     );
@@ -1678,7 +1682,7 @@ fn check_a_window_switch_moves_the_painted_panes(smoke: &mut Smoke, report: &mut
         .filter(|id| !home_ids.contains(id))
         .collect();
     let Some(&away_pane) = away_ids.first() else {
-        report.check(
+        report.describing(
             &format!("the new window has a pane of its own to mark (home {home_ids:?})"),
             false,
         );
@@ -1686,7 +1690,7 @@ fn check_a_window_switch_moves_the_painted_panes(smoke: &mut Smoke, report: &mut
     };
     let drove = mark_pane(&mut daemon, &session, away_pane, AWAY_MARK);
     let away_painted = smoke.wait_for(|s| painted(s, AWAY_MARK).then_some(()));
-    report.check(
+    report.describing(
         &format!("the new window's pane paints a marker of its own (drive {drove:?})"),
         away_painted.is_ok(),
     );
@@ -1694,13 +1698,13 @@ fn check_a_window_switch_moves_the_painted_panes(smoke: &mut Smoke, report: &mut
     // Back to the FIRST window this check made, found by the NAME it was born with: the strip grew
     // again, so the index that tab had is not the index it has now.
     let Some(at) = grown.iter().position(|name| *name == first_tab) else {
-        report.check(
+        report.describing(
             &format!("the window this check marked still has a tab ({first_tab} of {grown:?})"),
             false,
         );
         return;
     };
-    report.check(
+    report.describing(
         &format!("the marked window's tab activates ({at} of {grown:?})"),
         smoke
             .invoke(
@@ -1733,7 +1737,7 @@ fn check_a_window_switch_moves_the_painted_panes(smoke: &mut Smoke, report: &mut
             seen
         })
         .unwrap_or_default();
-    report.check(
+    report.describing(
         &format!(
             "a tab click brings this window's panes back, and not the other window's \
              (home painted {home_here}, other painted {away_here}, tabs now \
@@ -1755,7 +1759,7 @@ fn check_a_window_switch_moves_the_painted_panes(smoke: &mut Smoke, report: &mut
     // the state this whole comparison was impossible in, and a check that passed on silence would be
     // green for exactly the product that produced the bug report.
     let chrome = smoke.chrome_current_window();
-    report.check(
+    report.describing(
         &format!(
             "the chrome and the pixels name the SAME window (chrome says {chrome:?}, this \
              window is {first_tab:?}, panes {painted_now:?})"
@@ -1812,7 +1816,7 @@ fn run_the_destroyed_session_checks(smoke: &mut Smoke, report: &mut Report) {
     };
     // A guaranteed survivor, so this check does not depend on what earlier ones left standing.
     let spare = smoke.cli(&["new", "smoke-spare"]);
-    report.check(
+    report.describing(
         &format!("a spare session exists to land in ({spare:?})"),
         spare.is_ok(),
     );
@@ -1820,7 +1824,7 @@ fn run_the_destroyed_session_checks(smoke: &mut Smoke, report: &mut Report) {
     // OUT OF BAND: the `sprag` CLI, not this client's palette. The distinction is the whole subject
     // — a gesture gets its own answer, and this is the path where nobody at this keyboard acted.
     let killed = smoke.cli(&["kill-session", &mine]);
-    report.check(
+    report.describing(
         &format!("the CLI destroys the session this client is attached to ({killed:?})"),
         killed.is_ok(),
     );
@@ -1834,13 +1838,13 @@ fn run_the_destroyed_session_checks(smoke: &mut Smoke, report: &mut Report) {
         let text = strip.text.join("\u{1f}");
         text.contains("was destroyed").then_some(text)
     });
-    report.check(
+    report.describing(
         &format!("the client SAYS its session was destroyed ({said:?})"),
         said.as_deref().is_ok_and(|text| text.contains(&mine)),
     );
 
     let moved = smoke.wait_for(|s| s.attached_session().filter(|now| *now != mine));
-    report.check(
+    report.describing(
         &format!("...and it MOVED rather than sitting on a session that is gone ({moved:?})"),
         moved.is_ok(),
     );
@@ -1957,7 +1961,7 @@ fn check_the_frames_report_their_settle_work(smoke: &mut Smoke, report: &mut Rep
     let timings = match smoke.call("scene/frame_timings", json!({})) {
         Ok(value) => value,
         Err(error) => {
-            report.check(
+            report.describing(
                 &format!("the client reports its frame work ({error})"),
                 false,
             );
@@ -1966,13 +1970,13 @@ fn check_the_frames_report_their_settle_work(smoke: &mut Smoke, report: &mut Rep
     };
     // Non-vacuity first, as next door: a settle verdict about zero frames is not evidence.
     let frames = timings["frame_count"].as_u64().unwrap_or(0);
-    report.check(
+    report.describing(
         &format!("the client has painted frames to report on ({frames})"),
         frames > 0,
     );
     let passes = timings["last"]["settle_passes"].as_u64();
     let settled = timings["last"]["settled"].as_bool();
-    report.check(
+    report.describing(
         &format!("the last frame settled inside the pass budget (passes: {passes:?}, settled: {settled:?})"),
         passes.is_some_and(|p| (1..=SETTLE_PASS_BUDGET).contains(&p)) && settled == Some(true),
     );
@@ -1996,7 +2000,7 @@ fn check_the_agent_mirror_settles_like_the_paint(smoke: &mut Smoke, report: &mut
     let timings = match smoke.call("scene/frame_timings", json!({})) {
         Ok(value) => value,
         Err(error) => {
-            report.check(
+            report.describing(
                 &format!("the client prices its mirror work ({error})"),
                 false,
             );
@@ -2007,13 +2011,13 @@ fn check_the_agent_mirror_settles_like_the_paint(smoke: &mut Smoke, report: &mut
     let scenes = mirror["scenes_total"].as_u64().unwrap_or(0);
     let passes = mirror["passes_total"].as_u64();
     let unsettled = mirror["unsettled_total"].as_u64();
-    report.check(
+    report.describing(
         &format!(
             "the agent-facing mirror was actually stored ({scenes} scenes, {passes:?} passes)"
         ),
         scenes > 0,
     );
-    report.check(
+    report.describing(
         &format!("every scene an agent read had settled ({unsettled:?} unsettled)"),
         unsettled == Some(0),
     );
@@ -2035,7 +2039,7 @@ fn check_sprag_focus_requests_reach_the_re_derive(smoke: &mut Smoke, report: &mu
     let timings = match smoke.call("scene/frame_timings", json!({})) {
         Ok(value) => value,
         Err(error) => {
-            report.check(
+            report.describing(
                 &format!("the client reports its focus work ({error})"),
                 false,
             );
@@ -2044,7 +2048,7 @@ fn check_sprag_focus_requests_reach_the_re_derive(smoke: &mut Smoke, report: &mu
     };
     let derivations = timings["focus"]["derivations_total"].as_u64();
     let retries = timings["focus"]["retries_total"].as_u64();
-    report.check(
+    report.describing(
         &format!("sprag's focus requests reached the re-derive ({derivations:?} derivations, {retries:?} retries)"),
         derivations.is_some_and(|total| total > 0),
     );
@@ -2059,7 +2063,7 @@ fn frame_work(smoke: &mut Smoke, what: &str, report: &mut Report) -> Option<Valu
     match smoke.call("scene/frame_timings", json!({})) {
         Ok(value) => Some(value),
         Err(error) => {
-            report.check(&format!("{what} ({error})"), false);
+            report.describing(&format!("{what} ({error})"), false);
             None
         }
     }
@@ -2095,7 +2099,7 @@ fn check_an_agents_read_costs_no_scene_rederive(smoke: &mut Smoke, report: &mut 
         return;
     };
     let derived = driven["produce"]["passes_total"].as_u64();
-    report.check(
+    report.describing(
         &format!(
             "a path-addressed call DOES re-derive the scene ({idle:?} -> {derived:?}, {resolved:?})"
         ),
@@ -2111,7 +2115,7 @@ fn check_an_agents_read_costs_no_scene_rederive(smoke: &mut Smoke, report: &mut 
         return;
     };
     let after_read = read["produce"]["passes_total"].as_u64();
-    report.check(
+    report.describing(
         &format!("an agent's read re-derives NOTHING ({derived:?} -> {after_read:?})"),
         after_read.is_some() && after_read == derived,
     );
@@ -2168,7 +2172,7 @@ fn check_the_mirror_reshapes_nothing_it_has_shaped(smoke: &mut Smoke, report: &m
         return;
     };
     let warm = shaped["mirror"]["shape_misses_total"].as_u64();
-    report.check(
+    report.describing(
         &format!("novel text DOES reach the shaper ({cold:?} -> {warm:?}, {wrote:?})"),
         matches!((cold, warm), (Some(before), Some(after)) if after > before),
     );
@@ -2184,13 +2188,13 @@ fn check_the_mirror_reshapes_nothing_it_has_shaped(smoke: &mut Smoke, report: &m
     let misses_after = steady["mirror"]["shape_misses_total"].as_u64();
     // Non-vacuity before the verdict, exactly as next door: no mirror stored means no shaping to
     // account, and a zero delta would then be true of a call that did nothing at all.
-    report.check(
+    report.describing(
         &format!(
             "a mirror was actually re-stored to price ({scenes_before:?} -> {scenes_after:?})"
         ),
         matches!((scenes_before, scenes_after), (Some(before), Some(after)) if after > before),
     );
-    report.check(
+    report.describing(
         &format!("and it re-shaped nothing ({warm:?} -> {misses_after:?})"),
         misses_after.is_some() && misses_after == warm,
     );
@@ -2243,8 +2247,9 @@ fn check_an_agents_state_reaches_the_painted_pane_title(smoke: &mut Smoke, repor
         let painted = s.docked_panes().ok()?;
         matches!((ids.as_slice(), painted.as_slice()), ([_], [_])).then_some(painted)
     });
-    report.check(
-        &format!("one pane on each side to drive an agent screen into (daemon {ids:?})"),
+    report.checked(
+        "one pane on each side to drive an agent screen into",
+        &format!("daemon {ids:?}"),
         one_each.is_ok(),
     );
     let Ok(painted) = one_each else {
@@ -2315,7 +2320,7 @@ fn check_an_agents_state_reaches_the_painted_pane_title(smoke: &mut Smoke, repor
             .find(|(_, node)| joined(&node.text).contains(PHRASE))
             .map(|(tag, node)| format!("{tag}: {:?}", node.text))
     });
-    report.check(
+    report.describing(
         &format!("a blocked agent's state is PAINTED beside its pane's title ({titled:?}, drive {drove:?})"),
         titled.is_ok(),
     );
@@ -2326,8 +2331,12 @@ fn check_an_agents_state_reaches_the_painted_pane_title(smoke: &mut Smoke, repor
         .values()
         .filter_map(|node| node["name"].as_str().map(str::to_owned))
         .find(|name| name.contains(PHRASE));
-    report.check(
-        &format!("and a screen reader is told the same thing ({announced:?})"),
+    // ⚠ NAMED FOR WHAT IT IS ABOUT since register item 1121, not *the same thing*: a second check
+    // one screen over carried the identical sentence, and two failures a register cannot tell
+    // apart are one claim holding both — the coarse-claim defect, arriving through the name.
+    report.checked(
+        "and a screen reader is told the agent screen's phrase",
+        &format!("{announced:?}"),
         announced.is_some(),
     );
 }
@@ -2362,7 +2371,7 @@ fn check_a_sessions_sampled_activity_reaches_its_painted_row(
     let made = std::fs::create_dir_all(dir.join(".git")).and_then(|()| {
         std::fs::write(dir.join(".git/HEAD"), format!("ref: refs/heads/{branch}\n"))
     });
-    report.check(
+    report.describing(
         &format!("a work tree to drive a pane into ({made:?})"),
         made.is_ok(),
     );
@@ -2380,7 +2389,7 @@ fn check_a_sessions_sampled_activity_reaches_its_painted_row(
     };
     let ids = daemon_panes(&mut daemon, &session);
     let Some(&id) = ids.first() else {
-        report.check(&format!("a pane to drive (daemon {ids:?})"), false);
+        report.describing(&format!("a pane to drive (daemon {ids:?})"), false);
         return;
     };
 
@@ -2436,9 +2445,10 @@ fn check_a_sessions_sampled_activity_reaches_its_painted_row(
                 .collect()
         })
         .unwrap_or_default();
-    report.check(
+    report.checked(
+        "the sampled branch is PAINTED on the session's own row",
         &format!(
-            "the sampled branch is PAINTED on the session's own row ({painted:?}, drive {drove:?}, pane {id} of {ids:?} in {session}, rail {rows:?}, daemon {sampled:?})"
+            "{painted:?}, drive {drove:?}, pane {id} of {ids:?} in {session}, rail {rows:?}, daemon {sampled:?}"
         ),
         painted.is_ok(),
     );
@@ -2450,8 +2460,9 @@ fn check_a_sessions_sampled_activity_reaches_its_painted_row(
         .values()
         .filter_map(|node| node["name"].as_str().map(str::to_owned))
         .find(|name| name.contains(&branch));
-    report.check(
-        &format!("and a screen reader is told the same thing ({announced:?})"),
+    report.checked(
+        "and a screen reader is told the sampled branch",
+        &format!("{announced:?}"),
         announced.is_some(),
     );
 }
@@ -2517,10 +2528,9 @@ fn check_a_daemon_side_split_reaches_the_attached_client(smoke: &mut Smoke, repo
         let painted = s.docked_panes().ok()?;
         (!ids.is_empty() && painted.len() == ids.len()).then_some(painted)
     });
-    report.check(
-        &format!(
-            "the two sides agree on the pane set to split from (daemon {ids:?}, client {agreed:?})"
-        ),
+    report.checked(
+        "the two sides agree on the pane set to split from",
+        &format!("daemon {ids:?}, client {agreed:?}"),
         agreed.is_ok(),
     );
     if agreed.is_err() {
@@ -2550,7 +2560,7 @@ fn check_a_daemon_side_split_reaches_the_attached_client(smoke: &mut Smoke, repo
             "session": session,
         }),
     );
-    report.check(
+    report.describing(
         &format!("the daemon takes a split nobody's client asked for ({split:?})"),
         split.is_ok(),
     );
@@ -2561,7 +2571,7 @@ fn check_a_daemon_side_split_reaches_the_attached_client(smoke: &mut Smoke, repo
         let now = daemon_panes(&mut daemon, &s.attached_session()?);
         (now.len() > ids.len()).then_some(now)
     });
-    report.check(
+    report.describing(
         &format!("the DAEMON holds one more pane than it did ({grown:?} was {ids:?})"),
         grown.is_ok(),
     );
@@ -2575,7 +2585,7 @@ fn check_a_daemon_side_split_reaches_the_attached_client(smoke: &mut Smoke, repo
         let tiles = s.docked_panes().ok()?;
         (tiles.len() == after.len()).then_some(tiles)
     });
-    report.check(
+    report.describing(
         &format!(
             "and the ATTACHED client paints the pane it never asked for ({painted:?} of daemon {after:?})"
         ),
@@ -2599,7 +2609,7 @@ fn check_a_daemon_side_split_reaches_the_attached_client(smoke: &mut Smoke, repo
         let tiles = s.docked_panes().ok()?;
         (tiles.len() == ids.len()).then_some(tiles)
     });
-    report.check(
+    report.describing(
         &format!("the pane it made is taken away again ({restored:?}, close {closed:?})"),
         restored.is_ok(),
     );
@@ -2673,10 +2683,9 @@ fn check_terminal_output_never_reaches_the_shaper(smoke: &mut Smoke, report: &mu
         Ok(painted) => Ok(painted.clone()),
         Err(_) => smoke.docked_panes(),
     };
-    report.check(
-        &format!(
-            "the daemon and the client agree on ONE pane to drive (daemon {ids:?}, painted {last:?})"
-        ),
+    report.checked(
+        "the daemon and the client agree on ONE pane to drive",
+        &format!("daemon {ids:?}, painted {last:?}"),
         one_each.is_ok(),
     );
     // Nothing below may run on a guess: with the correspondence unproven, driving whichever pane the
@@ -2696,11 +2705,11 @@ fn check_terminal_output_never_reaches_the_shaper(smoke: &mut Smoke, report: &mu
         s.tabs()
             .is_ok_and(|tabs| tabs.iter().any(|name| name == NOVEL_WINDOW))
     });
-    report.check(
+    report.describing(
         &format!("a host-driven rename reaches the client's painted strip ({renamed:?})"),
         watch.arrived,
     );
-    report.check(
+    report.describing(
         &format!(
             "novel CHROME text DOES reach the shaper ({:?})",
             watch.misses()
@@ -2746,7 +2755,7 @@ fn check_terminal_output_never_reaches_the_shaper(smoke: &mut Smoke, report: &mu
     // else, or was empty. Two machines then failed it identically while CI passed, and the report
     // could not tell those apart. **A symptom report is «what looked like that», not «it failed».**
     let seen = smoke.pane_rows(index);
-    report.check(
+    report.describing(
         &format!(
             "the novel output reached the PAINTED grid (drive {printed:?}, painted rows {:?})",
             seen.as_ref().map(|rows| rows
@@ -2757,7 +2766,7 @@ fn check_terminal_output_never_reaches_the_shaper(smoke: &mut Smoke, report: &mu
         ),
         watch.arrived,
     );
-    report.check(
+    report.describing(
         &format!(
             "and every frame it took was seen ({} frames, contiguous: {})",
             watch.frames.len(),
@@ -2765,7 +2774,7 @@ fn check_terminal_output_never_reaches_the_shaper(smoke: &mut Smoke, report: &mu
         ),
         !watch.frames.is_empty() && watch.contiguous,
     );
-    report.check(
+    report.describing(
         &format!(
             "not one of them handed the shaper a run ({:?})",
             watch.misses()
@@ -2812,7 +2821,7 @@ fn check_the_gui_follows_the_users_font(smoke: &mut Smoke, report: &mut Report) 
     let Some(large_cols) = boot_pane_cols(smoke, report, "at a doubled glyph size") else {
         return;
     };
-    report.check(
+    report.describing(
         &format!(
             "a bigger gui-font measures a NARROWER grid ({default_cols} -> {large_cols} columns)"
         ),
@@ -2871,7 +2880,7 @@ fn check_a_client_that_attaches_paints_the_panes_it_joined(smoke: &mut Smoke, re
     let ids = listed.as_deref().map(listed_pane_ids).unwrap_or_default();
     // The fixture, asserted rather than assumed: with no pane there is nothing to attach TO, and
     // every claim below would pass by being about nothing.
-    report.check(
+    report.describing(
         &format!("the daemon lists the panes there are to attach to ({ids:?})"),
         !ids.is_empty(),
     );
@@ -2883,7 +2892,7 @@ fn check_a_client_that_attaches_paints_the_panes_it_joined(smoke: &mut Smoke, re
     let ready = smoke
         .wait_for(|s| daemon_screen_line(s, &session, pane))
         .is_ok();
-    report.check(
+    report.describing(
         &format!("the pane the client joins has something on its screen (pane {pane})"),
         ready,
     );
@@ -2905,7 +2914,7 @@ fn check_a_client_that_attaches_paints_the_panes_it_joined(smoke: &mut Smoke, re
     // client that made the session — the only difference between the two is the relaunch between
     // them, which is exactly the variable under test.
     let by_the_creator = client_shows_what_the_daemon_holds(smoke, &session, pane);
-    report.check(
+    report.describing(
         &format!(
             "the client that CREATED the session paints what the daemon holds ({by_the_creator:?})"
         ),
@@ -2917,7 +2926,7 @@ fn check_a_client_that_attaches_paints_the_panes_it_joined(smoke: &mut Smoke, re
 
     // ── The act. The ONE thing that changes is the variable the product branches on.
     if let Err(error) = smoke.relaunch_gui_attached(&session) {
-        report.check(
+        report.describing(
             &format!("a client relaunches naming a session ({error})"),
             false,
         );
@@ -2928,13 +2937,13 @@ fn check_a_client_that_attaches_paints_the_panes_it_joined(smoke: &mut Smoke, re
     let joined = smoke
         .wait_for(|s| s.attached_session().filter(|now| *now == session))
         .is_ok();
-    report.check(
+    report.describing(
         &format!("a client that names a session lands ON it ({session})"),
         joined,
     );
 
     let tiles = smoke.wait_for(|s| s.pane_count().ok().filter(|painted| *painted == ids.len()));
-    report.check(
+    report.describing(
         &format!(
             "an attaching client paints one tile per pane the daemon reports ({tiles:?} of {})",
             ids.len()
@@ -2944,7 +2953,7 @@ fn check_a_client_that_attaches_paints_the_panes_it_joined(smoke: &mut Smoke, re
 
     // ── The claim itself: the same measurement as the control, after the relaunch.
     let agreed = client_shows_what_the_daemon_holds(smoke, &session, pane);
-    report.check(
+    report.describing(
         &format!(
             "an attaching client paints the CONTENT the daemon says its panes hold ({agreed:?})"
         ),
@@ -3037,14 +3046,14 @@ fn check_a_launch_that_names_nothing_joins_the_work(smoke: &mut Smoke, report: &
         .count();
     // Non-vacuity: adoption can only be told from creation while there IS something to adopt, and
     // on an empty daemon both readings create. The run has sessions by here; assert it.
-    report.check(
+    report.describing(
         &format!("the daemon has work for a launch to join ({had} sessions)"),
         had > 0,
     );
 
     // ── A launch that says NOTHING.
     if let Err(error) = smoke.relaunch_gui_bare() {
-        report.check(
+        report.describing(
             &format!("a client relaunches naming nothing ({error})"),
             false,
         );
@@ -3053,11 +3062,11 @@ fn check_a_launch_that_names_nothing_joins_the_work(smoke: &mut Smoke, report: &
     let joined = smoke.wait_for(|s| s.attached_session());
     let after = smoke.cli(&["ls"]).unwrap_or_default();
     let now = after.lines().filter(|line| !line.trim().is_empty()).count();
-    report.check(
+    report.describing(
         &format!("a launch that names nothing INVENTS no session ({had} -> {now})"),
         now == had,
     );
-    report.check(
+    report.describing(
         &format!("...and it lands on one that was already there ({joined:?})"),
         joined
             .as_ref()
@@ -3066,7 +3075,7 @@ fn check_a_launch_that_names_nothing_joins_the_work(smoke: &mut Smoke, report: &
 
     // ── And the word that still means *new*, which is what makes the default affordable.
     if let Err(error) = smoke.relaunch_gui() {
-        report.check(
+        report.describing(
             &format!("a client relaunches asking for its own ({error})"),
             false,
         );
@@ -3079,7 +3088,7 @@ fn check_a_launch_that_names_nothing_joins_the_work(smoke: &mut Smoke, report: &
         .lines()
         .filter(|line| !line.trim().is_empty())
         .count();
-    report.check(
+    report.describing(
         &format!("`sprag new -a`'s word still MAKES one ({now} -> {grown}, on {own:?})"),
         grown == now + 1,
     );
@@ -3087,7 +3096,7 @@ fn check_a_launch_that_names_nothing_joins_the_work(smoke: &mut Smoke, report: &
     // Put the client back where the run had it, so nothing below inherits a session this check
     // invented — the same courtesy the font gate above owes and pays.
     if let Err(error) = smoke.relaunch_gui_attached(&session) {
-        report.check(&format!("the client returns to {session} ({error})"), false);
+        report.describing(&format!("the client returns to {session} ({error})"), false);
     }
 }
 
@@ -3160,7 +3169,7 @@ fn check_the_window_size_a_person_chose_outlives_the_process(
             &TALLER.to_string(),
         ])
         .status();
-    report.check(
+    report.describing(
         &format!("the client's window is resized to {WIDER}x{TALLER} ({resized:?})"),
         resized.is_ok_and(|status| status.success()),
     );
@@ -3181,7 +3190,7 @@ fn check_the_window_size_a_person_chose_outlives_the_process(
             .ok()?;
         (cols > before).then_some(cols)
     });
-    report.check(
+    report.describing(
         &format!("the live client reflows to the wider window ({widened:?} from {before})"),
         widened.is_ok(),
     );
@@ -3207,7 +3216,7 @@ fn check_the_window_size_a_person_chose_outlives_the_process(
         .tags()
         .ok()
         .and_then(|tags| tags.get("sprag_gui").and_then(|node| node.rect));
-    report.check(
+    report.describing(
         &format!(
             "the window size a person chose outlives the process \
              ({before} -> resized {widened} -> reborn {after}, stored {stored}, root {root:?})"
@@ -3219,7 +3228,7 @@ fn check_the_window_size_a_person_chose_outlives_the_process(
 /// Relaunch the client and answer the columns its BOOT pane was sized to, or `None` after reporting.
 fn boot_pane_cols(smoke: &mut Smoke, report: &mut Report, when: &str) -> Option<u16> {
     if let Err(error) = smoke.relaunch_gui() {
-        report.check(&format!("the client relaunches {when} ({error})"), false);
+        report.describing(&format!("the client relaunches {when} ({error})"), false);
         return None;
     }
     let session = smoke.attached_session();
@@ -3235,7 +3244,7 @@ fn boot_pane_cols(smoke: &mut Smoke, report: &mut Report, when: &str) -> Option<
         .and_then(|dims| dims.split('x').next())
         .and_then(|cols| cols.parse::<u16>().ok())
         .filter(|cols| *cols > 0);
-    report.check(
+    report.describing(
         &format!("the relaunched client's boot pane reports a grid {when} ({cols:?})"),
         cols.is_some(),
     );
@@ -3285,7 +3294,7 @@ fn check_the_gui_follows_the_users_keymap(smoke: &mut Smoke, report: &mut Report
         "an unprefixed command key is accepted",
         smoke.press(pane, "%", false).is_ok(),
     );
-    report.check(
+    report.describing(
         &format!("...and divides nothing ({before} pane(s))"),
         smoke.pane_count() == Ok(before),
     );
@@ -3312,7 +3321,7 @@ fn check_the_gui_follows_the_users_keymap(smoke: &mut Smoke, report: &mut Report
         let count = s.pane_count().ok()?;
         (count > before).then_some(count)
     });
-    report.check(
+    report.describing(
         &format!("`prefix %` off the user's own config split the focused pane ({grown:?})"),
         grown.is_ok(),
     );
@@ -3331,7 +3340,7 @@ fn check_the_gui_follows_the_users_keymap(smoke: &mut Smoke, report: &mut Report
         return;
     }
     let _ = smoke.press(pane, "F6", false);
-    report.check(
+    report.describing(
         &format!("an unbound key still divides nothing ({grown} pane(s))"),
         smoke.pane_count() == Ok(grown),
     );
@@ -3343,7 +3352,7 @@ fn check_the_gui_follows_the_users_keymap(smoke: &mut Smoke, report: &mut Report
         let count = s.pane_count().ok()?;
         (count > grown).then_some(count)
     });
-    report.check(
+    report.describing(
         &format!("`-n F5` split the focused pane with NO prefix ({rooted:?})"),
         rooted.is_ok(),
     );
@@ -3360,7 +3369,7 @@ fn check_the_gui_follows_the_users_keymap(smoke: &mut Smoke, report: &mut Report
         return;
     }
     let reported = palette_text(smoke);
-    report.check(
+    report.describing(
         &format!("a config the client cannot use is REPORTED in the palette ({reported:?})"),
         reported
             .as_deref()
@@ -3380,7 +3389,7 @@ fn check_the_gui_follows_the_users_keymap(smoke: &mut Smoke, report: &mut Report
         let text = palette_text(s)?;
         (!text.contains("config.toml")).then_some(text)
     });
-    report.check(
+    report.describing(
         &format!("and it GOES when the file is fixed ({:?})", fixed.is_ok()),
         fixed.is_ok(),
     );
@@ -3401,7 +3410,7 @@ fn check_the_gui_follows_the_users_keymap(smoke: &mut Smoke, report: &mut Report
         let text = palette_text(s)?;
         text.contains("config.toml").then_some(text)
     });
-    report.check(
+    report.describing(
         &format!("a value no option takes is REPORTED too ({complaint:?})"),
         complaint
             .as_deref()
@@ -3505,7 +3514,7 @@ fn check_the_host_projects_panes_only_for_a_grid_reader(smoke: &mut Smoke, repor
     }
     let total: u64 = areas.values().sum();
     let one = areas.get(&named).copied().unwrap_or_default();
-    report.check(
+    report.describing(
         &format!(
             "the pane set can attribute its own work (pane_{named} is {one} of {total} cells over {} panes)",
             areas.len()
@@ -3622,7 +3631,7 @@ fn check_the_host_projects_panes_only_for_a_grid_reader(smoke: &mut Smoke, repor
 
     // The geometry must not have moved under the measurement, or the areas the arithmetic rests on
     // describe a set that no longer exists. Asserted, not hoped for.
-    report.check(
+    report.describing(
         &format!(
             "the pane geometry held still while it was priced ({total} cells over {} panes)",
             areas.len()
@@ -3634,7 +3643,7 @@ fn check_the_host_projects_panes_only_for_a_grid_reader(smoke: &mut Smoke, repor
     // check so that a red names WHICH of the two sentences failed, instead of charging the reads
     // for a cost they did not cause. Together with the claim below this is exactly as strong as
     // the single `== 0` it replaces: when the idle window is free, the reads must be free too.
-    report.check(
+    report.describing(
         &format!(
             "an idle window of the same length costs the grid nothing \
              ({windows} window(s), {idle_projections} projections, {idle_cells} cells)"
@@ -3643,7 +3652,7 @@ fn check_the_host_projects_panes_only_for_a_grid_reader(smoke: &mut Smoke, repor
     );
     // THE claim: a read that cannot reach a grid does not pay for one. This used to be one whole
     // pane set per call — `{READS} reads` cost `{READS}` sets — and is now nothing whatsoever.
-    report.check(
+    report.describing(
         &format!(
             "{READS} reads of a NUMBER cost the grid no more than an idle window \
              ({projections} projections / {cells} cells against {idle_projections} / {idle_cells})"
@@ -3669,7 +3678,7 @@ fn check_the_host_projects_panes_only_for_a_grid_reader(smoke: &mut Smoke, repor
     report.check("the daemon answered a snapshot to price it", snapped);
     // Exact, because nothing here perturbs any more; and divisible by the SET while not by the
     // named pane, which is the half that rules out "one pane projected several times".
-    report.check(
+    report.describing(
         &format!(
             "a snapshot still projects every pane, whole ({projections} projections, {cells} cells = the {total}-cell set, not a multiple of pane_{named}'s {one})"
         ),
@@ -3765,7 +3774,7 @@ fn check_the_host_projects_panes_only_for_a_grid_reader(smoke: &mut Smoke, repor
     // the client's grid, while `painted` with no cells would mean it arrived without a fetch. A
     // 1-in-16 failure here was recorded as `0 projections, 0 cells` with nothing to say which — the
     // silence R247 removed from the cropped-pane gate, in a second place.
-    report.check(
+    report.describing(
         &format!(
             "the driven line reached the client's painted grid \
              (invoke {driven:?}, painted {painted}, {cells} cells{})",
@@ -3794,7 +3803,7 @@ fn check_the_host_projects_panes_only_for_a_grid_reader(smoke: &mut Smoke, repor
         ),
         painted && cells > 0,
     );
-    report.check(
+    report.describing(
         &format!(
             "only the pane that CHANGED was re-fetched ({projections} projections, {cells} cells is {}x pane_{named}'s {one}, not a multiple of the {total}-cell set)",
             cells / one.max(1)
@@ -4198,7 +4207,7 @@ fn check_the_resize_key_pins_this_windows_own_area(smoke: &mut Smoke, report: &m
         .ok()
         .and_then(|panes| panes.first().copied());
     let focused = docked.is_some_and(|pane| smoke.focus_pane(pane));
-    report.check(
+    report.describing(
         &format!("a pane can be focused to drive the resize key ({docked:?})"),
         focused,
     );
@@ -4236,7 +4245,7 @@ fn check_the_resize_key_pins_this_windows_own_area(smoke: &mut Smoke, report: &m
     report.check("the GUI accepts `prefix R`", pressed);
     let folded =
         smoke.wait_for(|_| (window_size(&mut daemon, &session) == Some(measured)).then_some(()));
-    report.check(
+    report.describing(
         &format!("`prefix R` pinned the window to this client's own area ({measured:?})"),
         folded.is_ok(),
     );
@@ -4275,7 +4284,7 @@ fn check_the_resize_key_pins_this_windows_own_area(smoke: &mut Smoke, report: &m
     report.check("the GUI accepts `prefix U`", released);
     let unpinned =
         smoke.wait_for(|_| (window_size(&mut daemon, &session) == Some(measured)).then_some(()));
-    report.check(
+    report.describing(
         &format!("`prefix U` handed the window back to this client's own area ({unpinned:?})"),
         unpinned.is_ok(),
     );
@@ -4312,7 +4321,7 @@ fn check_the_resize_key_pins_this_windows_own_area(smoke: &mut Smoke, report: &m
                 .map(|p| p.text.join("\u{1f}"))
         })
         .unwrap_or_default();
-    report.check(
+    report.describing(
         &format!("a pin the policy IGNORES says so on this window ({said:?})"),
         said.contains("window-size is largest"),
     );
@@ -4348,7 +4357,7 @@ fn check_the_resize_key_pins_this_windows_own_area(smoke: &mut Smoke, report: &m
     if smoke.run_palette_row("Fit this window to the smallest client watching it", report) {
         let fitted = smoke
             .wait_for(|_| (window_size(&mut daemon, &session) == Some(measured)).then_some(()));
-        report.check(
+        report.describing(
             &format!("the palette's fit row folded this client's own area ({fitted:?})"),
             fitted.is_ok(),
         );
@@ -4389,7 +4398,7 @@ fn check_the_window_keys_reach_the_daemon(smoke: &mut Smoke, report: &mut Report
         return;
     };
     let before = windows_of(&mut daemon, &session);
-    report.check(
+    report.describing(
         &format!("the session has windows to start from ({before:?})"),
         !before.is_empty(),
     );
@@ -4402,7 +4411,7 @@ fn check_the_window_keys_reach_the_daemon(smoke: &mut Smoke, report: &mut Report
         let now = windows_of(&mut daemon, &session);
         (now.len() > before.len()).then_some(now)
     });
-    report.check(
+    report.describing(
         &format!("`prefix c` created a window on the daemon ({grown:?})"),
         grown.is_ok(),
     );
@@ -4423,7 +4432,7 @@ fn check_the_window_keys_reach_the_daemon(smoke: &mut Smoke, report: &mut Report
             .is_some_and(|(_, current)| *current)
             .then_some(now)
     });
-    report.check(
+    report.describing(
         &format!("`prefix n` wrapped onto the session's first window ({walked:?})"),
         walked.is_ok(),
     );
@@ -4458,7 +4467,7 @@ fn check_the_break_key_gives_a_pane_a_window_of_its_own(smoke: &mut Smoke, repor
     };
     // THE FIXTURE IS THE CLAIM'S PRECONDITION, asserted rather than assumed: with one pane in the
     // window the break has no observable half, so a green check would mean nothing.
-    report.check(
+    report.describing(
         &format!("the window holds more than one pane to break out of ({panes})"),
         panes > 1,
     );
@@ -4478,7 +4487,7 @@ fn check_the_break_key_gives_a_pane_a_window_of_its_own(smoke: &mut Smoke, repor
         let now = windows_of(&mut daemon, &session);
         (now.len() > before.len()).then_some(now)
     });
-    report.check(
+    report.describing(
         &format!("`prefix !` gave the pane a window of its own ({grown:?})"),
         grown.is_ok(),
     );
@@ -4491,7 +4500,7 @@ fn check_the_break_key_gives_a_pane_a_window_of_its_own(smoke: &mut Smoke, repor
     // docked now is ONE pane, where a client that merely created an empty window would still be
     // projecting the several it started with.
     let alone = smoke.wait_for(|s| s.pane_count().ok().filter(|now| *now == 1));
-    report.check(
+    report.describing(
         &format!("the broken-out pane is alone in the window it made ({alone:?})"),
         alone.is_ok(),
     );
@@ -4534,19 +4543,19 @@ fn check_the_session_keys_move_this_client(smoke: &mut Smoke, report: &mut Repor
         "scene/invoke",
         json!({ "path": "/sprag_mux/external/new_session", "args": { "name": "smoke-elsewhere" } }),
     );
-    report.check(
+    report.describing(
         &format!("a second session exists for the ring to reach ({made:?})"),
         made.is_ok(),
     );
     let listed = sessions_of(&mut daemon);
-    report.check(
+    report.describing(
         &format!("the daemon lists more than one session ({listed:?})"),
         listed.len() > 1,
     );
     if listed.len() < 2 {
         return;
     }
-    report.check(
+    report.describing(
         &format!("this client is counted on the session it is on ({home})"),
         attached_to(&mut daemon, &home) > 0,
     );
@@ -4561,7 +4570,7 @@ fn check_the_session_keys_move_this_client(smoke: &mut Smoke, report: &mut Repor
         let now = attached_to(&mut daemon, &home);
         (now == 0).then_some(now)
     });
-    report.check(
+    report.describing(
         &format!("`prefix )` moved this client OFF the session it was on ({moved:?})"),
         moved.is_ok(),
     );
@@ -4579,7 +4588,7 @@ fn check_the_session_keys_move_this_client(smoke: &mut Smoke, report: &mut Repor
             .collect();
         (where_now.len() == 1 && where_now[0] != home).then_some(where_now)
     });
-    report.check(
+    report.describing(
         &format!("...and onto a DIFFERENT one, which the daemon counts ({landed:?})"),
         landed.is_ok(),
     );
@@ -4593,7 +4602,7 @@ fn check_the_session_keys_move_this_client(smoke: &mut Smoke, report: &mut Repor
         let now = attached_to(&mut daemon, &home);
         (now > 0).then_some(now)
     });
-    report.check(
+    report.describing(
         &format!("`prefix L` brought this client back to {home} ({back:?})"),
         back.is_ok(),
     );
@@ -4641,11 +4650,11 @@ fn check_the_chooser_opens_and_a_picked_row_moves_this_client(
         "scene/invoke",
         json!({ "path": "/sprag_mux/external/new_session", "args": { "name": "smoke-chosen" } }),
     );
-    report.check(
+    report.describing(
         &format!("a session exists for the chooser to offer ({made:?})"),
         made.is_ok(),
     );
-    report.check(
+    report.describing(
         &format!("this client starts on the session it is viewing ({home})"),
         attached_to(&mut daemon, &home) > 0,
     );
@@ -4659,7 +4668,7 @@ fn check_the_chooser_opens_and_a_picked_row_moves_this_client(
     let pressed = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, "s", false).is_ok();
     report.check("the GUI accepts `prefix s`", pressed);
     let opened = smoke.wait_for_tag("sprag_chooser_panel");
-    report.check(
+    report.describing(
         &format!("`prefix s` opened the chooser ({opened:?})"),
         opened.is_ok(),
     );
@@ -4676,7 +4685,7 @@ fn check_the_chooser_opens_and_a_picked_row_moves_this_client(
         .and_then(|tags| tags.get("sprag_chooser_panel"))
         .map(|painted| painted.text.join("\u{1f}"))
         .unwrap_or_default();
-    report.check(
+    report.describing(
         &format!("the panel painted its rows ({} chars)", text.len()),
         !text.is_empty(),
     );
@@ -4696,7 +4705,7 @@ fn check_the_chooser_opens_and_a_picked_row_moves_this_client(
         let _ = smoke.press(pane, key, false);
     }
     let panes_after = daemon_panes(&mut daemon, &home);
-    report.check(
+    report.describing(
         &format!("no key reaches the panes behind it ({panes_before:?} -> {panes_after:?})"),
         panes_before == panes_after,
     );
@@ -4709,7 +4718,7 @@ fn check_the_chooser_opens_and_a_picked_row_moves_this_client(
         (attached_to(&mut daemon, "smoke-chosen") > 0 && attached_to(&mut daemon, &home) == 0)
             .then_some(())
     });
-    report.check(
+    report.describing(
         &format!("a picked row moved this client to the session it named ({landed:?})"),
         landed.is_ok(),
     );
@@ -4717,7 +4726,7 @@ fn check_the_chooser_opens_and_a_picked_row_moves_this_client(
         let tags = s.tags().ok()?;
         (!tags.contains_key("sprag_chooser_panel")).then_some(())
     });
-    report.check(
+    report.describing(
         &format!("...and the panel is gone, so the panes have the keyboard ({gone:?})"),
         gone.is_ok(),
     );
@@ -4730,7 +4739,7 @@ fn check_the_chooser_opens_and_a_picked_row_moves_this_client(
         let _ = s;
         (attached_to(&mut daemon, &home) > 0).then_some(())
     });
-    report.check(
+    report.describing(
         &format!("...and this check leaves the client where it found it ({back:?})"),
         back.is_ok(),
     );
@@ -4774,7 +4783,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
         "scene/invoke",
         json!({ "path": "/sprag_mux/external/new_session", "args": { "name": "smoke-report" } }),
     );
-    report.check(
+    report.describing(
         &format!("a session exists for the good key to reach ({made:?})"),
         made.is_ok(),
     );
@@ -4783,7 +4792,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
         "[[bind]]\nkey = \"y\"\naction = \"switch-client -t smoke-report\"\n\n\
          [[bind]]\nkey = \"g\"\naction = \"switch-client -t no-such-session\"\n",
     );
-    report.check(
+    report.describing(
         &format!("the two bindings are written ({wrote:?})"),
         wrote.is_ok(),
     );
@@ -4799,7 +4808,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
         let _ = s;
         (attached_to(&mut daemon, "smoke-report") > 0).then_some(())
     });
-    report.check(
+    report.describing(
         &format!("a key naming a session that EXISTS moves this client ({moved:?})"),
         moved.is_ok(),
     );
@@ -4817,7 +4826,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
     let bad = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, "g", false).is_ok();
     report.check("the GUI accepts the bad binding", bad);
     let shown = smoke.wait_for_tag("sprag_message_strip");
-    report.check(
+    report.describing(
         &format!("a key naming a session that does NOT exist raises the strip ({shown:?})"),
         shown.is_ok(),
     );
@@ -4827,7 +4836,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
         .and_then(|tags| tags.get("sprag_message_strip"))
         .map(|painted| painted.text.join("\u{1f}"))
         .unwrap_or_default();
-    report.check(
+    report.describing(
         &format!("...and the strip NAMES what is not there ({said:?})"),
         said.contains("no session called") && said.contains("no-such-session"),
     );
@@ -4835,7 +4844,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
         "...and it says SESSION, not the action's grouping subject",
         !said.contains("no client called"),
     );
-    report.check(
+    report.describing(
         &format!("...and the refused switch moved nobody ({said:?})"),
         attached_to(&mut daemon, "smoke-report") > 0,
     );
@@ -4847,7 +4856,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
         let tags = s.tags().ok()?;
         (!tags.contains_key("sprag_message_strip")).then_some(())
     });
-    report.check(
+    report.describing(
         &format!(
             "...and the strip clears on its own deadline, with no key to prompt it ({cleared:?})"
         ),
@@ -4868,7 +4877,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
         .and_then(|tags| tags.get("sprag_message_strip"))
         .map(|painted| painted.text.join("\u{1f}"))
         .unwrap_or_default();
-    report.check(
+    report.describing(
         &format!("a directional key at the edge says so here too ({said_edge:?})"),
         said_edge.contains("select-pane -L: nowhere to go"),
     );
@@ -4882,7 +4891,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
         let tags = s.tags().ok()?;
         (!tags.contains_key("sprag_message_strip")).then_some(())
     });
-    report.check(
+    report.describing(
         &format!("the strip is empty before the routed message ({cleared_before:?})"),
         cleared_before.is_ok(),
     );
@@ -4894,7 +4903,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
             "args": { "text": "the deploy finished", "severity": "note" },
         }),
     );
-    report.check(
+    report.describing(
         &format!("the daemon accepts a message for this client's session ({sent:?})"),
         sent.is_ok(),
     );
@@ -4905,7 +4914,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
         .ok()
         .and_then(|answer| answer["clients"].as_array().cloned())
         .unwrap_or_default();
-    report.check(
+    report.describing(
         &format!("...and names the client it reached ({delivered:?})"),
         delivered.len() == 1,
     );
@@ -4916,7 +4925,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
         .and_then(|tags| tags.get("sprag_message_strip"))
         .map(|painted| painted.text.join("\u{1f}"))
         .unwrap_or_default();
-    report.check(
+    report.describing(
         &format!("a message SENT BY ANOTHER PROCESS reaches this window ({said_routed:?})"),
         said_routed.contains("the deploy finished"),
     );
@@ -4925,7 +4934,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
         let tags = s.tags().ok()?;
         (!tags.contains_key("sprag_message_strip")).then_some(())
     });
-    report.check(
+    report.describing(
         &format!("...and a NOTE clears on its own deadline ({note_cleared:?})"),
         note_cleared.is_ok(),
     );
@@ -4939,12 +4948,12 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
             "args": { "text": "the deploy needs you", "severity": "alert" },
         }),
     );
-    report.check(
+    report.describing(
         &format!("the daemon accepts an ALERT ({alerted:?})"),
         alerted.is_ok(),
     );
     let raised = smoke.wait_for_tag("sprag_message_strip");
-    report.check(
+    report.describing(
         &format!("the alert raises the strip ({raised:?})"),
         raised
             .as_ref()
@@ -4982,7 +4991,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
         let tags = s.tags().ok()?;
         (!tags.contains_key("sprag_message_strip")).then_some(())
     });
-    report.check(
+    report.describing(
         &format!("...and a keystroke is what clears it ({acknowledged:?})"),
         acknowledged.is_ok(),
     );
@@ -4996,7 +5005,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
         let tags = s.tags().ok()?;
         (!tags.contains_key("sprag_message_strip")).then_some(())
     });
-    report.check(
+    report.describing(
         &format!("the strip is empty before the pane raises anything ({quiet_first:?})"),
         quiet_first.is_ok(),
     );
@@ -5018,7 +5027,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
             "args": { "text": "printf '\\033]9;build finished: 3 errors\\007'\r" },
         }),
     );
-    report.check(
+    report.describing(
         &format!("the pane's shell accepts the notifying command ({typed:?})"),
         typed.is_ok(),
     );
@@ -5037,7 +5046,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
             .any(|row| row["notification"]["body"].as_str() == Some("build finished: 3 errors"));
         seen.then_some(())
     });
-    report.check(
+    report.describing(
         &format!("the DAEMON latched the child's notification ({latched:?})"),
         latched.is_ok(),
     );
@@ -5048,18 +5057,18 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
         .and_then(|tags| tags.get("sprag_message_strip"))
         .map(|painted| painted.text.join("\u{1f}"))
         .unwrap_or_default();
-    report.check(
+    report.describing(
         &format!("a pane CHILD's own notification reaches this window ({said_pane:?})"),
         said_pane.contains("build finished: 3 errors"),
     );
-    report.check(
+    report.describing(
         &format!("...and the strip NAMES the pane it came from ({said_pane:?})"),
         said_pane.contains(&format!("pane {raising}")),
     );
 
     // WHAT IT LEAVES: the shipped table back, and this client where it started.
     let restored = smoke.write_user_config("");
-    report.check(
+    report.describing(
         &format!("the shipped keymap is put back ({restored:?})"),
         restored.is_ok(),
     );
@@ -5070,7 +5079,7 @@ fn check_a_key_that_finds_nothing_says_so_on_the_screen(smoke: &mut Smoke, repor
         let _ = s;
         (attached_to(&mut daemon, &home) > 0).then_some(())
     });
-    report.check(
+    report.describing(
         &format!("...and this check leaves the client where it found it ({back:?})"),
         back.is_ok(),
     );
@@ -5114,7 +5123,7 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
     // is the same defect one layer in. The isolation was PROVED the way that lesson says: putting
     // `off` in this file turns the assertions below RED.
     let policy = smoke.write_user_config("[options]\nnotify-outward = \"unfocused\"\n");
-    report.check(
+    report.describing(
         &format!("the outward policy under test is written, not inherited ({policy:?})"),
         policy.is_ok(),
     );
@@ -5124,7 +5133,7 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
     // fired for everything is caught here rather than passing the interesting half by accident.
     let before = notify_calls_by(&state, client).len();
     let focused = smoke.call("scene/window_focus", json!({ "focused": true }));
-    report.check(
+    report.describing(
         &format!("the window can be told it holds OS focus ({focused:?})"),
         focused.is_ok(),
     );
@@ -5136,7 +5145,7 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
             "args": { "text": "a message the person can see", "severity": "note" },
         }),
     );
-    report.check(
+    report.describing(
         &format!("the daemon accepts a message for a WATCHED window ({seen:?})"),
         seen.is_ok(),
     );
@@ -5149,13 +5158,13 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
             .contains("a message the person can see")
             .then_some(())
     });
-    report.check(
+    report.describing(
         &format!("...and it reaches the strip ({painted:?})"),
         painted.is_ok(),
     );
     // Sampled AFTER the strip proved the delivery landed, so this is "nothing was sent", not
     // "nothing had been sent yet".
-    report.check(
+    report.describing(
         &format!(
             "a message a person can READ is not also thrown at their desktop ({:?})",
             notify_calls_by(&state, client).len() - before,
@@ -5165,7 +5174,7 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
 
     // THE CLAIM. The person leaves: the WM takes focus off every window this client owns.
     let blurred = smoke.call("scene/window_focus", json!({ "focused": false }));
-    report.check(
+    report.describing(
         &format!("the window can be told it lost OS focus ({blurred:?})"),
         blurred.is_ok(),
     );
@@ -5177,7 +5186,7 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
             "args": { "text": "the deploy needs you", "severity": "alert" },
         }),
     );
-    report.check(
+    report.describing(
         &format!("the daemon accepts a message for an UNWATCHED window ({sent:?})"),
         sent.is_ok(),
     );
@@ -5189,22 +5198,22 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
         .last()
         .cloned()
         .unwrap_or_default();
-    report.check(
+    report.describing(
         &format!("a message reaches the person's DESKTOP once they have left ({argv:?})"),
         followed.is_ok(),
     );
     // The words, the session it came from, and the URGENCY — the three things a desktop
     // notification has to carry for it to be worth more than a beep.
     let joined = argv.join(" ");
-    report.check(
+    report.describing(
         &format!("...carrying the words the strip would have shown ({joined:?})"),
         joined.contains("the deploy needs you"),
     );
-    report.check(
+    report.describing(
         &format!("...naming the session it came from ({joined:?})"),
         joined.contains(&home),
     );
-    report.check(
+    report.describing(
         &format!("...and an ALERT asks for the CRITICAL urgency ({joined:?})"),
         argv.windows(2)
             .any(|pair| pair[0] == "-u" && pair[1] == "critical"),
@@ -5225,14 +5234,14 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
         let tags = s.tags().ok()?;
         (!tags.contains_key("sprag_message_strip")).then_some(())
     });
-    report.check(
+    report.describing(
         &format!("the alert is acknowledged before the child speaks ({cleared_first:?})"),
         cleared_first.is_ok(),
     );
     // A keystroke is only allowed to move the STRIP, never the window manager — if pressing a key
     // had re-focused this window the reading below would be about a person who came back.
     let still_away = smoke.call("scene/window_focus", json!({ "focused": false }));
-    report.check(
+    report.describing(
         &format!("the person is still away after the acknowledgement ({still_away:?})"),
         still_away.is_ok(),
     );
@@ -5253,7 +5262,7 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
             "args": { "text": "printf '\\033]9;the build finished\\007'\r" },
         }),
     );
-    report.check(
+    report.describing(
         &format!("the pane's shell accepts the notifying command ({raised:?})"),
         raised.is_ok(),
     );
@@ -5269,7 +5278,7 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
             .contains("the build finished")
             .then_some(())
     });
-    report.check(
+    report.describing(
         &format!("the child's words reached this client at all ({on_strip:?})"),
         on_strip.is_ok(),
     );
@@ -5281,7 +5290,7 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
         .last()
         .cloned()
         .unwrap_or_default();
-    report.check(
+    report.describing(
         &format!("a PANE CHILD's notification follows the person out too ({child_argv:?})"),
         chased.is_ok() && child_argv.join(" ").contains("the build finished"),
     );
@@ -5291,7 +5300,7 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
     // it, a client that forwarded on every unfocused message regardless of the setting would pass
     // everything above — and the setting is the whole reason this is a policy and not a feature.
     let silenced = smoke.write_user_config("[options]\nnotify-outward = \"off\"\n");
-    report.check(
+    report.describing(
         &format!("the policy can be turned off without restarting the client ({silenced:?})"),
         silenced.is_ok(),
     );
@@ -5304,7 +5313,7 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
             "args": { "text": "a message nobody asked to be chased with", "severity": "alert" },
         }),
     );
-    report.check(
+    report.describing(
         &format!("the daemon accepts a message under the OFF policy ({refused:?})"),
         refused.is_ok(),
     );
@@ -5319,11 +5328,11 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
             .contains("a message nobody asked to be chased with")
             .then_some(())
     });
-    report.check(
+    report.describing(
         &format!("...and it still reaches the strip ({landed:?})"),
         landed.is_ok(),
     );
-    report.check(
+    report.describing(
         &format!(
             "an OFF policy chases nobody, on the same blurred window ({} calls)",
             notify_calls_by(&state, client).len() - quiet_from,
@@ -5334,12 +5343,12 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
     // WHAT IT LEAVES: the shipped config back, the window focused again, and the strip clear —
     // every later check reads all three.
     let put_back = smoke.write_user_config("");
-    report.check(
+    report.describing(
         &format!("the shipped config is put back ({put_back:?})"),
         put_back.is_ok(),
     );
     let restored = smoke.call("scene/window_focus", json!({ "focused": true }));
-    report.check(
+    report.describing(
         &format!("the window is left holding focus ({restored:?})"),
         restored.is_ok(),
     );
@@ -5351,7 +5360,7 @@ fn check_a_message_follows_the_person_out_of_the_window(smoke: &mut Smoke, repor
         let tags = s.tags().ok()?;
         (!tags.contains_key("sprag_message_strip")).then_some(())
     });
-    report.check(
+    report.describing(
         &format!("...and the strip is clear before the next check ({cleared:?})"),
         cleared.is_ok(),
     );
@@ -5389,7 +5398,7 @@ fn check_the_order_keys_move_a_window_on_the_daemon(smoke: &mut Smoke, report: &
     let before = windows_of(&mut daemon, &session);
     // TWO windows at least, or a move has nowhere to go and every assertion below is vacuous —
     // which is the shape this project has caught five times, so it is checked rather than assumed.
-    report.check(
+    report.describing(
         &format!("the session has more than one window to reorder ({before:?})"),
         before.len() > 1,
     );
@@ -5418,7 +5427,7 @@ fn check_the_order_keys_move_a_window_on_the_daemon(smoke: &mut Smoke, report: &
         let now = windows_of(&mut daemon, &session);
         (names(&now) != was).then_some(now)
     });
-    report.check(
+    report.describing(
         &format!("`prefix >` moved a window on the daemon ({moved:?})"),
         moved.is_ok(),
     );
@@ -5441,7 +5450,7 @@ fn check_the_order_keys_move_a_window_on_the_daemon(smoke: &mut Smoke, report: &
         let tabs = s.tabs().ok()?;
         (tabs == names(&moved)).then_some(tabs)
     });
-    report.check(
+    report.describing(
         &format!("the window strip PAINTS the new order ({painted:?})"),
         painted.is_ok(),
     );
@@ -5453,7 +5462,7 @@ fn check_the_order_keys_move_a_window_on_the_daemon(smoke: &mut Smoke, report: &
         let now = windows_of(&mut daemon, &session);
         (names(&now) == was).then_some(now)
     });
-    report.check(
+    report.describing(
         &format!("`prefix <` put the order back ({back:?})"),
         back.is_ok(),
     );
@@ -5512,7 +5521,7 @@ fn check_the_resize_key_moves_a_boundary_on_the_daemon(smoke: &mut Smoke, report
         let now = widths(&mut daemon);
         (now.len() > before.len()).then_some(now)
     });
-    report.check(
+    report.describing(
         &format!("the split reached this window on the daemon ({before:?} -> {grew:?})"),
         grew.is_ok(),
     );
@@ -5531,7 +5540,7 @@ fn check_the_resize_key_moves_a_boundary_on_the_daemon(smoke: &mut Smoke, report
         last = Some(now.clone());
         settled.then_some(now)
     });
-    report.check(
+    report.describing(
         &format!("the split's widths settled before the boundary is moved ({opened:?})"),
         opened.is_ok(),
     );
@@ -5552,7 +5561,7 @@ fn check_the_resize_key_moves_a_boundary_on_the_daemon(smoke: &mut Smoke, report
         let now = widths(&mut daemon);
         (now.len() == opened.len() && now != opened).then_some(now)
     });
-    report.check(
+    report.describing(
         &format!("`prefix C-Left` moved a boundary on the daemon ({opened:?} -> {moved:?})"),
         moved.is_ok(),
     );
@@ -5565,7 +5574,7 @@ fn check_the_resize_key_moves_a_boundary_on_the_daemon(smoke: &mut Smoke, report
         return;
     };
     let shrank = moved[edge] < opened[edge];
-    report.check(
+    report.describing(
         &format!("`prefix C-Left` took cells from the leaf on the boundary's left (leaf {edge})"),
         shrank,
     );
@@ -5594,7 +5603,7 @@ fn check_the_resize_key_moves_a_boundary_on_the_daemon(smoke: &mut Smoke, report
         let now = widths(&mut daemon);
         (now.len() == moved.len() && now.get(edge) > moved.get(edge)).then_some(now)
     });
-    report.check(
+    report.describing(
         &format!("`prefix C-Right` moved the same boundary the other way ({moved:?} -> {back:?})"),
         back.is_ok(),
     );
@@ -5663,7 +5672,7 @@ fn check_the_guarded_kill_key_asks_and_a_yes_reaches_the_daemon(
             text.as_str().map(str::to_owned)
         })
         .ok();
-    report.check(
+    report.describing(
         &format!("`prefix x` armed a question rather than killing (prompt: {prompt:?})"),
         prompt.as_deref().is_some_and(|p| p.contains("Kill pane")),
     );
@@ -5683,7 +5692,7 @@ fn check_the_guarded_kill_key_asks_and_a_yes_reaches_the_daemon(
     // `sprag-tui`'s `the_pane_kill_key_says_what_it_will_take_and_takes_it`, where the harness can
     // arrange a window down to its last pane without ending the run's own client.)
     let consequence = smoke.query("sprag_confirm", "consequence").ok();
-    report.check(
+    report.describing(
         &format!(
             "a pane with siblings takes nothing else, and the question says so ({consequence:?})"
         ),
@@ -5698,7 +5707,7 @@ fn check_the_guarded_kill_key_asks_and_a_yes_reaches_the_daemon(
         let count = s.pane_count().ok()?;
         (count + 1 == before).then_some(count)
     });
-    report.check(
+    report.describing(
         &format!("a yes reached the daemon and the pane is gone ({shrunk:?})"),
         shrunk.is_ok(),
     );
@@ -5743,7 +5752,7 @@ fn check_the_key_table_opens_and_shows_the_table_in_force(smoke: &mut Smoke, rep
     let pressed = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, "?", false).is_ok();
     report.check("the GUI accepts `prefix ?`", pressed);
     let opened = smoke.wait_for_tag("sprag_keyhelp_panel");
-    report.check(
+    report.describing(
         &format!("`prefix ?` opened the key table ({opened:?})"),
         opened.is_ok(),
     );
@@ -5760,7 +5769,7 @@ fn check_the_key_table_opens_and_shows_the_table_in_force(smoke: &mut Smoke, rep
         .and_then(|tags| tags.get("sprag_keyhelp_panel"))
         .map(|painted| painted.text.join("\u{1f}"))
         .unwrap_or_default();
-    report.check(
+    report.describing(
         &format!("the panel painted its rows ({} strings)", text.len()),
         !text.is_empty(),
     );
@@ -5792,7 +5801,7 @@ fn check_the_key_table_opens_and_shows_the_table_in_force(smoke: &mut Smoke, rep
         let painted = tags.get("sprag_keyhelp_panel")?.text.join("\u{1f}");
         painted.contains(form).then_some(())
     });
-    report.check(
+    report.describing(
         &format!("...and paging reaches the forms a binding can name ({paged:?})"),
         paged.is_ok(),
     );
@@ -5811,7 +5820,7 @@ fn check_the_key_table_opens_and_shows_the_table_in_force(smoke: &mut Smoke, rep
     let _ = smoke.press(pane, "b", true);
     let _ = smoke.press(pane, "%", false);
     let panes_after = daemon_panes(&mut daemon, &session);
-    report.check(
+    report.describing(
         &format!("no key reaches the panes behind it ({panes_before:?} -> {panes_after:?})"),
         panes_before == panes_after,
     );
@@ -5823,7 +5832,7 @@ fn check_the_key_table_opens_and_shows_the_table_in_force(smoke: &mut Smoke, rep
         let tags = s.tags().ok()?;
         (!tags.contains_key("sprag_keyhelp_panel")).then_some(())
     });
-    report.check(
+    report.describing(
         &format!("...and the panel is gone, so the panes have the keyboard ({gone:?})"),
         gone.is_ok(),
     );
@@ -5873,7 +5882,7 @@ fn check_the_rename_key_asks_and_the_answer_reaches_the_daemon(
     let pressed = smoke.press(pane, "b", true).is_ok() && smoke.press(pane, ",", false).is_ok();
     report.check("the GUI accepts `prefix ,`", pressed);
     let asked = smoke.wait_for_tag("sprag_prompt_panel");
-    report.check(
+    report.describing(
         &format!("`prefix ,` opened the name prompt ({asked:?})"),
         asked.is_ok(),
     );
@@ -5897,7 +5906,7 @@ fn check_the_rename_key_asks_and_the_answer_reaches_the_daemon(
     let typed = smoke.invoke("sprag_prompt_field", "key", json!("z")) == Ok(Value::Bool(true));
     report.check("the prompt's field takes a character", typed);
     let held = smoke.query("sprag_prompt_field", "text");
-    report.check(
+    report.describing(
         &format!("...and HOLDS it, seed and all ({held:?})"),
         held == Ok(Value::String(format!("{current}z"))),
     );
@@ -5911,7 +5920,7 @@ fn check_the_rename_key_asks_and_the_answer_reaches_the_daemon(
             .any(|(name, current)| *current && *name == wanted)
             .then_some(now)
     });
-    report.check(
+    report.describing(
         &format!("the typed name reached the DAEMON as {wanted:?} ({renamed:?})"),
         renamed.is_ok(),
     );
@@ -6262,7 +6271,7 @@ fn collect_tags(node: &Value, out: &mut Vec<String>) {
 /// nothing, so the count is asserted before the agreement is.
 fn check_this_client_addresses_methods_as_published(smoke: &mut Smoke, report: &mut Report) {
     let addressed: Vec<String> = smoke.window_addressed.iter().cloned().collect();
-    report.check(
+    report.describing(
         &format!(
             "this run addressed methods by window path, so the agreement below is about something ({addressed:?})"
         ),
@@ -6272,7 +6281,7 @@ fn check_this_client_addresses_methods_as_published(smoke: &mut Smoke, report: &
     let published = match smoke.call("rpc/methods", json!({})) {
         Ok(answer) => answer,
         Err(error) => {
-            report.check(&format!("rpc/methods answers ({error})"), false);
+            report.describing(&format!("rpc/methods answers ({error})"), false);
             return;
         }
     };
@@ -6283,7 +6292,7 @@ fn check_this_client_addresses_methods_as_published(smoke: &mut Smoke, report: &
         .filter(|method| method["window"].as_str() == Some("path"))
         .filter_map(|method| method["name"].as_str().map(str::to_owned))
         .collect();
-    report.check(
+    report.describing(
         &format!(
             "rpc/methods publishes a window class per method ({} take a path)",
             by_path.len()
@@ -6295,7 +6304,7 @@ fn check_this_client_addresses_methods_as_published(smoke: &mut Smoke, report: &
         .iter()
         .filter(|method| !by_path.contains(*method))
         .collect();
-    report.check(
+    report.describing(
         &format!(
             "every method this client named a window to by path is one that takes it ({disagreed:?})"
         ),
@@ -6327,7 +6336,7 @@ fn check_every_painted_frame_settled(smoke: &Smoke, report: &mut Report) {
     // have arrived. A check that reads a channel nothing could ever reach passes forever and means
     // nothing, so the channel is asserted before what it carries.
     let lines = log.lines().count();
-    report.check(
+    report.describing(
         &format!("the client's own diagnostics reached the smoke ({lines} lines)"),
         lines > 0,
     );
@@ -6335,7 +6344,7 @@ fn check_every_painted_frame_settled(smoke: &Smoke, report: &mut Report) {
         .lines()
         .filter(|line| line.contains("did not settle"))
         .collect();
-    report.check(
+    report.describing(
         &format!(
             "every painted frame settled within the pass budget ({} unsettled)",
             unsettled.len()
@@ -6893,11 +6902,11 @@ impl Smoke {
     /// the chain broke rather than only that the effect never arrived.
     fn run_palette_row(&mut self, title: &str, report: &mut Report) -> bool {
         if self.invoke("sprag_palette", "open", Value::Null).is_err() {
-            report.check(&format!("the palette opens to reach `{title}`"), false);
+            report.describing(&format!("the palette opens to reach `{title}`"), false);
             return false;
         }
         if self.wait_for_tag("sprag_palette_panel").is_err() {
-            report.check(&format!("the palette paints to reach `{title}`"), false);
+            report.describing(&format!("the palette paints to reach `{title}`"), false);
             return false;
         }
         let Some(at) = self.row_named(title) else {
@@ -6905,7 +6914,7 @@ impl Smoke {
             // the catalog froze in a state that gates it out, or because the title moved — and those
             // read identically as a bare "not offered".
             let offered = self.row_titles();
-            report.check(
+            report.describing(
                 &format!("the palette offers `{title}` (offered: {offered:?})"),
                 false,
             );
@@ -6914,7 +6923,7 @@ impl Smoke {
         };
         let _ = self.invoke("sprag_palette", "select", json!(at));
         let ran = self.invoke("sprag_palette", "execute", Value::Null) == Ok(json!(title));
-        report.check(&format!("the palette runs `{title}`"), ran);
+        report.describing(&format!("the palette runs `{title}`"), ran);
         ran
     }
 
@@ -7746,22 +7755,99 @@ impl FrameWatch {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **ONE FAILED CHECK, AND WHETHER THIS REPORT CAN *NAME* IT** — register item 1121.
+///
+/// # ⛔⛔⛔ What a description costs, measured
+///
+/// A register holds a red by NAME: an item claims one, and a later run's report is matched against
+/// that claim. A name only works if it is the same text every run. **Measured 2026-09-15 on `pixel
+/// (linux)`** — red on five consecutive runs with no item holding it — every one of its six
+/// failures was built with `format!`, fusing the check's identity with that run's pane ids and PSI
+/// percentages:
+///
+/// ```text
+/// FAILED: the daemon and the client agree on ONE pane to drive (daemon [0, 1, 2, 3, 5], painted Ok([0]))
+/// FAILED: the sampled branch is PAINTED on the session's own row (Err("timed out — cpu some avg300: Percent(673)"))
+/// ```
+///
+/// Nothing can claim those: the next run spells them differently. So the register could not hold a
+/// red that had been standing for five runs, and `north-star` printed `0 standing` beside it.
+///
+/// ⚠⚠ **THE TYPE IS WHAT KEEPS THEM APART, NOT A CONVENTION.** A reader that split on *the last
+/// parenthesis* would be prose standing in for a field — this workspace's most-repeated defect, and
+/// checks whose identity legitimately contains brackets would be cut in the wrong place.
+/// [`Named`](Self::Named) carries a `&'static str`, so a fused string cannot reach it at all.
+enum Failed {
+    /// A check whose identity is the same text every run, with what THIS run saw beside it.
+    Named {
+        /// The identity — `&'static str`, so it cannot have been built from this run's values.
+        what: &'static str,
+        /// What this run saw, which varies and is therefore never part of the name.
+        seen: Option<String>,
+    },
+    /// ⛔ A check that can only DESCRIBE itself: identity and evidence in one string, so no two
+    /// runs spell it the same way and no register can hold it. The population a gate ratchets down.
+    Described(String),
+}
+
 /// What the run found.
 #[derive(Default)]
 struct Report {
     passed: usize,
-    failed: Vec<String>,
+    failed: Vec<Failed>,
     unmet: Vec<String>,
 }
 
 impl Report {
-    /// Record one check, printing it as it happens so a hung run still shows how far it got.
-    fn check(&mut self, what: &str, ok: bool) {
+    /// Record one check whose identity is all there is to say, printing it as it happens so a hung
+    /// run still shows how far it got.
+    ///
+    /// ⚠⚠ **`&'static str` SINCE REGISTER ITEM 1121**, and that is the whole guarantee: an identity
+    /// built from this run's values cannot be passed here, so every failure this door records is
+    /// one a register can hold. A check with evidence to show uses [`checked`](Self::checked); one
+    /// that still fuses the two uses [`describing`](Self::describing) and is counted there.
+    fn check(&mut self, what: &'static str, ok: bool) {
         println!("  {}  {what}", if ok { "PASS" } else { "FAIL" });
         if ok {
             self.passed += 1;
         } else {
-            self.failed.push(what.to_owned());
+            self.failed.push(Failed::Named { what, seen: None });
+        }
+    }
+
+    /// Record one check **with what this run saw beside its identity** — register item 1121.
+    ///
+    /// ⚠ The evidence is as visible as it ever was; it simply stops being part of the name. That
+    /// distinction is what a register needs and a reader loses nothing: the failure line carries
+    /// the identity and the evidence follows it on its own line.
+    fn checked(&mut self, what: &'static str, seen: &str, ok: bool) {
+        println!("  {}  {what} ({seen})", if ok { "PASS" } else { "FAIL" });
+        if ok {
+            self.passed += 1;
+        } else {
+            self.failed.push(Failed::Named {
+                what,
+                seen: Some(seen.to_owned()),
+            });
+        }
+    }
+
+    /// ⛔⛔⛔ **THE LEGACY DOOR: a check that can only describe itself** — register item 1121, and
+    /// a population that may only shrink.
+    ///
+    /// Its argument is an ordinary `&str` because that is exactly what it accepts: a string built
+    /// by `format!` out of this run's values. Such a failure is printed as a DESCRIPTION rather
+    /// than a name, and `north-star` counts it among the failures it cannot name rather than
+    /// inventing a claim that could never match again.
+    ///
+    /// ⚠⚠ The remedy per call site is mechanical: move the interpolated part into
+    /// [`checked`](Self::checked)'s `seen` and leave the sentence as a literal.
+    fn describing(&mut self, what: &str, ok: bool) {
+        println!("  {}  {what}", if ok { "PASS" } else { "FAIL" });
+        if ok {
+            self.passed += 1;
+        } else {
+            self.failed.push(Failed::Described(what.to_owned()));
         }
     }
 
@@ -7792,8 +7878,33 @@ impl Report {
             self.failed.len(),
             self.unmet.len(),
         );
+        // ⛔⛔⛔⛔⛔ TWO SHAPES, BECAUSE THEY ARE TWO FACTS — register item 1121. `FAILED:` carries
+        // an identity a register can hold; `FAILED?` carries a description that is true of this run
+        // and of no other. A reader that printed both the same way would invite a claim on a string
+        // the next run does not produce, which is worse than holding nothing.
+        let mut described = 0;
         for failure in &self.failed {
-            println!("  FAILED: {failure}");
+            match failure {
+                Failed::Named { what, seen } => {
+                    println!("  FAILED: {what}");
+                    if let Some(seen) = seen {
+                        println!("          seen: {seen}");
+                    }
+                }
+                Failed::Described(text) => {
+                    described += 1;
+                    println!("  FAILED? {text}");
+                }
+            }
+        }
+        // ⚠⚠ STATED AS A NUMBER rather than left to be counted off the lines above — this
+        // workspace's rule 10. It is what says how much of this report a register CANNOT be held
+        // to, and it is the figure register item 1121's ratchet drives to zero.
+        if described > 0 {
+            println!(
+                "  {described} of those are DESCRIBED, not named: no register can hold them, \
+                 because the next run spells them differently"
+            );
         }
         for skipped in &self.unmet {
             println!("  NOT ASKED: {skipped}");

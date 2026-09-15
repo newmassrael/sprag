@@ -726,6 +726,33 @@ impl Tally {
             }),
         }
     }
+
+    /// ⛔⛔⛔⛔⛔ **WHICH OF ITS FAILURES THIS SHAPE *NAMES*** — register item 1121, and the half
+    /// [`stated`](Self::stated) is judged against.
+    ///
+    /// A name is text that is the same every run, because that is the only thing a register can
+    /// hold: an item claims a name, and a later report is matched against the claim. So this takes
+    /// only the lines that carry one, and a failure a checker can merely DESCRIBE is deliberately
+    /// absent — it shows up as the gap between the two, which is a refusal.
+    fn names(self, text: &str) -> Vec<String> {
+        match self {
+            Self::Cargo => text
+                .lines()
+                .filter_map(|line| line.split_once(" ... FAILED").map(|(head, _)| head))
+                .filter_map(|head| head.rsplit_once("test ").map(|(_, name)| name))
+                .map(|name| name.trim().to_owned())
+                .collect(),
+            // ⚠⚠ `FAILED: ` AND NOT `FAILED? ` — register item 1121 gave the checker two shapes
+            // precisely so this reader would not have to guess. The first is a `&'static str` the
+            // producer's own type guarantees; the second is a sentence built from this run's pane
+            // ids and timings, which no two runs spell alike.
+            Self::Smoke => text
+                .lines()
+                .filter_map(|line| line.split_once("FAILED: "))
+                .map(|(_, name)| name.trim().to_owned())
+                .collect(),
+        }
+    }
 }
 
 impl ReportedFailures {
@@ -761,27 +788,29 @@ impl ReportedFailures {
         if !Self::reads_as_a_test_log(text) {
             return Err(Unread::NotATestLog);
         }
-        let failed: Vec<String> = text
-            .lines()
-            .filter_map(|line| line.split_once(" ... FAILED").map(|(head, _)| head))
-            .filter_map(|head| head.rsplit_once("test ").map(|(_, name)| name))
-            .map(|name| name.trim().to_owned())
+        let failed: Vec<String> = Tally::ALL
+            .iter()
+            .flat_map(|shape| shape.names(text))
             .collect();
         // ⛔⛔⛔⛔⛔ THE TWO WITNESSES MUST AGREE — register item 998's ⑷. The harness writes both
         // lines; this reads one of them for names and the other for a count, and the only way they
         // disagree is that the reading is wrong.
         //
-        // ⛔⛔⛔⛔⛔ **AND THE COUNT IS TAKEN FROM EVERY CHECKER, NOT ONLY CARGO** — register item
-        // 1120. Read as `test result: FAILED` alone, this witness was blind to any report cargo did
-        // not write: `pixel (linux)`'s log states `6 failed` in `sprag-smoke`'s own summary, had no
-        // cargo failure at all, and so answered *names no failing test* — the answer that instructs
-        // deleting a `@red:` line. See [`Tally`], which holds the measurement.
-        let stated: usize = Tally::ALL
+        // ⛔⛔⛔⛔⛔ **AND THE DISAGREEMENT IS ASKED PER CHECKER** — register items 1120 and 1121.
+        // Asked once over the whole file it was two different blindnesses at once: cargo's tally
+        // was the only one read (so `pixel (linux)`'s `6 failed` was invisible), and *any name at
+        // all* satisfied it (so a report naming two of its six failures would have passed with four
+        // unaccounted). Per shape, the question is the honest one — **did this checker name
+        // everything it says it failed** — and the arms cannot cover for each other.
+        let short: usize = Tally::ALL
             .iter()
-            .filter_map(|shape| shape.stated(text))
+            .filter_map(|shape| {
+                let stated = shape.stated(text)?;
+                Some(stated.saturating_sub(shape.names(text).len()))
+            })
             .sum();
-        if failed.is_empty() && stated > 0 {
-            return Err(Unread::NamesOutOfStep { tallies: stated });
+        if short > 0 {
+            return Err(Unread::NamesOutOfStep { tallies: short });
         }
         Ok(Self { failed })
     }
@@ -1815,8 +1844,12 @@ headless (macos)\tTest\t2026-09-09T02:18:52Z test result: FAILED. 610 passed; 3 
     fn a_checkers_own_summary_of_failures_is_a_second_witness_too() {
         // The two lines that matter out of that job's log, with the runner's own prefix on them
         // exactly as it arrives.
+        // ⚠⚠ `FAILED?` SINCE REGISTER ITEM 1121 — that is what a failure this checker can only
+        // DESCRIBE looks like, and it is the shape every one of those six really had: built with
+        // `format!` out of that run's pane ids. A `FAILED:` line is a NAME and is counted as one,
+        // which the arm below this one measures.
         let smoke_red = "\
-pixel (linux)\t2026-09-15T08:18:10.9873698Z   FAILED: the daemon and the client agree on ONE pane
+pixel (linux)\t2026-09-15T08:18:10.9873698Z   FAILED? the daemon and the client agree (daemon [0, 1])
 pixel (linux)\t2026-09-15T08:18:10.9865269Z 311 passed, 6 failed, 1 not asked";
         assert_eq!(
             ReportedFailures::of(smoke_red).err(),
@@ -1853,6 +1886,61 @@ pixel (linux)\t2026-09-15T08:18:10.9865269Z 311 passed, 6 failed, 1 not asked";
             None,
             "⚠ the same in the other direction — neither arm may answer for a checker that did \
              not run",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A CHECKER'S *NAMED* FAILURES ARE TAKEN, AND ITS DESCRIBED ONES ARE THE GAP** —
+    /// register item 1121.
+    ///
+    /// # ⛔⛔⛔ Why a name and a description are not the same reading
+    ///
+    /// A register holds a red by NAME: an item claims one and a later report is matched against the
+    /// claim. `sprag-smoke` prints `FAILED: <identity>` for a check whose identity is a `&'static
+    /// str` — the same text every run — and `FAILED? <text>` for one that still fuses its identity
+    /// with that run's pane ids and timings. Taking the second as a name would invite a claim the
+    /// next run cannot match, which is worse than holding nothing: the item would read as covered.
+    ///
+    /// # ⚠⚠⚠⚠⚠ The mixed case is the one a coarser guard passes
+    ///
+    /// *Any name at all satisfies the tally* was the old shape of this question, and a report
+    /// naming two of its six failures would have sailed through it with four unaccounted. Asked per
+    /// checker — **did this one name everything it says it failed** — the four are the refusal.
+    #[test]
+    fn a_named_failure_is_taken_and_a_described_one_is_the_gap() {
+        let two_of_six = "\
+pixel (linux)\t  FAILED: the daemon and the client agree on ONE pane to drive
+pixel (linux)\t  FAILED: the two sides agree on the pane set to split from
+pixel (linux)\t  FAILED? one pane on each side (daemon [0, 1, 2, 3, 5])
+pixel (linux)\t311 passed, 6 failed, 1 not asked";
+        assert_eq!(
+            ReportedFailures::of(two_of_six).err(),
+            Some(Unread::NamesOutOfStep { tallies: 4 }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1121: this report names two of the six failures it states, so \
+             four are unaccounted — and a reader satisfied by *some name was found* would have \
+             judged every claim against a picture missing four reds",
+        );
+
+        let all_six_named = "\
+pixel (linux)\t  FAILED: the daemon and the client agree on ONE pane to drive
+pixel (linux)\t  FAILED: the two sides agree on the pane set to split from
+pixel (linux)\t2 passed, 2 failed, 0 not asked";
+        let read = ReportedFailures::of(all_six_named)
+            .expect("⚠ a checker that names everything it failed is readable");
+        assert_eq!(
+            read.failed,
+            vec![
+                "the daemon and the client agree on ONE pane to drive".to_owned(),
+                "the two sides agree on the pane set to split from".to_owned(),
+            ],
+            "⛔⛔⛔ AND THE NAMES ARE THE IDENTITIES, with no evidence glued to them — that is the \
+             whole of what makes them claimable. A trailing `(daemon [0, 1, 2, 3, 5])` here would \
+             be a name the next run does not produce",
+        );
+        assert_eq!(
+            Tally::Smoke.names("  FAILED? the daemon and the client agree (daemon [0, 1])"),
+            Vec::<String>::new(),
+            "⚠⚠ AND A DESCRIPTION IS NEVER TAKEN AS A NAME, which is the arm that keeps the \
+             refusal above from being bought by scraping the text of a line that varies",
         );
     }
 
