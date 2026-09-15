@@ -2755,13 +2755,41 @@ fn check_terminal_output_never_reaches_the_shaper(smoke: &mut Smoke, report: &mu
         &format!("a host-driven rename reaches the client's painted strip ({renamed:?})"),
         watch.arrived,
     );
-    report.describing(
-        &format!(
-            "novel CHROME text DOES reach the shaper ({:?})",
-            watch.misses()
-        ),
-        watch.shaped(),
+    // ⛔⛔⛔⛔⛔ **A POSITIVE CLAIM OFF A SAMPLER MUST SAY WHETHER IT SAW EVERY FRAME** — register
+    // item 1124.
+    //
+    // `watch_frames` POLLS, so frames can pass between two reads, and `contiguous` is the detector
+    // that already knows it — its own doc says *"a frame was painted and never read … the sampler
+    // cannot prevent that; it can refuse to hide it"*. That warning was written for the NEGATIVE
+    // claim below (`re-shaped nothing`, quantified over every frame). On this claim the same gap is
+    // a FALSE NEGATIVE: the shaping frame is the one that got skipped, and *I did not see it* is
+    // reported as *it did not happen*.
+    //
+    // ⚠ So the evidence carries it, and the verdict ASKS it — see `FrameWatch::shaping_verdict`.
+    let seen = format!(
+        "{:?}, every frame seen: {}",
+        watch.misses(),
+        watch.contiguous
     );
+    let verdict = watch.shaping_verdict();
+    match verdict {
+        // ⚠⚠ NOT a failure: the sampler skipped a frame, and the frame it is most likely to skip
+        // is the one the shaping happened in. Printed and counted, never silent — a skip nobody
+        // can see reads as coverage (item 576).
+        Shaped::NotSeen => report.unmet(&format!(
+            "novel CHROME text DOES reach the shaper — a frame was painted and never read, so \
+             this span cannot say whether the shaper ran ({seen})"
+        )),
+        // ⚠ ONE call site and not one per arm: the two differ only in the boolean, and a second
+        // spelling of this identity would be a name two checks share — which is exactly what
+        // `every_stable_identity_this_smoke_prints_belongs_to_one_check` refuses, and it caught
+        // this while it was being written.
+        _ => report.checked(
+            "novel CHROME text DOES reach the shaper",
+            &seen,
+            verdict == Shaped::Yes,
+        ),
+    }
 
     // ── The claim: novel OUTPUT, arriving the one way nothing of ours precedes.
     //
@@ -7773,6 +7801,19 @@ fn subtree_rows(node: &Value) -> Vec<String> {
     found
 }
 
+/// ⛔⛔⛔ **THE THREE ANSWERS A SAMPLED SPAN OWES A POSITIVE CLAIM** — register item 1124, and they
+/// are three because two of them are absences.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shaped {
+    /// A frame in this span handed the shaper a run — observed, and nothing can take it back.
+    Yes,
+    /// Every frame in the span was seen and none shaped. A real failure.
+    No,
+    /// A frame was painted and never read, so this span cannot answer. Neither a pass nor a
+    /// failure — the third word item 576 built `NOT ASKED` for.
+    NotSeen,
+}
+
 /// The frames a client painted across one change, and what each spent on the shaper.
 ///
 /// A run of samples rather than a total, because the per-frame count is the LAST frame's and pinion
@@ -7819,6 +7860,29 @@ impl FrameWatch {
         self.frames
             .iter()
             .any(|(_, misses)| misses.is_some_and(|count| count > 0))
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHAT THIS SPAN MAY SAY ABOUT A *POSITIVE* SHAPING CLAIM** — register item 1124.
+    ///
+    /// [`shaped`](Self::shaped) alone answers two different facts with one `false`: *no frame in
+    /// this span shaped* and *the frame that shaped was never sampled*. [`contiguous`](Self::contiguous) is the
+    /// detector that already tells them apart — its own doc says a gap means *"a frame was painted
+    /// and never read"* — and the verdict never asked it.
+    ///
+    /// ⚠⚠ The warning on that field was written for the NEGATIVE claim next door (`re-shaped
+    /// nothing`, quantified over every frame), where a missed frame is a false PASS. On a positive
+    /// claim the same gap is a false FAILURE, and that is the direction this method fixes: the
+    /// shaping frame is precisely the one a sampler is most likely to skip, because it is the frame
+    /// the work happened in.
+    ///
+    /// ⚠ It can never manufacture a pass: [`Shaped::Yes`] still requires a real observation. What
+    /// it buys is that *I did not look* stops being reported as *it did not happen*.
+    fn shaping_verdict(&self) -> Shaped {
+        match (self.shaped(), self.contiguous) {
+            (true, _) => Shaped::Yes,
+            (false, true) => Shaped::No,
+            (false, false) => Shaped::NotSeen,
+        }
     }
 
     /// What each frame spent, for the report line.
@@ -7988,6 +8052,51 @@ impl Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ⛔⛔⛔⛔⛔ **A SAMPLED SPAN TELLS *NOTHING SHAPED* FROM *I DID NOT LOOK*** — register item
+    /// 1124.
+    ///
+    /// `watch_frames` POLLS `scene/frame_timings`, so frames pass between reads; `contiguous` is
+    /// the detector that already knew it and the verdict never asked. A `false` from
+    /// [`FrameWatch::shaped`] therefore answered two facts at once, and the one it reported —
+    /// *it did not happen* — is the wrong one when the skipped frame is the shaping frame.
+    ///
+    /// **Measured on `pixel (linux)`**: the release gate saw `[Some(0)]` and called it a product
+    /// failure; the same check on the same commit saw `[Some(2)]` one run later. It is the one
+    /// frame the work happened in, and a poller is likeliest to miss exactly that one.
+    #[test]
+    fn a_span_that_skipped_a_frame_cannot_say_the_shaper_never_ran() {
+        let span = |frames: Vec<(u64, Option<i64>)>, contiguous: bool| FrameWatch {
+            frames,
+            arrived: true,
+            contiguous,
+        };
+        assert_eq!(
+            span(vec![(1, Some(2))], true).shaping_verdict(),
+            Shaped::Yes,
+            "⚠ an observed run of the shaper is a PASS, and a gap could not take it back — the \
+             observation happened",
+        );
+        assert_eq!(
+            span(vec![(1, Some(2))], false).shaping_verdict(),
+            Shaped::Yes,
+            "⚠⚠ AND A GAP NEVER MANUFACTURES ONE EITHER: this arm is what keeps the remedy from \
+             becoming an excuse. A pass still needs a real observation",
+        );
+        assert_eq!(
+            span(vec![(1, Some(0)), (2, Some(0))], true).shaping_verdict(),
+            Shaped::No,
+            "⛔⛔⛔ EVERY FRAME SEEN AND NONE SHAPED IS A REAL FAILURE — the claim this check \
+             exists to make, and the remedy must not blunt it",
+        );
+        assert_eq!(
+            span(vec![(1, Some(0))], false).shaping_verdict(),
+            Shaped::NotSeen,
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1124: a frame was painted and never read, so this span cannot \
+             say whether the shaper ran. Reporting that as *it did not* is the sampler blaming the \
+             product for its own blink",
+        );
+    }
 
     /// ⚠⚠ **THE INSTRUMENT IS A CLAIM, SO IT IS PROBED** — R351's rule, whose first two instruments
     /// were false.

@@ -59,7 +59,7 @@ const DESCRIBED_MARK: &str = "FAILED? ";
 /// ⚠⚠ **AN EQUALITY AND NOT A CEILING**, on `TESTS_SWITCHED_OFF`'s stated reason: a floor above the
 /// count is that many conversions admitted in silence. A round that converts one lowers this in the
 /// same edit, and the refusal below names the figure to write.
-const DESCRIBED: usize = 234;
+const DESCRIBED: usize = 233;
 
 /// How many stable identities are shared by more than one call site, measured 2026-09-15.
 ///
