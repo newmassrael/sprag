@@ -645,10 +645,85 @@ impl std::fmt::Display for Unread {
             ),
             Self::NamesOutOfStep { tallies } => write!(
                 into,
-                "{tallies} tally line(s) in it say a run FAILED, and not one `test <name> ... \
+                "its own summaries state {tallies} failure(s), and not one `test <name> ... \
                  FAILED` line could be read out of it — so this reader's spelling is out of step \
-                 with the log rather than the platform being green"
+                 with the log rather than the platform being green. ⚠ A checker that is not \
+                 `cargo` reports failures this reader cannot NAME, and a name is what a claim \
+                 holds: see register item 1115 for `sprag-smoke`, whose checks fuse their identity \
+                 with the evidence of the run that printed them"
             ),
+        }
+    }
+}
+
+/// ⛔⛔⛔⛔⛔ **EVERY WAY A REPORT IN THIS REPOSITORY SAYS HOW MUCH FAILED** — register item 1120,
+/// and the second witness [`Unread::NamesOutOfStep`] rests on.
+///
+/// # ⛔⛔⛔⛔⛔ One spelling was not the population, and the gap answered *green*
+///
+/// This reader knew `cargo`'s tally and nothing else, so a report written by any other checker
+/// could state failures it could not see. **Measured 2026-09-15 on `pixel (linux)` of run
+/// 34918714087** — five consecutive red runs, the job this repository's own item 1115 is about:
+///
+/// | | reading |
+/// |---|---|
+/// | lines making it read as a test log | **350** |
+/// | `test <name> ... FAILED` lines | **0** |
+/// | what the report's own summary says | **`311 passed, 6 failed, 1 not asked`** |
+/// | what `--elsewhere` answered | **rc=0**, *"names no failing test at all"* |
+///
+/// The failing checks are `sprag-smoke`'s, printed as `  FAILED: <check>`, and the job's cargo
+/// steps ran clean — so the file looked like a readable test log and yielded no names. ⛔ **And
+/// *names no failing test* is the answer that instructs DELETING a `@red:` line**, which this
+/// reader's own doc says out loud. A report about six failures was telling rounds to throw evidence
+/// away.
+///
+/// # ⚠⚠⚠⚠⚠ Enumerated, so a third checker cannot be silently unpriced — rule 6
+///
+/// [`ALL`](Self::ALL) is the population and the arms are read through it, which is the shape this
+/// workspace keeps arriving at (`QuestionShape::ALL`, one crate over, for the same reason): a
+/// checker whose tally nobody spelled here is a population reading as a pass, and the only way to
+/// notice is for the set to be a value somebody has to extend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tally {
+    /// `cargo test`'s own summary — `test result: FAILED. 3 passed; 1 failed; …`.
+    Cargo,
+    /// `sprag-smoke`'s — `311 passed, 6 failed, 1 not asked`.
+    Smoke,
+}
+
+impl Tally {
+    /// The population, and the only road to the arms.
+    const ALL: [Self; 2] = [Self::Cargo, Self::Smoke];
+
+    /// How many failures this shape STATES in `text`, or [`None`] where the shape is not present.
+    ///
+    /// ⚠⚠ **PRESENT-AND-CLEAN IS `Some(0)`, NOT `None`** — the distinction this whole type exists
+    /// for one level down: *this checker did not run* and *this checker ran and passed* are two
+    /// facts, and folding them would put the reader back where item 1120 found it.
+    fn stated(self, text: &str) -> Option<usize> {
+        match self {
+            // ⚠ A COUNT OF TARGETS rather than of tests, which is what this line has always been:
+            // the question it answers is *did anything fail*, and the number rides along so the
+            // refusal can say how much it is disagreeing with.
+            Self::Cargo => {
+                let mut seen = false;
+                let failed = text
+                    .lines()
+                    .filter(|line| line.contains("test result:"))
+                    .inspect(|_| seen = true)
+                    .filter(|line| line.contains("test result: FAILED"))
+                    .count();
+                seen.then_some(failed)
+            }
+            // ⚠⚠ The number is read out of the line rather than its presence being taken as a
+            // failure: this checker prints the same sentence when it is green, and a reader that
+            // refused on the SHAPE would make every clean smoke log unreadable.
+            Self::Smoke => text.lines().find_map(|line| {
+                let (head, _) = line.split_once(" failed, ")?;
+                let (_, count) = head.rsplit_once(" passed, ")?;
+                count.trim().parse().ok()
+            }),
         }
     }
 }
@@ -659,13 +734,19 @@ impl ReportedFailures {
     /// ⚠ Read as a prefix and a marker rather than a full grammar: the report is a CI log with the
     /// runner's own timestamps and job names glued to the front of every line, so an anchored match
     /// would recognise nothing. What has to be true is that the file is a test log at all.
+    ///
+    /// ⚠⚠ **AND A CHECKER'S OWN SUMMARY COUNTS AS ONE** — register item 1120. A job that runs only
+    /// `sprag-smoke` writes no `cargo` line at all, and refusing its log as *not a test log* would
+    /// make the one report this repository's item 1115 is about unreadable for the opposite reason.
+    /// Read through [`Tally::ALL`], so the recogniser and the second witness cannot come to
+    /// disagree about which checkers exist.
     fn reads_as_a_test_log(text: &str) -> bool {
         text.lines().any(|line| {
             line.contains(" ... ok")
                 || line.contains(" ... FAILED")
                 || line.contains(" ... ignored")
                 || line.contains("test result:")
-        })
+        }) || Tally::ALL.iter().any(|shape| shape.stated(text).is_some())
     }
 
     /// What the report says failed. ⚠ The NAME only — the harness prints `test <name> ... FAILED`
@@ -689,14 +770,18 @@ impl ReportedFailures {
         // ⛔⛔⛔⛔⛔ THE TWO WITNESSES MUST AGREE — register item 998's ⑷. The harness writes both
         // lines; this reads one of them for names and the other for a count, and the only way they
         // disagree is that the reading is wrong.
-        let tallies_that_failed = text
-            .lines()
-            .filter(|line| line.contains("test result: FAILED"))
-            .count();
-        if failed.is_empty() && tallies_that_failed > 0 {
-            return Err(Unread::NamesOutOfStep {
-                tallies: tallies_that_failed,
-            });
+        //
+        // ⛔⛔⛔⛔⛔ **AND THE COUNT IS TAKEN FROM EVERY CHECKER, NOT ONLY CARGO** — register item
+        // 1120. Read as `test result: FAILED` alone, this witness was blind to any report cargo did
+        // not write: `pixel (linux)`'s log states `6 failed` in `sprag-smoke`'s own summary, had no
+        // cargo failure at all, and so answered *names no failing test* — the answer that instructs
+        // deleting a `@red:` line. See [`Tally`], which holds the measurement.
+        let stated: usize = Tally::ALL
+            .iter()
+            .filter_map(|shape| shape.stated(text))
+            .sum();
+        if failed.is_empty() && stated > 0 {
+            return Err(Unread::NamesOutOfStep { tallies: stated });
         }
         Ok(Self { failed })
     }
@@ -1560,7 +1645,7 @@ fn admits(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::E
 
 #[cfg(test)]
 mod tests {
-    use super::{ReportedFailures, Unread, tests_run, verdict_of};
+    use super::{ReportedFailures, Tally, Unread, tests_run, verdict_of};
     use sprag_gate::north_star::{Recurrence, RedClaim, Reported, Suite};
 
     /// A claim on the mark `recurrence` names, about no particular platform — what the match rule
@@ -1700,6 +1785,74 @@ headless (macos)\tTest\t2026-09-09T02:18:52Z test result: FAILED. 610 passed; 3 
             green.failed.is_empty(),
             "⚠ AND THE OTHER CONTROL: a tally that says nothing failed must still read as zero \
              failures, or a green platform could never retire a stale claim",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A CHECKER THAT IS NOT CARGO STATES FAILURES TOO, AND THEY MUST NOT READ AS
+    /// *GREEN*** — register item 1120, and the hole item 998's guard had all along.
+    ///
+    /// # ⛔⛔⛔ The measurement, on the job item 1115 is about
+    ///
+    /// `pixel (linux)` of run 34918714087 — one of five consecutive red runs. Its log holds **350**
+    /// lines that make it read as a test log, **zero** `test … FAILED` lines, and its own summary
+    /// says **`311 passed, 6 failed, 1 not asked`**. The job's cargo steps were clean; the six are
+    /// `sprag-smoke`'s, printed as `  FAILED: <check>`. `--elsewhere` answered **rc=0**, *"that
+    /// report names no failing test at all"*.
+    ///
+    /// ⛔ **That answer is the one that instructs deleting a `@red:` line**, by this reader's own
+    /// doc. So a report about six failures was telling rounds to throw evidence away, and the
+    /// instrument printed `0 standing` beside it for five runs running.
+    ///
+    /// # ⚠⚠ Refused rather than NAMED, deliberately — and that is not the cheap half
+    ///
+    /// The six could be scraped out of those lines. They must not be: `sprag-smoke` builds each
+    /// check's text with `format!`, fusing the check's identity with THIS run's evidence (pane ids,
+    /// PSI percentages), so no two runs spell the same failure the same way. A name that changes
+    /// every run is one no claim can hold and no `@judged:` line can move — marks that could never
+    /// match again. Refusing says *this reader cannot name what this report failed*, which is true,
+    /// and leaves the fix where it belongs: the checker publishing a stable identity.
+    #[test]
+    fn a_checkers_own_summary_of_failures_is_a_second_witness_too() {
+        // The two lines that matter out of that job's log, with the runner's own prefix on them
+        // exactly as it arrives.
+        let smoke_red = "\
+pixel (linux)\t2026-09-15T08:18:10.9873698Z   FAILED: the daemon and the client agree on ONE pane
+pixel (linux)\t2026-09-15T08:18:10.9865269Z 311 passed, 6 failed, 1 not asked";
+        assert_eq!(
+            ReportedFailures::of(smoke_red).err(),
+            Some(Unread::NamesOutOfStep { tallies: 6 }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1120: a report whose own summary says six checks failed must \
+             not answer *names no failing test at all* — that answer refutes every claim and \
+             reports no unclaimed red, two greens about a job that is red",
+        );
+
+        // ── ⚠⚠⚠ THE CONTROLS: the same shape, green, must stay readable ────────────────────────
+        let smoke_green = "311 passed, 0 failed, 1 not asked";
+        let read = ReportedFailures::of(smoke_green)
+            .expect("⚠ a checker's own summary makes its log a readable report");
+        assert!(
+            read.failed.is_empty(),
+            "⛔ A GREEN SMOKE LOG MUST STILL RETIRE STALE CLAIMS. If this refused, the arm above \
+             would be bought by making every report of that checker unreadable — which is a gate \
+             that cannot tell red from green, not a stricter one",
+        );
+        assert_eq!(
+            Tally::Smoke.stated(smoke_green),
+            Some(0),
+            "⚠⚠ AND *RAN AND PASSED* IS NOT *DID NOT RUN*: `Some(0)` rather than `None`, or the \
+             two facts fold back together and the recogniser above stops seeing this checker",
+        );
+        assert_eq!(
+            Tally::Smoke.stated("test result: FAILED. 610 passed; 3 failed"),
+            None,
+            "⚠ and a cargo log states nothing in THIS shape, or one checker's summary would be \
+             read out of another's and the count would double",
+        );
+        assert_eq!(
+            Tally::Cargo.stated(smoke_green),
+            None,
+            "⚠ the same in the other direction — neither arm may answer for a checker that did \
+             not run",
         );
     }
 
