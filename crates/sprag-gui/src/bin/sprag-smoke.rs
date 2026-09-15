@@ -1618,13 +1618,31 @@ fn check_a_window_switch_moves_the_painted_panes(smoke: &mut Smoke, report: &mut
     // `tabs().first()`, and read two bare shell prompts: the strip's FIRST TAB IS NOT THE WINDOW
     // THIS CLIENT IS VIEWING, and by this point in the run several checks have left windows behind.
     // Nothing below needs to know which window was current on entry.
+    // ⛔⛔⛔⛔⛔ **THE PANES THIS SESSION ALREADY HAD, TAKEN BEFORE THE WINDOW IS OPENED** —
+    // register item 1123, and the half of this function's own warning that was never applied.
+    //
+    // The away window below already derives ITS pane by set difference (`away_ids`), and this one
+    // used to take `first_ids.first()` — the LOWEST pane id in the whole SESSION. `daemon_panes` is
+    // session-scoped by design (`workspace_scene`: *"every other pane of this session, addressable
+    // but not drawn"*), so by this point in the run that is window 0's pane, not the one just born.
+    //
+    // ⛔ What that cost, measured: the mark went to a pane this window does not paint, the wait for
+    // it could never end, and the check reported a 60-second TIMEOUT. Six checks failed that way on
+    // five consecutive CI runs and three local ones — and the timeout made it read as slowness, so
+    // item 1115 was diagnosed as a LOAD problem it never was.
+    let ids_before = daemon_panes(&mut daemon, &session);
     let Some((first_tab, after_first)) = open_a_window(smoke, report, &before) else {
         return;
     };
     let first_ids = daemon_panes(&mut daemon, &session);
-    let Some(&home_pane) = first_ids.first() else {
+    // ⚠ The one that APPEARED, by the same set difference `away_ids` uses — a new window is born
+    // with its pane, so exactly one id is new. Nothing here may assume which number it will be.
+    let Some(&home_pane) = first_ids.iter().find(|id| !ids_before.contains(id)) else {
         report.describing(
-            &format!("the window this check made has a pane to mark ({first_tab})"),
+            &format!(
+                "the window this check made has a pane to mark ({first_tab}, \
+                 was {ids_before:?}, now {first_ids:?})"
+            ),
             false,
         );
         return;
