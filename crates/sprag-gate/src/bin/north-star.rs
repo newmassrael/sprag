@@ -656,6 +656,13 @@ impl std::fmt::Display for Unread {
     }
 }
 
+/// ⛔⛔⛔⛔⛔ **THE LINE A REPORT PRINTS TO SAY ITS `FAILED:` IS AN IDENTITY** — register item 1125,
+/// `sprag-smoke`'s `IDENTITY_VOCABULARY`.
+///
+/// Spelled here as well as there because the two crates share no module tree; the gate
+/// `the_producer_and_the_reader_spell_the_two_marks_the_same_way` is what holds them together.
+const IDENTITY_VOCABULARY: &str = "checks publish their own identity";
+
 /// ⛔⛔⛔⛔⛔ **EVERY WAY A REPORT IN THIS REPOSITORY SAYS HOW MUCH FAILED** — register item 1120,
 /// and the second witness [`Unread::NamesOutOfStep`] rests on.
 ///
@@ -746,11 +753,24 @@ impl Tally {
             // precisely so this reader would not have to guess. The first is a `&'static str` the
             // producer's own type guarantees; the second is a sentence built from this run's pane
             // ids and timings, which no two runs spell alike.
-            Self::Smoke => text
+            //
+            // ⛔⛔⛔⛔⛔ **AND ONLY WHERE THE REPORT DECLARES THAT VOCABULARY** — register item
+            // 1125. Every build BEFORE item 1121 printed `FAILED:` for the fused sentence, so the
+            // marker says which build wrote the log and not what the line is. Measured on a real CI
+            // log from `1ed3beae`: this reader took its six fused sentences as six names and told a
+            // reader to open items for them — strings carrying pane ids and PSI readings, which no
+            // two runs spell alike. Item 1121 refused to mint marks that can never match; without
+            // this line it minted them anyway, from the one direction it had not looked.
+            //
+            // ⚠ An undeclared log yields NO names here, so its failures fall into the gap
+            // `ReportedFailures::of` measures against the tally — a refusal, which is the honest
+            // answer about a report written in a vocabulary this reader cannot assume.
+            Self::Smoke if text.contains(IDENTITY_VOCABULARY) => text
                 .lines()
                 .filter_map(|line| line.split_once("FAILED: "))
                 .map(|(_, name)| name.trim().to_owned())
                 .collect(),
+            Self::Smoke => Vec::new(),
         }
     }
 }
@@ -1674,7 +1694,7 @@ fn admits(mut args: impl Iterator<Item = std::ffi::OsString>) -> std::process::E
 
 #[cfg(test)]
 mod tests {
-    use super::{ReportedFailures, Tally, Unread, tests_run, verdict_of};
+    use super::{IDENTITY_VOCABULARY, ReportedFailures, Tally, Unread, tests_run, verdict_of};
     use sprag_gate::north_star::{Recurrence, RedClaim, Reported, Suite};
 
     /// A claim on the mark `recurrence` names, about no particular platform — what the match rule
@@ -1907,11 +1927,15 @@ pixel (linux)\t2026-09-15T08:18:10.9865269Z 311 passed, 6 failed, 1 not asked";
     /// checker — **did this one name everything it says it failed** — the four are the refusal.
     #[test]
     fn a_named_failure_is_taken_and_a_described_one_is_the_gap() {
+        // ⚠ The declaration is part of every fixture written as a POST-item-1121 report — see
+        // `a_report_that_does_not_declare_the_vocabulary_names_nothing`. Without it these lines are
+        // a log from an older build, which is a different subject.
         let two_of_six = "\
 pixel (linux)\t  FAILED: the daemon and the client agree on ONE pane to drive
 pixel (linux)\t  FAILED: the two sides agree on the pane set to split from
 pixel (linux)\t  FAILED? one pane on each side (daemon [0, 1, 2, 3, 5])
-pixel (linux)\t311 passed, 6 failed, 1 not asked";
+pixel (linux)\t311 passed, 6 failed, 1 not asked
+pixel (linux)\t  checks publish their own identity";
         assert_eq!(
             ReportedFailures::of(two_of_six).err(),
             Some(Unread::NamesOutOfStep { tallies: 4 }),
@@ -1923,7 +1947,8 @@ pixel (linux)\t311 passed, 6 failed, 1 not asked";
         let all_six_named = "\
 pixel (linux)\t  FAILED: the daemon and the client agree on ONE pane to drive
 pixel (linux)\t  FAILED: the two sides agree on the pane set to split from
-pixel (linux)\t2 passed, 2 failed, 0 not asked";
+pixel (linux)\t2 passed, 2 failed, 0 not asked
+pixel (linux)\t  checks publish their own identity";
         let read = ReportedFailures::of(all_six_named)
             .expect("⚠ a checker that names everything it failed is readable");
         assert_eq!(
@@ -1941,6 +1966,55 @@ pixel (linux)\t2 passed, 2 failed, 0 not asked";
             Vec::<String>::new(),
             "⚠⚠ AND A DESCRIPTION IS NEVER TAKEN AS A NAME, which is the arm that keeps the \
              refusal above from being bought by scraping the text of a line that varies",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A REPORT THAT DOES NOT DECLARE THE VOCABULARY HAS ITS `FAILED:` READ AS A
+    /// DESCRIPTION** — register item 1125.
+    ///
+    /// # ⛔⛔⛔ The marker dates the log; it does not type the line
+    ///
+    /// Item 1121 gave `sprag-smoke` two markers so this reader would not have to guess. **Every
+    /// build before it printed `FAILED:` for the fused sentence** — identity and the run's pane
+    /// ids in one string — so the marker says which build wrote the log and nothing about what the
+    /// line is.
+    ///
+    /// **Measured 2026-09-16 on a real CI log** (`1ed3beae`, job 104426701646): this reader took
+    /// its six fused sentences as six NAMES and told a reader to *open an item* for each. They
+    /// carry pane ids and PSI percentages; no two runs spell them alike, so every one would have
+    /// been a claim that could never match again — precisely what item 1121 refused to mint, coming
+    /// from the direction it had not looked: logs already written.
+    ///
+    /// ⚠⚠ The remedy is a precondition on the REPORT and not a cleverer marker, because no marker
+    /// can carry a fact about the build that printed it.
+    #[test]
+    fn a_report_that_does_not_declare_the_vocabulary_names_nothing() {
+        let older = "\
+pixel (linux)\t  FAILED: the daemon and the client agree on ONE pane to drive (daemon [0, 1, 2, 3, 5])
+pixel (linux)\t311 passed, 6 failed, 1 not asked";
+        assert_eq!(
+            Tally::Smoke.names(older),
+            Vec::<String>::new(),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1125: a log from a build that fused identity with evidence \
+             must yield NO names — one taken from it is a mark no later run can match",
+        );
+        assert_eq!(
+            ReportedFailures::of(older).err(),
+            Some(Unread::NamesOutOfStep { tallies: 6 }),
+            "⚠⚠ AND THE FAILURES IT STATES BECOME THE GAP, so the answer is a refusal rather than \
+             *this platform failed nothing* — the same rule item 1120 put on every checker",
+        );
+
+        // ── ⚠⚠⚠ THE CONTROL: the same lines WITH the declaration are names ─────────────────────
+        let declared = format!("{older}\n  {IDENTITY_VOCABULARY}");
+        assert_eq!(
+            Tally::Smoke.names(&declared),
+            vec![
+                "the daemon and the client agree on ONE pane to drive (daemon [0, 1, 2, 3, 5])"
+                    .to_owned()
+            ],
+            "⛔ THE CONTROL: with the declaration present this reader DOES take the name, or the \
+             arm above is bought by a reader that can no longer read anything",
         );
     }
 

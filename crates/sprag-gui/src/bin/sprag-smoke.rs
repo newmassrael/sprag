@@ -7801,6 +7801,14 @@ fn subtree_rows(node: &Value) -> Vec<String> {
     found
 }
 
+/// ⛔⛔⛔⛔⛔ **THE LINE THAT SAYS A `FAILED:` HERE IS AN IDENTITY** — register item 1125.
+///
+/// Every build before item 1121 printed `FAILED:` for a sentence with this run's pane ids and
+/// timings fused into it. So the marker says which BUILD wrote the log, never what the line is, and
+/// a reader that took it for a name would mint claims that can never match again. This line is what
+/// a reader may key on; `north-star` spells it too, and a gate holds the two spellings together.
+const IDENTITY_VOCABULARY: &str = "checks publish their own identity";
+
 /// ⛔⛔⛔ **THE THREE ANSWERS A SAMPLED SPAN OWES A POSITIVE CLAIM** — register item 1124, and they
 /// are three because two of them are absences.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8014,6 +8022,24 @@ impl Report {
             self.failed.len(),
             self.unmet.len(),
         );
+        // ⛔⛔⛔⛔⛔ **THE REPORT SAYS WHICH VOCABULARY IT SPEAKS** — register item 1125.
+        //
+        // Item 1121 gave this checker two markers: `FAILED:` for a check whose identity is a
+        // `&'static str` and `FAILED?` for one that can only describe itself. **Every build before
+        // it printed `FAILED:` for the fused text**, so that marker alone cannot tell a name from a
+        // description — it can only tell which build wrote the log.
+        //
+        // ⛔ Measured 2026-09-16 on a real CI log from `1ed3beae`: `north-star --elsewhere` read
+        // its six fused sentences as six NAMES and told a reader to open items for them. Those
+        // strings carry pane ids and PSI readings; no two runs spell them alike, so every one would
+        // have been a mark that could never match again — the exact hazard item 1121 refused to
+        // create, arriving from the one direction it had not looked: the PAST.
+        //
+        // ⚠⚠ So the declaration is the reader's precondition, not the marker. A log without this
+        // line has its `FAILED:` lines counted among the failures nobody can name, which is a
+        // refusal — the honest answer about a report written in a vocabulary this reader cannot
+        // assume.
+        println!("  {IDENTITY_VOCABULARY}");
         // ⛔⛔⛔⛔⛔ TWO SHAPES, BECAUSE THEY ARE TWO FACTS — register item 1121. `FAILED:` carries
         // an identity a register can hold; `FAILED?` carries a description that is true of this run
         // and of no other. A reader that printed both the same way would invite a claim on a string

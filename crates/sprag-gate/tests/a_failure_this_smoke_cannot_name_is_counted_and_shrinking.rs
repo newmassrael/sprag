@@ -54,6 +54,13 @@ const NAMED: &str = "FAILED: ";
 /// holding a protocol whose halves live in two crates.
 const DESCRIBED_MARK: &str = "FAILED? ";
 
+/// ⛔⛔⛔⛔⛔ **THE LINE THAT SAYS A `FAILED:` IS AN IDENTITY AT ALL** — register item 1125.
+///
+/// Every build before item 1121 printed `FAILED:` for a sentence with the run's pane ids fused in,
+/// so the marker dates the log rather than typing the line. The reader takes a name only where the
+/// report declares this, and both sides must keep spelling it.
+const IDENTITY_VOCABULARY: &str = "checks publish their own identity";
+
 /// How many checks still fuse their identity with the run's evidence, measured 2026-09-15.
 ///
 /// ⚠⚠ **AN EQUALITY AND NOT A CEILING**, on `TESTS_SWITCHED_OFF`'s stated reason: a floor above the
@@ -88,6 +95,10 @@ fn the_producer_and_the_reader_spell_the_two_marks_the_same_way() {
     for (mark, what) in [
         (NAMED, "a failure it can NAME"),
         (DESCRIBED_MARK, "a failure it can only DESCRIBE"),
+        (
+            IDENTITY_VOCABULARY,
+            "the declaration that its `FAILED:` lines are identities at all",
+        ),
     ] {
         assert!(
             producer.contains(mark),
