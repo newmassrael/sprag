@@ -1679,11 +1679,39 @@ impl Landing {
 /// which is everything its callers do with it, and off the wire as a plain integer — the derive is
 /// `transparent`. There is deliberately no accessor: one was written this round, nothing called it,
 /// and an answer no caller reads is the shape this project sweeps for.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
-)]
+/// ⛔⛔⛔⛔⛔ **`Debug` IS WRITTEN AND NOT DERIVED, AND THAT IS NOT A STYLE CHOICE** — register item
+/// 1122.
+///
+/// # ⛔⛔⛔ What the derive cost, measured in this repository's own register
+///
+/// The derive prints the STORAGE — `Percent(673)` — and the storage is hundredths. Every sentence a
+/// person actually reads this type in is built with `{:?}`, because it is nested inside
+/// `Measured`/`Pressure` which are themselves formatted that way. So the one place a human meets
+/// this number showed it **one hundred times too large, with no unit to give the mistake away**.
+///
+/// **It was believed.** Item 1115 read `cpu some avg300: Percent(673)` off a CI failure and wrote
+/// into the register that the runner was at **673%** cpu and **246%** io, against a local machine
+/// at 35.75% io — and concluded *"같은 코드·같은 단언인데 부하가 양 끝이다"*, that load was what
+/// separated the red from the green. The true readings are **6.73%** and **2.46%**: that runner was
+/// nearly IDLE, and **quieter than the local machine on the day the same checks passed.** The
+/// diagnosis was not merely imprecise, it pointed the opposite way.
+///
+/// ⚠⚠ A `Display` that renders correctly does not save a type whose `Debug` does not: nothing here
+/// chooses between them at the call site — the enclosing struct does, and it derives.
+///
+/// ⚠ It stays a `derive` for every other trait. `Ord` is what callers compare with, and the wire is
+/// `transparent` serde — neither reads this.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub struct Percent(u32);
+
+impl std::fmt::Debug for Percent {
+    /// The same text [`Display`](std::fmt::Display) writes — see the type's own note. A reader who
+    /// meets this inside a `{:?}` of some enclosing struct gets a number with its unit on it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
 
 impl Percent {
     /// Nothing at all.
@@ -3091,6 +3119,49 @@ mod tests {
         assert_eq!(Percent::from_hundredths(8869).to_string(), "88.69%");
         assert_eq!(Percent::from_hundredths(705).to_string(), "7.05%");
         assert_eq!(parse_percent("what"), None);
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE NUMBER A PERSON READS CARRIES ITS UNIT, IN EVERY FORMAT** — register item
+    /// 1122, and a wrong entry in this repository's own register is what it cost.
+    ///
+    /// # ⛔⛔⛔ What was measured
+    ///
+    /// The derived `Debug` printed `Percent(673)` — the storage, which is hundredths, with no unit.
+    /// Nothing reads this type through `Display` where it matters: it is nested inside `Measured`
+    /// and `Pressure`, and the sentence a person meets it in is built with `{:?}` of those. So a
+    /// reader saw a number **one hundred times too large with nothing to give it away.**
+    ///
+    /// **Item 1115 read exactly that off a CI failure and wrote the runner down as `673%` cpu and
+    /// `246%` io**, against a local machine at 35.75% io, and concluded that load separated the red
+    /// from the green. The true figures are 6.73% and 2.46% — that runner was quieter than the
+    /// machine the same checks passed on, so the conclusion pointed the opposite way.
+    ///
+    /// # ⚠⚠ Asserted through the ENCLOSING struct, because that is where the defect lived
+    ///
+    /// `Percent`'s own `Display` was always right. What was wrong is what a `{:?}` of the thing
+    /// holding it produced, and a test that only asked this type directly would have been green
+    /// throughout.
+    #[test]
+    fn a_pressure_reading_a_person_reads_carries_its_unit_however_it_is_formatted() {
+        assert_eq!(
+            format!("{:?}", Percent::from_hundredths(673)),
+            "6.73%",
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1122: the derived `Debug` printed the STORAGE — `Percent(673)` \
+             — and hundredths read as a percentage are a hundredfold error with no unit to catch \
+             it. Item 1115's register entry is what that cost",
+        );
+        let reading = Waiting::Measured {
+            avg10: Percent::NONE,
+            avg60: Percent::from_hundredths(28),
+            avg300: Percent::from_hundredths(673),
+        };
+        let said = format!("{reading:?}");
+        assert!(
+            said.contains("6.73%") && !said.contains("673)"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1122: the sentence a person actually meets is a `{{:?}}` of \
+             the ENCLOSING struct, and this is the format the failure message in `sprag-smoke` is \
+             built with. A `Display` that is right where nobody calls it saves nothing: {said}",
+        );
     }
 
     /// `cpu.stat` carries `usage_usec`, `user_usec` and `system_usec`, and a prefix test would
