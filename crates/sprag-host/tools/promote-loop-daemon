@@ -410,6 +410,24 @@ phase_promote() {
     #
     # ⚠ The harness's own variables are dropped rather than passed on: a daemon that
     # inherited them would hand every agent it drives the session that promoted it.
+    #
+    # ⛔⛔⛔⛔⛔ **AND `9>&-` CLOSES THE PROMOTION LOCK FOR THIS CHILD** — register item 1116, and
+    # it is the line that keeps this script able to run a SECOND time.
+    #
+    # `flock` holds on the OPEN FILE DESCRIPTION, not on the path, and a fd inherited across
+    # `fork` SHARES that description. So a daemon started with fd 9 still open holds this very
+    # lock, and hands a copy to every pane, shell, agent and driver it ever spawns. Measured
+    # 2026-09-15: `/proc/<daemon>/fd/9 -> .promote.lock` on a daemon this script had started that
+    # morning, with FIFTEEN processes holding copies.
+    #
+    # ⛔ THE COST WAS A CYCLE, NOT A WARNING. The next promotion needs the lock; the lock releases
+    # when the daemon dies; killing the daemon is this script's own `kill-server` — which is BELOW
+    # the `flock` that already refused. Three promotions were refused in one day with
+    # *"another promotion holds the lock"* while no promotion was running, and there is no way out
+    # from inside this script: a person has to kill the daemon by hand.
+    #
+    # ⚠ The lock itself is NOT released here — this closes the child's copy only, so the promotion
+    # keeps holding it to its own end, which is what one-promotion-at-a-time means.
     env -u CLAUDECODE -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_ENTRYPOINT \
         -u CLAUDE_CODE_EXECPATH -u CLAUDE_CODE_MAX_RETRIES -u CLAUDE_CODE_MESSAGING_SOCKET \
         -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_SESSION_ID -u CLAUDE_EFFORT -u CLAUDE_PID \
@@ -417,7 +435,7 @@ phase_promote() {
         SPRAG_HOST_RPC_SOCK="$PROMOTE_SOCK" \
         XDG_CONFIG_HOME="$PROMOTE_ROOT/config" XDG_DATA_HOME="$PROMOTE_ROOT/data" \
         XDG_STATE_HOME="$PROMOTE_ROOT/state" \
-        setsid "$BIN/$DAEMON_BIN_NAME" --daemon </dev/null >>"$PROMOTE_ROOT/daemon.log" 2>&1 &
+        setsid "$BIN/$DAEMON_BIN_NAME" --daemon </dev/null >>"$PROMOTE_ROOT/daemon.log" 2>&1 9>&- &
     waited=0
     while [ "$waited" -lt "$PROMOTE_WAIT" ]; do
         if SPRAG_HOST_RPC_SOCK="$PROMOTE_SOCK" "$BIN/sprag" doctor >/dev/null 2>&1; then

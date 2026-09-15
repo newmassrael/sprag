@@ -147,6 +147,45 @@ fn the_script_and_this_workspace_name_one_daemon() {
     );
 }
 
+/// ⛔⛔⛔⛔⛔ **THE DAEMON THIS SCRIPT STARTS MUST NOT INHERIT THE PROMOTION LOCK** — register
+/// item 1116, and the arm that keeps a promotion able to run a SECOND time.
+///
+/// # ⚠⚠ What the absence of `9>&-` cost, measured
+///
+/// `flock` holds on the OPEN FILE DESCRIPTION, and a fd inherited across `fork` SHARES it. A
+/// daemon started with fd 9 still open therefore holds the promotion's own lock, and hands a copy
+/// to every pane, shell, agent and driver it spawns — fifteen of them on 2026-09-15, with
+/// `/proc/<daemon>/fd/9 -> .promote.lock` on a daemon this script had started that morning.
+///
+/// ⛔ **The cost is a CYCLE, not a warning.** The next promotion needs the lock; the lock releases
+/// when that daemon dies; killing it is this script's own `kill-server`, which sits BELOW the
+/// `flock` that already refused. Three promotions were refused in one day with *"another promotion
+/// holds the lock"* while none was running, and nothing inside the script can break out of it.
+///
+/// ⚠ THE ASSERTION IS ON THE SPAWN LINE AND NOT ON THE FILE, because `9>&-` anywhere else would
+/// close the promoter's own copy — which releases the lock and ends one-promotion-at-a-time. What
+/// this holds is that the redirection is on the line that starts the daemon.
+#[test]
+fn the_daemon_this_script_starts_does_not_inherit_the_promotion_lock() {
+    let shell = text_of(SCRIPT);
+    let lock = line_with(&shell, "exec 9>");
+    assert!(
+        lock.contains(".promote.lock"),
+        "⚠ THE PREMISE: this gate is about fd 9 being the promotion lock, and the line that opens \
+         it no longer names that file — so every assertion below is about nothing. Got {lock:?}",
+    );
+    let spawn = line_with(&shell, "--daemon </dev/null");
+    assert!(
+        spawn.contains("9>&-"),
+        "⛔⛔⛔⛔⛔ ITEM 1116: {SCRIPT} starts the daemon WITHOUT closing fd 9 for it, so that \
+         daemon inherits this promotion's own lock and every process it spawns gets a copy. The \
+         next promotion then refuses with *another promotion holds the lock* while none is \
+         running, and the only way out is a person killing the daemon by hand — because the \
+         `kill-server` that would release it is below the `flock` that refused. The line was: \
+         {spawn:?}",
+    );
+}
+
 // ⚠⚠ **WHERE THE SCRIPT'S OWN `--selftest` IS RUN, AND WHY NOT HERE.** It drives the identity
 // predicate against the process strings measured on 2026-09-13, and it is run by
 // `a_declared_selftest_is_one_this_suite_runs` — which walked `.githooks/` alone until this item
