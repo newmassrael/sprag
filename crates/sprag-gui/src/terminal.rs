@@ -5,6 +5,11 @@
 use crate::slotview::SlotView;
 use crate::{WINDOW_H, WINDOW_W};
 use pinion_core::CellMetric;
+use pinion_core::external::{
+    Backend, BackendFallback, BackendSupport, External, ExternalIntrospect, InterveneError,
+    IntrospectSchema, IntrospectValue, ReadRefusal, RepaintOwner, SchemaArg, SchemaField,
+    ThreadOwnership,
+};
 use pinion_core::reactive::Owner;
 use pinion_core::{use_quit_sink, use_repaint_sink};
 use sprag_client::WireHost;
@@ -93,6 +98,167 @@ pub(crate) fn pane_tag(index: usize) -> &'static str {
 /// Pane `index`'s scrollbar track + drag-External tag (`index < `[`MAX_PANES`]).
 pub(crate) fn pane_scrollbar_tag(index: usize) -> &'static str {
     PANE_SLOTS[index].scrollbar
+}
+
+/// ⛔⛔⛔⛔⛔ **WHERE THIS CLIENT PUBLISHES *WHICH HOST PANE EACH TILE IS SHOWING*** — register
+/// item 1123.
+pub(crate) const PANE_IDENTITY_TAG: &str = "sprag_gui.panes";
+
+/// ⛔⛔⛔⛔⛔ **THE CORRESPONDENCE THIS CLIENT KNEW AND DID NOT PUBLISH** — register item 1123.
+///
+/// # ⛔⛔⛔ Two vocabularies for one pane, and nothing joining them
+///
+/// The daemon addresses a pane by its HOST ID and tags it `pane_<id>`. This client paints a pane by
+/// its TILE INDEX and tags it `sprag_gui.pane.<i>`, out of the fixed [`PANE_SLOTS`] table. **They
+/// are different numbers**, and until this surface existed nothing on any wire mapped one to the
+/// other — while [`SlotView::id`] had the answer in hand the whole time.
+///
+/// # ⚠⚠⚠⚠⚠ What the gap cost, measured
+///
+/// Two checks in `sprag-smoke` carry the same warning in their own comments — *"the daemon
+/// addresses a pane by id and the client paints it by index, and nothing on the wire maps one to
+/// the other"* — and each worked around it. One GUESSED (drove the session's lowest pane id and
+/// waited for paint that could never come, a 60-second timeout); the other REFUSED to proceed
+/// unless there was exactly one pane on each side, which stops being true the moment the run leaves
+/// a second pane behind.
+///
+/// **`pixel (linux)` was red on five consecutive CI runs and three local ones for this reason**,
+/// and because the symptom is a timeout it was diagnosed as a LOAD problem it never was — item
+/// 1122 holds what that cost the register.
+///
+/// # ⚠⚠ A hole answers `Null`, and that is the third answer rather than a refusal
+///
+/// A tile with no pane in it is not an unknown path: the tile exists and shows nothing. Collapsing
+/// *this slot is empty* into *there is no such slot* would be this workspace's most-repeated defect
+/// — two absences under one word — in the surface built to end exactly that kind of guess.
+pub(crate) struct PaneIdentity {
+    /// The live model, read per query: the tiling changes under this surface and a snapshot taken
+    /// at registration would answer about a window that has since been re-tiled.
+    view: Rc<TerminalView>,
+}
+
+/// ⚠ Written rather than derived because [`TerminalView`] holds the live host client and is not
+/// `Debug`. What a reader of this surface wants in a log is the correspondence itself, so that is
+/// what it prints — the same answer [`PaneIdentity::read`] gives, per slot.
+impl std::fmt::Debug for PaneIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PaneIdentity")
+            .field(
+                "panes",
+                &(0..MAX_PANES)
+                    .map(|slot| self.view.slots.id(slot).map(|id| id.0))
+                    .collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
+impl PaneIdentity {
+    /// Publish the correspondence held by `view`.
+    pub(crate) const fn new(view: Rc<TerminalView>) -> Self {
+        Self { view }
+    }
+
+    /// One read, or [`None`] for a path this surface does not serve.
+    fn read(&self, path: &str) -> Option<IntrospectValue> {
+        read_identity(path, |slot| self.view.slots.id(slot))
+    }
+}
+
+/// ⛔⛔⛔ **THE PATH GRAMMAR, APART FROM THE LIVE CLIENT** — register item 1123.
+///
+/// Split out so the three answers this surface owes can be driven directly: an id, `Null` for a
+/// tile that paints nothing, and *no such path*. [`PaneIdentity`] holds a live `Rc<TerminalView>`
+/// whose host cannot be stood up in a unit test, and a rule that can only be exercised through a
+/// booted GUI is one nothing re-derives.
+///
+/// ⚠⚠ **WHAT THIS CANNOT GUARD IS THE WIRING**, and that is stated rather than implied: pinion
+/// defaults [`External::introspect`] to [`None`], so this grammar can be perfect while the surface
+/// answers nothing at all — measured, on this item's first run. What catches that is the live
+/// `sprag-smoke` check, which asks a booted client and fails loudly; the same discipline the tag
+/// constants in that binary already rely on.
+fn read_identity(
+    path: &str,
+    id_at: impl Fn(usize) -> Option<sprag_terminal::PaneId>,
+) -> Option<IntrospectValue> {
+    match path {
+        // ⚠ The SLOT count and not the occupied count: it is the bound on the index below, and the
+        // tiling is sparse — a hole is a slot that answers `Null`, not a slot that is absent.
+        "slot_count" => Some(IntrospectValue::Int(MAX_PANES as i64)),
+        _ => {
+            let slot: usize = path.strip_prefix("pane.")?.parse().ok()?;
+            if slot >= MAX_PANES {
+                return None;
+            }
+            Some(match id_at(slot) {
+                // ⚠ `try_from` and not a cast: a host id past `i64` is not a number this wire can
+                // carry, and a wrapping cast would answer a DIFFERENT pane's id — the one failure
+                // mode this surface exists to prevent.
+                Some(id) => i64::try_from(id.0).map_or(IntrospectValue::Null, IntrospectValue::Int),
+                None => IntrospectValue::Null,
+            })
+        }
+    }
+}
+
+impl External for PaneIdentity {
+    fn backends(&self) -> BackendSupport {
+        BackendSupport::new(&[Backend::Gui, Backend::Rpc], BackendFallback::Skip)
+    }
+
+    fn repaint_ownership(&self) -> RepaintOwner {
+        RepaintOwner::Framework
+    }
+
+    fn thread_ownership(&self) -> ThreadOwnership {
+        ThreadOwnership::UiThreadSync
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WITHOUT THESE TWO THE SURFACE IS REGISTERED AND ANSWERS NOTHING** — pinion
+    /// defaults both to [`None`], so a type may implement [`ExternalIntrospect`] in full and still
+    /// be invisible to `scene/query`: the framework holds it as `dyn External` and never learns it
+    /// can be asked. Measured while building this: the first run registered the surface, the smoke
+    /// queried it, every read refused, and the checks failed exactly as they had before the surface
+    /// existed — a fix that looks applied and is not.
+    fn introspect(&self) -> Option<&dyn ExternalIntrospect> {
+        Some(self)
+    }
+
+    fn introspect_mut(&mut self) -> Option<&mut dyn ExternalIntrospect> {
+        Some(self)
+    }
+}
+
+impl ExternalIntrospect for PaneIdentity {
+    fn schema(&self) -> IntrospectSchema {
+        IntrospectSchema::new(
+            const {
+                &[
+                    SchemaField::new("slot_count", "int"),
+                    SchemaField::parametric(
+                        "pane.<i>",
+                        "int",
+                        const { &[SchemaArg::index("i", "slot_count")] },
+                    ),
+                ]
+            },
+        )
+    }
+
+    fn query(&self, path: &str) -> Result<IntrospectValue, ReadRefusal> {
+        self.read(path).ok_or(ReadRefusal::UnknownPath)
+    }
+
+    /// ⛔ Nothing here is writable, and a path this surface DOES serve says so with
+    /// [`InterveneError::ReadOnly`] rather than with *unknown*. Which pane a tile shows is the
+    /// tiling's answer — a writer that could set it would be a second authority over the dock, and
+    /// the two would disagree the moment the host re-tiled.
+    fn intervene(&mut self, path: &str, _value: IntrospectValue) -> Result<(), InterveneError> {
+        match self.read(path) {
+            Some(_) => Err(InterveneError::ReadOnly),
+            None => Err(InterveneError::UnknownPath),
+        }
+    }
 }
 
 /// Pane `index`'s row-unit `ScrollState` `Owner::cache` key (`index < `[`MAX_PANES`]).
@@ -609,5 +775,49 @@ mod tests {
         assert_eq!(grid_dims((0, 0), metric), (1, 1));
         // A sub-cell viewport floors to 1x1 too.
         assert_eq!(grid_dims((cw - 1, ch - 1), metric), (1, 1));
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE CORRESPONDENCE ANSWERS THREE THINGS, AND THEY ARE THREE** — register item
+    /// 1123.
+    ///
+    /// The daemon addresses a pane by host id and this client paints it by tile index. Two checks
+    /// in `sprag-smoke` worked around the missing map — one GUESSED the session's lowest id, one
+    /// refused to run unless there was only one candidate — and the guessing kept `pixel (linux)`
+    /// red for five consecutive CI runs. What a reader needs is not a count but an answer, and the
+    /// answer has three cases that must not collapse into two.
+    #[test]
+    fn a_tile_answers_which_host_pane_it_shows_or_says_it_shows_none() {
+        let occupied = |slot: usize| (slot == 2).then_some(sprag_terminal::PaneId(41));
+        assert_eq!(
+            read_identity("pane.2", occupied),
+            Some(IntrospectValue::Int(41)),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1123: a painted tile must name the HOST pane behind it — that \
+             is the whole fact this surface exists to publish, and the one every reader of this \
+             client's scene had to guess at",
+        );
+        assert_eq!(
+            read_identity("pane.0", occupied),
+            Some(IntrospectValue::Null),
+            "⚠⚠ A TILE THAT PAINTS NOTHING SAYS SO. Folding *this tile is empty* into *there is no \
+             such tile* would put a reader back to guessing, in the surface built to end guessing",
+        );
+        assert_eq!(
+            read_identity("pane.99", occupied),
+            None,
+            "⚠ and a tile past the table is NO SUCH PATH — the third answer, distinct from the \
+             empty one above",
+        );
+        assert_eq!(
+            read_identity("slot_count", occupied),
+            Some(IntrospectValue::Int(MAX_PANES as i64)),
+            "⚠ the bound the parametric index is declared against, and it is the SLOT count: the \
+             tiling is sparse, so an occupied count would let a reader skip a hole and read the \
+             wrong tile's pane",
+        );
+        assert_eq!(
+            read_identity("panes", occupied),
+            None,
+            "⚠ a name this surface does not serve is refused rather than guessed at",
+        );
     }
 }

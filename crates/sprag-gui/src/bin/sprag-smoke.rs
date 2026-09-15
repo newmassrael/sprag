@@ -2257,26 +2257,24 @@ fn check_an_agents_state_reaches_the_painted_pane_title(smoke: &mut Smoke, repor
         report.check("the daemon takes a second connection to drive it by", false);
         return;
     };
-    // One pane on each side, waited on rather than sampled — the same correspondence argument (and the
-    // same flake) as the check above: the daemon addresses a pane by id, the client paints it by index,
-    // and nothing on the wire maps one to the other.
+    // ⭐ ASKED, not required to be unambiguous — register item 1123, the same change as the sibling
+    // check: this used to demand one pane on each side because the correspondence was unpublished,
+    // and `daemon_panes` is SESSION-scoped, so the demand became unsatisfiable as soon as the run
+    // left a second pane behind. The client answers which host pane it is painting now.
     let ids = daemon_panes(&mut daemon, &session);
-    let one_each = smoke.wait_for(|s| {
+    let paired = smoke.wait_for(|s| {
         let painted = s.docked_panes().ok()?;
-        matches!((ids.as_slice(), painted.as_slice()), ([_], [_])).then_some(painted)
+        let index = *painted.first()?;
+        Some((s.pane_identity(index)?, index))
     });
     report.checked(
-        "one pane on each side to drive an agent screen into",
-        &format!("daemon {ids:?}"),
-        one_each.is_ok(),
+        "the client names the host pane behind the tile to drive an agent screen into",
+        &format!("daemon has {ids:?}; paired {paired:?}"),
+        paired.is_ok(),
     );
-    let Ok(painted) = one_each else {
+    let Ok((id, index)) = paired else {
         return;
     };
-    let ([id], [index]) = (ids.as_slice(), painted.as_slice()) else {
-        return;
-    };
-    let (id, index) = (*id, *index);
 
     // ⚠⚠⚠⚠⚠ THE PRECONDITION IS ASKED FIRST, AND A GRID TOO NARROW IS NOT A FAILURE — item 576.
     // The detector below reads a MENU off this pane's screen, and a menu that wrapped is not the
@@ -2405,9 +2403,21 @@ fn check_a_sessions_sampled_activity_reaches_its_painted_row(
         report.check("the daemon takes a second connection to drive it by", false);
         return;
     };
+    // ⚠ THE PANE THIS CLIENT IS WATCHING — register item 1123, not `ids.first()`. The claim below
+    // is that a branch sampled in a pane's work tree is PAINTED on this window's session row, so
+    // the pane driven has to be one this window shows. `daemon_panes` is session-scoped, and its
+    // lowest id belongs to whichever window was made first — driving that one left the claim
+    // waiting for paint that could not arrive.
     let ids = daemon_panes(&mut daemon, &session);
-    let Some(&id) = ids.first() else {
-        report.describing(&format!("a pane to drive (daemon {ids:?})"), false);
+    let watching = smoke.wait_for(|s| {
+        let painted = s.docked_panes().ok()?;
+        s.pane_identity(*painted.first()?)
+    });
+    let Ok(id) = watching else {
+        report.describing(
+            &format!("a pane this window paints, to drive (daemon {ids:?}, {watching:?})"),
+            false,
+        );
         return;
     };
 
@@ -2533,28 +2543,31 @@ fn check_a_daemon_side_split_reaches_the_attached_client(smoke: &mut Smoke, repo
         report.check("the daemon takes a second connection to split over", false);
         return;
     };
-    // The two sides AGREEING is the fixture, whatever number they agree on — not a fixed count.
+    // ⛔⛔⛔⛔⛔ **THE TWO SIDES COUNT DIFFERENT POPULATIONS, SO "AGREE" WAS NEVER REACHABLE** —
+    // register item 1123.
     //
-    // ⚠⚠⚠⚠ **A FIXTURE OF "EXACTLY ONE EACH" WAS TRIED FIRST AND IT MADE THIS CHECK UNFALSIFIABLE.**
-    // Measured 2026-08-21 against the mutation below: a client that never learns a new pane leaves
-    // the sides DISAGREEING by the time this check is reached, so the one-each precondition failed
-    // and the claim underneath it never ran — a red, in the wrong place, saying nothing about the
-    // product. The correspondence this check actually needs is not a count but a MATCH: read the two
-    // sides until they agree, and the tile that appears afterwards is the pane that was made.
+    // This waited for the client's TILE count to equal the daemon's pane count. `daemon_panes` is
+    // SESSION-scoped by design (item 679: every pane of the session is addressable, only the viewed
+    // window's are drawn), so the daemon answers six while the window paints one and the wait can
+    // only time out. ⚠ The comment this replaces says a one-each fixture was tried first and made
+    // the check unfalsifiable — true, and the reason BOTH shapes failed is the same: a count was
+    // standing in for the fact nobody published, which pane the client is looking at.
+    //
+    // ⭐ It is published now, so the precondition is the ANSWER: the tile the client paints, and
+    // the host pane behind it. Both sides stay window-scoped, and the split below drives the pane
+    // this client can actually be watched learning about.
     let ids = daemon_panes(&mut daemon, &session);
-    let agreed = smoke.wait_for(|s| {
+    let watching = smoke.wait_for(|s| {
         let painted = s.docked_panes().ok()?;
-        (!ids.is_empty() && painted.len() == ids.len()).then_some(painted)
+        let index = *painted.first()?;
+        Some((s.pane_identity(index)?, painted.len()))
     });
     report.checked(
-        "the two sides agree on the pane set to split from",
-        &format!("daemon {ids:?}, client {agreed:?}"),
-        agreed.is_ok(),
+        "the client names the host pane it is about to split from",
+        &format!("daemon has {ids:?}; {watching:?}"),
+        watching.is_ok(),
     );
-    if agreed.is_err() {
-        return;
-    }
-    let Some(&id) = ids.first() else {
+    let Ok((id, tiles_before)) = watching else {
         return;
     };
 
@@ -2599,13 +2612,18 @@ fn check_a_daemon_side_split_reaches_the_attached_client(smoke: &mut Smoke, repo
 
     // ── The claim. The client is polled, not sampled once: a paint is three processes away from the
     // split, so a single read could only ever prove "not yet".
+    // ⚠ ONE MORE TILE THAN THIS WINDOW HAD — register item 1123, not *as many tiles as the session
+    // has panes*. The claim is that the client LEARNED of a pane it never asked for, and that is a
+    // statement about this window's own count moving; comparing it to the session's made the claim
+    // unreachable the moment another window existed.
     let painted = smoke.wait_for(|s| {
         let tiles = s.docked_panes().ok()?;
-        (tiles.len() == after.len()).then_some(tiles)
+        (tiles.len() > tiles_before).then_some(tiles)
     });
     report.describing(
         &format!(
-            "and the ATTACHED client paints the pane it never asked for ({painted:?} of daemon {after:?})"
+            "and the ATTACHED client paints the pane it never asked for \
+             ({painted:?}, was {tiles_before} tile(s), daemon {after:?})"
         ),
         painted.is_ok(),
     );
@@ -2623,9 +2641,11 @@ fn check_a_daemon_side_split_reaches_the_attached_client(smoke: &mut Smoke, repo
             "session": session,
         }),
     );
+    // ⚠ Back to the count this WINDOW started with — register item 1123, the same correction as the
+    // claim above: what has to be put back is this window's tiling, not a session-wide total.
     let restored = smoke.wait_for(|s| {
         let tiles = s.docked_panes().ok()?;
-        (tiles.len() == ids.len()).then_some(tiles)
+        (tiles.len() == tiles_before).then_some(tiles)
     });
     report.describing(
         &format!("the pane it made is taken away again ({restored:?}, close {closed:?})"),
@@ -2691,30 +2711,38 @@ fn check_terminal_output_never_reaches_the_shaper(smoke: &mut Smoke, report: &mu
     // the flake this replaced. `.ok()?` makes an unreadable tree a retry rather than a count of
     // zero; if it stays unreadable, the failure below prints WHY instead of a bare empty list.
     let ids = daemon_panes(&mut daemon, &session);
-    let one_each = smoke.wait_for(|s| {
+    // ⭐⭐⭐⭐⭐ **IT ASKS NOW, INSTEAD OF REQUIRING THERE TO BE NOTHING TO ASK ABOUT** — register
+    // item 1123.
+    //
+    // This used to demand exactly ONE pane on each side, because with more the correspondence would
+    // have been a guess. That is a guard over a MISSING FACT, and it stopped being satisfiable the
+    // moment the run left a second pane behind: `daemon_panes` is SESSION-scoped by design, so by
+    // this point it answers six while the window paints one, and the guard could never come true
+    // again. Five checks downstream of it were red on every CI run for that reason.
+    //
+    // The client publishes which host pane each tile shows now, so the honest question is *which
+    // pane am I watching* — answered for any number of panes, and never guessed.
+    let paired = smoke.wait_for(|s| {
         let painted = s.docked_panes().ok()?;
-        matches!((ids.as_slice(), painted.as_slice()), ([_], [_])).then_some(painted)
+        let index = *painted.first()?;
+        Some((s.pane_identity(index)?, index))
     });
     // On failure the tree is read ONE more time for the message, so the diagnostic carries what was
     // finally there — an empty set, or the snapshot error that used to be indistinguishable from it.
-    let last = match &one_each {
-        Ok(painted) => Ok(painted.clone()),
-        Err(_) => smoke.docked_panes(),
+    let last = match &paired {
+        Ok((id, index)) => Ok(format!("tile {index} shows host pane {id}")),
+        Err(_) => smoke.docked_panes().map(|painted| format!("{painted:?}")),
     };
     report.checked(
-        "the daemon and the client agree on ONE pane to drive",
-        &format!("daemon {ids:?}, painted {last:?}"),
-        one_each.is_ok(),
+        "the client says which host pane the tile it paints is showing",
+        &format!("daemon has {ids:?}; {last:?}"),
+        paired.is_ok(),
     );
-    // Nothing below may run on a guess: with the correspondence unproven, driving whichever pane the
-    // ids happen to favour would let the claim pass or fail on which pane got the text.
-    let Ok(painted) = one_each else {
+    // Nothing below may run on a guess — the same rule as before, now met by an ANSWER rather than
+    // by there being only one candidate.
+    let Ok((id, index)) = paired else {
         return;
     };
-    let ([id], [index]) = (ids.as_slice(), painted.as_slice()) else {
-        return;
-    };
-    let (id, index) = (*id, *index);
 
     // ── The detector: novel CHROME text, over the same host path, before anything is claimed.
     let from = smoke.frame_count();
@@ -6396,6 +6424,13 @@ const MAX_VISIBLE_ROWS: usize = 10;
 /// The window strip's "+" (new window) button tag — the same gesture a user clicks, addressed
 /// symbolically because a synthesised pointer coordinate never lands headless.
 const NEW_WINDOW_TAG: &str = "sprag_gui.wnew";
+/// ⛔⛔⛔⛔⛔ **WHERE THE CLIENT PUBLISHES WHICH HOST PANE EACH TILE SHOWS** — register item 1123,
+/// `terminal::PANE_IDENTITY_TAG`.
+///
+/// Spelled here for [`NEW_WINDOW_TAG`]'s reason (this binary shares no module tree with the
+/// client's), and the drift guard is the same one: a query at a tag the client no longer registers
+/// answers an ERROR, so the checks below fail loudly rather than quietly guessing again.
+const PANE_IDENTITY_TAG: &str = "sprag_gui.panes";
 /// The per-tab button tag prefix — tab `i` is `{TAB_TAG_PREFIX}{i}`, addressed symbolically for
 /// [`NEW_WINDOW_TAG`]'s reason. Spelled here rather than imported because this binary does not
 /// share a module tree with `wtabs`; the strip's own `tab_tag` is the other speller, and
@@ -6714,6 +6749,25 @@ impl Smoke {
     /// How many pane tiles the main window is painting.
     fn pane_count(&mut self) -> Result<usize, String> {
         Ok(self.docked_panes()?.len())
+    }
+
+    /// ⛔⛔⛔⛔⛔ **WHICH HOST PANE THE CLIENT PAINTS AT TILE `index`** — register item 1123, and
+    /// the question this file used to have no way to ask.
+    ///
+    /// The daemon addresses a pane by id and the client paints it by tile index. Two checks here
+    /// carried that warning in their comments and worked around it — one by GUESSING the session's
+    /// lowest id, one by refusing to run unless there was exactly one pane on each side — and the
+    /// guessing is what kept `pixel (linux)` red for five CI runs. The client knew all along
+    /// (`SlotView::id`); it publishes the answer now.
+    ///
+    /// [`None`] for a tile that paints no pane, for a client too old to serve this, and for an
+    /// unreadable answer alike — every caller here is choosing a pane to DRIVE, and all three mean
+    /// *do not drive one*.
+    fn pane_identity(&mut self, index: usize) -> Option<u32> {
+        let answered = self
+            .query(PANE_IDENTITY_TAG, &format!("pane.{index}"))
+            .ok()?;
+        u32::try_from(answered.as_u64()?).ok()
     }
 
     /// Write the user's `config.toml` — the file both children read out of this run's isolated

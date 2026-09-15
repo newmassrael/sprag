@@ -593,6 +593,15 @@ impl WidgetCore for TerminalViewer {
         // all at fixed tags (pinion R689 preserves them across this per-frame rebuild, like the
         // context menu and splitters). Their clicks route through `update` to `SlotView` window
         // actions (select / new / kill window).
+        // ⛔⛔⛔⛔⛔ WHICH HOST PANE EACH TILE IS SHOWING — register item 1123. The daemon
+        // addresses a pane by id and this client paints it by tile index; `SlotView` has held the
+        // map all along and nothing published it, so every reader of this scene had to guess. Two
+        // checks in `sprag-smoke` say so in their own comments, and the guessing is what kept
+        // `pixel (linux)` red for five CI runs. Read-only, one node, the live model behind it.
+        externals.push(ExtraExternal::new(
+            terminal::PANE_IDENTITY_TAG,
+            Box::new(terminal::PaneIdentity::new(Rc::clone(&terminal))),
+        ));
         externals.extend(wtabs::create_window_externals());
         // The session sidebar's buttons: one `ButtonExternal` per possible row plus "+", all at
         // fixed tags (pinion R689 preserves them across this per-frame rebuild). Their clicks route
