@@ -2108,14 +2108,30 @@ impl Driver {
         // **It was not.** The pane had left the pool the run holds, which is a different fact from
         // the pane not existing, and nothing said so.
         //
-        // # ⚠⚠ What it does NOT claim, and why the hedge is the honest part
+        // # ⛔⛔⛔⛔⛔ The clause USED TO SAY *it may still be open in another window*, AND THAT
+        // WENT STALE UNDER ITS OWN REPAIR — register item 692, measured 2026-09-16
         //
-        // *Where* the pane went is a SESSION fact, and this layer sees one pool by design (the ISP
-        // boundary `sprag_host::plugin_host` keeps: a plugin has no business knowing about the
-        // window tree). A move and a close are indistinguishable from here — `sprag_plugin`'s
-        // `a_run_ends_the_same_way_whether_its_pane_moved_or_was_closed` is the gate that measures
-        // it. So the clause says *may still be open*, which is the true shape of what is known:
-        // it names the DIRECTION to look rather than pretending to a fact this side cannot have.
+        // It was written when this surface saw ONE window's pool and nothing else, so *look in the
+        // next window* was the honest direction. Both halves of the product then learned to follow
+        // a pane that moved: in process through [`crate::access::PaneElsewhere`] (register items
+        // 682, 1099), and over the wire through a request tree that carries every pane of the
+        // session (register item 679). On either of those a pane this run cannot reach is one that
+        // was CLOSED — so the old clause sent the reader of a closed pane hunting through windows
+        // that could not hold it, which is the very misdirection repair (a) was written to end.
+        //
+        // # ⚠⚠ What it claims now, and why the disjunction is the honest part
+        //
+        // *No pool this run can reach holds it* is the whole of what this layer knows, and it is
+        // true under BOTH reaches — which matters because the reach is the SURFACE's property and
+        // this side cannot read it. A run driven through a following surface has had every window
+        // of its session searched, so the second limb is empty and the pane was closed; a run
+        // driven through a host that follows nothing (one whose pool is the whole world, which is
+        // what installing no reader means) has the second limb for the move it cannot see. Neither
+        // reading points anybody at a window that does not hold the pane.
+        // ⚠ `sprag_plugin`'s `a_run_ends_the_same_way_whether_its_pane_moved_or_was_closed` still
+        // measures that a move and a close end a run with one sentence on a surface with no
+        // reader, and `a_run_follows_its_pane_to_another_window_and_still_dies_when_it_is_closed`
+        // measures that with one they are two outcomes. The sentence here has to be true in both.
         //
         // ⚠⚠⚠ ADDED TO the error's sentence rather than replacing it. The error's own words are
         // what tie a dead run to the incident that produced it, and this crate's standing rule is
@@ -2140,8 +2156,8 @@ impl Driver {
         // send a reader the same useful way — which is the honest scope of what one pool can know.
         let note = match error {
             PaneError::UnknownPane(gone) if plugin.driving() == Some(*gone) => format!(
-                "{note} — that is the pane this run is driving, and a workspace is one window's \
-                 pool: it may still be open in another window of this session",
+                "{note} — that is the pane this run is driving, and no pool this run can reach \
+                 holds it: it was closed, or moved somewhere this surface cannot see",
             ),
             _ => note,
         };
@@ -4790,8 +4806,41 @@ mod tests {
         }
     }
 
+    /// A plugin that drives `pane` and, when it steps, asks the REAL replacement door to replace
+    /// `replaces` — the shape `ai_loop`'s `restarting` state has, which is the second door one
+    /// missing pane can reach a run through (register item 692).
+    ///
+    /// ⚠ It calls the door rather than raising the error, so this fixture measures what the door
+    /// ANSWERS. Handed a surface whose pool does not hold `replaces`, that is *no pool holds it*.
+    struct RestartsAPane {
+        pane: Option<PaneId>,
+        replaces: PaneId,
+    }
+    impl Plugin for RestartsAPane {
+        fn step(&mut self, panes: &dyn PaneAccess, _run: &RunContext) -> Result<Step, PaneError> {
+            let life = panes.lifecycle().ok_or_else(|| {
+                PaneError::Spawn("this fixture needs a host that owns its panes".to_owned())
+            })?;
+            life.respawn(self.replaces)?;
+            Ok(Step::new(Cost::Bytes(1), Verdict::Continue))
+        }
+        fn driving(&self) -> Option<PaneId> {
+            self.pane
+        }
+        /// The document's own word for where a replacement happens.
+        fn at(&self) -> Option<&'static str> {
+            Some("restarting")
+        }
+    }
+
     /// Run `plugin` to its ending and answer the last line it wrote in its own journal.
     fn last_line(plugin: &mut dyn Plugin) -> String {
+        last_line_over(plugin, &NoPanes)
+    }
+
+    /// The same, against a surface the fixture actually calls — for a plugin whose failure has to
+    /// come from a real door rather than from the fixture's own hand (register item 692).
+    fn last_line_over(plugin: &mut dyn Plugin, panes: &dyn PaneAccess) -> String {
         let cell: ProgressCell = Arc::new(Mutex::new(Progress::default()));
         let outcome = Driver::new(Guardrails {
             max_iterations: Some(5),
@@ -4799,7 +4848,7 @@ mod tests {
             max_duration: None,
         })
         .reporting_to(Arc::clone(&cell))
-        .run(plugin, &NoPanes, &RunContext::uncancellable());
+        .run(plugin, panes, &RunContext::uncancellable());
         assert_eq!(
             outcome.state,
             OutcomeState::Failed,
@@ -4815,7 +4864,13 @@ mod tests {
 
     /// The clause register item 682 added — quoted once, so the gate below and the product cannot
     /// drift about what is being asserted.
-    const ONE_WINDOWS_POOL: &str = "one window's pool";
+    ///
+    /// ⚠⚠ **IT SAID `one window's pool` UNTIL REGISTER ITEM 692.** That wording was a claim about
+    /// the SURFACE (*a workspace is one window's pool, so look in the next window*), and both
+    /// halves of the product have since learned to follow a pane that moved — so on every
+    /// production surface the pane a run cannot reach was CLOSED, and the old direction sent its
+    /// reader hunting through windows that could not hold it.
+    const NO_POOL_THIS_RUN_CAN_REACH: &str = "no pool this run can reach holds it";
 
     /// ⛔⛔⛔⛔⛔ **A RUN WHOSE PANE WENT MISSING SAYS THE PANE LEFT, NOT THAT IT NEVER EXISTED** —
     /// register item 682's repair (a).
@@ -4843,6 +4898,20 @@ mod tests {
     ///
     /// ⚠ The clause is ADDED to the error's own sentence, never instead of it — asserted here, so
     /// the tie between a dead run and the incident that produced it survives this repair.
+    ///
+    /// # ⛔⛔⛔⛔⛔ AND THE SAME THREE ARMS OVER THE DOOR A RESTART USES — register item 692
+    ///
+    /// One cause — a person moved or closed the pane — reaches a run through whichever door it was
+    /// at. A run TYPING meets `WorkspacePaneAccess::typing`; a run REPLACING its inner session
+    /// meets `PaneLifecycle::respawn`, which is `ai_loop`'s `restarting` effect. The second door
+    /// answered a SENTENCE (`no pane N to replace`) where the first answers a TYPE, so the reading
+    /// below — the one thing that tells a reader the run's own pane has gone — fired for one of
+    /// them and not the other, and nothing said why the two differed.
+    ///
+    /// ⚠⚠ The arms below drive the REAL door over a real (empty) pool rather than raising the
+    /// error by hand: a fixture that constructed `UnknownPane` itself would pass on the build this
+    /// item is about, where the door raises `Spawn` and the reading never runs. The two controls
+    /// are inherited exactly — a run driving nothing, and a run replacing somebody else's pane.
     #[test]
     fn a_run_whose_pane_went_missing_says_it_left_rather_than_that_it_never_was() {
         // ── 1. THE CONTROLS, AND THEY COME FIRST ──
@@ -4855,7 +4924,7 @@ mod tests {
              the absence below is about a journal that says nothing at all: {drives_nothing:?}",
         );
         assert!(
-            !drives_nothing.contains(ONE_WINDOWS_POOL),
+            !drives_nothing.contains(NO_POOL_THIS_RUN_CAN_REACH),
             "⚠⚠⚠⚠ A RUN DRIVING NO PANE HAS NOWHERE TO SEND ANYBODY. Saying it anyway would make \
              the clause a suffix every unknown-pane failure carries, which is a sentence that has \
              stopped distinguishing anything: {drives_nothing:?}",
@@ -4873,7 +4942,7 @@ mod tests {
             "⚠⚠ the control's precondition again: {another_pane:?}",
         );
         assert!(
-            !another_pane.contains(ONE_WINDOWS_POOL),
+            !another_pane.contains(NO_POOL_THIS_RUN_CAN_REACH),
             "⚠⚠⚠⚠⚠ **THE DISCRIMINATION.** This run drives pane 7 and the failure names 9, so \
              nothing of THIS RUN'S is missing — a clause here would send a person looking for a \
              pane 7 that never moved: {another_pane:?}",
@@ -4892,16 +4961,18 @@ mod tests {
              record written before today unmatchable: {lost:?}",
         );
         assert!(
-            lost.contains(ONE_WINDOWS_POOL),
+            lost.contains(NO_POOL_THIS_RUN_CAN_REACH),
             "⚠⚠⚠⚠⚠ **AND THE READING A RUN OWES ITS READER.** Without it a person who goes and \
              finds the pane alive concludes the run is lying about its own death — measured, and \
              it cost a day: {lost:?}",
         );
         assert!(
-            lost.contains("another window"),
-            "⚠⚠⚠ **AND THE DIRECTION TO LOOK, which is the whole value.** A pool is one WINDOW's, \
-             so a pane this one has not got may be alive in the next — that is the fact a reader \
-             needs and the one this layer can honestly hedge at: {lost:?}",
+            !lost.contains("another window of this session"),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 692: the clause sent its reader to ANOTHER WINDOW, which the \
+             product stopped meaning. Both halves now follow a pane that moved — in process by \
+             `PaneElsewhere`, over the wire by a tree carrying every pane of the session — so a \
+             pane a run cannot reach was CLOSED, and a direction that points at windows which \
+             cannot hold it is the misdirection repair (a) was written to end: {lost:?}",
         );
 
         // ── 3. AND A RUN THAT NEVER COMPLETED A STEP STILL SAYS IT ──
@@ -4914,9 +4985,72 @@ mod tests {
         // step while driving pane 7.
         let first_step = last_line(&mut FailingSomewhere);
         assert!(
-            first_step.contains(ONE_WINDOWS_POOL),
+            first_step.contains(NO_POOL_THIS_RUN_CAN_REACH),
             "⚠⚠⚠⚠ a run that dies on its FIRST step is still driving a pane, and its reader still \
-             needs telling which window to look in: {first_step:?}",
+             needs telling that it has gone: {first_step:?}",
+        );
+
+        // ── 4. AND THE SAME THREE, THROUGH THE DOOR A RESTART USES ── register item 692.
+        //
+        // ⚠⚠ The pool is EMPTY, so `respawn` meets exactly the fact this is about: no pool this
+        // surface can reach holds the pane. The controls come first, as they do above.
+        let pool: Arc<Mutex<sprag_terminal::Workspace>> =
+            Arc::new(Mutex::new(sprag_terminal::Workspace::new((20, 4))));
+        let replacing = crate::access::WorkspacePaneAccess::new(Arc::clone(&pool));
+
+        let restart_drives_nothing = last_line_over(
+            &mut RestartsAPane {
+                pane: None,
+                replaces: PaneId(9),
+            },
+            &replacing,
+        );
+        assert!(
+            restart_drives_nothing.contains("there is no pane 9"),
+            "⚠⚠ THE CONTROL'S OWN PRECONDITION: the replacement door must still refuse in the \
+             error's own words, or the absence below is about a journal that says nothing at all: \
+             {restart_drives_nothing:?}",
+        );
+        assert!(
+            !restart_drives_nothing.contains(NO_POOL_THIS_RUN_CAN_REACH),
+            "⚠⚠⚠⚠ a run that drives no pane has nowhere to send anybody, at this door as at the \
+             typing one: {restart_drives_nothing:?}",
+        );
+
+        let restarts_another = last_line_over(
+            &mut RestartsAPane {
+                pane: Some(PaneId(7)),
+                replaces: PaneId(9),
+            },
+            &replacing,
+        );
+        assert!(
+            !restarts_another.contains(NO_POOL_THIS_RUN_CAN_REACH),
+            "⚠⚠⚠⚠⚠ **THE DISCRIMINATION, at the replacement door.** This run drives pane 7 and the \
+             failure names 9 — a checker's pane, say — so nothing of THIS RUN'S is missing: \
+             {restarts_another:?}",
+        );
+
+        // ⭐⭐⭐⭐⭐ **THE MEASUREMENT: a run replacing ITS OWN pane, which is what `restarting`
+        // does, and the arm register item 692 is.**
+        let restart_lost_it = last_line_over(
+            &mut RestartsAPane {
+                pane: Some(PaneId(7)),
+                replaces: PaneId(7),
+            },
+            &replacing,
+        );
+        assert!(
+            restart_lost_it.contains("there is no pane 7"),
+            "⚠⚠⚠⚠ the error's own words must survive this door's repair too: {restart_lost_it:?}",
+        );
+        assert!(
+            restart_lost_it.contains(NO_POOL_THIS_RUN_CAN_REACH),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 692: a run whose pane went missing while it was REPLACING its \
+             inner session told its reader nothing, while the same run dying one door over — \
+             typing — was told. One cause, two doors, and only one of them passed through the \
+             driver's reading, because this one answered a sentence where that one answers a \
+             type: {restart_lost_it:?}",
         );
     }
 

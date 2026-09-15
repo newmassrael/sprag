@@ -2419,6 +2419,21 @@ impl WorkspaceExternal {
     ///
     /// ⚠ The pane is REQUIRED here where `close` lets it default to the active one: replacing
     /// whichever pane happens to be active is not a thing any caller means.
+    ///
+    /// # ⛔⛔⛔⛔⛔ AND IT FOLLOWS A PANE THAT MOVED WINDOWS, AS FAR AS THIS REQUEST'S SESSION
+    ///
+    /// Register item 1099 gave the in-process verb one place that chooses a pool, so a moved pane
+    /// could be replaced — and this door, which is the one the product actually takes (a run's
+    /// driver is a separate process by default), built its surface over the SCOPE's window alone
+    /// and went on refusing. So *the person moved my pane* and *my agent cannot be restarted* were
+    /// still one event for every run that is driven over a socket, which is the whole of item 682
+    /// arriving a second time by the other road.
+    ///
+    /// ⚠⚠ The reach is the SESSION, on [`window_holding_for_close`](Self::window_holding_for_close)'s
+    /// argument exactly: this verb DESTROYS the pane it names, and a connection scoped to one
+    /// session must not be able to end another one's agent by naming a number. A pane no window of
+    /// this session holds falls through to the scope's own pool, so the refusal is the one below
+    /// rather than a second vocabulary for *it is not here*.
     fn respawn(&self, args: &IntrospectValue) -> Result<IntrospectValue, InvokeError> {
         let map = as_object(args)?;
         let pane = match map.get(crate::wire::SPLIT_PANE_KEY) {
@@ -2437,13 +2452,30 @@ impl WorkspaceExternal {
             .with_attention(self.attention.as_ref().map(|router| {
                 let router = Arc::clone(router);
                 Arc::new(move || router.signal()) as sprag_plugin::access::AttentionMinter
-            }));
-        let fresh = sprag_plugin::PaneLifecycle::respawn(&access, pane).map_err(|error| {
-            // The refusals this door can meet are the caller's — a pane nobody holds, or one with
-            // no recorded command to re-run — so they reach the caller as its own sentence rather
-            // than as a type mismatch.
-            refused(error.to_string())
-        })?;
+            }))
+            // ⛔⛔⛔⛔⛔ AND WHERE THE PANE WENT IF SOMEBODY MOVED IT — register item 692. The
+            // in-process verb chooses its pool in one place (register item 1099); what it can
+            // choose FROM is this hook, and without it this door was the one place in the product
+            // where a moved pane was still un-restartable.
+            .with_panes_elsewhere(Some(crate::rpc::pools_of_session(
+                Arc::clone(&self.registry),
+                self.scope.session().to_owned(),
+            )));
+        let fresh =
+            sprag_plugin::PaneLifecycle::respawn(&access, pane).map_err(|error| match error {
+                // ⚠⚠ ONE SPELLING OF *THIS HOST HOLDS NO SUCH PANE* — `crate::wire::no_such_pane`, the
+                // sentence six pane verbs already refuse in and a client reads back into
+                // `PaneError::UnknownPane`. Passed through as its `Display` instead, this door would
+                // hand a remote driver a string where every other door hands it the typed fact, and
+                // the driver's reading of *the pane this run is driving has gone* would keep missing
+                // the one act that is a restart.
+                sprag_plugin::access::PaneError::UnknownPane(gone) => {
+                    refused(crate::wire::no_such_pane(gone.0))
+                }
+                // The rest are the caller's too — a pane with no recorded command to re-run, a fresh
+                // pane that could not start — and they reach it as their own sentence.
+                other => refused(other.to_string()),
+            })?;
         // A pane was born and another died, so the set changed twice: wake parked waiters once,
         // after both, exactly as `spawn` does for its one birth.
         self.announce();

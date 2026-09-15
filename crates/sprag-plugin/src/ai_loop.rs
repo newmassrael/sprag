@@ -3277,7 +3277,7 @@ mod tests {
         // **This is the wiring**, and it is asserted here rather than there because this is the
         // gate that reconstructs the incident.
         assert!(
-            note.contains("one window's pool") && note.contains("another window"),
+            note.contains("no pool this run can reach holds it"),
             "⚠⚠⚠⚠⚠ A REAL RUN MUST CARRY THE READING, not just a stand-in. Without it a person who \
              goes and finds the pane alive — as they did, in window `pinion`, with its child up \
              for 2h40m — concludes the run is lying about its own death: {note:?}",
@@ -3463,9 +3463,15 @@ mod tests {
         // ⚠⚠⚠⚠⚠ **AND WHAT REPAIR (a) DID AND DID NOT CHANGE, said here so the equality above is
         // not read as *nothing was learned*.**
         //
-        // Both lines now carry the run's own reading — *a workspace is one window's pool; it may
-        // still be open in another window* — which is what stops a reader who finds the pane alive
-        // concluding the run lied. That is a real gain and it is asserted, not assumed.
+        // Both lines now carry the run's own reading — *no pool this run can reach holds it: it
+        // was closed, or moved somewhere this surface cannot see* — which is what stops a reader
+        // who finds the pane alive concluding the run lied. That is a real gain and it is
+        // asserted, not assumed.
+        //
+        // ⚠⚠ **THE SECOND LIMB IS WHY THAT SENTENCE IS TRUE HERE** — register item 692. This
+        // fixture's surface has NO reader, so the moved arm really is a pane that moved somewhere
+        // it cannot see; the clause used to say *it may still be open in another window*, which
+        // was true here and false on every surface that followed its pane.
         //
         // **It does not break the equality, and could not.** *Moved* and *closed* differ in what
         // became of the pane's CHILD, and a pool cannot see a pane it no longer holds — the ISP
@@ -3475,7 +3481,8 @@ mod tests {
         // equality to break would have to give the run a reader it does not have today**, which is
         // a decision about that boundary rather than a sentence somebody forgot to write.
         assert!(
-            moved.contains("one window's pool") && closed.contains("one window's pool"),
+            moved.contains("no pool this run can reach holds it")
+                && closed.contains("no pool this run can reach holds it"),
             "⚠⚠⚠⚠ BOTH endings must carry the reading register item 682's repair (a) added — the \
              equality above is *the two causes are indistinguishable*, NOT *the run says nothing*. \
              Moved: {moved:?}; closed: {closed:?}",
@@ -3671,6 +3678,27 @@ mod tests {
                     .any(|note| note.contains(&format!("there is no pane {}", pane.0))),
                 "⚠⚠⚠ and with the live runs' own sentence, or this arm ended somewhere else: \
                  {said:?}",
+            );
+            // ⛔⛔⛔⛔⛔ **AND IT MUST NOT SEND ITS READER TO ANOTHER WINDOW** — register item 692,
+            // and the arm where the old clause was actually false. This surface HAS the reader, so
+            // it has just searched every window of the session and found none holding the pane:
+            // the pane was CLOSED. The clause said *it may still be open in another window of this
+            // session* anyway, which is the misdirection register item 682's repair (a) exists to
+            // end, pointed the other way — a person sent hunting through windows that cannot hold
+            // it concludes the run is confused rather than that somebody closed their pane.
+            assert!(
+                !said
+                    .iter()
+                    .any(|note| note.contains("another window of this session")),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 692: the run's ending pointed at another window for a pane \
+                 that was CLOSED, on a surface that had already looked in every window of the \
+                 session. Journal: {said:?}",
+            );
+            assert!(
+                said.iter()
+                    .any(|note| note.contains("no pool this run can reach holds it")),
+                "⚠⚠⚠ and it must still carry the reading — the claim is that the DIRECTION was \
+                 wrong, not that a closed pane deserves no sentence: {said:?}",
             );
             for live in access.pane_ids() {
                 access.lifecycle().expect("lifecycle").close(live);

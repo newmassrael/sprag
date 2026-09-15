@@ -5789,6 +5789,25 @@ fn tree_of(conn: &mut HostConn) -> Vec<Value> {
     .clone()
 }
 
+/// **WHICH WINDOW HOLDS `pane`**, asked of the daemon rather than assumed — the tree carries every
+/// window of every session with the panes in it, which is the only answer a client can get to this.
+///
+/// ⚠ One spelling, because two gates ask it now: register item 679's offstage birth and register
+/// item 692's replacement of a pane somebody moved.
+fn window_holding(conn: &mut HostConn, pane: PaneId) -> Option<String> {
+    tree_of(conn).iter().find_map(|session| {
+        session["windows"]
+            .as_array()?
+            .iter()
+            .find(|window| {
+                window["panes"]
+                    .as_array()
+                    .is_some_and(|panes| panes.iter().any(|held| held["id"] == json!(pane.0)))
+            })
+            .map(|window| window["name"].as_str().unwrap_or_default().to_owned())
+    })
+}
+
 /// **The tree carries an identity at every level, and a RENAME does not move any of them** — which
 /// is the property the whole pick rests on and the one a name cannot have.
 ///
@@ -11468,11 +11487,117 @@ fn a_remote_driver_replaces_a_pane_and_the_new_one_is_the_same_program_in_the_sa
 
     // ── THE REFUSAL, WHICH IS A REAL CASE AND NOT A DEFENSIVE ONE ─────────────────────────────
     let ghost = lifecycle.respawn(old);
+    assert_eq!(
+        ghost,
+        Err(PaneError::UnknownPane(old)),
+        "⛔⛔⛔⛔⛔ REGISTER ITEM 692, over the wire: replacing a pane nobody holds must refuse \
+         with the TYPED fact, and with the pane named. A fabricated id would hand a driver a pane \
+         that does not exist and its next act is to type into it; a refusal that arrives as a \
+         SENTENCE is one the driver's reading of *the pane this run is driving has gone* cannot \
+         match, which is how a run that died restarting told its reader nothing. Got {ghost:?}",
+    );
+
+    let _ = std::fs::remove_file(&sock);
+}
+
+/// ⛔⛔⛔⛔⛔ **A REMOTE DRIVER REPLACES A PANE SOMEBODY MOVED TO ANOTHER WINDOW** — register item
+/// 692, and register item 1099 arriving at the road the product actually takes.
+///
+/// # ⛔⛔⛔⛔⛔ Why the in-process gate could not say this
+///
+/// `sprag_plugin`'s `a_pane_that_moved_windows_is_replaced_in_the_window_it_moved_to` holds the
+/// verb: one place chooses the pool, so a moved pane can be replaced. **This door built its own
+/// surface over the SCOPE's window and installed no reader**, so the repair stopped at the crate
+/// boundary — and `run-driver-process` has defaulted to **on** since 2026-08-25, which means every
+/// run in production replaces its inner session through here. *The person moved my pane* and *my
+/// agent cannot be restarted* stayed one event for exactly the runs that matter.
+///
+/// # ⚠⚠⚠ The premise, made over the socket and then asserted
+///
+/// `break-pane` moves the pane into a window of its own and makes that window CURRENT, so the
+/// session is pointed back at the window the pane LEFT — otherwise the driver's scope resolves to
+/// the window holding it and a build that follows nothing would pass. `pane_ids` is this surface's
+/// one window-scoped read (register item 1099 states why), so it is what says the premise holds.
+///
+/// ⚠ And the refusal that must survive it: a pane no window of the session holds is
+/// [`PaneError::UnknownPane`], not a fabricated id — the same word the in-process door answers.
+#[test]
+fn a_remote_driver_replaces_a_pane_that_moved_windows_and_one_nobody_holds_is_unknown() {
+    let (_host, sock) = spawn_host();
+    let (remote, mut setup) = remote_driver(&sock);
+    let lifecycle = remote.lifecycle().expect("this host opens panes");
+
+    // The daemon's boot session, spelled as every other wire gate here spells it.
+    let session = "0";
+    let old = spawn_pane(
+        &mut setup,
+        json!({ "cmd": ["sh", "-c", "cat"], "name": "inner-session" }),
+    );
+    let home = window_holding(&mut setup, old).unwrap_or_else(|| {
+        panic!("the pane must be somewhere before it is moved, or nothing below is measurable")
+    });
+
+    // ── THE MOVE, over the socket: `break-pane` is `close` + `adopt` between windows ───────────
+    let moved_to = setup
+        .call(
+            "scene/invoke",
+            json!({
+                "session": session,
+                "path": mux_action_path(BREAK_PANE_ACTION),
+                "args": { "pane": old.0 },
+            }),
+        )
+        .expect("break_pane answers")
+        .as_str()
+        .expect("break_pane returns the new window's name")
+        .to_owned();
+    assert_ne!(
+        moved_to, home,
+        "⚠⚠ the pane must have left the window it was born in, or the claim below is about a \
+         daemon with one window",
+    );
+    // The broken-out window is born CURRENT, so this points the session back at the one the pane
+    // left — which is the window an unscoped driver's requests resolve to.
+    select_window(&mut setup, session, &home);
     assert!(
-        matches!(ghost, Err(PaneError::Spawn(_))),
-        "⚠⚠⚠⚠ replacing a pane nobody holds must REFUSE with the reason. A fabricated id here \
-         would hand a driver a pane that does not exist, and its next act is to type into it. \
-         Got {ghost:?}",
+        !remote.pane_ids().contains(&old),
+        "⛔ THE PREMISE: `pane_ids` answers the scope's WINDOW, and the moved pane still being in \
+         it would make every assertion below pass in a one-window world",
+    );
+
+    // ── THE CLAIM ── the door a restart drives follows the pane the person moved.
+    let fresh = lifecycle.respawn(old).unwrap_or_else(|error| {
+        panic!(
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 692: a remote driver could not replace a pane that had been \
+             MOVED to another window — {error:?}. The pane is open and its program is running; the \
+             only thing that changed is which window's list holds it. This is the door \
+             `ai_loop`'s `restarting` state drives, so a person rearranging their windows ends \
+             every run that reaches a session rollover — which register item 1099 repaired in \
+             process and could not reach from there."
+        )
+    });
+    assert_eq!(
+        window_holding(&mut setup, fresh).as_deref(),
+        Some(moved_to.as_str()),
+        "⛔⛔⛔⛔⛔ the replacement landed somewhere other than the window the pane was in, so \
+         `hand_seat_over` had one pane and not two and the seat's declarations were dropped — the \
+         operator watches their pane vanish from where they put it and reappear, stripped, where \
+         they moved it from",
+    );
+    assert_eq!(
+        window_holding(&mut setup, old),
+        None,
+        "⚠⚠ and the pane being replaced is gone, in the pool it actually lived in",
+    );
+
+    // ── AND A PANE NOBODY HOLDS IS THE TYPED FACT, not a fabricated id ────────────────────────
+    let ghost = lifecycle.respawn(old);
+    assert_eq!(
+        ghost,
+        Err(PaneError::UnknownPane(old)),
+        "⛔⛔⛔⛔ REGISTER ITEM 692: a pane no window of this session holds must answer the same \
+         word here as in process, so a driver's one reading of *the pane this run is driving has \
+         gone* covers a run that was restarting. Got {ghost:?}",
     );
 
     let _ = std::fs::remove_file(&sock);
@@ -14590,33 +14715,17 @@ fn a_remote_drivers_offstage_pane_lands_in_another_window_and_it_can_still_close
     let (_host, sock) = spawn_host();
     let (remote, mut setup) = remote_driver(&sock);
 
-    // WHERE A PANE IS, asked of the daemon rather than assumed — the tree carries every window of
-    // every session with the panes in it, which is the only answer a client can get to this.
-    let window_of = |setup: &mut HostConn, pane: PaneId| -> Option<String> {
-        tree_of(setup).iter().find_map(|session| {
-            session["windows"]
-                .as_array()?
-                .iter()
-                .find(|window| {
-                    window["panes"]
-                        .as_array()
-                        .is_some_and(|panes| panes.iter().any(|held| held["id"] == json!(pane.0)))
-                })
-                .map(|window| window["name"].as_str().unwrap_or_default().to_owned())
-        })
-    };
-
     // ── THE CONTROL ── an ordinary birth through the same surface, first.
     let onstage = PaneLifecycle::spawn_in(&remote, &["cat".to_owned()], None, 20, 4)
         .expect("an ordinary remote birth still works");
-    let scoped = window_of(&mut setup, onstage).unwrap_or_else(|| {
+    let scoped = window_holding(&mut setup, onstage).unwrap_or_else(|| {
         panic!("the control pane must be somewhere, or nothing below is measurable")
     });
 
     // ── THE CLAIM ── the same birth, said to be a helper's.
     let offstage = PaneLifecycle::spawn_offstage(&remote, &["cat".to_owned()], None, 20, 4)
         .expect("an offstage birth is a birth");
-    let landed = window_of(&mut setup, offstage);
+    let landed = window_holding(&mut setup, offstage);
     assert_eq!(
         landed.as_deref(),
         Some(sprag_terminal::OFFSTAGE_WINDOW),
@@ -14641,12 +14750,12 @@ fn a_remote_drivers_offstage_pane_lands_in_another_window_and_it_can_still_close
          nobody is watching, with `close`'s own `bool` the only thing that said so.",
     );
     assert_eq!(
-        window_of(&mut setup, offstage),
+        window_holding(&mut setup, offstage),
         None,
         "and it is really gone from the daemon's tree",
     );
     assert_eq!(
-        window_of(&mut setup, onstage).as_deref(),
+        window_holding(&mut setup, onstage).as_deref(),
         Some(scoped.as_str()),
         "while the pane nobody asked about is untouched — a close that reached too far would be a \
          worse defect than the one this repays",

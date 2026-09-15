@@ -825,24 +825,63 @@ impl RemotePaneAccess {
     /// ⚠⚠ An answer that is not a number is a REFUSAL and not a zero: a daemon answering a shape
     /// this client cannot read has not opened a pane, and a caller handed `PaneId(0)` would go on to
     /// drive whichever pane really has that id.
-    fn born(&self, path: String, args: Value) -> Result<PaneId, PaneError> {
+    ///
+    /// ⚠⚠⚠ `replacing` is the pane the verb NAMES, for the one birth that has a subject
+    /// ([`PaneLifecycle::respawn`]) — see [`birth_failed`](Self::birth_failed). A spawn names none,
+    /// and passing `None` is what says so rather than leaving a reader to infer it.
+    fn born(
+        &self,
+        path: String,
+        args: Value,
+        replacing: Option<PaneId>,
+    ) -> Result<PaneId, PaneError> {
         // THE ANSWER IS A VALUE BEFORE IT IS EXAMINED, for `read`'s reason — see the note there.
         let outcome =
             lock(&self.conn).try_call(INVOKE_METHOD, json!({ PATH_PARAM: path, ARGS_PARAM: args }));
-        let answer = outcome.map_err(|error| {
-            PaneError::Spawn(match error {
-                CallError::Transport(error) => error.to_string(),
-                CallError::Fault(fault) => unknown_action(&path, &fault)
-                    .or_else(|| refusal(&fault))
-                    .unwrap_or_else(|| io::Error::other(fault.to_string()))
-                    .to_string(),
-            })
-        })?;
+        let answer = outcome.map_err(|error| Self::birth_failed(&path, replacing, error))?;
         answer.as_u64().map(PaneId).ok_or_else(|| {
             PaneError::Spawn(format!(
                 "{path} answered {answer}, which names no pane, so nothing here can be driven"
             ))
         })
+    }
+
+    /// Turn a BIRTH verb's failure into the typed cause it names —
+    /// [`injection_failed`](Self::injection_failed)'s shape at the door that opens panes instead of
+    /// typing into them.
+    ///
+    /// # ⛔⛔⛔⛔⛔ A pane this daemon does not hold is [`PaneError::UnknownPane`] HERE TOO
+    ///
+    /// Register item 692. [`PaneLifecycle::respawn`] is the door `ai_loop`'s `restarting` state
+    /// drives, and a replacement refused because nobody holds the pane is the same fact the typing
+    /// door and the stop door answer as a TYPE — the fact `Driver::note_failure` reads to tell a
+    /// run's reader that the pane it was driving has gone. Flattened into a sentence, it reached
+    /// that reader as prose and the reading never fired: a person who moved or closed a pane
+    /// killed a typing run and a restarting run identically, and only one of them was told why.
+    ///
+    /// ⚠⚠ The refusal is matched as [`crate::wire::no_such_pane`] — the one spelling six pane
+    /// verbs already refuse in, read back here exactly as [`stop_failed`](Self::stop_failed) reads
+    /// it. A near miss is left as [`PaneError::Spawn`] rather than guessed at, which is this
+    /// surface's standing rule for a word it did not publish.
+    ///
+    /// ⚠ Only for the pane the verb NAMES. A spawn has no subject, so nothing here could be that
+    /// pane, and a refusal it meets is about the birth.
+    fn birth_failed(path: &str, replacing: Option<PaneId>, error: CallError) -> PaneError {
+        let fault = match error {
+            CallError::Transport(error) => return PaneError::Spawn(error.to_string()),
+            CallError::Fault(fault) => fault,
+        };
+        if let Some(id) = replacing
+            && fault.refusal() == Some(crate::wire::no_such_pane(id.0).as_str())
+        {
+            return PaneError::UnknownPane(id);
+        }
+        PaneError::Spawn(
+            unknown_action(path, &fault)
+                .or_else(|| refusal(&fault))
+                .unwrap_or_else(|| io::Error::other(fault.to_string()))
+                .to_string(),
+        )
     }
 
     /// Turn an [`INJECT_ACTION`] failure into the typed cause it names.
@@ -1490,7 +1529,7 @@ impl RemotePaneAccess {
         if offstage {
             args[crate::wire::SPAWN_OFFSTAGE_KEY] = json!(true);
         }
-        self.born(mux_action_path(SPAWN_ACTION), args)
+        self.born(mux_action_path(SPAWN_ACTION), args, None)
     }
 }
 
@@ -1572,12 +1611,16 @@ impl PaneLifecycle for RemotePaneAccess {
     ///
     /// # Errors
     ///
-    /// [`PaneError::Spawn`] when the daemon refuses (a pane it does not hold, or one with no
-    /// recorded command to re-run), when it is too old to serve the verb, or when the wire fails.
+    /// [`PaneError::UnknownPane`] for a pane this daemon holds in no window of the connection's
+    /// session — register item 692, and the same word the in-process door answers.
+    ///
+    /// [`PaneError::Spawn`] when the daemon refuses for any other reason (a pane with no recorded
+    /// command to re-run), when it is too old to serve the verb, or when the wire fails.
     fn respawn(&self, id: PaneId) -> Result<PaneId, PaneError> {
         self.born(
             mux_action_path(RESPAWN_ACTION),
             json!({ SPLIT_PANE_KEY: id.0 }),
+            Some(id),
         )
     }
 

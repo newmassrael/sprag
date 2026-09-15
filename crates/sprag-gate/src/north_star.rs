@@ -648,11 +648,17 @@ pub const WITNESS: &str = "@witness:";
 /// green, which is worse than prose. That was nearly enough to abandon this mark.
 ///
 /// What answers it is that an item states BOTH. Item 692, measured 2026-09-11 while writing this:
-/// its premise is that `access.rs` still carries `no pane {} to replace` (true), and its finish is
-/// that the same file reaches `seat_of_pane` (false — zero occurrences). **Paid in some third
-/// shape, the finish stays quiet and the PREMISE fires instead**, because that sentence cannot
-/// survive the repair either. A guessed finish therefore degrades to *no help*, never to *wrongly
-/// silent* — the premise is the net under it.
+/// its premise was that `access.rs` still carries `no pane {} to replace` (true then), and its
+/// finish was that the same file reaches `seat_of_pane` (false — zero occurrences). **Paid in some
+/// third shape, the finish stays quiet and the PREMISE fires instead**, because that sentence
+/// cannot survive the repair either. A guessed finish therefore degrades to *no help*, never to
+/// *wrongly silent* — the premise is the net under it.
+///
+/// ⭐⭐⭐⭐⭐ **AND THAT IS EXACTLY WHAT HAPPENED, 2026-09-16.** Item 692 was paid in a third shape:
+/// the door stopped spelling that refusal as a sentence at all and raises `PaneError::UnknownPane`
+/// like every other door, so `seat_of_pane` never appeared and the guessed finish said nothing —
+/// while the premise's needle went with the repair, as this paragraph predicted. The mark that
+/// fires is the one that rests on a sentence the work has to delete.
 ///
 /// ⚠⚠ **AND THE TWO MUST NOT BE THE SAME NEEDLE.** Written that way — premise *lacks X*, finish
 /// *contains X* — one event raises two faults saying the same thing, and a report that says a

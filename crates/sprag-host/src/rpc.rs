@@ -371,6 +371,32 @@ pub fn pools_of(registry: Arc<Mutex<SessionRegistry>>) -> sprag_plugin::access::
     Arc::new(move |pane| Some(crate::lock(&registry).pool_holding(pane)?.pool))
 }
 
+/// ⛔⛔⛔⛔⛔ **WHICH POOL OF `session` HOLDS `pane`** — [`pools_of`] bounded to one session, for a
+/// door that acts on a pane a REQUEST named rather than on the pane a run is driving.
+///
+/// # ⚠⚠⚠⚠ Why a verb served over a connection gets the narrow one
+///
+/// [`pools_of`] is handed to a RUN, whose pane was checked into its pool before it started, so the
+/// widest answer is the right one: the run is following its own subject. A verb arriving on a
+/// socket names a pane by NUMBER, and a number is a thing a caller can be wrong about — so a door
+/// that DESTROYS what it names must not reach past the session the connection is scoped to. That
+/// is `sprag_host::workspace`'s `window_holding_for_close` argument, and `respawn` (register item
+/// 692) is the second door to need it.
+///
+/// ⚠ [`None`] for a pane this session does not hold — including one a WINDOW of another session
+/// does — which leaves the caller's own refusal to state, rather than a second vocabulary for *it
+/// is not here*.
+#[must_use]
+pub fn pools_of_session(
+    registry: Arc<Mutex<SessionRegistry>>,
+    session: String,
+) -> sprag_plugin::access::PaneElsewhere {
+    Arc::new(move |pane| {
+        let home = crate::lock(&registry).pool_holding(pane)?;
+        (home.session == session).then_some(home.pool)
+    })
+}
+
 /// ⛔⛔⛔⛔⛔ **HOW A SESSION OPENS A PANE NOBODY ASKED TO LOOK AT** — register item 679, and
 /// [`pools_of`]'s neighbour: that one finds a pane somewhere else, this one PUTS one there.
 ///

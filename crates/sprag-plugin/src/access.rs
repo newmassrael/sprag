@@ -2496,8 +2496,14 @@ pub trait PaneLifecycle {
     ///
     /// # Errors
     ///
-    /// [`PaneError::Spawn`] when there is no such pane, when it has no argv to re-run (a pane
-    /// restored from a snapshot older than argv capture), or when the fresh pane cannot start.
+    /// [`PaneError::UnknownPane`] when no pool this surface can reach holds the pane — register
+    /// item 692, and the same word the typing and stop doors use for that same fact, so one
+    /// reading of *the pane this run is driving has gone* covers a run that was restarting as well
+    /// as one that was typing.
+    ///
+    /// [`PaneError::Spawn`] for the failures that are about the BIRTH: a pane with no argv to
+    /// re-run (one restored from a snapshot older than argv capture), or a fresh pane that cannot
+    /// start.
     fn respawn(&self, id: PaneId) -> Result<PaneId, PaneError>;
 }
 
@@ -3308,16 +3314,24 @@ impl PaneLifecycle for WorkspacePaneAccess {
         // ⚠⚠ Held as the pool and not re-resolved per step: the read, the spawn, the seat handover
         // and the close must all name ONE window, and four separate resolutions could be four
         // different answers if somebody moves the pane while this runs.
-        let pool = self
-            .pool_holding(id)
-            .ok_or_else(|| PaneError::Spawn(format!("no pane {} to replace", id.0)))?;
+        //
+        // ⛔⛔⛔⛔⛔ **AND *NO POOL HOLDS IT* IS [`PaneError::UnknownPane`] HERE, AS IT IS AT EVERY
+        // OTHER DOOR** — register item 692. This said `Spawn("no pane N to replace")`, which is a
+        // SENTENCE where the typing door and the stop door raise a TYPE about the same fact, so
+        // the driver's one reading of *the pane this run is driving has gone*
+        // (`Driver::note_failure`) matched the run that was typing and never the run that was
+        // RESTARTING — the same cause, and only one of the two doors told its reader anything.
+        // ⚠ `Spawn` keeps the failures that really are about the birth: a pane with no argv to
+        // re-run, and a fresh pane that cannot start.
+        let pool = self.pool_holding(id).ok_or(PaneError::UnknownPane(id))?;
         // ⚠⚠ READ, THEN RELEASE, THEN SPAWN. `spawn_with` takes the pool's lock itself, and this
         // crate's standing rule is that no lock is held across a syscall — a pty spawn most of all.
         let (argv, env, cwd, (cols, rows)) = {
             let guard = lock(&pool);
-            let pane = guard
-                .pane(id)
-                .ok_or_else(|| PaneError::Spawn(format!("no pane {} to replace", id.0)))?;
+            // ⚠ The pool answered a statement ago and is asked again under its lock, so this arm is
+            // the pane leaving between the two — the same fact as the one above and therefore the
+            // same word for it.
+            let pane = guard.pane(id).ok_or(PaneError::UnknownPane(id))?;
             (
                 pane.argv().to_vec(),
                 pane.env().to_vec(),
@@ -5021,18 +5035,26 @@ mod tests {
 
     /// A pane that has gone cannot be replaced, and the refusal names it — the arm a loop meets when
     /// somebody closed its inner session by hand between two pumps.
+    ///
+    /// ⛔⛔⛔⛔⛔ **AND IT IS [`PaneError::UnknownPane`], WHICH IS THE WHOLE OF REGISTER ITEM 692.**
+    /// This door refused with `Spawn("no pane N to replace")` — a sentence about the same fact the
+    /// typing door and the stop door state as a TYPE. `Driver::note_failure` reads that type to
+    /// tell a run's reader that the pane it was driving has gone, so a run that died TYPING was
+    /// told and a run that died RESTARTING was not, although a person moving or closing a pane
+    /// kills them identically.
     #[test]
     fn a_pane_that_is_gone_cannot_be_replaced() {
         let workspace = Arc::new(Mutex::new(Workspace::new((20, 4))));
         let access = WorkspacePaneAccess::new(Arc::clone(&workspace));
         let life = access.lifecycle().expect("lifecycle");
-        match life.respawn(PaneId(4242)) {
-            Err(PaneError::Spawn(why)) => assert!(
-                why.contains("4242") && why.contains("replace"),
-                "the refusal must name the pane and what was being attempted: {why:?}",
-            ),
-            other => panic!("a pane nobody has cannot be replaced: {other:?}"),
-        }
+        let gone = life.respawn(PaneId(4242));
+        assert_eq!(
+            gone,
+            Err(PaneError::UnknownPane(PaneId(4242))),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 692: a pane no pool holds must be the same word here as at \
+             every other door, and it must NAME the pane — a refusal that spelled this as a \
+             sentence is one no reader can act on without matching prose: {gone:?}",
+        );
     }
 
     #[test]
