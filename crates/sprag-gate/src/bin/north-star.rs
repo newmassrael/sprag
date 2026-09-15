@@ -255,6 +255,27 @@ fn main() -> std::process::ExitCode {
     for (number, asked) in &holdings {
         println!("  {number} waits on: {asked}");
     }
+    // ⛔⛔⛔⛔⛔ AND THE OPEN ITEMS AN OCCURRENCE PARKS — register item 1119, printed beside the
+    // holdings because it is the THIRD reason an open item is not takeable, and never silent for
+    // the same reason: a reader has to tell *nothing is parked* from *this line does not exist*.
+    //
+    // ⚠⚠ A SEPARATE LINE AND NOT A WIDER `held`, which is the whole of item 1119: *waiting on a
+    // person* is actionable by the person reading this, and *waiting on an occurrence* is
+    // actionable by nobody. One word for the two would be register item 477's defect written into
+    // the report that exists to prevent it.
+    let awaitings = reading.awaitings();
+    println!(
+        "awaiting {} on an occurrence: {}",
+        awaitings.len(),
+        awaitings
+            .iter()
+            .map(|(number, _)| number.to_string())
+            .collect::<Vec<_>>()
+            .join(" "),
+    );
+    for (number, occurrence) in &awaitings {
+        println!("  {number} awaits: {occurrence}");
+    }
     // ⛔⛔⛔⛔⛔ AND WHAT THE CAP WOULD HAVE HELD AND NO LONGER DOES — register item 921. An empty
     // `deferred` line has two completely different causes and a reader has to be able to tell
     // *nothing sits deep* from *everything deep sits under closed parents*: the second is a claim

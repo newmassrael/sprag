@@ -491,6 +491,72 @@ pub const JUDGED: &str = "@judged:";
 /// this* stops being a sentence in a memory file and becomes a line the command reads.
 pub const HELD: &str = "@held:";
 
+/// ⛔⛔⛔⛔⛔ **THE LINE AN ITEM SAYS ITS REMAINING WORK WAITS ON AN OCCURRENCE FOR**:
+/// `@awaits: <date> — <what must happen, and where it will be read>` — register item 1119.
+///
+/// # ⛔⛔⛔⛔⛔ [`HELD`] fixed half of its own finding and left the other half in prose
+///
+/// That mark's doc says it plainly: *some items cannot be finished by any round however good*, and
+/// it built a line for the case where **a person** is what stands in the way. There is a second
+/// case, and it was in the same list. **805 waits for a macOS CI job to fail again**; **803 waits
+/// for a flake to recur**; **1106 waits for a live loop run to ask a milestone check.** Nobody can
+/// be asked for any of those. No round can produce one.
+///
+/// Each of those items says so IN PROSE, in its own words. 805: *"이 항목은 갚는 항목이 아니라
+/// «기다리는 항목»이다. 라운드를 여기에 더 쓰지 말고, red 가 오는 날 로그를 읽어라."* 803: *"뒤
+/// 절반은 발생 대기다 … 라운드를 이것에 쓰지 말고, 다른 일을 기다리는 시간에만 돌려라."* **Nothing
+/// read either sentence**, so [`Reading::takeable`] went on offering all three — which is, word for
+/// word, the state [`HELD`]'s own doc was opened on.
+///
+/// ⛔ **Measured 2026-09-15, and it is what this mark cost before it existed**: the loop's `next`
+/// named **1106** to two consecutive rounds. Both re-derived the same blockage from the store —
+/// runs 394 and 395 on the promoted build, `asked 0` — and neither could move it. The second round
+/// wrote the finding down; without a mark, the third would have derived it again.
+///
+/// # ⛔⛔⛔⛔⛔ Why a SECOND mark, and not a wider [`HELD`]
+///
+/// Because they are two facts, and the report has to tell them apart. *Waiting on a person* is
+/// actionable by the person most likely to be reading — they can answer, and the mark names what to
+/// answer. *Waiting on an occurrence* is actionable by nobody: the honest report is that the item
+/// is parked until the world does something. Folding both into one word would be this workspace's
+/// most-repeated defect — one word standing for two facts, register item 477 — and it would be
+/// committed inside the instrument, on the very item (1106) whose whole subject is a value that
+/// folded two facts and could not answer the question it was for.
+///
+/// # ⚠⚠⚠⚠⚠ Why this is not the escape hatch rule 6 refuses — the same two halves as [`HELD`]
+///
+/// **An awaiting item is still OPEN and still counted by the ending.** See [`Reading::ending`],
+/// which takes the population and knows nothing about this mark. Marking something awaited cannot
+/// move the north star one item closer; what it changes is the WORK ORDER.
+///
+/// ⚠⚠ **AND THE MARK MUST NAME THE OCCURRENCE.** A bare `@awaits:` is [`Fault::AwaitsUnnamed`], not
+/// a pass: *something will happen eventually* with no occurrence behind it is a round excusing
+/// itself, and this mark is the wider door of the two — an occurrence has no counterparty who can
+/// contradict it, where an asking has a person. The instrument cannot check that the occurrence is
+/// real; it can check that the line says what it is and where it will be read, and refuse silence.
+///
+/// ⚠ **NO FLOOR, deliberately, and that is [`HELD`]'s discipline rather than an omission.** A
+/// second, different guard on a sibling mark would be two rules for one shape — two readers of one
+/// thing, free to disagree, which this crate calls its oldest defect class. What holds both is the
+/// pair above: still owed, and the line has to say something.
+///
+/// # ⚠⚠⚠ THE RESIDUE, STATED RATHER THAN HIDDEN — and it is [`HELD`]'s, unchanged
+///
+/// **Nothing retires it, and nothing here reads a clock.** An occurrence that happened last week
+/// leaves the mark standing until the round that reads it removes the line. ⚠ This bites HARDER
+/// here than on [`HELD`]: a person notices they were answered, and an occurrence in a log notices
+/// nothing. **So the line names WHERE it will be read** — that clause is what a round returning to
+/// the item needs, and requiring it is the closest this instrument can get to retiring the mark.
+///
+/// ⛔⛔ **AND THE VALUE IS THE FIRST LINE ONLY** — [`HELD`]'s shape, and stated here because this
+/// mark asks for two clauses where that one asks for one, so the limit bites sooner. A wrapped
+/// continuation is NOT read: in this ledger an indented line that does not open with `@` is
+/// ordinary prose as often as it is a continuation, and a reader that swallowed it would attach a
+/// paragraph to the mark. Measured on the real ledger: 808's holding prints as *"…⚠ pc3 는 이
+/// 세션에서"*, stopping mid-clause, because its sentence wraps. **Write the occurrence and its
+/// reading-place short enough to fit one line**, and put the argument in the item's body.
+pub const AWAITS: &str = "@awaits:";
+
 /// ⛔⛔⛔⛔⛔ **THE LINE AN ITEM PUTS ONE OF ITS OWN MEASUREMENTS ON, IN A FORM THIS TREE CAN BE
 /// ASKED**: `` @witness: `<path>` contains|lacks `<text>` `` — register item 488.
 ///
@@ -1530,6 +1596,14 @@ pub struct Item {
     /// print what is owed by whom. A [`HELD`] line with nothing after it is [`Fault::HeldUnasked`]
     /// and leaves this `None`, so a refused mark can never quietly hold an item back.
     pub held: Option<String>,
+    /// ⛔⛔⛔ **WHAT OCCURRENCE THIS ITEM'S REMAINING WORK WAITS ON** — [`AWAITS`], and [`None`] for
+    /// an item waiting on nothing outside itself.
+    ///
+    /// ⚠ Kept as the STRING for [`held`](Self::held)'s reason exactly, and one more: an occurrence
+    /// has nobody to ask, so the only thing a returning round has is this sentence and the place it
+    /// names. An [`AWAITS`] line with nothing after it is [`Fault::AwaitsUnnamed`] and leaves this
+    /// `None`, so a refused mark can never quietly hold an item back.
+    pub awaits: Option<String>,
     /// Whether any block of it names the loop — the alarm's input, never the population's.
     pub names_the_loop: bool,
     /// Whether the prose vocabulary reads it as closed — likewise only the alarm's input.
@@ -1667,6 +1741,19 @@ pub enum Fault {
     /// that, so the silence is a RED: this instrument cannot check that a person was really asked,
     /// and it can check that the line says what was asked and of whom.
     HeldUnasked {
+        /// The item whose line it is.
+        number: u32,
+        /// The line, exactly as written.
+        line: String,
+    },
+    /// ⛔⛔⛔⛔⛔ **AN [`AWAITS`] LINE THAT NAMES NO OCCURRENCE** — register item 1119, and
+    /// [`Fault::HeldUnasked`]'s sibling for the same reason one mark over.
+    ///
+    /// The mark takes an item out of the work order, so a bare one is a round excusing itself. And
+    /// this is the WIDER of the two doors: an asking has a person who can contradict it, while
+    /// *something will happen eventually* has nobody at all. The instrument cannot check that the
+    /// occurrence is real; it can check that the line says what it is and where it will be read.
+    AwaitsUnnamed {
         /// The item whose line it is.
         number: u32,
         /// The line, exactly as written.
@@ -2205,6 +2292,14 @@ impl fmt::Display for Fault {
                  was asked or of whom — a `{HELD}` line is `{HELD} <date> — <the asking>`, and \
                  without one this mark is a round excusing itself rather than a fact about a \
                  person's decision",
+                line.trim(),
+            ),
+            Self::AwaitsUnnamed { number, line } => write!(
+                f,
+                "item {number}: `{}` takes it out of the work order and says nothing about what \
+                 must happen or where it will be read — an `{AWAITS}` line is `{AWAITS} <date> — \
+                 <the occurrence, and where it will be read>`. Nobody can be asked about an \
+                 occurrence, so that clause is the only thing a round returning to this item has",
                 line.trim(),
             ),
             Self::BacklogOwnerUnclear { token, claimed } => match claimed.as_slice() {
@@ -3161,6 +3256,7 @@ impl Reading {
     #[must_use]
     pub fn takeable(&self, cap: u32) -> Vec<u32> {
         let held = self.held();
+        let awaiting = self.awaiting();
         self.population()
             .into_iter()
             // ⛔⛔⛔ [`Reading::debts_above`] AND NOT [`Reading::depth`] — register item 921. The
@@ -3173,6 +3269,12 @@ impl Reading {
             // numbers in the loop's memory index, in the file whose own rule is that hand lists
             // leak and marks win. See [`HELD`], which holds why this cannot empty the population.
             .filter(|number| !held.contains(number))
+            // ⛔⛔⛔⛔⛔ **AND THE THIRD** — register item 1119. [`HELD`] built this door for the
+            // case where a PERSON stands in the way and left the other case in prose, which is the
+            // state its own doc was opened on: 805 waits for a macOS CI job to fail again, 803 for
+            // a flake to recur, 1106 for a live run to ask a check. Nobody can be asked for any of
+            // them. See [`AWAITS`], which holds why this cannot empty the population either.
+            .filter(|number| !awaiting.contains(number))
             .collect()
     }
 
@@ -3201,6 +3303,36 @@ impl Reading {
             .iter()
             .filter(|item| open.contains(&item.number))
             .filter_map(|item| Some((item.number, item.held.clone()?)))
+            .collect()
+    }
+
+    /// 🎯🎯🎯🎯🎯 **THE OPEN ITEMS AN OCCURRENCE PARKS** — [`AWAITS`], and the second set
+    /// [`takeable`](Self::takeable) subtracts.
+    ///
+    /// ⚠⚠ **STILL OPEN, AND STILL COUNTED BY THE ENDING** — [`held`](Self::held)'s half exactly,
+    /// and asserted apart from it: two marks that shrink nothing have to be shown to shrink nothing
+    /// SEPARATELY, or the second one rides on a gate written about the first.
+    #[must_use]
+    pub fn awaiting(&self) -> Vec<u32> {
+        let open = self.population();
+        self.items
+            .iter()
+            .filter(|item| item.awaits.is_some() && open.contains(&item.number))
+            .map(|item| item.number)
+            .collect()
+    }
+
+    /// What each awaiting item waits on, in the order [`awaiting`](Self::awaiting) answers.
+    ///
+    /// ⚠ The occurrence AND where it will be read — see [`AWAITS`]: an occurrence has nobody to
+    /// ask, so this sentence is the whole of what a returning round has.
+    #[must_use]
+    pub fn awaitings(&self) -> Vec<(u32, String)> {
+        let open = self.population();
+        self.items
+            .iter()
+            .filter(|item| open.contains(&item.number))
+            .filter_map(|item| Some((item.number, item.awaits.clone()?)))
             .collect()
     }
 
@@ -4385,6 +4517,11 @@ fn held_value(line: &str) -> Option<&str> {
     line.trim_start().strip_prefix(HELD)
 }
 
+/// The value of an [`AWAITS`] line, by the same whole-line rule [`held_value`] holds.
+fn awaits_value(line: &str) -> Option<&str> {
+    line.trim_start().strip_prefix(AWAITS)
+}
+
 /// ⛔⛔⛔⛔⛔ **EVERY DECLARATION TOKEN AN [`OWNER`] LINE MAY NAME** — register item 939, and the
 /// one place that says what the four are.
 ///
@@ -5307,6 +5444,9 @@ pub fn read(text: &str) -> Reading {
         // ⛔ Register item 1108: what a person was asked that this item's remaining work waits on,
         // settled by the topmost block that names anything — the rule `owns` follows.
         let mut held: Option<String> = None;
+        // ⛔ Register item 1119: what occurrence this item's remaining work waits on, settled by
+        // the same topmost-block rule `held` follows one line up.
+        let mut awaits: Option<String> = None;
         let mut settled = false;
         for body in bodies {
             let mut in_block: Vec<Tag> = Vec::new();
@@ -5318,6 +5458,7 @@ pub fn read(text: &str) -> Reading {
             let mut judgements: Vec<Judged> = Vec::new();
             let mut owned: Vec<&'static str> = Vec::new();
             let mut holdings: Vec<String> = Vec::new();
+            let mut awaitings: Vec<String> = Vec::new();
             let mut witnessed: Vec<Witness> = Vec::new();
             // ⛔ Register item 1053(3): whether this block says its prescription cannot be asked.
             let mut answered_finish = false;
@@ -5459,6 +5600,21 @@ pub fn read(text: &str) -> Reading {
                         holdings.push(asked.to_owned());
                     }
                 }
+                // ⛔⛔⛔⛔⛔ AND WHETHER AN OCCURRENCE HOLDS WHAT IS LEFT OF IT — register item
+                // 1119, by the arm above it exactly and for the wider of the two reasons: an
+                // asking has a person who can contradict it and an occurrence has nobody, so an
+                // empty value here is a fault rather than a silence (rule 6).
+                if let Some(value) = awaits_value(line) {
+                    let occurrence = value.trim();
+                    if occurrence.is_empty() {
+                        faults.push(Fault::AwaitsUnnamed {
+                            number: *number,
+                            line: (*line).to_string(),
+                        });
+                    } else {
+                        awaitings.push(occurrence.to_owned());
+                    }
+                }
                 let Some(value) = mark_value(line) else {
                     continue;
                 };
@@ -5514,6 +5670,13 @@ pub fn read(text: &str) -> Reading {
             // hatch this mark is built not to be.
             if held.is_none() {
                 held = holdings.first().cloned();
+            }
+            // ⚠ AND WHAT IT WAITS ON — register item 1119, by the rule above it exactly and for
+            // the same reason: an occurrence named in a block that lost the tie is one this item
+            // is no longer waiting for, and parking a round on a sentence nobody is asserting is
+            // the escape hatch this mark is built not to be.
+            if awaits.is_none() {
+                awaits = awaitings.first().cloned();
             }
             // ⚠⚠ AND SO DO THE WITNESSES — register item 488, by the same rule and for the same
             // reason the ownership claim above it follows: a premise stated by a block that lost
@@ -5586,6 +5749,7 @@ pub fn read(text: &str) -> Reading {
             witnesses,
             unaskable,
             held,
+            awaits,
             names_the_loop,
             reads_as_closed,
         });
@@ -6295,6 +6459,184 @@ mod tests {
             vec![700, 701],
             "⚠⚠ so the item is takeable again, which is the state a round must meet: the mark was \
              not written, whatever it looks like",
+        );
+    }
+
+    /// A ledger with the THIRD reason an open item is not takeable — register item 1119. `703`
+    /// waits on an occurrence nobody can be asked for, and `701` is the control.
+    const AWAITINGS: &str = "\
+# Ledger
+## A. THE SHARPEST THINGS OPEN
+@ns-unclassified: 0
+@sev-unclassified: 0
+@from-unclassified: 0
+@paid-uncommitted: 0
+@witness-floor: 0
+@finish-unclassified: 0
+
+703. ⛔ **Its last step is a reading only a live run can produce**
+     @ns: open
+     @sev: critical — it misleads the judging scheme
+     @from: none
+     @finish: none — a fixture states no prescription
+     @awaits: 2026-09-15 — a loop run must ask a milestone check; read it in the run store
+
+701. ⛔ **Nobody is waiting on anything**
+     @ns: open
+     @sev: ordinary — an ordinary one
+     @from: none
+     @finish: none — a fixture states no prescription
+";
+
+    /// ⛔⛔⛔⛔⛔ **AN ITEM AN OCCURRENCE PARKS LEAVES THE WORK ORDER AND NOT THE LEDGER** —
+    /// register item 1119.
+    ///
+    /// # ⛔⛔⛔ What this replaces, and it is [`HELD`]'s own unfinished half
+    ///
+    /// Item 1108 built that mark for the case where a PERSON stands in the way, and its doc lists
+    /// eight items it was opened on. **Three of them were never waiting on a person at all**: 805
+    /// waits for a macOS CI job to fail again, 803 for a flake to recur, 1106 for a live loop run
+    /// to ask a milestone check. Each says so in its own prose and nothing read it, so
+    /// [`Reading::takeable`] went on offering them — which is the exact sentence [`HELD`]'s doc
+    /// opens with.
+    ///
+    /// ⛔ **Measured**: `next` named **1106** to two consecutive rounds, and neither could move it.
+    ///
+    /// # ⚠⚠⚠⚠⚠ Both halves, asserted apart — and apart from [`HELD`]'s
+    ///
+    /// **An awaiting item is still in the population and still counted by the ending.** Asserted
+    /// here rather than leaned on the sibling gate: two marks that shrink nothing have to be shown
+    /// to shrink nothing separately, or the second rides on a proof written about the first.
+    #[test]
+    fn an_item_an_occurrence_parks_leaves_the_work_order_and_not_the_ledger() {
+        let reading = read(AWAITINGS);
+        assert!(reading.is_green(), "faults: {:?}", reading.faults);
+
+        assert_eq!(
+            reading.awaiting(),
+            vec![703],
+            "the mark is what says so — the prose inside the item never did",
+        );
+        assert_eq!(
+            reading.takeable(1),
+            vec![701],
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1119: a round asking what to take was handed an item no round \
+             can finish and nobody can be asked about. `@held:` covered the person case and left \
+             this one in prose, which is the state that mark's own doc was opened on",
+        );
+
+        // ── ⛔⛔⛔⛔⛔ AND THE HALF THAT KEEPS IT FROM BEING AN EXCUSE ───────────────────────────
+        assert_eq!(
+            reading.population(),
+            vec![701, 703],
+            "⛔⛔⛔⛔⛔ AN AWAITING ITEM IS STILL OWED. If this mark shrank the population, a \
+             register could be finished by declaring its remainder somebody else's weather — and \
+             this mark is the wider door of the two, because an occurrence has no counterparty who \
+             can contradict it",
+        );
+        assert_eq!(
+            reading.ending().open,
+            vec![701, 703],
+            "⚠⚠ and the ENDING is what the north star is read off, so it is asserted apart from \
+             the population it happens to be derived from today",
+        );
+
+        // ── ⛔⛔⛔ A CRITICAL ITEM THAT IS PARKED MUST NOT BE WHAT A ROUND IS SENT AT ───────────
+        //
+        // ⚠⚠ This is the arm the register really paid for: 1106 IS critical, and rule 11 reads
+        // `critical` first, so two rounds running were steered at an item neither could move.
+        assert_eq!(
+            reading.critical(),
+            vec![703],
+            "the control: it really is critical, or the arm below is about nothing",
+        );
+        assert_eq!(
+            reading.admits(1, &[]),
+            vec![701],
+            "⛔⛔⛔⛔⛔ AND THE OVERRIDE IS NOT A WAY ROUND IT: `critical` steers what a round takes \
+             and it must steer within what a round CAN take. This is the measured cost — `next` \
+             named 1106 to two consecutive rounds and neither could move it",
+        );
+        assert_eq!(
+            reading.awaitings(),
+            vec![(
+                703,
+                "2026-09-15 — a loop run must ask a milestone check; read it in the run store"
+                    .to_owned()
+            )],
+            "⚠⚠⚠ AND WHAT IT WAITS ON TRAVELS WITH IT — the occurrence AND where it will be read. \
+             Nobody can be asked about an occurrence, so that clause is the whole of what a round \
+             returning to this item has",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AN AWAITS MARK WITH NO OCCURRENCE BEHIND IT IS A RED, NEVER A SILENCE** —
+    /// register item 1119, and rule 6 at the WIDER of the two marks that could become an excuse.
+    ///
+    /// An asking has a person who can contradict it. *Something will happen eventually* has nobody
+    /// at all, so the empty line is refused for a sharper reason than its sibling's.
+    #[test]
+    fn an_awaits_mark_that_names_no_occurrence_is_refused_and_parks_nothing() {
+        let bare = AWAITINGS.replace(
+            "@awaits: 2026-09-15 — a loop run must ask a milestone check; read it in the run store",
+            "@awaits:",
+        );
+        let reading = read(&bare);
+        assert!(
+            reading
+                .faults
+                .iter()
+                .any(|fault| matches!(fault, Fault::AwaitsUnnamed { number: 703, .. })),
+            "a mark that takes an item out of the work order and names no occurrence must be a \
+             fault: {:?}",
+            reading.faults,
+        );
+        assert!(
+            reading.awaiting().is_empty(),
+            "⛔⛔⛔⛔⛔ AND THE REFUSED MARK MUST NOT PARK ANYTHING ANYWAY — `@held:`'s own arm: a \
+             fault that reddened the ledger while still removing the item from the work order \
+             would let a round have the benefit of the excuse and pay for it in a number nobody \
+             reads",
+        );
+        assert_eq!(
+            reading.takeable(1),
+            vec![701, 703],
+            "⚠⚠ so the item is takeable again, which is the state a round must meet: the mark was \
+             not written, whatever it looks like",
+        );
+    }
+
+    /// ⛔⛔⛔ **THE TWO MARKS ARE TWO FACTS, AND THE READING KEEPS THEM APART** — register item
+    /// 1119, and the defect it would otherwise commit inside the instrument.
+    ///
+    /// Folding *waiting on a person* and *waiting on an occurrence* into one word is register item
+    /// 477's shape — one word standing for two facts — and it matters here because the two have
+    /// opposite remedies: a holding is actionable by the person reading the report, and an awaiting
+    /// is actionable by nobody. A reader handed one list cannot tell which of their items they
+    /// could unblock right now.
+    #[test]
+    fn a_holding_and_an_awaiting_are_never_read_as_the_same_fact() {
+        let both = format!(
+            "{}\n704. ⛔ **Waits on a person**\n     @ns: open\n     @sev: ordinary — an ordinary \
+             one\n     @from: none\n     @finish: none — a fixture states no prescription\n     \
+             @held: 2026-09-15 — asked the owner to clear the mirror on pc3\n",
+            AWAITINGS,
+        );
+        let reading = read(&both);
+        assert!(reading.is_green(), "faults: {:?}", reading.faults);
+
+        assert_eq!(
+            (reading.held(), reading.awaiting()),
+            (vec![704], vec![703]),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1119: each mark answers for its own item and neither borrows \
+             the other's. A single widened `held` would have reported both as *waiting on a \
+             person*, and the one thing a reader does with that report — go and ask them — is \
+             impossible for half of it",
+        );
+        assert_eq!(
+            reading.takeable(1),
+            vec![701],
+            "⚠⚠ and BOTH are out of the work order, which is the half the two marks share",
         );
     }
 
@@ -9350,6 +9692,10 @@ mod tests {
             // ⚠ Register item 939's first fault is about ONE line, which its message quotes.
             | Fault::UnknownOwned { .. }
             | Fault::HeldUnasked { .. }
+            // ⚠ Register item 1119's is about ONE line, which its message quotes — the sibling of
+            // the arm above it, and this is the gate working again: the variant could not be added
+            // without its author answering here whether it carries a set.
+            | Fault::AwaitsUnnamed { .. }
             // ⚠⚠ Register item 488's four name ONE item each — the item, the path and the text it
             // is about, all in the message — except the last, which is about the LEDGER and names
             // no item because there is none to name: every witness it counts has left the
