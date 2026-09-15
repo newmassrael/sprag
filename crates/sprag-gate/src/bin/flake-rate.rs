@@ -35,6 +35,41 @@
 /// Where the logs live, relative to the working directory, unless `--logs` says otherwise.
 const ARCHIVE: &str = "target/bx-logs";
 
+/// ⛔⛔⛔⛔⛔ **THE FLAG THAT ASKS THE ARCHIVE WHICH TESTS HAVE EVER FAILED** — register item 1128.
+///
+/// Without it this binary can only confirm a name somebody already suspected, which makes the
+/// population a HAND LIST — and this register's rule is that a hand list leaks (80, 762, 823).
+/// **Measured**: item 683 carried three members for three weeks and its fourth was found only
+/// because it happened to fail during the round that first used this instrument. A member nobody
+/// suspected could not be found by asking.
+///
+/// ⚠ It does not replace naming: a round tracking one test still asks for it by name, and the
+/// by-name reading stays the one a register entry quotes. This answers a different question —
+/// *what is the population at all*.
+const EVERY: &str = "--every-failing";
+
+/// ⛔⛔⛔⛔⛔ **HOW MANY OUTCOMES A RATE NEEDS BEFORE IT IS RANKED AS ONE** — register item 1128.
+///
+/// # ⛔⛔⛔ A rate off two observations is not a rate, measured
+///
+/// Ranked by the point estimate alone, this archive's top twelve are all tests with **eleven
+/// outcomes or fewer** — `1 ok, 1 FAILED` reads as 5,000 per 10k and sits above everything. Those
+/// are tests that failed once while somebody was writing them. The class this instrument was built
+/// for looks nothing like that: register item 683's four members carry **763 to 1,594** outcomes
+/// each and rates of **75 to 351 per 10k**.
+///
+/// So the floor is a DECLARED number with a MEASURED reason — the shape this workspace keeps
+/// arriving at. Anything between 12 and 763 separates the two populations on today's archive; 30 is
+/// inside it and says *one failure may not exceed 333 per 10k on its own*.
+///
+/// ⚠⚠ Under-sampled rows are PRINTED, in their own group. Dropping them would make the floor an
+/// exemption list — a test on its way to becoming a real member would vanish exactly while its
+/// sample grew, which is rule 6's escape hatch wearing a statistician's coat.
+const RATED_AFTER: usize = 30;
+
+/// The flag that moves [`RATED_AFTER`].
+const SEEN: &str = "--seen";
+
 /// The flag naming a different archive.
 const LOGS: &str = "--logs";
 
@@ -63,6 +98,8 @@ fn main() -> std::process::ExitCode {
     let mut since: Option<String> = None;
     let mut busy = BUSY_DEFAULT;
     let mut wanted: Vec<String> = Vec::new();
+    let mut every = false;
+    let mut rated_after = RATED_AFTER;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -78,11 +115,20 @@ fn main() -> std::process::ExitCode {
                 Some(threads) => busy = threads,
                 None => return refused(&format!("{BUSY} needs a thread count")),
             },
+            EVERY => every = true,
+            SEEN => match args.next().and_then(|n| n.parse().ok()) {
+                Some(outcomes) => rated_after = outcomes,
+                None => return refused(&format!("{SEEN} needs a count of outcomes")),
+            },
             _ => wanted.push(arg),
         }
     }
-    if wanted.is_empty() {
-        return refused("name at least one test");
+    // ⛔⛔⛔⛔⛔ **NAMING NOTHING IS STILL A REFUSAL** — register item 709's discipline, kept
+    // exactly: *I could not look* and *I looked and found nothing* must not be one answer, so an
+    // empty request is refused rather than quietly becoming the enumeration. [`EVERY`] is the
+    // asking, and it has to be said out loud.
+    if wanted.is_empty() && !every {
+        return refused(&format!("name at least one test, or ask {EVERY}"));
     }
     let Ok(entries) = std::fs::read_dir(&archive) else {
         return refused(&format!(
@@ -100,6 +146,11 @@ fn main() -> std::process::ExitCode {
     logs.sort();
 
     let mut counted = 0_usize;
+    // Every test the archive reports on, when `EVERY` was asked — `(whole window, busy band)`.
+    let mut found: std::collections::BTreeMap<
+        String,
+        (sprag_gate::sweep::Outcomes, sprag_gate::sweep::Outcomes),
+    > = std::collections::BTreeMap::new();
     let mut tally: Vec<(
         String,
         sprag_gate::sweep::Outcomes,
@@ -142,6 +193,23 @@ fn main() -> std::process::ExitCode {
                 *hot = hot.and(seen);
             }
         }
+        // ⛔ THE ENUMERATION WALKS THE SAME LOG IN THE SAME PASS — register item 1128. A second
+        // walk could read a different set of files (the archive grows under a long run), and two
+        // readings of one archive free to disagree is this crate's oldest defect class.
+        if every {
+            for (test, seen) in sprag_gate::sweep::outcomes_by_test(&text) {
+                let row = found.entry(test).or_insert_with(|| {
+                    (
+                        sprag_gate::sweep::Outcomes::default(),
+                        sprag_gate::sweep::Outcomes::default(),
+                    )
+                });
+                row.0 = row.0.and(seen);
+                if band.is_some_and(|threads| threads >= busy) {
+                    row.1 = row.1.and(seen);
+                }
+            }
+        }
     }
 
     println!(
@@ -163,6 +231,61 @@ fn main() -> std::process::ExitCode {
             "{test}: {} ok, {} FAILED, {rate} — at {BUSY} >= {busy}: {} ok, {} FAILED, {of_busy}",
             all.passed, all.failed, hot.passed, hot.failed,
         );
+    }
+    if every {
+        // ⛔⛔⛔⛔⛔ **THREE POPULATIONS, BECAUSE "EVER FAILED" IS THREE DIFFERENT FACTS** —
+        // register item 1128, measured on this archive:
+        //
+        // * **seen both ways, enough times to rate** — a test that passes and fails is what
+        //   *shakes* means, and with [`RATED_AFTER`] outcomes behind it the rate is one.
+        // * **seen both ways, too few times** — a real rate may be forming; it cannot be ranked
+        //   against the first group without putting `1 ok, 1 FAILED` above everything.
+        // * **never seen to pass** — not a flake at all: a test that was red while somebody wrote
+        //   it, or one since renamed. Counting it among the shakers is what made the raw list
+        //   useless.
+        //
+        // ⚠ All three are PRINTED. A group dropped here would be a population that stops existing
+        // the moment it is inconvenient, which is the escape hatch rule 6 refuses.
+        let (mut rated, mut thin, mut never_green) = (Vec::new(), Vec::new(), Vec::new());
+        for row in found.iter().filter(|(_, (all, _))| all.failed > 0) {
+            let seen = row.1.0.passed + row.1.0.failed;
+            if row.1.0.passed == 0 {
+                never_green.push(row);
+            } else if seen >= rated_after {
+                rated.push(row);
+            } else {
+                thin.push(row);
+            }
+        }
+        // ⚠ Ranked by rate, because the question is *which shakes most* and a reader handed an
+        // alphabet has to sort it themselves — the step nobody takes.
+        rated.sort_by(|a, b| {
+            b.1.0
+                .per_myriad()
+                .cmp(&a.1.0.per_myriad())
+                .then(a.0.cmp(b.0))
+        });
+        println!(
+            "of {} test(s) this archive reports on, {} have ever failed: {} rated ({SEEN} >= \
+             {rated_after}), {} too thin to rate, {} never seen to pass",
+            found.len(),
+            rated.len() + thin.len() + never_green.len(),
+            rated.len(),
+            thin.len(),
+            never_green.len(),
+        );
+        for (test, (all, hot)) in rated {
+            let rate = all
+                .per_myriad()
+                .map_or_else(|| "never ran".to_owned(), |per| format!("{per} per 10k"));
+            let of_busy = hot
+                .per_myriad()
+                .map_or_else(|| "never ran".to_owned(), |per| format!("{per} per 10k"));
+            println!(
+                "  {test}: {} ok, {} FAILED, {rate} — at {BUSY} >= {busy}: {} ok, {} FAILED, {of_busy}",
+                all.passed, all.failed, hot.passed, hot.failed,
+            );
+        }
     }
     std::process::ExitCode::SUCCESS
 }

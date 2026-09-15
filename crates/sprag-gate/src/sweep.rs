@@ -209,6 +209,61 @@ pub fn outcomes_of(test: &str, log: &str) -> Outcomes {
     seen
 }
 
+/// ⛔⛔⛔⛔⛔ **EVERY TEST `log` REPORTS ON, AND WHAT EACH DID** — register item 1128, and the
+/// inverse of [`outcomes_of`].
+///
+/// # ⛔⛔⛔ Why asking BY NAME was not enough
+///
+/// [`outcomes_of`] answers about a test somebody already suspected, so the population it can speak
+/// about is a HAND LIST — and this register's own rule is that a hand list leaks (items 80, 762,
+/// 823: *마크가 이긴다*). **It leaked here, measured**: register item 683 named a class of tests
+/// that shake, carried three members for three weeks, and its FOURTH was found only because it
+/// happened to fail during the round that first used this instrument. Nothing had ever enumerated
+/// the archive; a member nobody suspected could not be found by asking.
+///
+/// So the class becomes a DERIVATION: ask the record which tests have ever failed, rather than ask
+/// the record about the tests somebody remembers.
+///
+/// # ⚠⚠ Keyed on the name's LAST segment, which is what [`outcomes_of`] matches on
+///
+/// The harness prints `ai_loop::tests::x` in a lib target and a bare `x` in an integration one, and
+/// [`outcomes_of`] deliberately matches either. Keying this on the full printed name would split
+/// one test into two rows and make the two readers of one archive disagree — this crate's oldest
+/// defect class. So both sides see one test.
+///
+/// ⚠ **The residue, stated**: two tests in different modules sharing a leaf name merge into one
+/// row. They merge for [`outcomes_of`] too, so the readings agree; what neither can do is tell them
+/// apart. A day that matters is the day a leaf name is reused, and the honest answer then is to
+/// give one of them a different name.
+#[must_use]
+pub fn outcomes_by_test(log: &str) -> std::collections::BTreeMap<String, Outcomes> {
+    let mut seen: std::collections::BTreeMap<String, Outcomes> = std::collections::BTreeMap::new();
+    for line in log.lines() {
+        let Some(rest) = line.strip_prefix("test ") else {
+            continue;
+        };
+        let Some((named, verdict)) = rest.split_once(" ... ") else {
+            continue;
+        };
+        let leaf = named.rsplit("::").next().unwrap_or(named).trim();
+        if leaf.is_empty() {
+            continue;
+        }
+        // ⚠⚠ THE ROW IS CREATED ONLY BY A VERDICT THAT COUNTS — `entry().or_default()` ahead of
+        // this match gave an ignored-only test a `0 ok, 0 FAILED` row, so it appeared among the
+        // tests this archive *reports on* while `outcomes_of` says it never ran. Two readers of one
+        // archive disagreeing is what this function exists not to do; the gate caught it.
+        match verdict.trim() {
+            "ok" => seen.entry(leaf.to_owned()).or_default().passed += 1,
+            "FAILED" => seen.entry(leaf.to_owned()).or_default().failed += 1,
+            // ⚠ `ignored` is neither, exactly as `outcomes_of` has it — an ignored run is not
+            // evidence about whether a test shakes.
+            _ => {}
+        }
+    }
+    seen
+}
+
 /// **HOW MANY THREADS THE HARNESS WAS GIVEN**, or [`None`] for a log that does not say.
 ///
 /// ⚠⚠ It is what the WRAPPER decided, printed once per run, and it is the axis register item 683
@@ -276,6 +331,69 @@ a_person_keeps_the_pane ... FAILED is quoted right here in the message
             None,
             "⚠⚠ A TEST NOBODY RAN HAS NO RATE, and it must not read as a perfect one: silence is \
              the absence of evidence, which is `unreported`'s rule one function up",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE POPULATION IS DERIVED, NOT REMEMBERED** — register item 1128.
+    ///
+    /// # ⛔⛔⛔ The hand list leaked, measured
+    ///
+    /// [`outcomes_of`] can only confirm a name somebody already suspected, so the set of tests that
+    /// shake was a HAND LIST — and this register's own rule is that a hand list leaks (items 80,
+    /// 762, 823). **It did**: register item 683 carried three members for three weeks and its
+    /// fourth was found only because it happened to fail during the round that first used this
+    /// instrument. Asked of the whole archive on 2026-09-16, the worst-shaking test is at **3,469
+    /// per 10k** and not one of 683's four members (75–351 per 10k) is near the top.
+    ///
+    /// ⚠⚠ **THE SAME MATCHING RULE AS [`outcomes_of`]**, asserted on the same fixture: two readers
+    /// of one archive free to disagree is this crate's oldest defect class, and here it would mean
+    /// the enumeration and the by-name query reporting different histories for one test.
+    #[test]
+    fn every_test_a_log_reports_on_is_tallied_the_way_asking_by_name_would() {
+        let log = "\
+running 3 tests
+test a_person_keeps_the_pane ... ok
+test tui::tests::a_person_keeps_the_pane ... FAILED
+test a_person_keeps_the_pane_and_more ... FAILED
+test keeps_the_pane ... ok
+test something_else ... ignored
+
+failures:
+
+---- a_person_keeps_the_pane stdout ----
+thread 'a_person_keeps_the_pane' panicked at x.rs:1:1:
+a_person_keeps_the_pane ... FAILED is quoted right here in the message
+";
+        let seen = outcomes_by_test(log);
+        assert_eq!(
+            seen.get("a_person_keeps_the_pane"),
+            Some(&Outcomes {
+                passed: 1,
+                failed: 1
+            }),
+            "⛔⛔⛔⛔⛔ REGISTER ITEM 1128: the enumeration must agree with `outcomes_of` on the \
+             SAME log — the bare and module-qualified lines are one test, and the name quoted in a \
+             panic message is not a verdict",
+        );
+        assert_eq!(
+            seen.get("a_person_keeps_the_pane_and_more"),
+            Some(&Outcomes {
+                passed: 0,
+                failed: 1
+            }),
+            "⚠⚠ AND A LONGER NAME IS ITS OWN TEST, kept apart here exactly as the by-name reading \
+             keeps it apart — otherwise one test's reds land on another's rate",
+        );
+        assert_eq!(
+            seen.get("something_else"),
+            None,
+            "⚠⚠⚠ AN IGNORED RUN IS NOT EVIDENCE either way, so the test does not appear at all — \
+             the same answer `outcomes_of` gives, and the reason a rate may never be read off a \
+             switched-off test",
+        );
+        assert!(
+            !seen.contains_key("never_ran"),
+            "⚠ and a test this log never reports on is absent rather than zero: {seen:?}",
         );
         assert_eq!(
             Outcomes {
