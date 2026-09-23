@@ -1324,6 +1324,15 @@ pub trait PaneAccess {
         None
     }
 
+    /// The pane's *pointer* — focus and a button press at a cell, the two edges a person's mouse
+    /// gives a program. `None` by default, on the same terms as the other sub-surfaces.
+    ///
+    /// ⚠ A consumer without it has no fallback: a keystroke is not a click, and a run that cannot
+    /// reach this must say it could not select rather than pretend it did.
+    fn pointer(&self) -> Option<&dyn PanePointer> {
+        None
+    }
+
     /// The pane's *job control* — the ability to STOP what its terminal belongs to. `None` by
     /// default, on the same terms as the other six sub-surfaces.
     ///
@@ -1639,6 +1648,35 @@ pub trait PaneInputTrail {
 pub trait PaneHands {
     /// How many times each hand has written into `id`, or `None` for a pane nobody knows.
     fn pane_hands(&self, id: PaneId) -> Option<Hands>;
+}
+
+/// A pane's POINTER: the focus edge and the left-button press a person's mouse would give its
+/// program. Reached via [`PaneAccess::pointer`].
+///
+/// # Why a driver needs it
+///
+/// Owner's measurement (2026-09-23): a `claude` pane whose submit did not become a question takes
+/// the keys again only after the pane has focus AND the TITLE of the question at the bottom of its
+/// screen has been clicked — not any cell of it. `claude` 2.1.280 turns on mouse tracking (DEC
+/// 1000/1002/1003, SGR 1006) and focus reporting (DEC 1004) at start, so both edges reach it as
+/// input. [`crate::deliver::select_and_press`] uses this, in that order, before it presses again.
+///
+/// Both edges are gated at the host against the pane's live modes, exactly as a display client's
+/// are: a program that has not asked for the report receives nothing, and that is a success.
+pub trait PanePointer {
+    /// Report a focus edge to `id`'s program — `ESC [ I` for `true`, `ESC [ O` for `false`.
+    ///
+    /// # Errors
+    ///
+    /// [`PaneError`] when the host could not write the edge.
+    fn pane_focus(&self, id: PaneId, focused: bool) -> Result<(), PaneError>;
+
+    /// Press and release the left button at `row`, `column` of `id`'s visible screen (0-based).
+    ///
+    /// # Errors
+    ///
+    /// [`PaneError`] when the host could not write the press or the release.
+    fn pane_click(&self, id: PaneId, row: u16, column: u16) -> Result<(), PaneError>;
 }
 
 /// What a pane's TERMINAL does with what is written into it — the kernel's answers, not guesses.

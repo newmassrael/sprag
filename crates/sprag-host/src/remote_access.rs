@@ -120,8 +120,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use sprag_plugin::{
     CutCheckout, JobLeader, KeyStroke, PaneAccess, PaneCheckout, PaneError, PaneForegroundJob,
-    PaneHands, PaneInputEcho, PaneJobControl, PaneLifecycle, PaneOrigin, PaneOutputLines, PaneRow,
-    PaneSupervision, PaneTerminalModes, Signalled, Written,
+    PaneHands, PaneInputEcho, PaneJobControl, PaneLifecycle, PaneOrigin, PaneOutputLines,
+    PanePointer, PaneRow, PaneSupervision, PaneTerminalModes, Signalled, Written,
 };
 use sprag_rpc::{CallError, HostConn, NO_EXTERNAL_FAULT, Outstanding};
 use sprag_terminal::{Hands, JobProcess, PaneEcho, PaneEndOfInput, PaneId, Reach, Stop, Unstopped};
@@ -130,17 +130,18 @@ use sprag_vt::LinesSince;
 use crate::external::lock;
 use crate::wire::{
     AGENT_SUPERVISION_SLOT, ALT_FIELD, CHILD_EXIT_CODE_FIELD, CHILD_EXIT_SIGNAL_FIELD,
-    CLOSE_ACTION, CTRL_FIELD, DAEMON_INSTANCE_SLOT, FULL_LINES_SLOT, FULL_TEXT_SLOT, INJECT_ACTION,
-    INJECT_STROKES_KEY, INJECTED_BYTES_KEY, KEY_FIELD, LINES_KEY, LINES_LOST_KEY, LINES_NEXT_KEY,
-    LINES_PARTIAL_KEY, LINES_RESTARTED_KEY, PANE_CHILD_EXIT_SLOT, PANE_ECHO_SLOT,
-    PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT, PANE_FOREGROUND_SLOT, PANE_HANDS_SLOT,
-    PANE_PAINTED_SLOT, PANE_RAW_OUTPUT_SLOT, PANE_START_DIR_SLOT, PANE_SUMMARY_ID_KEY, PANES_SLOT,
-    PEER_GONE_REFUSAL, RESPAWN_ACTION, SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SESSION_SLOT,
-    SHIFT_FIELD, SPAWN_ACTION, SPAWN_CMD_KEY, SPAWN_COLS_KEY, SPAWN_CWD_KEY, SPAWN_NAME_KEY,
-    SPAWN_ROWS_KEY, SPLIT_PANE_KEY, STOP_JOB_ACTION, STOP_JOB_LEADER_KEY, STOP_JOB_PGID_KEY,
-    STOP_JOB_REACH_KEY, STOP_JOB_SIGNAL_KEY, STOP_JOB_STOP_KEY, SUPER_FIELD, agent_slot_for,
-    hands_of, lines_since_at, mux_action_path, pane_input_path, raw_output_of, recent_input_has,
-    refusal, unknown_action, unknown_slot,
+    CLOSE_ACTION, CTRL_FIELD, DAEMON_INSTANCE_SLOT, FOCUS_ACTION, FOCUSED_FIELD, FULL_LINES_SLOT,
+    FULL_TEXT_SLOT, INJECT_ACTION, INJECT_STROKES_KEY, INJECTED_BYTES_KEY, KEY_FIELD, LINES_KEY,
+    LINES_LOST_KEY, LINES_NEXT_KEY, LINES_PARTIAL_KEY, LINES_RESTARTED_KEY, MOUSE_ACTION,
+    PANE_CHILD_EXIT_SLOT, PANE_ECHO_SLOT, PANE_END_OF_INPUT_SLOT, PANE_EOF_SLOT,
+    PANE_FOREGROUND_SLOT, PANE_HANDS_SLOT, PANE_PAINTED_SLOT, PANE_RAW_OUTPUT_SLOT,
+    PANE_START_DIR_SLOT, PANE_SUMMARY_ID_KEY, PANES_SLOT, PEER_GONE_REFUSAL, RESPAWN_ACTION,
+    SCREEN_COLLAPSED_SLOT, SCREEN_ROWS_SLOT, SESSION_SLOT, SHIFT_FIELD, SPAWN_ACTION,
+    SPAWN_CMD_KEY, SPAWN_COLS_KEY, SPAWN_CWD_KEY, SPAWN_NAME_KEY, SPAWN_ROWS_KEY, SPLIT_PANE_KEY,
+    STOP_JOB_ACTION, STOP_JOB_LEADER_KEY, STOP_JOB_PGID_KEY, STOP_JOB_REACH_KEY,
+    STOP_JOB_SIGNAL_KEY, STOP_JOB_STOP_KEY, SUPER_FIELD, agent_slot_for, hands_of, lines_since_at,
+    mouse_args, mux_action_path, pane_input_path, raw_output_of, recent_input_has, refusal,
+    unknown_action, unknown_slot,
 };
 
 /// The JSON-RPC method that reads one address.
@@ -1177,6 +1178,12 @@ impl PaneAccess for RemotePaneAccess {
         Some(self)
     }
 
+    /// Always `Some`: the focus and mouse doors are the ones a display client already uses, and a
+    /// daemon serving this wire has both.
+    fn pointer(&self) -> Option<&dyn PanePointer> {
+        Some(self)
+    }
+
     /// **WHERE THE WORK IS** — register item 722, and the half of register item 710 this surface
     /// could not answer until the pane's birth directory had an address.
     ///
@@ -1383,6 +1390,57 @@ impl PaneAccess for RemotePaneAccess {
                     "{path} answered no {INJECTED_BYTES_KEY}, so what it wrote cannot be counted"
                 ))
             })
+    }
+}
+
+impl RemotePaneAccess {
+    /// Write one pointer edge through `action`'s door, on [`inject`](PaneAccess::inject)'s terms:
+    /// nothing is written through a replaced daemon, and a write that failed in transit is reported
+    /// rather than retried, because its fate is unknown.
+    fn pointer_edge(&self, id: PaneId, action: &str, edge: Value) -> Result<(), PaneError> {
+        let path = pane_input_path(id.0, action);
+        if self.world_changed() {
+            return Err(PaneError::Unreachable(format!(
+                "the daemon behind this connection was replaced, so {path} names a pane this \
+                 driver never adopted"
+            )));
+        }
+        self.adopt();
+        let outcome =
+            lock(&self.conn).try_call(INVOKE_METHOD, json!({ PATH_PARAM: path, ARGS_PARAM: edge }));
+        if matches!(outcome, Err(CallError::Transport(_))) {
+            let _ = self.recover();
+        }
+        outcome
+            .map(|_| ())
+            .map_err(|error| Self::injection_failed(id, &path, error))
+    }
+}
+
+impl PanePointer for RemotePaneAccess {
+    fn pane_focus(&self, id: PaneId, focused: bool) -> Result<(), PaneError> {
+        self.pointer_edge(id, FOCUS_ACTION, json!({ FOCUSED_FIELD: focused }))
+    }
+
+    fn pane_click(&self, id: PaneId, row: u16, column: u16) -> Result<(), PaneError> {
+        let button = sprag_input::MouseButton::Left.wire_str();
+        for kind in [
+            sprag_input::MouseEventKind::Press,
+            sprag_input::MouseEventKind::Release,
+        ] {
+            self.pointer_edge(
+                id,
+                MOUSE_ACTION,
+                mouse_args(
+                    button,
+                    kind.wire_str(),
+                    column,
+                    row,
+                    sprag_input::Modifiers::default(),
+                ),
+            )?;
+        }
+        Ok(())
     }
 }
 

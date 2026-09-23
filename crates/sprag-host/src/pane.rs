@@ -1297,7 +1297,7 @@ fn parse_focus_args(args: &IntrospectValue) -> Result<bool, InvokeError> {
     let IntrospectValue::Json(Value::Object(map)) = args else {
         return Err(InvokeError::TypeMismatch);
     };
-    map.get("focused")
+    map.get(crate::wire::FOCUSED_FIELD)
         .and_then(Value::as_bool)
         .ok_or(InvokeError::TypeMismatch)
 }

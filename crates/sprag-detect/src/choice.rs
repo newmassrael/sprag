@@ -120,6 +120,77 @@ pub fn question(screen: &Screen, window: u16) -> Option<Question> {
     })
 }
 
+/// Where the TITLE of the question at the bottom of a screen sits — the cell a pointer selects so
+/// that keys reach that question.
+///
+/// Owner's instruction (2026-09-23): when a delivery's submit does not become a question, the pane
+/// is focused and the bottom question's title is selected with the pointer before the keys are sent
+/// again; *"아무데나 누르는게 아니야"* — it is the TITLE, not any cell of the dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Title {
+    /// The screen row, counted from the top of the visible screen.
+    pub row: u16,
+    /// The column of the title's first visible character.
+    pub column: u16,
+    /// The title as it reads, trimmed.
+    pub text: String,
+}
+
+/// The title of the bottom question in `rows` — the visible screen, one entry per row, top first —
+/// or `None` when the last `window` non-empty rows hold no choice list, or nothing stands above it.
+///
+/// The title is the TOP line of the block directly above the options: the block is read upward
+/// from the first option and ends at the agent's own box rule or at the edge of the window. On a
+/// `claude` question that is the header row (`☐ Pick`), with the question sentence below it. ⚠ A
+/// dialog whose options carry no numbers (`claude`'s workspace-trust prompt) is not a choice list
+/// here, so it has no title yet — `an_unnumbered_trust_dialog_has_no_title_to_select_yet` holds
+/// that residue. A rule is where the block stops rather than
+/// a line to skip, because what sits above the rule is the transcript, and a click there selects
+/// the transcript instead of the question.
+///
+/// ⚠ Rows are read as rows, not joined into soft-wrapped lines as [`question`] does: the answer is
+/// a CELL, and a joined line has no single row to name.
+#[must_use]
+pub fn question_title(rows: &[String], window: u16) -> Option<Title> {
+    let mut picked: Vec<(u16, &str)> = rows
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, text)| !text.trim().is_empty())
+        .take(window as usize)
+        .filter_map(|(index, text)| Some((u16::try_from(index).ok()?, text.as_str())))
+        .collect();
+    picked.reverse();
+    let lines: Vec<String> = picked
+        .iter()
+        .map(|(_, text)| text.trim_end().to_owned())
+        .collect();
+    let (start, _) = choice_run(&lines)?;
+    let mut top = None;
+    for index in (0..start).rev() {
+        if is_rule(&lines[index]) {
+            break;
+        }
+        top = Some(index);
+    }
+    let top = top?;
+    let (row, text) = picked[top];
+    Some(Title {
+        row,
+        column: u16::try_from(indent(text)).ok()?,
+        text: text.trim().to_owned(),
+    })
+}
+
+/// Whether `line` is a box rule — a run of line-drawing characters and nothing else.
+fn is_rule(line: &str) -> bool {
+    let body = line.trim();
+    body.chars().count() >= 3
+        && body
+            .chars()
+            .all(|ch| matches!(ch, '─' | '━' | '═' | '-' | '—'))
+}
+
 /// The last `window` non-empty rows of the visible screen, in reading order, with the rows a line
 /// soft-wrapped across joined back into one entry.
 ///
@@ -430,5 +501,81 @@ mod tests {
             question(em.screen(), 2).is_none(),
             "a window holding options 2 and 3 holds no marker",
         );
+    }
+
+    fn rows(lines: &[&str]) -> Vec<String> {
+        lines.iter().map(|line| (*line).to_owned()).collect()
+    }
+
+    /// Captured 2026-09-23 off `claude` 2.1.280 raising `AskUserQuestion` (header `Pick`). The
+    /// title is the header row, not the question sentence under it and not the prompt echo above
+    /// the rule — a click on the echo selects the transcript.
+    #[test]
+    fn the_title_of_a_claude_question_is_its_header_row() {
+        let screen = rows(&[
+            "❯ Call the AskUserQuestion tool once: header \"Pick\", question \"Which letter?\",",
+            "  options A and B. Do nothing else.",
+            "────────────────────────────────────────",
+            " ☐ Pick",
+            "",
+            "Which letter?",
+            "",
+            "❯ 1. A",
+            "     Option A",
+            "  2. B",
+            "     Option B",
+            "  3. Type something.",
+            "────────────────────────────────────────",
+            "  4. Chat about this",
+            "",
+            "Enter to select · ↑/↓ to navigate · Esc to cancel",
+        ]);
+        let title = question_title(&screen, 12).expect("a question with a title");
+        assert_eq!(
+            title,
+            Title {
+                row: 3,
+                column: 1,
+                text: "☐ Pick".to_owned()
+            }
+        );
+    }
+
+    /// Captured 2026-09-23 off `claude` 2.1.280 in a pane opened on an untrusted folder. ⚠ ITS
+    /// OPTIONS CARRY NO NUMBERS, so it is not a choice list to this module and has no title here —
+    /// the residue stated rather than hidden: a pointer cannot select this dialog's title until a
+    /// reader for unnumbered options exists.
+    #[test]
+    fn an_unnumbered_trust_dialog_has_no_title_to_select_yet() {
+        let screen = rows(&[
+            "──────────────────────────────",
+            " Accessing workspace:",
+            "",
+            " /home/coin",
+            "",
+            " Quick safety check: Is this a project you created or one you trust?",
+            "",
+            " Claude Code'll be able to read, edit, and execute files here.",
+            "",
+            " Security guide",
+            "",
+            " ❯ No, exit",
+            "   Yes, I trust this folder",
+            "",
+            " Enter to confirm · Esc to cancel",
+        ]);
+        assert_eq!(question_title(&screen, 12), None);
+    }
+
+    /// No choice list, no question, no title — an idle composer is not something to select.
+    #[test]
+    fn a_screen_without_a_question_has_no_title() {
+        let screen = rows(&[
+            "────────────────────────────────────────",
+            "❯ [Pasted text #3 +6 lines]",
+            "────────────────────────────────────────",
+            "  ⏵⏵ accept edits on (shift+tab to cycle)",
+        ]);
+        assert_eq!(question_title(&screen, 12), None);
     }
 }

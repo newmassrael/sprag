@@ -3989,6 +3989,7 @@ mod tests {
                 made: 3,
                 folded: 0,
                 released: 0,
+                selected: 0,
                 unsubmitted: 0,
                 unreported: 0,
             }),

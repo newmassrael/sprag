@@ -788,7 +788,8 @@ pub enum Delivered {
     ///   this text appended to them — register item 223's residue, closed only by the account.
     /// * **The text WAS on that screen**, which is the whole difference from
     ///   [`Released`](Self::Released): [`is_on_screen`](Self::is_on_screen) is true here, this is
-    ///   no fold, and a run's fold budget must not be spent on it.
+    ///   no fold, and the run's `folded` count must not take it. (It once said a run's *fold
+    ///   budget* was at stake here; nothing a fold is counted by reaches `unasked_seen`.)
     ///
     /// ⚠ Unreachable where nothing can read a composer — a host with no supervisor, a pane whose
     /// screen carries no composer marker, or a daemon too old to send the rows. All of those keep
@@ -1057,7 +1058,8 @@ impl Delivered {
     /// [`Released`](Self::Released)** — register item 889. Both are a composer contract converging,
     /// and only one of them is about a prompt a person could see: that road is reached through the
     /// same read-back as `Confirmed`, so the text WAS on that screen. Answering false here would
-    /// file it as a fold, and a run's fold budget is what stops it for a person.
+    /// file it as a fold, and the run's `folded` count would then tell a reader the prompt was
+    /// hidden on a pane where it was in plain sight.
     #[must_use]
     pub const fn is_on_screen(&self) -> bool {
         matches!(
@@ -1283,8 +1285,8 @@ pub enum Witnessed {
     ///
     /// ⚠⚠ It is NOT a fold — the prompt WAS on that pane and a person sent there would have found
     /// it — which is exactly why it needs a row of its own rather than joining `LetGo`: the two
-    /// answer [`folded_away`](Self::folded_away) differently, and a run's fold budget is spent on
-    /// that answer.
+    /// answer [`folded_away`](Self::folded_away) differently, and the run's `folded` count is built
+    /// on that answer.
     Emptied,
     /// Nothing was asked of the screen, because this peer paints nothing until its prompt is
     /// submitted — the caller's `shows_the_prompt` is false, so the bytes went in and the submit
@@ -1476,9 +1478,9 @@ impl Witnessed {
             // program, echoed by the terminal — or leaves nothing established at all, and neither
             // is a fold. ⛔⛔⛔ `Emptied` is on THIS side and the decision is register item 889's:
             // that road's whole premise is that the box was SHOWING the prompt, so a person sent to
-            // that pane while it sat there would have found it. Filing it as a fold would spend the
-            // run's fold budget on a delivery that folded nothing, and that budget is what stops a
-            // run for a person.
+            // that pane while it sat there would have found it. Filing it as a fold would count a
+            // delivery that folded nothing in the run's `folded`, and send its reader away from a
+            // pane where the prompt was in plain sight.
             Self::Painted
             | Self::Echoed
             | Self::Emptied
@@ -2052,6 +2054,70 @@ fn submit(
     );
     *written += panes.inject(pane, &spec.then_press)?.bytes();
     Ok(witness.await_landing(panes, run, pane))
+}
+
+/// **FOCUS THE PANE, SELECT THE BOTTOM QUESTION'S TITLE, PRESS AGAIN** — the remedy a document
+/// names with `select_when_unasked`, for a delivery whose submit did not become a question.
+///
+/// Owner's measurement (2026-09-23): such a pane takes the keys again once it has focus and the
+/// TITLE of the question at the bottom of its screen has been clicked — *"반드시 하단 질문의
+/// 제목부분을 먼저 선택해야해 아무데나 누르는게 아니야"*, and the pane must hold focus before the
+/// click. So the order here is the order that was measured: focus edge, click on the title, then
+/// the delivery's own `then_press` under its own contract.
+///
+/// `Ok(None)` when there is nothing to select — no pointer on this surface, no screen, or no
+/// question at the bottom of it ([`sprag_detect::question_title`]). The caller then keeps the
+/// refusal it already has, so this step can only ADD a question, never lose one.
+///
+/// ⚠ What this does not claim: WHY a selection lets the keys in. That was not measured; the order
+/// and the target were, and they are what this function holds. A peer that asked a question after
+/// the press is the evidence, read through the same contract the delivery was held to.
+///
+/// # Errors
+///
+/// [`PaneError`] when the focus edge, the click or the press could not be written.
+pub fn select_and_press(
+    panes: &dyn PaneAccess,
+    run: &RunContext,
+    pane: PaneId,
+    text: &str,
+    spec: &Delivery,
+) -> Result<Option<Delivered>, PaneError> {
+    let Some(pointer) = panes.pointer() else {
+        return Ok(None);
+    };
+    let Some(rows) = panes.pane_rows(pane) else {
+        return Ok(None);
+    };
+    let rows: Vec<String> = rows.into_iter().map(|row| row.text).collect();
+    let Some(title) = sprag_detect::question_title(&rows, sprag_detect::DIALOG_WINDOW) else {
+        return Ok(None);
+    };
+    pointer.pane_focus(pane, true)?;
+    pointer.pane_click(pane, title.row, title.column)?;
+    let mut written = 0_u64;
+    let seen = submit(panes, run, pane, text, spec, &mut written, None)?;
+    let written = Written::of(written);
+    Ok(Some(match seen {
+        Seen::Yes => Delivered::Reported {
+            attempts: 1,
+            written,
+        },
+        Seen::LetGo => Delivered::Released {
+            attempts: 1,
+            written,
+        },
+        Seen::No => Delivered::Unsubmitted {
+            attempts: 1,
+            written,
+            wanted: spec.submitted_when,
+        },
+        Seen::Stopped => Delivered::Unwitnessed {
+            attempts: 1,
+            written,
+            wanted: spec.submitted_when,
+        },
+    }))
 }
 
 /// Who paints what is written into `pane`, or `None` where nothing can say.
@@ -4353,8 +4419,8 @@ mod tests {
         assert!(
             !Witnessed::of(&landed).is_some_and(Witnessed::folded_away),
             "⚠⚠ AND IT IS NOT A FOLD, which is the whole difference from `LetGo`: this prompt WAS \
-             on that pane, and filing it as a fold would spend the run's fold budget — the thing \
-             that stops a run for a person — on a delivery that folded nothing",
+             on that pane, and filing it as a fold would count a delivery that folded nothing in \
+             the run's `folded` and send its reader away from a pane where the prompt was plain",
         );
 
         // ── AND THE STAGING IS WHAT THE FIXTURE CLAIMS, or the arm above proves nothing ──
@@ -6676,6 +6742,204 @@ mod tests {
             "⛔⛔⛔⛔⛔ REGISTER ITEM 856: the run ending between the typing and the submit is NOT \
              a fold and is NOT a landing, and it sits inside `made - folded` — which is precisely \
              why that subtraction was never the landing count anybody read it as",
+        );
+    }
+
+    /// **A PEER THAT TAKES THE KEYS ONLY ONCE IT HAS FOCUS AND ITS BOTTOM QUESTION'S TITLE HAS BEEN
+    /// SELECTED** — the owner's measurement (2026-09-23), staged as a double so the ORDER and the
+    /// TARGET are what decide the answer.
+    ///
+    /// The peer asks the question only for an Enter that follows a focus edge and then a click on
+    /// the title's own cell. A click anywhere else, a click before the focus, or a press with
+    /// neither is a press the peer does not take.
+    struct Selectable {
+        rows: Vec<String>,
+        title: (u16, u16),
+        events: Mutex<Vec<String>>,
+    }
+
+    impl Selectable {
+        fn new(rows: &[&str], title: (u16, u16)) -> Self {
+            Self {
+                rows: rows.iter().map(|row| (*row).to_owned()).collect(),
+                title,
+                events: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn events(&self) -> Vec<String> {
+            self.events.lock().expect("the log").clone()
+        }
+
+        /// Whether an Enter landed after `focus`, then a click on the title, in that order.
+        fn asked(&self) -> bool {
+            let events = self.events();
+            let title = format!("click {} {}", self.title.0, self.title.1);
+            let Some(focused) = events.iter().position(|event| event == "focus true") else {
+                return false;
+            };
+            let Some(clicked) = events
+                .iter()
+                .skip(focused + 1)
+                .position(|event| *event == title)
+                .map(|at| at + focused + 1)
+            else {
+                return false;
+            };
+            events
+                .iter()
+                .skip(clicked + 1)
+                .any(|event| event == "Enter")
+        }
+    }
+
+    impl PaneAccess for Selectable {
+        fn pane_ids(&self) -> Vec<PaneId> {
+            vec![PaneId(1)]
+        }
+        fn pane_collapsed(&self, _id: PaneId) -> Option<String> {
+            Some(self.rows.join("\n"))
+        }
+        fn pane_rows(&self, _id: PaneId) -> Option<Vec<PaneRow>> {
+            Some(
+                self.rows
+                    .iter()
+                    .map(|text| PaneRow {
+                        generation: 0,
+                        text: text.clone(),
+                    })
+                    .collect(),
+            )
+        }
+        fn pane_eof(&self, _id: PaneId) -> Option<bool> {
+            Some(false)
+        }
+        fn pane_full_text(&self, id: PaneId) -> Option<String> {
+            self.pane_collapsed(id)
+        }
+        fn inject(&self, _id: PaneId, keys: &[KeyStroke]) -> Result<Written, PaneError> {
+            let mut events = self.events.lock().expect("the log");
+            for key in keys {
+                events.push(key.key.clone());
+            }
+            Ok(Written::of(keys.len() as u64))
+        }
+        fn supervision(&self) -> Option<&dyn crate::access::PaneSupervision> {
+            Some(self)
+        }
+        fn pointer(&self) -> Option<&dyn crate::access::PanePointer> {
+            Some(self)
+        }
+    }
+
+    impl crate::access::PanePointer for Selectable {
+        fn pane_focus(&self, _id: PaneId, focused: bool) -> Result<(), PaneError> {
+            self.events
+                .lock()
+                .expect("the log")
+                .push(format!("focus {focused}"));
+            Ok(())
+        }
+        fn pane_click(&self, _id: PaneId, row: u16, column: u16) -> Result<(), PaneError> {
+            self.events
+                .lock()
+                .expect("the log")
+                .push(format!("click {row} {column}"));
+            Ok(())
+        }
+    }
+
+    impl crate::access::PaneSupervision for Selectable {
+        fn pane_agent_state(&self, _id: PaneId) -> crate::access::Supervised {
+            let asked = self.asked();
+            crate::access::Supervised::Seen(Box::new(crate::access::AgentObservation {
+                state: AgentState::Working,
+                holding: None,
+                composing: None,
+                agent: Some("claude".to_owned()),
+                authority: crate::access::Authority::Reported {
+                    source: "hook:claude".to_owned(),
+                },
+                seq: u64::from(asked),
+                asked_seq: u64::from(asked),
+                reports: 0,
+                asking: None,
+                asked: asked.then(|| "the prompt".to_owned()),
+                said: None,
+                said_seq: 0,
+                noticed: None,
+                running: None,
+                transcript: None,
+                settling: crate::access::Settling::Nothing,
+                reporter: crate::access::ReporterVoice::Speaking,
+            }))
+        }
+    }
+
+    /// The screen the owner's instruction is about, captured off `claude` 2.1.280: a question at
+    /// the bottom whose header row is its title, at row 3, column 1.
+    const A_QUESTION_AT_THE_BOTTOM: &[&str] = &[
+        "❯ the prompt",
+        "",
+        "────────────────────────────────────────",
+        " ☐ Pick",
+        "",
+        "Which letter?",
+        "",
+        "❯ 1. A",
+        "  2. B",
+        "────────────────────────────────────────",
+        "Enter to select · ↑/↓ to navigate · Esc to cancel",
+    ];
+
+    /// ⛔⛔⛔⛔⛔ **FOCUS, THEN THE TITLE, THEN THE PRESS — AND THE QUESTION IS ASKED.** The owner's
+    /// two conditions, in the owner's order: the pane holds focus before the pointer moves, and the
+    /// pointer lands on the TITLE. Mutating either (dropping the focus, reordering it after the
+    /// click, or clicking another row) reds this, because the double asks only for that sequence.
+    #[test]
+    fn a_submit_that_did_not_land_lands_after_focus_and_a_click_on_the_bottom_title() {
+        let pane = Selectable::new(A_QUESTION_AT_THE_BOTTOM, (3, 1));
+        let landed = select_and_press(
+            &pane,
+            &RunContext::uncancellable(),
+            PaneId(1),
+            "the prompt",
+            &asking_once(),
+        )
+        .expect("no error");
+        assert_eq!(
+            pane.events(),
+            vec![
+                "focus true".to_owned(),
+                "click 3 1".to_owned(),
+                "Enter".to_owned()
+            ],
+            "the order is the instruction: focus, the title, the press",
+        );
+        assert!(
+            matches!(landed, Some(Delivered::Reported { .. })),
+            "the peer named the question after the selection, so it was asked: {landed:?}",
+        );
+    }
+
+    /// Nothing at the bottom to select means nothing is clicked and nothing is pressed — the caller
+    /// keeps the refusal it had, so this step can never turn a refusal into a blind press.
+    #[test]
+    fn a_screen_with_no_question_at_its_bottom_is_not_clicked_or_pressed() {
+        let pane = Selectable::new(&["❯ the prompt", "  ⏵⏵ accept edits on"], (0, 0));
+        let landed = select_and_press(
+            &pane,
+            &RunContext::uncancellable(),
+            PaneId(1),
+            "the prompt",
+            &asking_once(),
+        )
+        .expect("no error");
+        assert!(landed.is_none(), "nothing to select: {landed:?}");
+        assert!(
+            pane.events().is_empty(),
+            "and nothing was sent: {:?}",
+            pane.events()
         );
     }
 }

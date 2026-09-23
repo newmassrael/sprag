@@ -1151,7 +1151,7 @@ impl AiLoop {
                     // ⛔⛔⛔ AND THAT SENTENCE WAS PUT ON THE WRONG ARM FOR EIGHTEEN HOURS — item
                     // 762. *"Two sessions refused"* describes the `Again` arm below, which is
                     // reached with the SAME bytes. The `First` arm cannot mean it: see
-                    // [`a_second_fold_with_the_budget_gone`], which carries the road.
+                    // [`a_second_unasked_question_with_the_budget_gone`], which carries the road.
                     // ⛔⛔⛔⛔⛔ AND THE OTHER WAY IN IS THE OPPOSITE FINDING — register item 719.
                     // The arm above says two SESSIONS refused and nobody can say the text is why;
                     // this one says the TEXT is why, because these exact bytes were refused, bought
@@ -1170,7 +1170,7 @@ impl AiLoop {
                     // ⛔⛔⛔⛔⛔ THAT ARGUMENT HELD FOR THE ARM ABOVE AND COST A RUN ON THE ONE BELOW
                     // — register item 762. The sentence does not need a driven run, it needs the
                     // two numbers, so the `First` arm is now a free function with a gate on it
-                    // ([`a_second_fold_with_the_budget_gone`]). A fixture would have been product
+                    // ([`a_second_unasked_question_with_the_budget_gone`]). A fixture would have been product
                     // surface; a `format!` over two integers is not.
                     Some(Noticed::Unasked {
                         attempts,
@@ -1294,7 +1294,7 @@ impl AiLoop {
     }
 }
 
-/// **A SECOND QUESTION WAS FOLDED AWAY AND THIS RUN'S ONE REPLACEMENT WAS ALREADY GONE** — the
+/// **A SECOND QUESTION WENT UNASKED AND THIS RUN'S ONE REPLACEMENT WAS ALREADY GONE** — the
 /// sentence for a `prompt.unasked` that reached `failed` carrying [`crate::outer::Retyped::First`],
 /// register item 762.
 ///
@@ -1324,7 +1324,7 @@ impl AiLoop {
 ///
 /// So a `First` refusal reaching `failed` came down road 3, and road 3 is reachable **only** when
 /// `unasked_seen` is already 1. *The budget was spent* is not a guess about this run, it is the
-/// only thing that road means. `a_run_that_folds_twice_has_one_road_to_failed` holds the order
+/// only thing that road means. `a_run_left_unasked_twice_has_one_road_to_failed` holds the order
 /// against the document, because a `cond` added to that third transition would make this paragraph
 /// quietly false.
 ///
@@ -1335,7 +1335,7 @@ impl AiLoop {
 /// # ⭐⭐⭐ AND ONE THING IT CAN NOW SAY THAT IT COULD NOT
 ///
 /// Since register item 762's repair, `unasked_seen` is cleared by any `session.replaced` the fold
-/// budget did not buy ([`crate::outer::RestartReason::returns_the_fold_budget`]). So road 3 no
+/// budget did not buy ([`crate::outer::RestartReason::returns_the_unasked_budget`]). So road 3 no
 /// longer means only *a fold happened earlier in this run* — it means **the session bought for that
 /// fold is still the one on the pane**. That is a narrower and much more useful fact for the reader:
 /// the two folds are not eighteen hours and four handovers apart, they are the same session's.
@@ -1347,16 +1347,40 @@ impl AiLoop {
 /// with: the number in front of them means nothing, and nothing else was named. It now ends on
 /// [`THE_AXIS`] instead — the same constant the `Again` arm and [`crate::outer::Briefing::describe`]
 /// take, so this product's three fold notices cannot come to disagree about what was measured.
-fn a_second_fold_with_the_budget_gone(written: u64, attempts: u32) -> String {
+///
+/// # ⛔⛔⛔⛔⛔ AND IT CALLED BOTH REFUSALS FOLDS, WHICH THEY WERE NOT (owner, 2026-09-23)
+///
+/// Its name was `a_second_fold_with_the_budget_gone` and its sentence said *"spent on an EARLIER
+/// folded question … for that earlier fold"*. The event behind it is `prompt.unasked`, which the
+/// driver raises for a prompt SHOWN on the pane as well as for a folded one, and this repository's
+/// count puts every measured refusal on the shown road (folded 0, shown 52; register item 889).
+fn a_second_unasked_question_with_the_budget_gone(written: u64, attempts: u32) -> String {
     format!(
         "it put {written} bytes on the pane and pressed {attempts} time(s), and the question was \
          never asked. This run's ONE session replacement had already been spent on an EARLIER \
-         folded question, and the session it bought is STILL THE ONE ON THE PANE — nothing has \
-         handed over since, so the peer holding this unsendable draft is the peer the earlier \
-         replacement produced. What to look at is the run's journal, for that earlier fold and \
-         what was asked. {THE_AXIS}"
+         question that went unasked, and the session it bought is STILL THE ONE ON THE PANE — \
+         nothing has handed over since, so the peer holding this draft is the peer the earlier \
+         replacement produced. What to look at is the run's journal, for that earlier refusal and \
+         what was asked. {WHAT_TAKES_AN_UNASKED_QUESTION}"
     )
 }
+
+/// **WHAT A QUESTION THAT WAS NEVER ASKED IS, AND WHAT TAKES IT** — the clause every refused-question
+/// notice ends on (owner, 2026-09-23).
+///
+/// It replaced [`THE_AXIS`] on those notices. That constant describes what makes a composer FOLD,
+/// and a fold is not what goes unasked: over the 78 runs whose build counted both, folded pastes
+/// went unasked 0 times and prompts shown on the pane 52 times (register item 889). What was
+/// measured to take the keys is the owner's procedure — focus the pane, then select the TITLE of
+/// the question at the bottom of its screen, then press — and the document's `select_when_unasked`
+/// runs it before any of these notices can be reached.
+pub const WHAT_TAKES_AN_UNASKED_QUESTION: &str = "This is not a folded paste — over the 78 runs \
+     that counted both, a folded paste went unasked 0 times and a prompt shown on the pane 52 \
+     times. What takes the keys, by the owner's measurement, is giving the pane focus and then \
+     selecting the TITLE of the question at the bottom of its screen before pressing; the document \
+     does that first where `select_when_unasked` is true, and the run row's `selected` counts the \
+     prompts it saved. A person at that pane does the same: focus it, click the bottom question's \
+     title, press Enter";
 
 /// **WHAT THIS PRODUCT SAYS ABOUT WHAT MAKES A COMPOSER FOLD** — register item 856's ⑵, and the one
 /// place any of its notices may get that clause from.
@@ -1434,7 +1458,8 @@ pub const THE_AXIS: &str = "What is not known is why: the size of this text is n
      same runs were not folded once. What MOVES with a fold, measured and not explained, is WHICH \
      PROMPT THIS IS — a reflection gets folded and an ordinary turn prompt does not — and `sprag \
      folds` prints that rate road by road over every run this machine still holds. So look at what \
-     this loop was doing when it composed the text, not at the text";
+     this loop was doing when it composed the text, not at the text. And a fold does not cost the \
+     question: over the 78 runs that counted both, a folded paste went unasked 0 times";
 
 /// ⛔⛔⛔⛔⛔ **THE CLAIM [`THE_AXIS`] RETRACTED**, in the spellings this workspace actually shipped
 /// it in — the population of the ratchets that keep it from coming back.
@@ -1527,17 +1552,20 @@ fn what_a_refused_question_says(
     attempts: u32,
 ) -> String {
     match retyped {
-        crate::outer::Retyped::First => a_second_fold_with_the_budget_gone(written, attempts),
+        crate::outer::Retyped::First => {
+            a_second_unasked_question_with_the_budget_gone(written, attempts)
+        }
         // ⛔⛔⛔⛔⛔ THIS ARM SAID *"so what is left is the PROMPT. Shorten it, or split it"* UNTIL
-        // register item 856's ⑵. It was the only notice here that told its reader what to DO, and
-        // what it told them to do cannot be done — `THE_AXIS` carries the measurement. A round is
-        // recorded following it: a brief cut from 1,700 to 717 bytes was then refused twice at 363.
+        // register item 856's ⑵, and then ended on `THE_AXIS` — a paragraph about FOLDS — until
+        // the owner's correction of 2026-09-23: a folded paste is not what goes unasked, so a
+        // sentence about what makes a composer fold explained nothing about this refusal. It now
+        // ends on `WHAT_TAKES_AN_UNASKED_QUESTION`, which names the remedy that was measured.
         crate::outer::Retyped::Again(bytes) => format!(
             "it delivered the same {bytes} bytes of text that had already cost it a session: \
-             {written} bytes went on the pane, it pressed {attempts} time(s), and the composer \
-             would not take this text the second time either. Replacing the session is the only \
-             recovery this loop has for a question that was never asked, and it has now been spent \
-             on these exact bytes and changed nothing — so this run needs a person. {THE_AXIS}"
+             {written} bytes went on the pane, it pressed {attempts} time(s), and the pane would \
+             not take this text the second time either. The one session replacement this loop \
+             gives a question that was never asked has now been spent on these exact bytes and \
+             changed nothing — so this run needs a person. {WHAT_TAKES_AN_UNASKED_QUESTION}"
         ),
     }
 }
@@ -16224,7 +16252,7 @@ mod tests {
     /// # ⛔⛔⛔⛔⛔ What this cost, before it existed
     ///
     /// Register item 745(B) removed the clear on `priming`'s `prompt.sent`, and correctly: the
-    /// prompt that lands after a fold recovery is the brief that recovery retyped, so the recovery
+    /// prompt that lands after an unasked recovery is the brief that recovery retyped, so the recovery
     /// renewed the budget that bounds recoveries. What it left behind is that the count then
     /// outlived the peer it is about. **Run 110 folded at 14:08, handed its session over for
     /// CAPACITY four times over the next seventeen hours (18:17, 22:22, 02:25, 06:40), folded a
@@ -16249,7 +16277,7 @@ mod tests {
     /// holding numbers past its ceiling — rather than by writing `unasked_seen` from outside, which
     /// would be a fixture asserting about itself.
     #[test]
-    fn a_handover_the_fold_budget_did_not_buy_hands_it_back() {
+    fn a_handover_the_unasked_budget_did_not_buy_hands_it_back() {
         use sce_rust_runtime::ScriptValue;
 
         /// Walk a fresh machine: brief, turn, fold, replacement — the first half of both arms, and
@@ -16280,7 +16308,7 @@ mod tests {
             (engine, host, lua, session)
         }
 
-        // ── THE CLAIM: a capacity handover in between, and the second fold is recoverable ──
+        // ── THE CLAIM: a capacity handover in between, and the second unasked question is recoverable ──
         let (mut engine, host, lua, session) = folded_once();
         // ⚠ A turn, a claimed milestone and an applied reflection: the way `reviewing` is reached.
         for (event, data) in [
@@ -16315,7 +16343,7 @@ mod tests {
             engine.get_current_state(),
             AiLoopState::Restarting,
             "the control: a session past its ceiling is handed over, and THAT is the replacement \
-             this item is about — one the fold budget did not buy",
+             this item is about — one the unasked budget did not buy",
         );
         carried(&mut engine, &host, AiLoopEvent::SessionReplaced, "");
         carried(&mut engine, &host, AiLoopEvent::SessionReady, "");
@@ -16361,7 +16389,7 @@ mod tests {
         // the control does not, so a document that handed the budget back on ANY of those would
         // pass both arms above. This one takes the identical route to `reviewing` and then hands
         // `reviewing` numbers it cannot decide a handover from, so the run goes back to work with
-        // its session intact — and the next fold must still be the second one.
+        // its session intact — and the next unasked question must still be the second one.
         let (mut kept, host, lua, session) = folded_once();
         for (event, data) in [
             (AiLoopEvent::PromptSent, ""),
@@ -19623,9 +19651,9 @@ mod tests {
     /// the reader, the CAUSE is named, the old cause is gone, and the remedy that belongs to the
     /// OTHER arm has not leaked into this one.
     #[test]
-    fn the_sentence_for_a_second_fold_names_the_budget_and_not_the_peer() {
+    fn the_sentence_for_a_second_unasked_question_names_the_budget_and_not_the_peer() {
         // run110's own numbers, 2026-08-31 07:24.
-        let said = super::a_second_fold_with_the_budget_gone(2782, 1);
+        let said = super::a_second_unasked_question_with_the_budget_gone(2782, 1);
 
         assert!(
             said.contains("2782") && said.contains("1 time(s)"),
@@ -19737,14 +19765,25 @@ mod tests {
             // of one fact are two things to keep in step, and the one that fell behind would be
             // the one a person read. This is also what stops the notices disagreeing with the
             // brief's own line, which takes the same constant.
+            //
+            // ⛔⛔⛔⛔⛔ AND SINCE 2026-09-23 THAT IS `WHAT_TAKES_AN_UNASKED_QUESTION`, NOT
+            // `THE_AXIS` (owner). This assertion used to demand `THE_AXIS` — a paragraph about what
+            // makes a composer FOLD — on a notice about a question that was never ASKED, and the
+            // two are different events: folded pastes went unasked 0 times against 52 for prompts
+            // shown on the pane (register item 889). A reader handed the fold paragraph went
+            // looking for a fold.
             assert!(
-                said.contains(super::THE_AXIS),
-                "⛔⛔⛔⛔⛔ REGISTER ITEM 856's ⑵: the `{shape}` notice does not carry \
-                 `THE_AXIS`, so it denies the size axis (or says nothing about it) and names \
-                 nothing a reader can look at instead. What is measured to MOVE with a fold is \
-                 WHICH ROAD THE PROMPT CAME DOWN — reflections are folded away at every fullness \
-                 that has been measured, from a brand-new pane to one over its ceiling, and the \
-                 ordinary turn prompts of those same runs are not folded at all. Got: {said}",
+                said.contains(super::WHAT_TAKES_AN_UNASKED_QUESTION),
+                "⛔⛔⛔⛔⛔ the `{shape}` notice does not carry `WHAT_TAKES_AN_UNASKED_QUESTION`, \
+                 so it names nothing a reader can do at that pane. What was measured to take the \
+                 keys is focusing the pane and then selecting the TITLE of the question at the \
+                 bottom of its screen before pressing (owner, 2026-09-23). Got: {said}",
+            );
+            assert!(
+                !said.contains(super::THE_AXIS),
+                "⛔⛔⛔⛔⛔ the `{shape}` notice carries `THE_AXIS`, which explains FOLDS — and a \
+                 question that went unasked is not a fold (folded 0 against shown 52, register \
+                 item 889). Got: {said}",
             );
         }
 
@@ -19754,7 +19793,8 @@ mod tests {
         assert_ne!(
             sentences[0].1, sentences[1].1,
             "⛔⛔ two refusal shapes produced the SAME sentence, so the notice no longer says which \
-             road the run took and `THE_AXIS` has swallowed the arm it was appended to",
+             road the run took and `WHAT_TAKES_AN_UNASKED_QUESTION` has swallowed the arm it was \
+             appended to",
         );
     }
 
@@ -19905,7 +19945,7 @@ mod tests {
     }
 
     /// **A RUN THAT FOLDS TWICE HAS ONE ROAD TO `failed`** — the document half of item 762, and
-    /// what stops [`super::a_second_fold_with_the_budget_gone`]'s reasoning from rotting.
+    /// what stops [`super::a_second_unasked_question_with_the_budget_gone`]'s reasoning from rotting.
     ///
     /// That sentence asserts a CAUSE it cannot observe: the notice carries no budget. It is
     /// entitled to because of the order of three document-level transitions — `retyped` first,
@@ -19918,7 +19958,7 @@ mod tests {
     /// `stopping` each answer `prompt.unasked` for themselves (`converged`, `exhausted`), and those
     /// are more specific, so they are not on this road at all.
     #[test]
-    fn a_run_that_folds_twice_has_one_road_to_failed() {
+    fn a_run_left_unasked_twice_has_one_road_to_failed() {
         let roads: Vec<&str> = crate::outer::DOCUMENT
             .split("\n  <transition event=\"prompt.unasked\"")
             .skip(1)
@@ -19929,7 +19969,7 @@ mod tests {
             roads.len(),
             3,
             "⛔⛔⛔⛔ REGISTER ITEM 762: this document answers `prompt.unasked` at its top level \
-             {} time(s), not three. The sentence for a second fold is derived from the ORDER of \
+             {} time(s), not three. The sentence for a second unasked question is derived from the ORDER of \
              exactly three, so a fourth road — or a missing one — makes it a claim about a \
              document that is not this one: {roads:?}",
             roads.len(),
@@ -19949,7 +19989,7 @@ mod tests {
         assert!(
             !roads[2].contains("cond=") && roads[2].contains("\"failed\""),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 762: the third road is no longer the BARE fall-through to \
-             `failed`. `a_second_fold_with_the_budget_gone` says *the budget was already spent* as \
+             `failed`. `a_second_unasked_question_with_the_budget_gone` says *the budget was already spent* as \
              a fact rather than a guess, and it is only a fact while this transition is reachable \
              on nothing but the second one's guard being false: {roads:?}",
         );

@@ -234,9 +234,9 @@ pub(crate) mod testing;
 pub use access::{
     AgentObservation, AgentStateSource, Authority, CutCheckout, JobLeader, KeyStroke, PaneAccess,
     PaneChanges, PaneCheckout, PaneDoing, PaneError, PaneForegroundJob, PaneHands, PaneInputEcho,
-    PaneInputTrail, PaneJobControl, PaneLifecycle, PaneOrigin, PaneOutputLines, PaneRawCapture,
-    PaneRow, PaneSupervision, PaneTerminalModes, ReporterVoice, RowTrail, Settling, Signalled,
-    Supervised, WorkspacePaneAccess, Written,
+    PaneInputTrail, PaneJobControl, PaneLifecycle, PaneOrigin, PaneOutputLines, PanePointer,
+    PaneRawCapture, PaneRow, PaneSupervision, PaneTerminalModes, ReporterVoice, RowTrail, Settling,
+    Signalled, Supervised, WorkspacePaneAccess, Written,
 };
 pub use act::{Act, Asked, Asks, Does, Refused as ActRefused, Sentence, Serving};
 pub use agent::{Agent, AgentSpec, Closed as AgentClosed};

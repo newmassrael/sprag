@@ -3144,17 +3144,18 @@
       A reader who takes the line above for *nothing recovers a wedged draft* is
       reading further than anything here was measured to.
 
-      ONE means this run has already bought a session for a fold AND HAS NOT
+      ONE means this run has already bought a session for an unasked question AND HAS NOT
       REPLACED THAT SESSION SINCE FOR ANY OTHER REASON. Nothing another restart
       does reaches that, so the run says `failed` and a person looks.
 
       ⛔⛔⛔⛔⛔ THE SECOND HALF OF THAT SENTENCE IS REGISTER ITEM 762, AND IT
       COST A RUN. `restarting`'s `session.replaced` clears this wherever
-      `restart_reason` is not `unasked`, because a replacement the fold budget
+      `restart_reason` is not `unasked`, because a replacement the unasked budget
       did not buy is not the recovery renewing itself. Without that clause the
       count was of the RUN and outlived the peer it is about by any number of
-      sessions: run 110 folded at 14:08, handed over for CAPACITY four times
-      over the next seventeen hours, folded a second question at 07:24, and was
+      sessions: run 110 left a question unasked at 14:08, handed over for
+      CAPACITY four times over the next seventeen hours, left a second question
+      unasked at 07:24, and was
       failed here after 187 iterations while its pane read `working seq=26
       said=12`. The sentence a reader got named a peer that would not take a
       question; the peer at that moment was the fourth one since.
@@ -3166,7 +3167,7 @@
       PEER IS THE SAME ONE. `restarting` replaces the peer, `priming` retypes
       the brief into the replacement, and that landing was read as evidence the
       budget could be renewed — so **the recovery cleared the counter that
-      bounds recoveries.** Two runs on this machine folded twice and were never
+      bounds recoveries.** Two runs on this machine went unasked twice and were never
       failed by it; the name is `unasked_seen` because what it counts is not a
       stretch since any prompt landed.
 
@@ -3175,7 +3176,7 @@
       — `priming` is a state the recovery itself walks through — so the recovery
       renewed its own budget on every cycle. `session.replaced` carrying a
       reason other than `unasked` fires only where SOMETHING ELSE replaced the
-      peer, and the fold budget bought none of that.
+      peer, and the unasked budget bought none of that.
 
       ⚠⚠ THE OTHER TWO ARMS ASK DIFFERENT QUESTIONS AND ARE UNCHANGED, which is
       why this is a third eye rather than a tuning of one: `_event.data.retyped`
@@ -3187,13 +3188,44 @@
     <data id="unasked_seen" expr="0"/>
 
     <!--
+      ⛔⛔⛔⛔⛔ WHAT IS DONE BEFORE A SUBMIT THAT DID NOT BECOME A QUESTION IS
+      COUNTED AS ONE — the owner's instruction, 2026-09-23, and this document's
+      to decide rather than the driver's.
+
+      WHEN THE PANE DOES NOT TAKE THE INPUT: give the pane FOCUS first, then
+      SELECT THE TITLE OF THE QUESTION AT THE BOTTOM OF ITS SCREEN with the
+      pointer, and only then press again. Both conditions are the owner's own
+      measurement and both are required: *"반드시 하단 질문의 제목부분을 먼저
+      선택해야해 아무데나 누르는게 아니야"* — the TITLE, not any cell of the
+      dialog — and *"마우스로 선택하기전에, 해당 pane은 반드시 포커스가 있는
+      상태여야해"*. The driver does exactly that order
+      (`deliver::select_and_press`): a focus edge (`ESC [ I`), a left press and
+      release on the title's cell (`sprag_detect::question_title`), then the
+      delivery's own press under the contract it was already held to.
+
+      `true` turns it on. Only a question that lands after the selection
+      replaces the refusal; a selection that takes nothing leaves the refusal
+      exactly as it was, so `prompt.unasked` below arrives just as it did before
+      this key existed. A screen with no question at its bottom has no title,
+      and nothing is clicked.
+
+      ⚠ What is NOT claimed: why a selection lets the keys in. The order and the
+      target were measured; the mechanism inside the peer was not.
+
+      ⚠ How often it saved a prompt is counted, not assumed: the run row's
+      `selected` (`Deliveries::selected`) is the number of prompts that landed
+      only after the selection.
+    -->
+    <data id="select_when_unasked" expr="true"/>
+
+    <!--
       ⛔⛔⛔⛔⛔ HOW MANY JUDGED TURNS IN A ROW THIS SESSION HAS WRITTEN NOTHING —
       register item 878, and the counter `produced` was carried for two rounds
       without. Its own `<data>` said *"NOTHING GUARDS ON IT YET … what to DO
       about an empty turn is a separate decision, unproven"*. This is that
       decision, and the sentence above it is now false rather than left standing.
 
-      ⛔⛔⛔⛔ WHAT WENT UNANSWERED. A fold recovery replaced a session at
+      ⛔⛔⛔⛔ WHAT WENT UNANSWERED. A unasked recovery replaced a session at
       22:54:13 AND THE SESSION IT BOUGHT WAS DEAD. Twenty-five consecutive turns
       each read `AND THIS TURN PRODUCED NOTHING`, the pane's hook account read
       `asked=26  said=0`, and the run spent its entire `max_turns` on a corpse
@@ -3246,10 +3278,10 @@
       `unasked_seen`'s shape one condition over, and deliberately a SECOND
       counter rather than a share of that one.
 
-      ⚠⚠ A RUN THAT FOLDS ONCE AND LATER WRITES NOTHING HAS MET TWO CONDITIONS,
+      ⚠⚠ A RUN LEFT UNASKED ONCE THAT LATER WRITES NOTHING HAS MET TWO CONDITIONS,
       NOT ONE TWICE. Sharing a counter would make the second recovery
       unaffordable because of the first, and a reader of the `failed` run would
-      be told about a folded question that had nothing to do with it.
+      be told about an unasked question that had nothing to do with it.
 
       ⚠⚠⚠ ZERO means no session bought for this is still on the pane, so a peer
       that writes nothing is a session-level condition a replacement fixes. ONE
@@ -4510,19 +4542,19 @@
       lines: at 01:10:34 `working` took `prompt.unasked` into `restarting` · at
       01:10:40 `priming` took `prompt.sent` into `working`, returning the budget
       · at 01:14:33 a turn completed · at 01:14:43 `reflecting` took
-      `prompt.unasked` into `restarting` again. A SECOND fold, and the guard
-      read zero because the brief in between had landed. run 50 did the same
-      thing 5 turns apart, twice. Neither run was ever failed by this net, and
-      `retyped` did not bite either: the folded text was different each time
-      (1053 B, then 2847 B).
+      `prompt.unasked` into `restarting` again. A SECOND unasked question, and
+      the guard read zero because the brief in between had landed. run 50 did
+      the same thing 5 turns apart, twice. Neither run was ever failed by this
+      net, and `retyped` did not bite either: the unasked text was different
+      each time (1053 B, then 2847 B).
 
       ⚠⚠⚠ SO THE CLEAR IS GONE AND THE BUDGET IS ONE PER RUN. The counter's
       question is unchanged — *will this peer take a question at all* — but the
       answer may no longer be bought back by the one prompt whose landing is
       the replacement's own doing.
 
-      ⚠⚠ WHAT THAT COSTS, STATED RATHER THAN HIDDEN: a run whose peer folds a
-      prompt twice in an hour, with real work in between, now stops for a
+      ⚠⚠ WHAT THAT COSTS, STATED RATHER THAN HIDDEN: a run whose peer leaves a
+      prompt unasked twice in an hour, with real work in between, now stops for a
       person instead of quietly buying another session. That is the trade item
       745 asked for in its own title — *an unattended run can throw a session
       away every five turns for ever and nobody is called* — and being called
@@ -5612,7 +5644,7 @@
       IN A ROW — register item 878, and the transition `produced` was carried for
       two rounds without.
 
-      ⛔⛔⛔⛔ WHAT THE MISSING EDGE COST, measured. A fold recovery replaced a
+      ⛔⛔⛔⛔ WHAT THE MISSING EDGE COST, measured. A unasked recovery replaced a
       session at 22:54:13 and the session it bought was dead. Twenty-five turns
       followed, every one of them rendering the `Working` to `Judging` line with
       `AND THIS TURN PRODUCED NOTHING` on it; the pane's own hook account read
@@ -7158,25 +7190,31 @@
       BUDGET BACK — register item 762, and the other half of 745(B).
 
       745(B) removed the clear that lived on `priming`'s `prompt.sent` because the
-      prompt that lands after a fold recovery IS THE BRIEF THE RECOVERY ITSELF
+      prompt that lands after an unasked recovery IS THE BRIEF THE RECOVERY ITSELF
       RETYPED: the recovery renewed the budget that bounds recoveries. That
       argument is about PROVENANCE, not about the peer being gone. A session this
       run replaced for capacity, for economics, or because it could not read its
-      own numbers is a peer the fold budget did not pay for, and the earlier
+      own numbers is a peer the unasked budget did not pay for, and the earlier
       refusal is not evidence about it.
 
       ⛔⛔⛔⛔⛔ MEASURED, ON THREE RUNS OF THIS MACHINE, AND THE TWO GROUPS
       SEPARATE COMPLETELY ON THAT ONE VARIABLE:
 
-        run 110  fold 14:08, then FOUR `capacity` replacements (18:17, 22:22,
-                 02:25, 06:40), then a second fold at 07:24 = `failed` after 187
-                 iterations and 177,857 bytes. The peer was healthy: its pane
-                 read `working seq=26 said=12` immediately afterwards. The
-                 session that folded was FOUR SESSIONS REMOVED from the one the
+        run 110  unasked 14:08, then FOUR `capacity` replacements (18:17,
+                 22:22, 02:25, 06:40), then a second unasked question at 07:24
+                 = `failed` after 187 iterations and 177,857 bytes. The peer
+                 was healthy: its pane read `working seq=26 said=12`
+                 immediately afterwards. The session that left the first
+                 question unasked was FOUR SESSIONS REMOVED from the one the
                  recovery bought, and the budget had outlived every one of them.
-        run 50   fold 00:13:48, second fold 00:32:32, and the only replacement
-                 between them was the recovery's own.
-        run 51   fold 01:10:34, second fold 01:14:43, likewise.
+        run 50   unasked 00:13:48, second unasked question 00:32:32, and the
+                 only replacement between them was the recovery's own.
+        run 51   unasked 01:10:34, second unasked question 01:14:43, likewise.
+
+      ⚠ These rows were first written with the word *fold* for each unasked
+      question. Corrected 2026-09-23 (owner): the event is `prompt.unasked`,
+      which is not a fold — folded pastes went unasked 0 times over the 78 runs
+      that counted both (register item 889).
 
       So 50 and 51 are still stopped here, which is what 745(B) is for, and 110
       is not, which is what this item is for. Zero against four: the separation
@@ -7189,9 +7227,9 @@
       transition ago, so the question is answerable exactly.
 
       ⚠⚠⚠ AN UNCLASSIFIED WORD IS NOT WAVED THROUGH. An author who adds a
-      SECOND fold recovery reason and forgets this `cond` would get the loose
-      behaviour silently, so `the_fold_budget_is_returned_by_every_replacement_it_did_not_buy`
-      holds this `cond` against `RestartReason::returns_the_fold_budget` and reds
+      SECOND unasked recovery reason and forgets this `cond` would get the loose
+      behaviour silently, so `the_unasked_budget_is_returned_by_every_replacement_it_did_not_buy`
+      holds this `cond` against `RestartReason::returns_the_unasked_budget` and reds
       when the two disagree.
 
       ⚠ IT IS HERE AND NOT ON `restarting`'s `onentry` because the budget goes
@@ -7222,7 +7260,7 @@
         ⛔⛔⛔⛔⛔ AND THE SILENCE BUDGET IS RETURNED BY THE SAME RULE, ASKED
         SEPARATELY — register item 878, and it is an `<if>` inside this arm rather
         than a second clause on its guard for a measured reason: the guard above
-        is held byte for byte against `RestartReason::returns_the_fold_budget`,
+        is held byte for byte against `RestartReason::returns_the_unasked_budget`,
         and a second word in it would say that a silence replacement keeps the
         FOLD budget spent. It does not. The two recoveries have two budgets, and
         each hands the other's back.
@@ -7230,7 +7268,7 @@
         ⚠⚠ A RUN THAT FOLDS ONCE AND LATER GOES SILENT HAS MET TWO CONDITIONS,
         NOT ONE TWICE. Sharing one counter would make the second recovery
         unaffordable because of the first, and the `failed` run's reader would be
-        told about a folded question that had nothing to do with it.
+        told about an unasked question that had nothing to do with it.
       -->
       <if cond="restart_reason != 'wrote_nothing'">
         <assign location="empty_seen" expr="0"/>
@@ -7545,16 +7583,19 @@
     the moment any prompt landed, for the reason written under it: a question
     that landed makes the next refusal a NEW fact. In this cycle a question
     lands every time — the brief — so the budget was spent and handed straight
-    back. A bound on folds cannot express *the same text coming back*, however
+    back. A bound on unasked questions cannot express *the same text coming back*, however
     it is tuned, and the gate
     `a_brief_that_lands_no_longer_hands_back_the_bound_on_a_refused_prompt`
     pins that against the day somebody tries.
 
     ⛔⛔ AND THE CLEARING IS GONE SINCE REGISTER ITEM 745(B), so the guard below
-    now stops this run on its SECOND fold whatever the text was. That does not
-    make this edge redundant: it fires on the FIRST, one replacement sooner, and
-    it is the only one of the two that can name the remedy — *shorten the prompt
-    or split it* rather than *look at the session*.
+    now stops this run on its SECOND unasked question whatever the text was.
+    That does not make this edge redundant: it fires on the FIRST, one
+    replacement sooner, and it is the only one of the two that can say *the
+    same bytes came back* rather than *look at the session*. ⚠ It once named
+    *shorten the prompt or split it* as the remedy; register item 856 measured
+    that size decides nothing, and the remedy that was measured to take the
+    keys is `select_when_unasked`'s (owner, 2026-09-23).
 
     ⚠⚠⚠ SO THE DRIVER ANSWERS IT, because only the driver holds the earlier
     reading — the bytes it put on the pane last time this happened. It says
@@ -7603,6 +7644,14 @@
     folded composer and concatenates onto a painted one). The replacement is the
     remedy this document has evidence for, not the only one there could be.
 
+    ⛔⛔⛔⛔⛔ AND SINCE 2026-09-23 IT IS NOT THE FIRST ONE. The owner measured
+    what takes the keys on such a pane: give it FOCUS, then SELECT THE TITLE OF
+    THE QUESTION AT THE BOTTOM OF ITS SCREEN, then press. `select_when_unasked`
+    (in the datamodel above) makes the driver do exactly that before this event
+    is raised, so `prompt.unasked` now arrives only for a question that the
+    selection did not take either — or for a screen with no question at its
+    bottom to select.
+
     ⚠⚠⚠⚠⚠ AND THE REMEDY WAS ON ONE STATE WHILE THE CONDITION IS ON SIX. Every
     state that OWES the peer a prompt can meet it — `priming`, `working` (the
     turn prompt, carried by four transitions into it), `disputing`, `reflecting`,
@@ -7622,8 +7671,8 @@
     ending must not buy a session.
 
     ⚠⚠ ONE FREE REPLACEMENT PER PEER THE BUDGET BOUGHT, AND THE GUARD IS WHAT
-    MAKES THIS A RECOVERY RATHER THAN A SPIN. A peer that folds a second
-    question, in a run that bought a session for the first AND HAS NOT REPLACED
+    MAKES THIS A RECOVERY RATHER THAN A SPIN. A peer that leaves a second
+    question unasked, in a run that bought a session for the first AND HAS NOT REPLACED
     THAT SESSION SINCE FOR ANY OTHER REASON, is not something another restart
     reaches. That is a person's, and `failed` is how this document says so.
 
@@ -7631,8 +7680,9 @@
     RUN PAID FOR ITS ABSENCE. This sentence read *"if any later question is
     folded away too, whatever it says and however much work has happened in
     between, the run stops for a person"* — which is what it did to run 110:
-    it folded at 14:08, handed over for CAPACITY four times across the next
-    seventeen hours, folded again at 07:24 and was ended here, 187 iterations
+    it left a question unasked at 14:08, handed over for CAPACITY four times
+    across the next seventeen hours, left another unasked at 07:24 and was
+    ended here, 187 iterations
     in, with the pane it had just been driving reading `working seq=26
     said=12`. The clear lives on `restarting`'s `session.replaced`, where the
     reason the replacement was bought for is still readable.
@@ -7642,7 +7692,7 @@
     rather than one per run"* — REGISTER ITEM 745(B) MEASURED THAT CLEARING
     UNDOING THE NET. The prompt that lands after a replacement is the brief the
     replacement itself retyped, so the recovery renewed its own budget; runs 50
-    and 51 on this machine each folded twice and neither was ever failed here.
+    and 51 on this machine each went unasked twice and neither was ever failed here.
     Neither of them replaced its session for anything but the recovery, so both
     are still stopped by the arm below; what 762 gave back is the case those two
     do not cover, and `unasked_seen`'s own comment carries both traces.

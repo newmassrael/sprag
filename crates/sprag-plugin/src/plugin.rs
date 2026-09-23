@@ -458,6 +458,13 @@ pub struct Deliveries {
     /// send the key. Those are different faults with different remedies, and until this field
     /// existed they published the same number.
     pub released: u32,
+    /// **HOW MANY OF [`made`](Self::made) LANDED ONLY AFTER THE PANE WAS FOCUSED AND THE BOTTOM
+    /// QUESTION'S TITLE WAS SELECTED** — the remedy a document names with `select_when_unasked`
+    /// ([`crate::deliver::select_and_press`]). A sub-count of `made`, like
+    /// [`released`](Self::released): each of these was a refusal first and a question after the
+    /// selection, and without this number a run whose selection saved it would look like a run
+    /// whose first press landed.
+    pub selected: u32,
     /// How many prompts this run typed onto a pane, saw painted there, and **never got asked** —
     /// [`crate::deliver::Delivered::Unsubmitted`], the composer holding a question nobody
     /// submitted.
@@ -536,6 +543,7 @@ impl Deliveries {
         made: 0,
         folded: 0,
         released: 0,
+        selected: 0,
         unsubmitted: 0,
         unreported: 0,
         unaccounted: 0,

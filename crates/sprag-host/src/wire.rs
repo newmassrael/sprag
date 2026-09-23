@@ -136,6 +136,10 @@ pub const MOUSE_KIND_FIELD: &str = "kind";
 pub const MOUSE_COL_FIELD: &str = "col";
 /// A mouse report's field naming the ROW, zero-based from the pane's top edge.
 pub const MOUSE_ROW_FIELD: &str = "row";
+/// [`FOCUS_ACTION`]'s one field: `true` when the pane gained focus, `false` when it lost it. One
+/// home for the name, so the driver that sends the edge and the host that parses it cannot spell it
+/// apart.
+pub const FOCUSED_FIELD: &str = "focused";
 
 /// The modifiers a keystroke or a mouse report carries, re-exported so a WRITER needs only this
 /// module — register item 559.
@@ -2723,7 +2727,7 @@ impl PaneGrammar {
     /// [`FOCUS_ACTION`] — which way the focus edge went. REQUIRED: there is no sensible default for
     /// "did this pane gain or lose focus", and the parser refuses a call without it.
     pub const FOCUS: &'static [CallForm] =
-        &[CallForm::object(&[ArgGrammar::open("focused", "bool")])];
+        &[CallForm::object(&[ArgGrammar::open(FOCUSED_FIELD, "bool")])];
 
     /// [`CLIPBOARD_ANSWER_ACTION`] — the answer to a pending OSC 52 read.
     ///

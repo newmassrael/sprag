@@ -113,7 +113,7 @@ mod choice;
 pub mod peer;
 mod track;
 
-pub use choice::{Choice, Question, question};
+pub use choice::{Choice, Question, Title, question, question_title};
 pub use track::{DEFAULT_SETTLE, Hysteresis, Report, ReportOutcome, Tracker};
 
 /// How many rule evaluations have run, process-wide.

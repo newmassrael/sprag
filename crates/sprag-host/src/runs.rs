@@ -3570,6 +3570,11 @@ pub struct PersistedDeliveries {
     /// row's all-zero split means *delivered nothing* or *never counted*.
     #[serde(default)]
     pub unaccounted: u32,
+    /// [`sprag_plugin::Deliveries::selected`] — prompts that landed only after the pane was focused
+    /// and its bottom question's title selected. `#[serde(default)]`, and here the default is TRUE
+    /// rather than a residue: a run stored before the remedy existed could not have selected.
+    #[serde(default)]
+    pub selected: u32,
 }
 
 impl From<sprag_plugin::Deliveries> for PersistedDeliveries {
@@ -3581,6 +3586,7 @@ impl From<sprag_plugin::Deliveries> for PersistedDeliveries {
             unreported: live.unreported,
             released: live.released,
             unaccounted: live.unaccounted,
+            selected: live.selected,
         }
     }
 }
@@ -3594,6 +3600,7 @@ impl From<PersistedDeliveries> for sprag_plugin::Deliveries {
             unreported: stored.unreported,
             released: stored.released,
             unaccounted: stored.unaccounted,
+            selected: stored.selected,
         }
     }
 }
@@ -10297,6 +10304,7 @@ mod tests {
         let progress = ProgressCell::default();
         lock(&progress).deliveries = Some(sprag_plugin::Deliveries {
             unaccounted: 0,
+            selected: 0,
             made: 14,
             folded: 3,
             // ⚠ THE THIRD COUNT TRAVELS TOO — register item 617, and it is set to a value distinct
@@ -10878,6 +10886,7 @@ mod tests {
             let mut moving = lock(&progress);
             moving.deliveries = Some(sprag_plugin::Deliveries {
                 unaccounted: 0,
+                selected: 0,
                 made: 9,
                 folded: 2,
                 released: 1,
@@ -11206,6 +11215,7 @@ mod tests {
         // ── The two shapes the wrong predicates get wrong, both filed as their own items ──────
         let wedged = stored(Some(sprag_plugin::Deliveries {
             unaccounted: 0,
+            selected: 0,
             made: 0,
             folded: 0,
             released: 0,
@@ -11214,6 +11224,7 @@ mod tests {
         }));
         let swallowed = stored(Some(sprag_plugin::Deliveries {
             unaccounted: 0,
+            selected: 0,
             made: 0,
             folded: 0,
             released: 0,
@@ -11236,6 +11247,7 @@ mod tests {
         // ── And the three arms are DISTINCT, driven through a real stored row each ────────────
         let counted = stored(Some(sprag_plugin::Deliveries {
             unaccounted: 0,
+            selected: 0,
             made: 3,
             folded: 1,
             released: 0,

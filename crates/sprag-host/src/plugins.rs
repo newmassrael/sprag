@@ -922,6 +922,11 @@ pub const RUN_UNREPORTED_KEY: &str = "unreported";
 /// at that pane*. This is earned by register item 669's rule instead — the `Released` contract was
 /// built for that item, shipped, and no run could say whether it had ever answered once.
 pub const RUN_RELEASED_KEY: &str = "released";
+/// The answer key carrying **HOW MANY PROMPTS LANDED ONLY AFTER THE PANE WAS FOCUSED AND THE BOTTOM
+/// QUESTION'S TITLE WAS SELECTED** — [`sprag_plugin::Deliveries::selected`], a sub-count of
+/// [`RUN_DELIVERED_KEY`]. A driver built before the remedy existed does not send it, and reads as
+/// `0` here — which is true of that build rather than a guess: it could not select.
+pub const RUN_SELECTED_KEY: &str = "selected";
 /// ⛔⛔⛔⛔⛔ The answer key carrying **HOW MANY PROMPTS THIS RUN PUT ON A PANE AND COULD NOT
 /// ACCOUNT FOR** — [`sprag_plugin::Deliveries::unaccounted`], and register item 910.
 ///
@@ -6889,6 +6894,7 @@ pub fn progress_to_json(progress: &sprag_plugin::Progress) -> Value {
         // inside, never instead of it: a driver that sent this and not `folded` would be publishing
         // a sub-count with no container.
         RUN_RELEASED_KEY: progress.deliveries.map(|it| it.released),
+        RUN_SELECTED_KEY: progress.deliveries.map(|it| it.selected),
         RUN_UNSUBMITTED_KEY: progress.deliveries.map(|it| it.unsubmitted),
         RUN_UNREPORTED_KEY: progress.deliveries.map(|it| it.unreported),
         // ⛔⛔⛔⛔⛔ AND THE PROMPTS THIS RUN COULD NOT ACCOUNT FOR — register item 910. Beside the
@@ -7517,6 +7523,9 @@ pub fn progress_from_report(reported: &Value) -> ReportedProgress {
             // submit* about a build that could not have said otherwise. That reading is the one the
             // whole item is about: it is what every run said before this key existed.
             released: small(beside.get(RUN_RELEASED_KEY))?,
+            // ⚠ NOT `?`, unlike its neighbours: a driver that predates the key could not select,
+            // so `0` is that build's true answer and not an unknown dressed as one.
+            selected: small(beside.get(RUN_SELECTED_KEY)).unwrap_or(0),
             // ⛔⛔⛔⛔⛔ AND THE SIXTH IS `?` TOO, on the block's whole-or-nothing rule and register
             // item 910. A driver that reports five counters and not this one has not counted the
             // one road a run can DIE on, and answering `0` would publish *this run accounted for
@@ -8051,6 +8060,7 @@ pub(crate) fn run_to_json(run: &RunSummary, seat: Option<u64>, look: LiveLook) -
         // row carrying part of it is what that type exists to prevent. ⚠ It needs no clause of its
         // own in the predicate: a fold is a delivery, so `released > 0` implies `made > 0`.
         entry[RUN_RELEASED_KEY] = json!(deliveries.released);
+        entry[RUN_SELECTED_KEY] = json!(deliveries.selected);
         // ⛔⛔⛔⛔⛔ AND THE PROMPTS NOTHING COULD ACCOUNT FOR — register item 910, published under
         // the same predicate for the same reason: it is one value. ⚠ And it WIDENS that predicate
         // rather than riding on it — `Deliveries::is_empty` asks `attempted()`, which this counter
@@ -8982,6 +8992,27 @@ pub fn context_sentence(run: &Value) -> Option<String> {
 /// projection twice, the exact drift this file's `outcome_to_json` is `pub` to prevent.
 #[must_use]
 pub fn delivery_sentence(run: &Value) -> Option<String> {
+    // ⚠ THE SELECTION IS SAID BESIDE THE READING, NEVER INSTEAD OF IT: a prompt that landed after
+    // the pane was focused and its bottom question's title selected is a DELIVERY, so it is inside
+    // every count below; this clause is what tells it from one whose first press landed.
+    let reading = delivery_reading(run);
+    let selected = run[RUN_SELECTED_KEY].as_u64().unwrap_or(0);
+    if selected == 0 {
+        return reading;
+    }
+    let clause = format!(
+        "{selected} prompt(s) landed only after the pane was focused and the title of the question \
+         at the bottom of its screen was selected"
+    );
+    Some(match reading {
+        Some(reading) => format!("{reading}; {clause}"),
+        None => clause,
+    })
+}
+
+/// [`delivery_sentence`] without the selection clause — every reading this row had before the
+/// remedy existed, unchanged.
+fn delivery_reading(run: &Value) -> Option<String> {
     /// One count off a run's answer, saturating rather than wrapping — a number too large to be a
     /// `u32` is a defect somewhere else, and a reader must not be told a small one instead.
     fn count(run: &Value, key: &str) -> u32 {
@@ -8995,6 +9026,7 @@ pub fn delivery_sentence(run: &Value) -> Option<String> {
         made: count(run, RUN_DELIVERED_KEY),
         folded: count(run, RUN_FOLDED_KEY),
         released: count(run, RUN_RELEASED_KEY),
+        selected: count(run, RUN_SELECTED_KEY),
         unsubmitted: count(run, RUN_UNSUBMITTED_KEY),
         unreported: count(run, RUN_UNREPORTED_KEY),
         unaccounted: count(run, RUN_UNACCOUNTED_KEY),
@@ -12057,6 +12089,7 @@ mod tests {
                     0,
                     Some(crate::runs::PersistedDeliveries {
                         unaccounted: 0,
+                        selected: 0,
                         made: 0,
                         folded: 0,
                         unsubmitted: 1,
@@ -12316,6 +12349,7 @@ mod tests {
         assert_eq!(
             sprag_plugin::Deliveries {
                 unaccounted: 0,
+                selected: 0,
                 made: 9,
                 folded: 3,
                 released: 2,
@@ -12386,6 +12420,7 @@ mod tests {
                 unreported: 2,
                 released: 1,
                 unaccounted: 5,
+                selected: 0,
             }),
             "⚠⚠⚠⚠⚠ THE PREMISE: a report carrying every count must be read, and each number must \
              land in its own field — without this the refusals below are satisfied by a reader that \
@@ -24546,6 +24581,7 @@ mod tests {
                         }],
                         deliveries: Some(sprag_plugin::Deliveries {
                             unaccounted: 0,
+                            selected: 0,
                             made: 5,
                             folded: 2,
                             unsubmitted: 1,
@@ -24746,6 +24782,7 @@ mod tests {
             saved.deliveries,
             Some(crate::runs::PersistedDeliveries {
                 unaccounted: 0,
+                selected: 0,
                 made: 5,
                 folded: 2,
                 unsubmitted: 1,
@@ -24807,6 +24844,7 @@ mod tests {
             let mut moving = lock(&cell);
             moving.deliveries = Some(sprag_plugin::Deliveries {
                 unaccounted: 0,
+                selected: 0,
                 made: 7,
                 folded: 0,
                 released: 0,

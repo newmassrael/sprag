@@ -792,6 +792,10 @@ const SERVICE_SAYS: &str = "says";
 /// **HOW LONG TO LEAVE AN OUTAGE ALONE**, in milliseconds, as the document spells it.
 const SERVICE_RETRY_MS: &str = "service_retry_ms";
 
+/// **WHETHER A SUBMIT THAT DID NOT BECOME A QUESTION IS SELECTED AND PRESSED AGAIN**, as the
+/// document spells it — see [`OuterLoop::selects_when_unasked`].
+pub const SELECT_WHEN_UNASKED_KEY: &str = "select_when_unasked";
+
 /// **WHAT TO TYPE WHEN THE WAIT IS OVER**, as the document spells it.
 const SERVICE_RETRY_TEXT: &str = "service_retry_text";
 
@@ -4328,7 +4332,7 @@ pub enum RestartReason {
     /// anything took — the replacement retypes the brief, so a landing used to hand the budget
     /// straight back to the recovery that had just spent it. ⚠ Register item 762 then gave it back
     /// on the one replacement that recovery did NOT buy, which is
-    /// [`returns_the_fold_budget`](Self::returns_the_fold_budget).
+    /// [`returns_the_unasked_budget`](Self::returns_the_unasked_budget).
     /// ⚠ And it is raised only where the pane can REPORT being asked — at a scraped pane *nobody
     /// reported it* is not evidence, and the delivery's old refusal stands.
     Unasked,
@@ -4337,7 +4341,7 @@ pub enum RestartReason {
     ///
     /// # ⛔⛔⛔⛔⛔ The measurement, and what had no remedy at all
     ///
-    /// A fold recovery replaced a session at 22:54:13 and **the session it bought was dead**. Each
+    /// A unasked recovery replaced a session at 22:54:13 and **the session it bought was dead**. Each
     /// of the twenty-five turns that followed rendered the `Working` to `Judging` line carrying
     /// `AND THIS TURN PRODUCED NOTHING`, the pane's own hook account read `asked=26  said=0`, and
     /// the run spent its whole `max_turns` on a corpse before ending `exhausted (turns) after 87
@@ -4407,13 +4411,13 @@ impl RestartReason {
         Self::ALL.into_iter().find(|reason| reason.word() == word)
     }
 
-    /// ⛔⛔⛔⛔⛔ **WHETHER A REPLACEMENT BOUGHT FOR THIS REASON HANDS THE FOLD BUDGET BACK** —
+    /// ⛔⛔⛔⛔⛔ **WHETHER A REPLACEMENT BOUGHT FOR THIS REASON HANDS THE UNASKED BUDGET BACK** —
     /// register item 762, and the half of 745(B) that was measured missing.
     ///
-    /// `ai_loop.scxml` gives a run ONE session replacement for a folded question
-    /// ([`Unasked`](Self::Unasked)) and says `failed` on the next fold. Register item 745(B) had
+    /// `ai_loop.scxml` gives a run ONE session replacement for an unasked question
+    /// ([`Unasked`](Self::Unasked)) and says `failed` on the next one. Register item 745(B) had
     /// just removed the clear that lived on `priming`'s `prompt.sent`, and correctly: the prompt
-    /// that lands after a fold recovery is **the brief that recovery itself retyped**, so the
+    /// that lands after an unasked recovery is **the brief that recovery itself retyped**, so the
     /// recovery kept renewing the budget that bounds recoveries. What that repair left behind is
     /// that the count then outlived the peer it is about, by any number of sessions.
     ///
@@ -4433,21 +4437,21 @@ impl RestartReason {
     ///
     /// ⚠⚠ **EXHAUSTIVE, WITH NO `_` ARM, WHICH IS THE POINT.** A seventh restart reason cannot be
     /// added without somebody deciding which side of this line it falls on — the compiler asks. And
-    /// `the_fold_budget_is_returned_by_every_replacement_it_did_not_buy` holds the answer against
+    /// `the_unasked_budget_is_returned_by_every_replacement_it_did_not_buy` holds the answer against
     /// the `cond` in the document, because a classification only this file knows is one the machine
     /// does not act on.
     #[must_use]
-    pub const fn returns_the_fold_budget(self) -> bool {
+    pub const fn returns_the_unasked_budget(self) -> bool {
         match self {
             // ⚠ THE RECOVERY'S OWN. This is the replacement the budget paid for, and a budget that
             // renewed itself on being spent would bound nothing at all — 745(B) exactly.
             Self::Unasked => false,
             // Every other word is a decision reached out of numbers this document read — about
             // context, about cost, and (register item 878) about a session that answered nothing —
-            // with no folded question anywhere in it.
+            // with no unasked question anywhere in it.
             //
             // ⛔⛔⛔ `WroteNothing` SITS ON THIS SIDE AND THE LINE IS PROVENANCE, exactly as run
-            // 110 settled it: the fold budget did not buy a session replaced for writing nothing,
+            // 110 settled it: the unasked budget did not buy a session replaced for writing nothing,
             // so the earlier refusal is not evidence about the peer now on the pane. ⚠ The two
             // recoveries are separately bounded on purpose — `unasked_seen` and `empty_seen` —
             // because a run that folds once and later writes nothing has met two conditions, not
@@ -4518,18 +4522,28 @@ impl RestartReason {
             // it did to run 110: folded at 14:08, handed over for capacity four times over the
             // next seventeen hours, folded again at 07:24, ended here at 187 iterations with the
             // pane it had been driving reading `working seq=26 said=12`. See
-            // [`returns_the_fold_budget`](Self::returns_the_fold_budget) for the arithmetic; runs
+            // [`returns_the_unasked_budget`](Self::returns_the_unasked_budget) for the arithmetic; runs
             // 50 and 51 replaced their sessions for nothing but the recovery, so they are stopped
             // exactly as before.
+            // ⛔⛔⛔⛔⛔ AND IT NO LONGER CALLS THIS A FOLD (owner, 2026-09-23). It read *"the next
+            // fold buys another one … Fold a second question"*, and this repository's own count
+            // says otherwise: over the 78 runs whose build carried both counters, folded pastes
+            // went unasked 0 times and prompts shown on the pane 52 times (`deliver.rs`, register
+            // item 889). A reader handed *fold* went looking for a fold, found one in `sprag folds`
+            // and raised a remedy for it to critical — for a road that had never failed.
             Self::Unasked => {
                 "the peer would not take the question: the prompt reached its pane and the submit \
-                 after it never became a question the agent reported. Nothing is wrong with the \
-                 work or the milestone — what is wedged is the SESSION's own composer, and this is \
-                 the run opening a fresh one rather than throwing away what it has already paid \
-                 for. This run gets ONE such replacement UNTIL SOMETHING ELSE REPLACES THE SESSION \
-                 IT BOUGHT: hand over for capacity or for cost and the next fold buys another one, \
-                 because the peer this bound is about is gone. Fold a second question while that \
-                 same session is still on the pane and the run stops for a person"
+                 after it never became a question the agent reported — and where the document asks \
+                 for it, focusing the pane and selecting the title of the question at the bottom \
+                 of its screen did not make it one either. Nothing is wrong with the work or the \
+                 milestone, and this is the run opening a fresh session rather than throwing away \
+                 what it has already paid for. This run gets ONE such replacement UNTIL SOMETHING \
+                 ELSE REPLACES THE SESSION IT BOUGHT: hand over for capacity or for cost and the \
+                 next unasked question buys another one, because the peer this bound is about is \
+                 gone. Leave a second question unasked while that same session is still on the \
+                 pane and the run stops for a person. Do not read this as a folded paste: over the \
+                 78 runs that counted both, a folded paste went unasked 0 times and a prompt shown \
+                 on the pane 52 times"
             }
             // ⛔⛔⛔⛔⛔ REGISTER ITEM 878, AND THE REMEDY IS NAMED BECAUSE THE MEASURED RUN HAD
             // NONE: a reader who sees this word is looking at a run that CAUGHT the corpse, where
@@ -4541,7 +4555,7 @@ impl RestartReason {
                  replaced it rather than going on prompting it. NOTHING IS WRONG WITH THE WORK: \
                  this is the loop noticing a dead session, which before register item 878 it \
                  diagnosed on every turn and did nothing about. What is unmeasured is WHY a fresh \
-                 session arrives dead — the run this is made of got one out of a fold recovery. \
+                 session arrives dead — the run this is made of got one out of an unasked recovery. \
                  This run gets ONE such replacement until something else replaces the session it \
                  bought; a second silence on that same session stops the run for a person"
             }
@@ -6322,7 +6336,8 @@ impl Repeated {
 ///
 /// # ⚠⚠⚠⚠ Why the document's existing bound cannot express it, however it is tuned
 ///
-/// `unasked_seen` counts FOLDS IN THE RUN: one free replacement, and a second fold ends the run.
+/// `unasked_seen` counts QUESTIONS THAT WENT UNASKED: one free replacement, and a second unasked
+/// question ends the run.
 /// That guard is correct and it is not this one — it answers *will this peer take a question at
 /// all?*, and it names no text, so the run it stops is told to look at the SESSION rather than at
 /// the brief.
@@ -10529,6 +10544,20 @@ impl OuterLoop {
     /// [`NotScreenable`], naming the rule or the shape.
     pub fn screening(&self) -> Result<Option<ScreenRules>, NotScreenable> {
         Self::rules_in(&self.script, &self.session)
+    }
+
+    /// The document's `select_when_unasked` — whether a submit that did not become a question is
+    /// followed by focusing the pane, selecting the bottom question's title and pressing again.
+    ///
+    /// The DOCUMENT decides, and the driver only reads it: `true` only where the datamodel holds a
+    /// boolean `true`. A document that does not name the key selects nothing, which is how every
+    /// document behaved before the key existed.
+    pub fn selects_when_unasked(&self) -> bool {
+        matches!(
+            self.script
+                .get_variable(&self.session, SELECT_WHEN_UNASKED_KEY),
+            Ok(ScriptValue::Bool(true))
+        )
     }
 
     /// [`screening`](Self::screening)'s reading, separated from the loop that holds the engine —
@@ -15481,20 +15510,32 @@ impl OuterLoop {
             self.faced = Some(facing);
             return Ok(written);
         }
-        let delivered = deliver(
-            panes,
-            run,
-            self.driving.pane,
-            text,
-            &Delivery {
-                // A prompt longer than the pane is wide arrives in pieces — see the constant.
-                confirm: confirmable(text),
-                then_press: vec![crate::access::KeyStroke::named("Enter")],
-                // ⚠ THE READING TAKEN ABOVE, not a second ask — see the method's own doc.
-                submitted_when: self.submit_lands_when(&facing),
-                ..Delivery::new()
-            },
-        )?;
+        let spec = Delivery {
+            // A prompt longer than the pane is wide arrives in pieces — see the constant.
+            confirm: confirmable(text),
+            then_press: vec![crate::access::KeyStroke::named("Enter")],
+            // ⚠ THE READING TAKEN ABOVE, not a second ask — see the method's own doc.
+            submitted_when: self.submit_lands_when(&facing),
+            ..Delivery::new()
+        };
+        let mut delivered = deliver(panes, run, self.driving.pane, text, &spec)?;
+        // ⚠⚠⚠ **A SUBMIT THAT DID NOT BECOME A QUESTION IS SELECTED AND PRESSED AGAIN, WHERE THE
+        // DOCUMENT SAYS SO** — owner's instruction, 2026-09-23. The pane is focused, the TITLE of
+        // the question at the bottom of its screen is clicked, and the press is repeated under the
+        // same contract ([`crate::deliver::select_and_press`]). Only a question that then landed
+        // replaces the refusal; a selection that took nothing leaves the refusal exactly as it was,
+        // so the document's `prompt.unasked` edges see what they always saw.
+        if matches!(
+            delivered,
+            Delivered::Unsubmitted { .. } | Delivered::Unreported { .. }
+        ) && self.selects_when_unasked()
+            && let Some(after) =
+                crate::deliver::select_and_press(panes, run, self.driving.pane, text, &spec)?
+            && after.refused().is_none()
+        {
+            self.deliveries.selected = self.deliveries.selected.saturating_add(1);
+            delivered = after;
+        }
         // ⚠⚠⚠⚠ **WHAT PROVED IT ARRIVED, BEFORE ANY OF THE REFUSALS BELOW READ THE SAME ANSWER** —
         // register item 434. Written unconditionally so the slot describes THIS delivery and only
         // this one: the two answers that are refusals map to `None`, which clears an earlier
@@ -21897,7 +21938,7 @@ mod tests {
 
     /// ⛔⛔⛔⛔⛔ **THE DOCUMENT RETURNS THE FOLD BUDGET FOR EXACTLY THE REASONS THIS DRIVER SAYS
     /// IT SHOULD** — register item 762, and the ratchet that keeps
-    /// [`RestartReason::returns_the_fold_budget`] from being a classification nothing acts on.
+    /// [`RestartReason::returns_the_unasked_budget`] from being a classification nothing acts on.
     ///
     /// # ⚠⚠⚠ Two artefacts, and the gate reads BOTH
     ///
@@ -21910,14 +21951,14 @@ mod tests {
     ///
     /// # ⚠⚠ The safe default was chosen, and it is why the assertion is an equality
     ///
-    /// The `cond` is written `restart_reason != 'unasked'`, so an author who adds a second fold
+    /// The `cond` is written `restart_reason != 'unasked'`, so an author who adds a second unasked question
     /// recovery word and forgets it gets the LOOSE behaviour — the budget handed back for a
     /// replacement the recovery bought. That is 745(B)'s defect returning, and it is silent by
     /// construction: every existing gate stays green, because the walk is identical and only the
     /// arithmetic differs. What catches it is this equality going red the moment
-    /// `returns_the_fold_budget` says `false` for a word the `cond` does not exclude.
+    /// `returns_the_unasked_budget` says `false` for a word the `cond` does not exclude.
     #[test]
-    fn the_fold_budget_is_returned_by_every_replacement_it_did_not_buy() {
+    fn the_unasked_budget_is_returned_by_every_replacement_it_did_not_buy() {
         /// The authority. ⚠ Read as TEXT, for its neighbours' reason: the compiled machine cannot
         /// answer *what does this transition's guard say*.
         const DOCUMENT: &str = include_str!("ai_loop.scxml");
@@ -21960,7 +22001,7 @@ mod tests {
         assert!(
             arms.iter().any(|(_, _, clears)| *clears),
             "⛔⛔⛔⛔⛔ REGISTER ITEM 762: no `session.replaced` arm in `ai_loop.scxml` carries \
-             {CLEARS}, so the fold budget is spent for the life of the run again and a run that \
+             {CLEARS}, so the unasked budget is spent for the life of the run again and a run that \
              hands over for capacity four times between two folds is failed on the second. That is \
              run 110, which died at 187 iterations with its pane reading `working seq=26 said=12`. \
              Found {arms:?}",
@@ -21990,14 +22031,14 @@ mod tests {
             .collect();
         let keeps: std::collections::BTreeSet<&str> = RestartReason::ALL
             .into_iter()
-            .filter(|reason| !reason.returns_the_fold_budget())
+            .filter(|reason| !reason.returns_the_unasked_budget())
             .map(RestartReason::word)
             .collect();
         assert_eq!(
             excluded, keeps,
             "⛔⛔⛔⛔⛔ REGISTER ITEM 762: the document's guard ({:?}) and \
-             `RestartReason::returns_the_fold_budget` disagree about which replacements hand the \
-             fold budget back. A word this driver classifies as the recovery's OWN, that the guard \
+             `RestartReason::returns_the_unasked_budget` disagree about which replacements hand the \
+             unasked budget back. A word this driver classifies as the recovery's OWN, that the guard \
              does not exclude, renews the budget that bounds the recovery — register item 745(B) \
              measured that on runs 50 and 51 and it is invisible to every other gate here. A word \
              the guard excludes that the driver calls somebody else's leaves register item 762's \
@@ -31148,7 +31189,7 @@ mod tests {
             mute_to,
             AiLoopState::Restarting,
             "⛔⛔⛔⛔⛔ ITEM 878: a session that takes its questions and writes nothing back must \
-             cost a SESSION, not the run. Measured — a fold recovery bought a dead session at \
+             cost a SESSION, not the run. Measured — an unasked recovery bought a dead session at \
              22:54:13 and the loop prompted it for thirty-five minutes, diagnosing `AND THIS TURN \
              PRODUCED NOTHING` on every one of twenty-five turns, before ending `exhausted \
              (turns)`. Walked {mute_walk:?}",
