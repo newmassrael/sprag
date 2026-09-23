@@ -6879,6 +6879,20 @@ impl Accounted {
         }
     }
 
+    /// ⛔⛔⛔⛔⛔ **WHAT THE SERVICE SAID, WHERE THE RECORD'S NEWEST BILLED ROW IS ITS REFUSAL** — and
+    /// [`None`] both for an answered row and for a record nobody could read.
+    ///
+    /// ⚠⚠⚠ **ONE READER FOR EVERY DOOR THAT ASKS** — register item 1133. The fact is the peer's own
+    /// structured mark (`isApiErrorMessage`, see [`Spend::refused`](crate::spend::Spend::refused)),
+    /// and a turn can END two ways: `turn.done` asks it in [`OuterLoop::costs_now`] and
+    /// `turn.blocked` asks it in [`OuterLoop::parked_at_a_dialog`]. Until 1133 only the first did,
+    /// so the SAME refusal reached `service_down` through one door and a person through the other
+    /// — run 429's weekly limit, read as the first line of a question. Two call sites spelling
+    /// `spend().and_then(|spend| spend.refused …)` each would be two authorities waiting to drift.
+    fn refused(&self) -> Option<String> {
+        self.spend().and_then(|spend| spend.refused.clone())
+    }
+
     /// The record that could not be read, else [`None`].
     const fn unreadable(&self) -> Option<&std::path::PathBuf> {
         match self {
@@ -11626,8 +11640,11 @@ impl OuterLoop {
                     // register item 993. A pass that took no turn must not carry the LAST turn's
                     // answer, which is `made`'s rule one line up and for its reason.
                     repeated: None,
-                    // ⚠ AND NO TURN ENDED, so no service refused one — register item 988.
-                    service_said: None,
+                    // ⛔⛔⛔⛔⛔ BUT THE SERVICE MAY HAVE REFUSED THE ONE BEFORE IT — register item
+                    // 1133. No turn was opened here, and the dialog that stopped this prompt can be
+                    // the peer's own limit menu. `parked_at_a_dialog` asked the record one line up
+                    // and wrote the slot whole, so what stands in it is this pass's answer.
+                    service_said: self.service_said.clone(),
                     // ⚠ Nothing was judged on this edge, so there is no verdict for anything to be
                     // said beside, and no artifact for anything to have been shown.
                     explained: None,
@@ -12199,7 +12216,12 @@ impl OuterLoop {
             // refused and this says what it said. Carried here rather than kept on the loop as a
             // level, because it belongs to the TURN — a later pass reading the slot would quote an
             // outage at a step that took no turn.
-            service_said: (event == AiLoopEvent::TurnDone)
+            //
+            // ⛔⛔⛔⛔⛔ AND ON `turn.blocked`, SINCE REGISTER ITEM 1133: a turn can end at a dialog,
+            // and [`Self::parked_at_a_dialog`] writes this slot from the same reader `costs_now`
+            // does. Published on one ending only, the two doors would route one refusal to one
+            // state and tell a reader two different things about why.
+            service_said: (event == AiLoopEvent::TurnDone || event == AiLoopEvent::TurnBlocked)
                 .then(|| self.service_said.clone())
                 .flatten(),
             // ⚠ ON THE PASSES THAT JUDGED AND NO OTHER. The verdict belongs to the claim this
@@ -12821,11 +12843,34 @@ impl OuterLoop {
     /// service failure is not a design decision, and judging one is a model call — 4-6 seconds,
     /// measured — spent to arrive at the wrong state. The document routes on this above `judged`
     /// for the same reason; doing it in the other order here would pay for the judgement anyway.
+    ///
+    /// # ⛔⛔⛔⛔⛔ And the peer's RECORD is asked before any needle — register item 1133
+    ///
+    /// A turn the service refused can end at a dialog: run 429's peer printed *"You've hit your
+    /// weekly limit"* and the loop heard `turn.blocked`. The needles are one tool's sentences at one
+    /// version, written per document (`debt_loop.scxml` held the 8-20 family, the adopting kind
+    /// held three others, the template holds none) and the sentence that arrived was in NONE of
+    /// them — so the refusal went to `screening`, no rule claimed it, and a person was called 81
+    /// minutes after the record had said `isApiErrorMessage: true`. `turn.done` had been reading
+    /// that mark since item 988; this door never asked.
+    ///
+    /// ⇒ **the verdict is [`Accounted::refused`], the one reader both doors share**, and it is
+    /// published as the SAME fact the needles publish (`service`) plus the SAME words
+    /// (`service_said`) the other door carries — so the document routes one refusal to
+    /// `service_down` on the typing budget whichever way the turn ended. The needles stay, as the
+    /// fallback for a peer whose record says nothing: that is item 452(3)'s demotion again, one
+    /// witness further up.
     fn parked_at_a_dialog(&mut self, panes: &dyn PaneAccess, run: &RunContext) -> Raise {
+        // ⛔⛔⛔⛔⛔ THE RECORD FIRST — register item 1133. Assigned WHOLE, `None` included: the slot
+        // belongs to the turn this pass ended (`costs_now` overwrites it the same way), so a pass
+        // that found no refusal must not publish the last one.
+        self.service_said = self.driving.spent(panes).refused();
         // ⚠ CLONED because `service_failed` borrows this driver and the needles live on it — the
         // field's own doc holds why the pass's value is kept there rather than re-read.
         let needles = self.needles.clone();
-        let service = self.service_failed(panes, needles.as_deref());
+        // ⚠⚠ SHORT-CIRCUITED: a refusal the record states needs no needle, and reading the screen
+        // after it would only be a second, poorer witness to a fact already in hand.
+        let service = self.service_said.is_some() || self.service_failed(panes, needles.as_deref());
         let rule = if service {
             None
         } else {
@@ -16502,7 +16547,7 @@ impl OuterLoop {
         // ⚠ THE BASELINE STILL MOVES BELOW on a reading that happened, refused or not — the total
         // is real (it did not change, and that IS the reading), so a later answered turn compares
         // against the truth rather than against a gap.
-        let service_said = spend.and_then(|spend| spend.refused.clone());
+        let service_said = accounted.refused();
         let made = match service_said {
             Some(_) => Made::Refused,
             None => Made::between(self.driving.produced, now),
@@ -35879,6 +35924,211 @@ mod tests {
              Without this arm a build that sent every judged turn to `service_down` would be green \
              above, and a run that waits ten minutes between its agent's working turns is a worse \
              failure than the one item 991 is about.\n  walked {answered_walk:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A REFUSAL THAT ENDS A TURN AS A QUESTION IS NOT A QUESTION FOR A PERSON** —
+    /// register item 1133, and the door item 988's repair did not reach.
+    ///
+    /// # ⛔⛔⛔⛔⛔ The defect, measured on run 429
+    ///
+    /// The peer's record carried `isApiErrorMessage: true` at 23:01 KST. The turn ended at a dialog,
+    /// so the loop heard `turn.blocked`, and that door asked only the document's needles — none of
+    /// which held *"You've hit your weekly limit"*. `Screening --ScreenNone--> AwaitingHuman —
+    /// no_rule` at 00:22, and the run ended `blocked` with the limit sentence quoted as the first
+    /// line of a question. Had the same refusal ended as `turn.done`, [`Made::Refused`] would have
+    /// sent it to `service_down`: **one fact, two doors, and only one of them knew it.**
+    ///
+    /// # ⚠⚠⚠⚠ Both doors, the same record, and the product's own readers on each
+    ///
+    /// Each door is driven through the composer the product uses for it —
+    /// [`OuterLoop::costs_now`] for `turn.done`, [`OuterLoop::parked_at_a_dialog`] for
+    /// `turn.blocked` — against ONE refused record, and both must reach `service_down` on the
+    /// TYPING budget (`service_resumes_itself == false`) carrying the SAME words. A gate that gave
+    /// only one door the refusal would be green for the half-repair this item is about (register
+    /// item 1129's shape), which is why the arms are a product of doors and records rather than a
+    /// list of cases.
+    ///
+    /// ⚠⚠⚠ **NO NEEDLES AT ALL**, which is the sharp half: the template's shipped empty list stands
+    /// and the pane shows nothing, so the only witness either door can have answered from is the
+    /// record. A build that fixed this by writing one more sentence into a needle list goes red
+    /// here, because there is no list to write it into.
+    ///
+    /// ⚠⚠ **AND THE CONTROL IS THE SAME RECORD ANSWERED** — the refusal row is the only byte that
+    /// differs. A build that sent every blocked turn to `service_down` would pass the refused arms
+    /// alone, and a loop that waits ten minutes on every real question is a worse failure than the
+    /// one this item is about.
+    #[test]
+    fn a_refusal_that_ends_a_turn_as_a_question_is_not_a_question_for_a_person() {
+        /// Run 429's own sentence, in item 988's fixture shape: the flag at the top level,
+        /// `<synthetic>` for a model, a usage block of zeros that still carries a cache read.
+        const SAID: &str = "You've hit your weekly limit · resets Sep 25, 6am (Asia/Seoul)";
+
+        /// The door a turn ended through.
+        #[derive(Debug, Clone, Copy)]
+        enum Door {
+            Done,
+            Blocked,
+        }
+
+        /// What one door made of one record.
+        #[derive(Debug)]
+        struct Landed {
+            state: AiLoopState,
+            /// `service_resumes_itself` as the document holds it after the door.
+            resumes: Option<bool>,
+            /// What the driver will publish as the service's words for this turn.
+            said: Option<String>,
+            walked: Vec<String>,
+        }
+
+        fn ended_through(door: Door, record: &std::path::Path) -> Landed {
+            let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+            let (workspace, pane) = quiet_pane();
+            let access = crate::testing::supervised_writing(&workspace, record);
+            let run = RunContext::uncancellable();
+            let mut loops = bounded_at(Arc::clone(&lua), pane, Duration::from_millis(200))
+                .expect("the document's datamodel must carry its four authored strings");
+            let mut walked: Vec<String> = Vec::new();
+            let mut step = |loops: &mut OuterLoop, raise: Raise| {
+                let named = format!("{:?}", raise.event);
+                loops
+                    .advance(&access, &run, raise)
+                    .expect("the pane stays readable");
+                walked.push(format!("{named} -> {:?}", loops.state()));
+            };
+            step(&mut loops, AiLoopEvent::Start.into());
+            step(&mut loops, AiLoopEvent::PromptSent.into());
+            // ⚠⚠⚠ THE PRODUCT'S OWN COMPOSER FOR EACH DOOR, never a hand-written payload: the
+            // defect is which READER a door asks, and a payload typed here would ask none.
+            match door {
+                Door::Done => {
+                    let ended = loops.costs_now(&access);
+                    step(&mut loops, Raise::carrying(AiLoopEvent::TurnDone, ended));
+                    // ⚠ The judgement carries its own keys — the 991 gate's measured reason: an
+                    // ABSENT `_event.data` is a Lua error, and `failed` is not the door firing.
+                    step(
+                        &mut loops,
+                        Raise::carrying(
+                            AiLoopEvent::Judge,
+                            serde_json::json!({
+                                "done": false,
+                                "checked": false,
+                                "stop_short": false,
+                            }),
+                        ),
+                    );
+                }
+                Door::Blocked => {
+                    let ended = loops.parked_at_a_dialog(&access, &run);
+                    step(&mut loops, ended);
+                }
+            }
+            let resumes = match loops
+                .script
+                .get_variable(&loops.session, SERVICE_RESUMES_ITSELF)
+            {
+                Ok(ScriptValue::Bool(chose)) => Some(chose),
+                _ => None,
+            };
+            let said = loops.service_said.clone();
+            access.lifecycle().expect("lifecycle").close(pane);
+            Landed {
+                state: loops.state(),
+                resumes,
+                said,
+                walked,
+            }
+        }
+
+        let answered = crate::testing::MEASURED_HERE.transcript();
+        let refusal = serde_json::json!({
+            "type": "assistant",
+            "isApiErrorMessage": true,
+            "message": {
+                "id": "msg_refused_429",
+                "model": "<synthetic>",
+                "content": [{ "type": "text", "text": SAID }],
+                "usage": {
+                    "input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                    "output_tokens": 0,
+                },
+            },
+        });
+        let refused = format!("{answered}\n{refusal}");
+
+        // ⛔ `sprag_scratch::scratch_for` AND NOT `std::env::temp_dir()` — register item 794: a bare
+        // std call writes into this crate's own directory when `TMPDIR` is set-and-empty, and a
+        // per-run name without the seam is never collected when its run is killed.
+        let home = sprag_scratch::scratch_for("sprag-1133", "");
+        std::fs::create_dir_all(&home).expect("a directory to file the records in");
+        let refused_at = home.join("refused.jsonl");
+        let answered_at = home.join("answered.jsonl");
+        std::fs::write(&refused_at, &refused).expect("the refused record");
+        std::fs::write(&answered_at, &answered).expect("the answered record");
+
+        // ⚠⚠⚠ THE PREMISE, THROUGH THE PRODUCT'S OWN PARSER: the two records differ in the refusal
+        // and in nothing a door could read otherwise. A fixture whose refusal did not parse would
+        // make the refused arms the control arms, and the gate would be comparing one thing twice.
+        assert_eq!(
+            (
+                crate::spend::spend_in(&refused).refused.as_deref(),
+                crate::spend::spend_in(&answered).refused.as_deref(),
+            ),
+            (Some(SAID), None),
+            "⚠⚠⚠ the refused record must state the refusal and the answered one must not — or \
+             every arm below is answering a question this gate did not stage",
+        );
+
+        let doors = [Door::Done, Door::Blocked];
+        let refused_arms: Vec<(Door, Landed)> = doors
+            .iter()
+            .map(|&door| (door, ended_through(door, &refused_at)))
+            .collect();
+        let answered_arms: Vec<(Door, Landed)> = doors
+            .iter()
+            .map(|&door| (door, ended_through(door, &answered_at)))
+            .collect();
+        let _ = std::fs::remove_dir_all(&home);
+
+        for (door, landed) in &refused_arms {
+            assert_eq!(
+                (landed.state, landed.resumes, landed.said.as_deref()),
+                (AiLoopState::ServiceDown, Some(false), Some(SAID)),
+                "⛔⛔⛔⛔⛔ REGISTER ITEM 1133 at the {door:?} door: a turn whose record says the \
+                 SERVICE refused it must reach `service_down` on the typing budget and carry what \
+                 the service said — whichever way the turn ended. Run 429 ended at a dialog, went \
+                 `Screening --ScreenNone--> AwaitingHuman — no_rule` and called a person 81 \
+                 minutes after its record said `isApiErrorMessage: true`.\n  walked {:?}",
+                landed.walked,
+            );
+        }
+        for (door, landed) in &answered_arms {
+            assert_ne!(
+                landed.state,
+                AiLoopState::ServiceDown,
+                "⚠⚠ AND THE CONTROL at the {door:?} door: the same record ANSWERED must not be read \
+                 as an outage, or the arms above are green for a build that sends every ending to \
+                 the wait.\n  walked {:?}",
+                landed.walked,
+            );
+            assert_eq!(
+                landed.said, None,
+                "⚠⚠ and an answered turn carries no service sentence at the {door:?} door",
+            );
+        }
+        // ⚠⚠⚠ AND THE BLOCKED CONTROL REALLY IS A QUESTION — the pre-existing road, reached exactly
+        // as before. Without this the control above is green for a door that sent an answered
+        // blocked turn anywhere at all but `service_down`, including somewhere nobody meant.
+        let blocked_control = &answered_arms[1].1;
+        assert_eq!(
+            blocked_control.state,
+            AiLoopState::Screening,
+            "⚠⚠⚠ a blocked turn nobody refused is a question, and questions go to `screening`.\n  \
+             walked {:?}",
+            blocked_control.walked,
         );
     }
 

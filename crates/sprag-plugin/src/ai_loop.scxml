@@ -4661,8 +4661,19 @@
       error message is a model call spent to arrive at the wrong state, and a
       run whose judge is slow would pay 4-6 seconds of it per outage.
 
-      ⚠ A run whose kind declines this (the shipped empty list) never sees the
-      key set, so both branches below are reached exactly as they were.
+      ⛔⛔⛔⛔⛔ AND THE NEEDLES ARE NO LONGER THE ONLY WITNESS — register item
+      1133. The driver asks the peer's RECORD first: a turn whose newest billed
+      row carries the service's own mark (`isApiErrorMessage`) sets this key
+      whatever the needles say, and even where there are none. It is the SAME
+      reading `produced == 'refused'` routes on at `judging`, so one refusal
+      reaches this state on the typing budget whichever way its turn ended —
+      run 429's weekly limit ended at a dialog, matched no needle any document
+      held, and was handed to a person as a question 81 minutes after its
+      record had said so.
+
+      ⚠ A run whose kind declines the needles (the shipped empty list) and
+      whose record states no refusal never sees the key set, so both branches
+      below are reached exactly as they were.
 
       ⚠⚠⚠⚠ AND IT SAYS THE PEER IS *NOT* COMING BACK ON ITS OWN, which is what
       makes the way out of `service_down` speak. A turn that is OVER left an empty
