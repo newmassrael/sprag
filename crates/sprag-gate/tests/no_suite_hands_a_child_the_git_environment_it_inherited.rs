@@ -378,6 +378,7 @@ fn entering_the_mirror_leaves_the_commits_index_behind() {
         fi
         printf 'INDEX=[%s]\n' "${GIT_INDEX_FILE-<gone>}"
         printf 'PREFIX=[%s]\n' "${GIT_PREFIX-<gone>}"
+        printf 'GITDIR=[%s]\n' "${GIT_DIR-<gone>}"
         printf 'WHERE=[%s]\n' "$(pwd -P)"
     "#;
     let ask = |how: &str| {
@@ -392,6 +393,9 @@ fn entering_the_mirror_leaves_the_commits_index_behind() {
             ])
             .env("GIT_INDEX_FILE", ".git/index")
             .env("GIT_PREFIX", "crates/")
+            // ⛔ What a commit in a LINKED worktree also exports — register item 1140. The value
+            // names no real directory: the probe runs no git, it only asks what crossed the door.
+            .env("GIT_DIR", "/nowhere/.git/worktrees/operator")
             .output()
             .expect("bash must be runnable");
         assert!(
@@ -420,6 +424,18 @@ fn entering_the_mirror_leaves_the_commits_index_behind() {
          notice — the ratchet reads the name and `hooks_judge_the_bytes_being_published` reaches \
          the cut only through `index_mirror_git`. Driven: with the cut removed from this function \
          the whole of `sprag-gate` was rc=0. The probe said: {door:?}",
+    );
+    assert!(
+        plain.contains("GITDIR=[/nowhere/.git/worktrees/operator]"),
+        "⛔ THE CONTROL FAILED for `GIT_DIR`: a plain `cd` was supposed to carry it. The probe \
+         said: {plain:?}",
+    );
+    assert!(
+        door.contains("GITDIR=[<gone>]"),
+        "⛔ ITEM 1140: `GIT_DIR` crossed into the mirror. A commit made in a LINKED worktree \
+         exports it, and inside the mirror `git -C \"$mirror\" checkout --detach` obeyed it and \
+         moved the OPERATOR's worktree HEAD onto the synthetic mirror commit (2026-09-24, \
+         worktree `sprag-1139`). The probe said: {door:?}",
     );
     assert!(
         door.contains("WHERE=") && !door.contains("WHERE=[]"),

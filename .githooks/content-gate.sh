@@ -300,12 +300,25 @@ index_mirror_git() {
 # layer cuts the whole namespace because it builds a sandbox that wants none of them; a hook is
 # still the commit and must keep the identity it is committing under.
 #
+# ⛔⛔⛔⛔⛔ **AND AN EIGHTH IN A LINKED WORKTREE: `GIT_DIR`** — register item 1140, measured
+# 2026-09-24. The seven above were measured in the MAIN worktree, where git exports no `GIT_DIR`.
+# A commit made in a LINKED worktree (`git worktree add`) exports it, naming that worktree's own
+# `.git/worktrees/<name>` — measured on a scratch repository with a hook that lists the `GIT_*`
+# names: main 7, linked 8, the difference exactly `GIT_DIR`. It names WHERE the commit is being
+# made, so it is the same kind of name as the pair, and it is poison for the same reason: inside
+# `index_mirror`, `git -C "$mirror" checkout --detach … "$commit"` obeyed `GIT_DIR` rather than
+# `-C`, and **moved the OPERATOR's worktree HEAD onto the synthetic mirror commit** (worktree
+# `sprag-1139`, HEAD `c46acad8`, `the bytes a commit of this index would carry`) while the mirror
+# stayed where it was; the first attempt refused outright (`the index could not be checked out`).
+# Nothing is lost by cutting it here: in the main worktree it is not set, and every call behind this
+# boundary finds its repository from where it stands (`-C`, or the hook's own directory).
+#
 # ⚠⚠⚠ IT CANNOT BE CUT FOR THE WHOLE HOOK — `rust_gates_run` asks `git write-tree`, and THAT call
 # must read exactly the index git is about to commit. The same variable is load-bearing at the top
 # of that function and poison inside its subshells, which is why this is a boundary a caller crosses
 # rather than a line at the top of a file.
 leave_the_commits_index_behind() {
-    unset GIT_INDEX_FILE GIT_PREFIX
+    unset GIT_INDEX_FILE GIT_PREFIX GIT_DIR
 }
 
 # ⛔⛔⛔⛔⛔ **THE ONLY WAY INTO THE MIRROR** — register item 1082, and item 965's constructor
