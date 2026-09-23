@@ -9210,6 +9210,22 @@ fn reporter_build_report(reporter: Option<&str>, daemon: Option<&str>) -> String
     }
 }
 
+/// **WHERE A MUTE BREADCRUMB WAS READ**, closing every sentence [`agent`] prints about one —
+/// register item 712.
+///
+/// The directory is derived from THIS command's environment, not the hook's, and the two can
+/// differ: a watcher run without the hook's `XDG_STATE_HOME` stood in `~/.local/state`, read an old
+/// generation's word there as a live mute, and took a healthy reporter off its hook. Naming the
+/// variable as well as the path is what lets a reader see the mismatch rather than re-derive it.
+fn read_where(read_from: &std::path::Path) -> String {
+    format!(
+        "Read from {} — the state directory this command derived from its own environment (${}, \
+         else ~/.local/state), so a hook given another one leaves its word somewhere else.",
+        read_from.display(),
+        sprag_host::durability::STATE_HOME_VAR,
+    )
+}
+
 /// `agent [-t SESSION] [PANE]`: what the AI agent in each pane is doing — H3's verdict, from the
 /// same pane list every other surface reads.
 ///
@@ -9357,16 +9373,23 @@ fn agent(args: Vec<String>) -> io::Result<()> {
             let word = mute.word_from(id);
             match &word {
                 sprag_host::MuteWord::Speaking => {}
-                sprag_host::MuteWord::Mute { said } => println!(
+                sprag_host::MuteWord::Mute { said, read_from } => println!(
                     // ⚠⚠ IT STATES THE RULE, NOT THE OUTCOME. A daemon predating register item 709
                     // does not set a mute reporter aside, and one that does has a sweep-interval of
                     // lag before it has; in either window a sentence claiming *this pane is answered
                     // by its screen* would contradict the `source=` on the line ABOVE it, on one
                     // screen. Which of the two is answering is already printed there — what this
                     // sentence owes is the fact and the rule.
+                    //
+                    // ⚠⚠⚠⚠⚠ AND WHERE IT WAS READ — register item 712. This command derives its
+                    // state directory from ITS OWN environment, and a watcher that had not been
+                    // given the hook's `XDG_STATE_HOME` read an old generation's word out of
+                    // `~/.local/state` as a live mute. The path is what makes that visible here.
                     "    ⚠ THAT REPORTER IS MUTE: its last attempt failed — {said}. A report does \
                      not outrank the screen while that stands, and it clears itself the moment a \
-                     delivery succeeds — the line above says which of the two is answering now.",
+                     delivery succeeds — the line above says which of the two is answering now. \
+                     {}",
+                    read_where(read_from),
                 ),
                 // ⚠⚠ SAID, NOT SWALLOWED. Nothing prunes these (item 700's stated residue), so the
                 // file will be met again — and a reader told only *no mute* would go on to find it
@@ -9375,17 +9398,23 @@ fn agent(args: Vec<String>) -> io::Result<()> {
                     said,
                     left_in,
                     asking,
+                    read_from,
                 } => println!(
                     "    A mute breadcrumb sits under this pane's NUMBER and is not this \
                      reporter's: it was left in generation {left_in} and this daemon is {asking}, \
                      so its subject is a pane that no longer exists. It said {said:?}. The state \
-                     above stands.",
+                     above stands. {}",
+                    read_where(read_from),
                 ),
-                sprag_host::MuteWord::Unattributed { said, silent } => println!(
+                sprag_host::MuteWord::Unattributed {
+                    said,
+                    silent,
+                    read_from,
+                } => println!(
                     "    A mute breadcrumb sits under this pane's NUMBER and cannot be attributed \
                      — {} — so it is not acted on. It said {said:?}. A pane number is reissued by \
                      the next daemon's counter, and a breadcrumb with no generation beside it could \
-                     belong to any earlier holder of this number.",
+                     belong to any earlier holder of this number. {}",
                     match silent {
                         sprag_host::MuteSilence::Breadcrumb =>
                             "it names no generation, so it predates this check or was written by a \
@@ -9394,6 +9423,7 @@ fn agent(args: Vec<String>) -> io::Result<()> {
                             "this daemon does not say which generation it is, so there is nothing \
                              to compare it against",
                     },
+                    read_where(read_from),
                 ),
             }
             // The advice has to follow the evidence. Telling somebody to redefine a manifest rule

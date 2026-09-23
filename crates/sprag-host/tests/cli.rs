@@ -13457,6 +13457,131 @@ fn a_pane_that_inherits_a_dead_panes_number_is_not_taken_off_its_hook() {
          did — naming both generations is what makes the thirty minutes item 712 measures cost \
          nothing: {inherited}",
     );
+    assert!(
+        inherited.contains(&breadcrumb.display().to_string()),
+        "⚠⚠ AND WHERE IT WAS READ (item 712) — an inherited word is still a file this reader chose \
+         a directory for, and the directory is the other half of whose word it is: {inherited}",
+    );
+}
+
+/// ⛔⛔⛔⛔⛔ **A MUTE SENTENCE SAYS WHICH STATE DIRECTORY IT READ** — register item 712, through the
+/// doors the product uses: a real hook leaves the word, a real `sprag agent` reads it.
+///
+/// # The failure this reproduces
+///
+/// On 2026-08-26 a watcher asked `sprag agent inner-pinion` without the `XDG_STATE_HOME` the hook
+/// had been given. Its reader stood in `~/.local/state`, met an old generation's `hook-mute.7`, and
+/// printed *THAT REPORTER IS MUTE* — with nothing saying where it had looked. The reporter had never
+/// failed; the watcher took it off its hook and spent thirty minutes on the wrong end.
+///
+/// # ⚠⚠⚠⚠⚠ Why TWO state homes, and why each sentence is also checked for the OTHER's path
+///
+/// With one home, *the path is in the sentence* and *the sentence names the directory THIS command
+/// read* cannot be told apart: a sentence spelling any fixed directory, or the daemon's, would pass
+/// whenever that happened to coincide with the one given. Two homes holding the same kind of word,
+/// read by two runs that differ in `XDG_STATE_HOME` and nothing else, make the path the only thing
+/// that can vary — so each sentence must carry its own and must NOT carry the other's.
+///
+/// The daemon is given neither home: the reader's directory is the CLI's own derivation, and a
+/// daemon sharing one of them would let a sentence that named the daemon's pass one arm.
+///
+/// ⚠ The third home holds a breadcrumb with no generation, written through the product's own
+/// writer, because `sprag_host::MuteWord`'s other file-derived answer is otherwise reached by no gate at all —
+/// and a path added to two arms of three is the half-repair this item was registered against.
+#[test]
+fn a_mute_sentence_says_which_state_directory_it_read() {
+    let near = SharedStateHome(scratch_state_home());
+    let far = SharedStateHome(scratch_state_home());
+    let unstamped = SharedStateHome(scratch_state_home());
+    let announce = [
+        "sh",
+        "-c",
+        "printf 'BORN gen=%s pane=%s\\n' \"$SPRAG_PANE_GENERATION\" \"$SPRAG_PANE\"; exec cat",
+    ];
+    let (_host, sock) = spawn_host_with(&announce, &[]);
+    let born = wait_for_pane_text(&sock, "BORN ");
+    let generation = born_field(&born, "gen=");
+    assert_eq!(born_field(&born, "pane="), "0", "the boot pane: {born:?}");
+
+    // ── 1. THE SAME WORD, LEFT IN TWO HOMES by a hook that cannot deliver — the product's writer.
+    let breadcrumb_in = |home: &Path| home.join("sprag").join("hook-mute.0");
+    for home in [&near.0, &far.0] {
+        let nowhere = home.join("nobody-serves-this.sock");
+        let left_word = sprag_stdin(
+            &sock,
+            &["hook", "claude"],
+            &[
+                ("SPRAG_PANE", "0"),
+                ("SPRAG_PANE_GENERATION", generation.as_str()),
+                ("SPRAG_HOST_RPC_SOCK", nowhere.to_str().expect("utf-8 path")),
+                ("XDG_STATE_HOME", home.to_str().expect("utf-8 path")),
+            ],
+            r#"{"hook_event_name":"UserPromptSubmit","session_id":"s1"}"#,
+        );
+        assert!(left_word.ok, "a hook always exits 0: {}", left_word.stderr);
+        assert!(
+            breadcrumb_in(home).exists(),
+            "⚠ THE PREMISE: the hook left word at {} — without it both arms are vacuous",
+            breadcrumb_in(home).display(),
+        );
+    }
+    assert!(
+        sprag(&sock, &["report-agent", "working", "--pane", "0"]).ok,
+        "a reported verdict is what makes the reporter's health worth printing",
+    );
+
+    // ── 2. TWO READERS, differing in XDG_STATE_HOME and nothing else.
+    let read_in = |home: &Path| {
+        sprag_env(
+            &sock,
+            &["agent", "0"],
+            &[("XDG_STATE_HOME", home.to_str().expect("utf-8 path"))],
+        )
+        .stdout
+    };
+    let (near_said, far_said) = (read_in(&near.0), read_in(&far.0));
+    let (near_file, far_file) = (
+        breadcrumb_in(&near.0).display().to_string(),
+        breadcrumb_in(&far.0).display().to_string(),
+    );
+    assert_ne!(near_file, far_file, "⚠ THE PREMISE: two different paths");
+    for said in [&near_said, &far_said] {
+        assert!(
+            said.contains("THAT REPORTER IS MUTE"),
+            "⚠ THE PREMISE: both readers are told the reporter is mute — the claim below is about \
+             WHERE that sentence says it looked, so it has to be printed at all: {said}",
+        );
+    }
+    assert!(
+        near_said.contains(&near_file) && !near_said.contains(&far_file),
+        "⛔⛔⛔⛔⛔ THE WHOLE ITEM: the reader given {near_file} must say THAT path, and not the other \
+         home's. A sentence naming no path is what sent a watcher to `release-agent` against a \
+         healthy reporter: {near_said}",
+    );
+    assert!(
+        far_said.contains(&far_file) && !far_said.contains(&near_file),
+        "⛔⛔⛔⛔⛔ AND THE OTHER ARM, which is what makes the first one mean anything: a sentence that \
+         spelled one fixed directory passes one arm and fails this one: {far_said}",
+    );
+
+    // ── 3. THE THIRD FILE-DERIVED ANSWER, which names no generation and so cannot be attributed.
+    sprag_host::note_mute(
+        &unstamped.0.join("sprag"),
+        0,
+        None,
+        Some("could not reach the daemon"),
+    );
+    let unattributed = read_in(&unstamped.0);
+    assert!(
+        unattributed.contains("cannot be attributed"),
+        "⚠ THE PREMISE: a breadcrumb with no generation is reported as unattributable: \
+         {unattributed}",
+    );
+    assert!(
+        unattributed.contains(&breadcrumb_in(&unstamped.0).display().to_string()),
+        "⛔⛔⛔ AND IT SAYS WHERE IT WAS READ TOO — every answer read off a file names the file: \
+         {unattributed}",
+    );
 }
 
 /// A daemon that is UP but wedged cannot stall a REQUEST VERB either — it says so and exits.

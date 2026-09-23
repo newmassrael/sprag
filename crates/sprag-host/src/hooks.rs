@@ -908,13 +908,37 @@ pub fn note_mute(dir: &std::path::Path, pane: u64, generation: Option<&str>, sai
 /// [`crate::wire::reporter_image`] has four: the interesting cases are
 /// the ones where the two halves do not simply agree, and collapsing *cannot say* into either
 /// direction is how a surface comes to state something it was never told.
+///
+/// # ⚠⚠⚠⚠⚠ Every answer read off a FILE carries that file's path — register item 712
+///
+/// On 2026-08-26 a watcher asked `sprag agent` about a pane without the `XDG_STATE_HOME` its hook
+/// wrote under, so the reader stood in `~/.local/state` and met a breadcrumb an earlier generation
+/// had left there. The sentence said *THAT REPORTER IS MUTE* and nothing about WHERE it had looked;
+/// the watcher took a healthy reporter off its hook and spent thirty minutes on a hook that had
+/// never once failed. One path in that sentence and the mismatch is on the screen that caused it.
+///
+/// ⚠ The path lives HERE rather than being re-derived by each mouth, because the reader is the only
+/// party that knows which file it opened: a mouth that spelled the directory itself would be
+/// spelling a SECOND derivation, which can disagree with the first — the shape 700 and 711 paid
+/// for. And because both mouths destructure every field by name, adding it made each of them fail
+/// to compile until it said the path; `52459b9` had been recorded as paying the MCP half of this
+/// and had not — it moved the gates' directory, not the sentence's.
+///
+/// ⚠ [`MuteWord::Speaking`] carries none: no file was read. That a reader standing in the wrong
+/// directory answers *speaking* for a reporter that is mute somewhere else is the SILENT direction
+/// of the same hazard, and it is registered as its own item rather than folded in here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MuteWord {
     /// No breadcrumb: this pane's reporter is delivering.
     Speaking,
     /// A breadcrumb left in the generation being asked about — **this reporter is mute**, and `said`
     /// is its own account of the last failure.
-    Mute { said: String },
+    Mute {
+        /// The failing reporter's account.
+        said: String,
+        /// The breadcrumb this was read from — see the type's doc for why it is carried.
+        read_from: PathBuf,
+    },
     /// A breadcrumb left under this NUMBER by an EARLIER generation: its subject is a pane that no
     /// longer exists, so it says nothing about the pane now holding the number.
     ///
@@ -930,6 +954,8 @@ pub enum MuteWord {
         left_in: String,
         /// The generation the reader is asking about.
         asking: String,
+        /// The breadcrumb this was read from.
+        read_from: PathBuf,
     },
     /// A breadcrumb whose subject cannot be established, because one of the two halves did not say
     /// which generation it means.
@@ -947,6 +973,8 @@ pub enum MuteWord {
         /// Which half could not name a generation, so a reader can say which and a person can fix
         /// the right end.
         silent: MuteSilence,
+        /// The breadcrumb this was read from.
+        read_from: PathBuf,
     },
 }
 
@@ -1007,7 +1035,8 @@ impl<'a> MuteReader<'a> {
     /// daemon can state — which is why this takes it as an argument instead of going to look.
     #[must_use]
     pub fn word_from(&self, pane: u64) -> MuteWord {
-        let Ok(raw) = std::fs::read_to_string(mute_path(self.dir, pane)) else {
+        let read_from = mute_path(self.dir, pane);
+        let Ok(raw) = std::fs::read_to_string(&read_from) else {
             return MuteWord::Speaking;
         };
         let (left_in, said) = match raw.split_once('\n') {
@@ -1021,19 +1050,24 @@ impl<'a> MuteReader<'a> {
         // its text is only the hook's account of the failure, so nothing here filters on the text.
         let said = said.trim().to_owned();
         match (left_in, self.generation) {
-            (Some(left_in), Some(asking)) if left_in == asking => MuteWord::Mute { said },
+            (Some(left_in), Some(asking)) if left_in == asking => {
+                MuteWord::Mute { said, read_from }
+            }
             (Some(left_in), Some(asking)) => MuteWord::Inherited {
                 said,
                 left_in,
                 asking: asking.to_owned(),
+                read_from,
             },
             (None, _) => MuteWord::Unattributed {
                 said,
                 silent: MuteSilence::Breadcrumb,
+                read_from,
             },
             (Some(_), None) => MuteWord::Unattributed {
                 said,
                 silent: MuteSilence::Reader,
+                read_from,
             },
         }
     }

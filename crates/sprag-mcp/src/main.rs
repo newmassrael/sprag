@@ -3719,10 +3719,15 @@ fn reporter_caveats(
         // answered by its screen* would contradict the `source=` on the line above it, on one
         // screen. Which of the two is answering is already published there; what this owes is the
         // fact and the rule.
-        sprag_host::MuteWord::Mute { said } => out.push_str(&format!(
+        //
+        // ⚠⚠⚠⚠⚠ AND WHERE IT WAS READ — register item 712, on this mouth too. The directory is
+        // this SERVER's derivation, from the environment it was launched with, and nothing makes
+        // that the hook's: a caller told *MUTE* with no path cannot see that the two disagree.
+        sprag_host::MuteWord::Mute { said, read_from } => out.push_str(&format!(
             "{indent}⚠ THAT REPORTER IS MUTE: its last attempt failed — {said}. A report does not \
              outrank the screen while that stands, so read_pane is the better witness — and it \
-             clears itself the moment a delivery succeeds.\n",
+             clears itself the moment a delivery succeeds. {}\n",
+            read_where(&read_from),
         )),
         // ⚠⚠ STATED, NOT SWALLOWED: nothing prunes these (item 700's stated residue), so a caller
         // told only *not mute* would meet the file itself later and read it the way the watcher did.
@@ -3730,14 +3735,21 @@ fn reporter_caveats(
             said,
             left_in,
             asking,
+            read_from,
         } => out.push_str(&format!(
             "{indent}A mute breadcrumb sits under this pane's NUMBER and is not this reporter's: it \
              was left in generation {left_in} and the daemon holding this pane is {asking}, so its \
-             subject is a pane that no longer exists. It said {said:?}. The state above stands.\n",
+             subject is a pane that no longer exists. It said {said:?}. The state above stands. \
+             {}\n",
+            read_where(&read_from),
         )),
-        sprag_host::MuteWord::Unattributed { said, silent } => out.push_str(&format!(
+        sprag_host::MuteWord::Unattributed {
+            said,
+            silent,
+            read_from,
+        } => out.push_str(&format!(
             "{indent}A mute breadcrumb sits under this pane's NUMBER and cannot be attributed — \
-             {} — so it is not acted on. It said {said:?}.\n",
+             {} — so it is not acted on. It said {said:?}. {}\n",
             match silent {
                 sprag_host::MuteSilence::Breadcrumb =>
                     "it names no generation, so it predates this check or its reporter had lost the \
@@ -3746,6 +3758,7 @@ fn reporter_caveats(
                     "that daemon does not say which generation it is, so there is nothing to \
                      compare it against",
             },
+            read_where(&read_from),
         )),
     }
     let named = host_sock().map_or_else(
@@ -3788,6 +3801,22 @@ fn reporter_caveats(
         ),
     });
     out
+}
+
+/// **WHERE A MUTE BREADCRUMB WAS READ**, closing every sentence [`reporter_caveats`] writes about
+/// one — register item 712.
+///
+/// The directory is derived from THIS SERVER's environment, which is whatever launched it, not the
+/// hook's. A reader standing in the wrong directory once read an old generation's word as a live
+/// mute and a healthy reporter was taken off its hook; naming the variable as well as the path is
+/// what lets a caller see that mismatch rather than re-derive it.
+fn read_where(read_from: &std::path::Path) -> String {
+    format!(
+        "Read from {} — the state directory this server derived from its own environment (${}, \
+         else ~/.local/state), so a hook given another one leaves its word somewhere else.",
+        read_from.display(),
+        sprag_host::durability::STATE_HOME_VAR,
+    )
 }
 
 /// **WHERE A HOOK LEAVES WORD THAT IT COULD NOT DELIVER, AND WHOSE WORD IT WOULD HAVE TO BE** —

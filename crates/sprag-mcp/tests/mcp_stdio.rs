@@ -1974,6 +1974,73 @@ fn an_agent_is_told_whether_the_reporter_it_believes_is_mute_or_another_build() 
     );
 }
 
+/// ⛔⛔⛔⛔⛔ **THE AGENT-FACING MUTE SENTENCE SAYS WHICH STATE DIRECTORY IT READ** — register item
+/// 712 on this mouth, the wire twin of `sprag-host`'s
+/// `a_mute_sentence_says_which_state_directory_it_read`.
+///
+/// # ⚠⚠⚠⚠⚠ Why this mouth needs its own gate
+///
+/// The item was registered believing `52459b9` had paid this side. It had not: that commit made the
+/// GATES name their directory, and the sentence went on naming none. A repair gated on one mouth
+/// stands on one mouth, and a supervising loop reads this one — so this server, which derives its
+/// directory from the environment its launcher gave it, has to say which it read.
+///
+/// # Why TWO servers on ONE daemon
+///
+/// Two homes each holding the same live word, read by two servers that differ in `XDG_STATE_HOME`
+/// and nothing else, so the path is the only thing that can vary: each answer must name its own
+/// breadcrumb and not the other's. The daemon is given a third home, so a sentence that spelled the
+/// daemon's directory, or any fixed one, cannot pass either arm.
+#[test]
+fn an_agent_told_a_reporter_is_mute_is_told_which_state_directory_said_so() {
+    let daemon_state = state_home();
+    let (_daemon, sock) = spawn_daemon_with(
+        &["cat"],
+        BOOT_PANE,
+        &[("XDG_STATE_HOME", &daemon_state.display().to_string())],
+    );
+    let generation = daemon_generation(&sock);
+    // A LIVE reporter first, so the pane carries a reported verdict the sentence qualifies.
+    run_hook(&sock, &daemon_state, 0, generation.as_deref());
+
+    let nowhere = Path::new("/nonexistent/sprag-there-is-no-daemon.sock");
+    let (near, far) = (state_home(), state_home());
+    let breadcrumb_in = |home: &Path| home.join("sprag").join("hook-mute.0");
+    for home in [&near, &far] {
+        run_hook(nowhere, home, 0, generation.as_deref());
+        assert!(
+            breadcrumb_in(home).exists(),
+            "⚠ THE PREMISE: the hook left word at {} — without it both arms are vacuous",
+            breadcrumb_in(home).display(),
+        );
+    }
+    let (near_file, far_file) = (
+        breadcrumb_in(&near).display().to_string(),
+        breadcrumb_in(&far).display().to_string(),
+    );
+    assert_ne!(near_file, far_file, "⚠ THE PREMISE: two different paths");
+
+    let said_by = |home: &Path| {
+        McpServer::spawn_with_state(&sock, home).wait_for_tool(
+            "agent_state",
+            json!({ "pane": 1 }),
+            "MUTE",
+        )
+    };
+    let (near_said, far_said) = (said_by(&near), said_by(&far));
+    assert!(
+        near_said.contains(&near_file) && !near_said.contains(&far_file),
+        "⛔⛔⛔⛔⛔ THE WHOLE ITEM: the server given {near_file} must say THAT path and not the other \
+         home's. *MUTE* with no path is what sent a watcher to `release-agent` against a healthy \
+         reporter: {near_said}",
+    );
+    assert!(
+        far_said.contains(&far_file) && !far_said.contains(&near_file),
+        "⛔⛔⛔⛔⛔ AND THE OTHER ARM, which is what makes the first mean anything: a sentence that \
+         spelled one fixed directory passes one arm and fails this one: {far_said}",
+    );
+}
+
 /// ⚠⚠⚠⚠⚠ **THE SURFACE AN AGENT READS FIRST QUALIFIES WHAT IT SHOWS** — register item 475, and the
 /// residue item 474 was closed with.
 ///
