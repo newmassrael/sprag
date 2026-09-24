@@ -796,6 +796,27 @@ const SERVICE_RETRY_MS: &str = "service_retry_ms";
 /// document spells it — see [`OuterLoop::selects_when_unasked`].
 pub const SELECT_WHEN_UNASKED_KEY: &str = "select_when_unasked";
 
+/// **THE PERMISSION MODE EVERY PROMPT MUST BE TYPED IN**, as the document spells it — see
+/// [`OuterLoop::permission_mode`].
+pub const PERMISSION_MODE_KEY: &str = "permission_mode";
+
+/// **WHAT THE FOOTER SAYS WHILE THAT MODE HOLDS**, as the document spells it.
+pub const PERMISSION_MODE_SHOWS_KEY: &str = "permission_mode_shows";
+
+/// **WHICH AGENT THE FOOTER TEXT AND CYCLE KEY BELONG TO**, as the document spells it.
+pub const PERMISSION_MODE_AGENT_KEY: &str = "permission_mode_agent";
+
+/// **THE KEY THAT MOVES THE AGENT TO ITS NEXT MODE**, as the document spells it (`S-Tab` form).
+pub const PERMISSION_MODE_CYCLE_KEY: &str = "permission_mode_cycle";
+
+/// How many presses of the cycle key a prompt may spend reaching its mode. `claude` 2.1.280 cycles
+/// through four modes, so two full turns is the bound past which the footer is not going to say it.
+const MODE_CYCLE_LIMIT: u32 = 8;
+
+/// How long one press may take to show on the footer before the next is sent. A press sent before
+/// the footer repainted would step PAST the mode it was reaching for.
+const MODE_REPAINT_WITHIN: Duration = Duration::from_millis(1500);
+
 /// **WHAT TO TYPE WHEN THE WAIT IS OVER**, as the document spells it.
 const SERVICE_RETRY_TEXT: &str = "service_retry_text";
 
@@ -3965,6 +3986,79 @@ pub enum Counted {
 pub(crate) fn mode_in(argv: &[String]) -> ModeNamed {
     crate::spend::identity_in(argv, crate::spend::CLAUDE_MODE_FLAG)
         .map_or(ModeNamed::Nowhere, ModeNamed::In)
+}
+
+/// **PRESS `press` UNTIL `read` SHOWS `shows`** — the cycle behind
+/// [`OuterLoop::hold_the_documents_mode`], kept free of any pane so its order can be gated.
+///
+/// Reads first, and presses only while the footer does not show the mode. After each press it
+/// waits up to `within` for the footer to CHANGE before reading again, because a press sent before
+/// the repaint steps past the mode it was reaching for. `press` answers `false` where there is no
+/// key to press, which ends the cycle at once.
+///
+/// `Ok(Ok(()))` once the footer shows it; `Ok(Err(presses))` when `limit` presses (or a missing
+/// key) never got there.
+///
+/// # Errors
+///
+/// `press`'s own error, unchanged.
+fn cycle_until_shown(
+    read: impl Fn() -> Option<String>,
+    mut press: impl FnMut() -> Result<bool, PaneError>,
+    shows: &str,
+    limit: u32,
+    within: Duration,
+) -> Result<Result<(), u32>, PaneError> {
+    let mut presses = 0_u32;
+    loop {
+        let footer = read();
+        if footer.as_deref().is_some_and(|line| line.contains(shows)) {
+            return Ok(Ok(()));
+        }
+        if presses >= limit || !press()? {
+            return Ok(Err(presses));
+        }
+        presses += 1;
+        let deadline = std::time::Instant::now() + within;
+        while std::time::Instant::now() < deadline && read() == footer {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+/// The last non-empty row of `pane`'s screen — where an agent paints its mode — or `None` where
+/// the screen cannot be read.
+fn footer_of(panes: &dyn PaneAccess, pane: PaneId) -> Option<String> {
+    panes
+        .pane_rows(pane)?
+        .into_iter()
+        .rev()
+        .map(|row| row.text)
+        .find(|text| !text.trim().is_empty())
+}
+
+/// A key a document spells in the `send-keys` form — `S-Tab`, `C-c`, `M-x`, or a bare name — as
+/// the keystroke it names.
+fn key_spelled(spelled: &str) -> crate::access::KeyStroke {
+    let mut rest = spelled;
+    let mut mods = sprag_input::Modifiers::default();
+    loop {
+        if let Some(after) = rest.strip_prefix("S-") {
+            mods.shift = true;
+            rest = after;
+        } else if let Some(after) = rest.strip_prefix("C-") {
+            mods.ctrl = true;
+            rest = after;
+        } else if let Some(after) = rest.strip_prefix("M-") {
+            mods.alt = true;
+            rest = after;
+        } else {
+            break;
+        }
+    }
+    let mut key = crate::access::KeyStroke::named(rest);
+    key.mods = mods;
+    key
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -14836,6 +14930,85 @@ impl OuterLoop {
         }
     }
 
+    /// **THE PERMISSION MODE EVERY PROMPT MUST BE TYPED IN** — the template's `permission_mode`,
+    /// the owner's decision of 2026-09-24 (*"무조건 시작부터 auto mode여야해"*). `None` where the
+    /// document names none.
+    #[must_use]
+    pub fn permission_mode(&self) -> Option<String> {
+        Self::authored_text_in(&self.script, &self.session, PERMISSION_MODE_KEY)
+    }
+
+    /// ⛔⛔⛔⛔⛔ **BRING THE AGENT INTO THE DOCUMENT'S PERMISSION MODE BEFORE A PROMPT IS TYPED** —
+    /// the owner's decision of 2026-09-24, held before EVERY prompt rather than once, because a
+    /// session replacement re-executes the pane's argv and the mode is state inside the process
+    /// (register item 995): a mode set once is gone at the first replacement.
+    ///
+    /// Reads the footer; while it does not show `permission_mode_shows`, presses
+    /// `permission_mode_cycle` ONCE and waits for the footer to change before reading again — a
+    /// second press sent before the repaint would step past the mode being reached for. Gives up
+    /// after [`MODE_CYCLE_LIMIT`] presses.
+    ///
+    /// A document that names no mode, or no footer text to read it by, asks for nothing, and this
+    /// does nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`PaneError::ModeNotHeld`] when the footer never showed the mode, and the injection's own
+    /// errors.
+    fn hold_the_documents_mode(&self, panes: &dyn PaneAccess) -> Result<(), PaneError> {
+        let (Some(wanted), Some(shows), Some(agent)) = (
+            self.permission_mode(),
+            Self::authored_text_in(&self.script, &self.session, PERMISSION_MODE_SHOWS_KEY),
+            Self::authored_text_in(&self.script, &self.session, PERMISSION_MODE_AGENT_KEY),
+        ) else {
+            return Ok(());
+        };
+        // The footer text and the cycle key are that agent's; a pane whose supervisor names
+        // another agent, or none, has neither.
+        let reported = panes
+            .supervision()
+            .and_then(|supervisor| supervisor.pane_agent_state(self.driving.pane).seen())
+            .and_then(|seen| seen.agent);
+        if reported.as_deref() != Some(agent.as_str()) {
+            return Ok(());
+        }
+        // ⚠ AND THE PROGRAM IN THE PANE IS THAT AGENT, where the process table can say. A name is
+        // what a reporter CLAIMS; a stand-in that reports as `claude` paints no `claude` footer, and
+        // cycling its mode would spend the whole bound pressing a key nothing reads.
+        let program = panes
+            .foreground_job()
+            .and_then(|jobs| jobs.pane_foreground_leader(self.driving.pane))
+            .and_then(|leader| leader.argv.first().cloned());
+        if let Some(program) = program
+            && std::path::Path::new(&program)
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                != Some(agent.as_str())
+        {
+            return Ok(());
+        }
+        let cycle = Self::authored_text_in(&self.script, &self.session, PERMISSION_MODE_CYCLE_KEY)
+            .map(|spelled| key_spelled(&spelled));
+        let pane = self.driving.pane;
+        match cycle_until_shown(
+            || footer_of(panes, pane),
+            || match cycle.as_ref() {
+                Some(key) => panes.inject(pane, std::slice::from_ref(key)).map(|_| true),
+                None => Ok(false),
+            },
+            &shows,
+            MODE_CYCLE_LIMIT,
+            MODE_REPAINT_WITHIN,
+        )? {
+            Ok(()) => Ok(()),
+            Err(presses) => Err(PaneError::ModeNotHeld {
+                pane,
+                wanted,
+                presses,
+            }),
+        }
+    }
+
     /// [`authored_count`](Self::authored_count)'s reading, separated from the loop that holds the
     /// engine — `consents_in`'s shape, and for its reason: a loop KIND authors these in its own
     /// document ([`crate::kind`]), and a kind and a template that disagreed about what a decline IS
@@ -15550,6 +15723,9 @@ impl OuterLoop {
         // See [`said_marker`](Self::said_marker) and [`Session::asked`]. ⚠ Here rather than at any
         // composition site, because a screen rule's text is typed at the peer too and is in no
         // prompt slot at all.
+        // ⛔⛔⛔⛔⛔ THE DOCUMENT'S PERMISSION MODE IS HELD BEFORE ANY PROMPT IS TYPED — the owner's
+        // decision of 2026-09-24. See the method: a mode set once does not survive a replacement.
+        self.hold_the_documents_mode(panes)?;
         self.driving.asked = text.to_owned();
         if !self.shows_the_prompt {
             // The WRITE, not the delivery — see [`shows_the_prompt`](Self::shows_the_prompt). A
@@ -18202,6 +18378,134 @@ mod tests {
             workspace.lock().unwrap().close(pane).is_some(),
             "the pane this gate opened was there to close",
         );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE TEMPLATE HOLDS EVERY RUN IN `auto`, AND SAYS HOW** — the owner's decision of
+    /// 2026-09-24 (*"무조건 시작부터 auto mode여야해"*), read off the real document through the
+    /// product's own reader, so what a run gets is what is asserted.
+    #[test]
+    fn the_template_holds_every_claude_run_in_auto_mode() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (_workspace, pane) = quiet_pane();
+        let loops = bounded_at(lua, pane, Duration::from_millis(200)).expect("a loop");
+        let read = |key: &str| OuterLoop::authored_text_in(&loops.script, &loops.session, key);
+        assert_eq!(read(PERMISSION_MODE_KEY).as_deref(), Some("auto"));
+        assert_eq!(read(PERMISSION_MODE_AGENT_KEY).as_deref(), Some("claude"));
+        assert_eq!(
+            read(PERMISSION_MODE_SHOWS_KEY).as_deref(),
+            Some("auto mode on")
+        );
+        assert_eq!(read(PERMISSION_MODE_CYCLE_KEY).as_deref(), Some("S-Tab"));
+        let key = key_spelled("S-Tab");
+        assert_eq!(
+            (key.key.as_str(), key.mods.shift, key.mods.ctrl),
+            ("Tab", true, false),
+            "the cycle key is Shift+Tab, not a literal `S-Tab`",
+        );
+    }
+
+    /// A footer that walks the measured `claude` cycle one step per press — `accept edits on` →
+    /// `plan mode on` → `auto mode on` — repainting only `lag` after each press.
+    struct Cycling {
+        footers: Vec<&'static str>,
+        at: std::cell::Cell<usize>,
+        pressed_at: std::cell::Cell<Option<std::time::Instant>>,
+        lag: Duration,
+        presses: std::cell::Cell<u32>,
+    }
+
+    impl Cycling {
+        fn new(footers: &[&'static str], lag: Duration) -> Self {
+            Self {
+                footers: footers.to_vec(),
+                at: std::cell::Cell::new(0),
+                pressed_at: std::cell::Cell::new(None),
+                lag,
+                presses: std::cell::Cell::new(0),
+            }
+        }
+        fn read(&self) -> Option<String> {
+            if let Some(when) = self.pressed_at.get()
+                && when.elapsed() >= self.lag
+            {
+                self.at.set((self.at.get() + 1) % self.footers.len());
+                self.pressed_at.set(None);
+            }
+            Some(self.footers[self.at.get()].to_owned())
+        }
+        fn press(&self) -> Result<bool, PaneError> {
+            // A press before the last one repainted would be a second step; the cycle must not send
+            // one, and this double would count it as a step lost rather than hide it.
+            assert!(
+                self.pressed_at.get().is_none(),
+                "a press was sent before the footer repainted from the last one",
+            );
+            self.presses.set(self.presses.get() + 1);
+            self.pressed_at.set(Some(std::time::Instant::now()));
+            Ok(true)
+        }
+    }
+
+    const MEASURED_CYCLE: &[&str] = &[
+        "⏵⏵ accept edits on (shift+tab to cycle)",
+        "⏸ plan mode on (shift+tab to cycle)",
+        "⏵⏵ auto mode on",
+        "? for shortcuts",
+    ];
+
+    /// ⛔⛔⛔ **FROM `accept edits`, TWO PRESSES AND NOT MORE — AND NEVER ONE BEFORE THE REPAINT.**
+    /// The footer repaints 80 ms after each press; a cycle that pressed again inside that window
+    /// would step past `auto`, and the double refuses such a press outright.
+    #[test]
+    fn the_mode_cycle_stops_on_the_mode_and_waits_for_each_repaint() {
+        let pane = Cycling::new(MEASURED_CYCLE, Duration::from_millis(80));
+        let held = cycle_until_shown(
+            || pane.read(),
+            || pane.press(),
+            "auto mode on",
+            8,
+            Duration::from_secs(2),
+        )
+        .expect("no error");
+        assert_eq!(held, Ok(()));
+        assert_eq!(
+            pane.presses.get(),
+            2,
+            "accept edits → plan → auto is two presses"
+        );
+    }
+
+    /// Already in the mode: nothing is pressed.
+    #[test]
+    fn a_footer_already_in_the_mode_is_not_pressed() {
+        let pane = Cycling::new(&["⏵⏵ auto mode on"], Duration::ZERO);
+        let held = cycle_until_shown(
+            || pane.read(),
+            || pane.press(),
+            "auto mode on",
+            8,
+            Duration::from_millis(100),
+        )
+        .expect("no error");
+        assert_eq!((held, pane.presses.get()), (Ok(()), 0));
+    }
+
+    /// A cycle that never reaches the mode stops at the bound and says how many presses it spent.
+    #[test]
+    fn a_mode_the_cycle_never_reaches_is_refused_at_the_bound() {
+        let pane = Cycling::new(
+            &["accept edits on", "plan mode on"],
+            Duration::from_millis(5),
+        );
+        let held = cycle_until_shown(
+            || pane.read(),
+            || pane.press(),
+            "auto mode on",
+            3,
+            Duration::from_millis(200),
+        )
+        .expect("no error");
+        assert_eq!((held, pane.presses.get()), (Err(3), 3));
     }
 
     /// **A LOOP OVER `pane` WHOSE DOCUMENT AUTHORS `within` AS ITS PER-TURN BOUND** — the door

@@ -1502,6 +1502,40 @@
     <data id="may_answer" expr="[]"/>
 
     <!--
+      ⛔⛔⛔⛔⛔ THE PERMISSION MODE EVERY SESSION OF EVERY KIND IS BORN IN — the
+      owner's decision, 2026-09-24: *"무조건 시작부터 auto mode여야해"*.
+
+      It is held HERE, in the template, because it is an operating rule and not
+      a repository's: a wz run stood three hours in front of a permission dialog
+      (run 446, `blocked` / `no_rule`) because the only answers any document
+      held were one kind's own, and the owner ruled on 9/12 that a rule of this
+      shape belongs in the common layer and not copied per kind.
+
+      HOW IT IS HELD: BEFORE EVERY PROMPT, NOT ONCE. The mode is state INSIDE
+      the agent's process, and a session replacement re-executes the pane's argv
+      (register item 995), so a mode set once is gone at the first replacement.
+      So before every prompt the driver reads the footer; where it does not show
+      `permission_mode_shows`, it presses `permission_mode_cycle` once, waits for
+      the footer to change, and reads again — up to a bound. Measured cycle on
+      `claude` 2.1.280: `accept edits on` → `plan mode on` → `auto mode on`.
+      A footer that never shows it is `PaneError::ModeNotHeld`: nothing is
+      typed, because a session in another mode stops at permission questions
+      this run cannot answer.
+
+      The footer text and the cycle key are one agent's, so the rule is scoped to
+      the agent `permission_mode_agent` names: a pane whose supervisor reports a
+      different agent, or none, is typed at without it.
+
+      ⚠ Launching the agent with its permission-mode flag set to `auto` makes
+      every session start there and this cycle a no-op; it is still read every
+      time, because nothing else says the mode held.
+    -->
+    <data id="permission_mode" expr="'auto'"/>
+    <data id="permission_mode_agent" expr="'claude'"/>
+    <data id="permission_mode_shows" expr="'auto mode on'"/>
+    <data id="permission_mode_cycle" expr="'S-Tab'"/>
+
+    <!--
       ⚠⚠⚠ WHAT MAKES A DIALOG ONE THIS LOOP TURNS DOWN, and what it says instead.
 
       A `screen_rule` above QUOTES a dialog. This JUDGES one — and the difference

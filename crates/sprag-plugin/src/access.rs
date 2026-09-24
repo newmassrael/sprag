@@ -356,6 +356,22 @@ pub enum PaneError {
         running: String::new(),
         within: std::time::Duration::ZERO,
     },
+    /// ⛔⛔⛔⛔⛔ **THE PANE'S AGENT COULD NOT BE BROUGHT INTO THE PERMISSION MODE ITS DOCUMENT
+    /// REQUIRES, SO NOTHING WAS TYPED** — the owner's decision of 2026-09-24 (*"무조건 시작부터 auto
+    /// mode여야해"*). The driver reads the footer before every prompt and cycles the mode with the
+    /// document's key until the footer shows it; this is what it answers when it never did.
+    ModeNotHeld {
+        /// Which pane.
+        pane: PaneId,
+        /// The mode the document requires, as its `permission_mode` spells it.
+        wanted: String,
+        /// How many times the cycle key was pressed before giving up.
+        presses: u32,
+    } = {
+        pane: PaneId(0),
+        wanted: String::new(),
+        presses: 0,
+    },
     /// ⛔⛔⛔⛔⛔ **THIS PANE'S PEER IS PARKED AT A QUESTION NOTHING THIS RUN HOLDS MAY ANSWER, SO
     /// NOTHING WAS TYPED INTO IT** — register item 828, and [`PeerBusy`](Self::PeerBusy)'s sibling
     /// at the same door one fact over.
@@ -792,6 +808,22 @@ impl std::fmt::Display for PaneError {
                  call is not at rest, so a prompt typed there opens no turn this run could judge, \
                  and bytes left in a composer are what the next delivery concatenates onto. The \
                  remedy is the CHILD and never the prompt — let it finish, or look at the pane",
+                pane.0,
+            ),
+            // ⚠⚠⚠ IT SAYS WHY THE MODE IS WORTH REFUSING OVER, on `PeerBusy`'s terms. A session in
+            // another permission mode stops at questions a run cannot answer, which is the three
+            // hours a wz run stood (run 446) — so the remedy is the mode and never the prompt.
+            Self::ModeNotHeld {
+                pane,
+                wanted,
+                presses,
+            } => write!(
+                f,
+                "pane {}'s agent could not be brought into the {wanted:?} permission mode its \
+                 document requires — {presses} press(es) of the document's cycle key never showed \
+                 it on the footer — so nothing was typed: a session in another mode stops at \
+                 permission questions this run cannot answer. The remedy is the MODE — relaunch \
+                 the agent with its permission-mode flag set to {wanted}, or look at the pane",
                 pane.0,
             ),
             // ⚠⚠⚠ IT SAYS WHAT THE BYTES WOULD HAVE DONE, on `PeerBusy`'s terms one arm up. A
