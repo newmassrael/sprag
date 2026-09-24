@@ -281,6 +281,12 @@ struct Learned<'a> {
     /// terms and an owned one would take this struct's `Copy` away for a value the renderer only
     /// reads.
     wanting: Option<&'a crate::completion::Wanting>,
+    /// ⛔⛔⛔⛔⛔ **WHAT THE MOMENT OF A REFUSED PRESS LOOKED LIKE** — register item 1139, and
+    /// [`None`] on every pass whose delivery was not refused.
+    ///
+    /// ⚠ Taken off the loop, on [`faced`](Self::faced)'s rule: the slot is emptied at the top of
+    /// every pump, so what is in it belongs to the pass that just ran.
+    pressed: Option<&'a crate::deliver::PressMoment>,
 }
 
 /// The closing note, carrying what this run's own document SWALLOWED when it swallowed anything.
@@ -643,6 +649,7 @@ impl AiLoop {
             watching,
             moved,
             wanting,
+            pressed,
         } = learned;
         let mut note = if raised == AiLoopEvent::Null {
             // ⛔⛔⛔⛔⛔ **AND WHAT IT WAS WAITING FOR, WHICH THIS LINE COULD NOT SAY FOR FOUR
@@ -811,6 +818,12 @@ impl AiLoop {
         // has burned wire numbers over, said here for the fourth time on this one function.
         if let Some(peer) = faced {
             note = format!("{note} — {}", peer.noted());
+        }
+        // ⛔⛔⛔⛔⛔ AND, FOR A PRESS THAT WAS REFUSED, WHAT THAT INSTANT LOOKED LIKE — register item
+        // 1139. The refusal was measured transient, so the instant is the only place its cause can
+        // be read; this is the line a person reads when they ask why.
+        if let Some(press) = pressed {
+            note = format!("{note} — {}", press.noted());
         }
         if let Some(unanswered) = found {
             note = format!("{note} — {}", unanswered.noted());
@@ -1972,6 +1985,8 @@ impl Plugin for AiLoop {
                 // `watching`'s rule exactly and diffed in its own slot, which is what keeps the
                 // arity sentence beside it rare.
                 let moved = self.inner.moved();
+                // ⚠⚠ AND THE REFUSED PRESS'S INSTANT, on `faced`'s rule — register item 1139.
+                let pressed = self.inner.pressed();
                 let note = Self::walked(
                     from,
                     raised,
@@ -2011,6 +2026,7 @@ impl Plugin for AiLoop {
                         // is no finding here for an early return to consume. See
                         // `OuterLoop::wanting`, which holds why this one must repeat.
                         wanting: self.inner.wanting(),
+                        pressed: pressed.as_ref(),
                     },
                 );
                 // ⚠⚠⚠⚠⚠ **WHETHER THAT ARRIVAL WAS AN ENDING IS THE DOCUMENT'S TO SAY** — register
@@ -10703,6 +10719,51 @@ mod tests {
             "⚠⚠⚠⚠ A TURN THAT ENDED HAS NOTHING OUTSTANDING, so the line that names the transition \
              must not carry a stall clause — a reader told *the agent is still Working* by the very \
              line saying the turn finished is worse off than one told nothing. Got {moved_on:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A REFUSED PRESS'S WALK LINE SAYS WHAT THAT INSTANT LOOKED LIKE** — register item
+    /// 1139. The refusal was measured transient, so the line naming it is the only place its cause
+    /// can be read afterwards: how long after the text the press came, how many repaints fell in
+    /// between, what the peer was and what its question counter read on both sides. The CONTROL is
+    /// the same transition with no press recorded, which must not grow the clause.
+    #[test]
+    fn a_refused_press_says_what_its_instant_looked_like() {
+        let press = crate::deliver::PressMoment {
+            since_typed: Duration::from_millis(37),
+            repaints: Some(4),
+            asked_before: Some(3),
+            state_at_press: Some(sprag_detect::AgentState::Idle),
+        };
+        let said = AiLoop::walked(
+            AiLoopState::Reflecting,
+            AiLoopEvent::PromptUnasked,
+            AiLoopState::Restarting,
+            Learned {
+                pressed: Some(&press),
+                ..Learned::default()
+            },
+        );
+        for clause in [
+            "37 ms",
+            "4 screen repaint(s)",
+            "Idle",
+            "question counter at 3",
+        ] {
+            assert!(
+                said.contains(clause),
+                "the refused press's line must carry {clause:?}. Got {said:?}",
+            );
+        }
+        let plain = AiLoop::walked(
+            AiLoopState::Reflecting,
+            AiLoopEvent::PromptUnasked,
+            AiLoopState::Restarting,
+            Learned::default(),
+        );
+        assert!(
+            !plain.contains("the press came"),
+            "no press recorded, no clause. Got {plain:?}",
         );
     }
 

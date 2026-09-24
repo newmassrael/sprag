@@ -98,7 +98,7 @@ use crate::access::{PaneAccess, PaneError};
 use crate::act::Does;
 use crate::completion::{Completion, DoneWhen, Over, Quiet, Turn};
 use crate::consent::Unanswered;
-use crate::deliver::{Delivered, Delivery, SubmittedWhen, deliver};
+use crate::deliver::{Delivered, Delivery, SubmittedWhen};
 use crate::judge::{QuestionShape, Silence};
 use crate::readiness::{Reached, Readiness, ReadyWhen};
 use crate::run::{RunContext, Waited, park_until, poll_until};
@@ -7563,7 +7563,7 @@ pub struct OuterLoop {
     /// **WHETHER THE INNER AGENT PAINTS THE PROMPT BOX IT IS TYPED INTO.**
     ///
     /// [`AgentSpec::shows_the_prompt`](crate::agent::AgentSpec::shows_the_prompt)'s knob, and this
-    /// loop needs it for the same measured reason. [`deliver`] reads the prompt back off the
+    /// loop needs it for the same measured reason. [`deliver`](crate::deliver::deliver()) reads the prompt back off the
     /// SCREEN before it presses Enter, and withholds the press when the text is demonstrably
     /// absent — which is right, and is what stops a submit landing on a pane that swallowed the
     /// question.
@@ -8119,6 +8119,10 @@ pub struct OuterLoop {
     /// levels, and an arity that changes when an instrument breaks must not be republished every
     /// time a turn moves a file. See [`Moved`]'s own doc for the gate that said so.
     moved: Option<Moved>,
+    /// ⛔⛔⛔⛔⛔ **AND WHAT THE MOMENT OF THIS PASS'S REFUSED PRESS LOOKED LIKE** —
+    /// [`crate::deliver::PressMoment`], register item 1139, filled only where the delivery was
+    /// refused and emptied at the top of every pump exactly as the slots above are.
+    pressed: Option<crate::deliver::PressMoment>,
     /// ⛔⛔⛔⛔⛔ **AND WHAT THE TURN CONTRACT WAS STILL WAITING FOR, WHERE THIS PASS'S WAIT RAN OUT
     /// WITHOUT ONE** — [`crate::completion::Wanting`], register item 598, emptied at the top of
     /// every pump exactly as
@@ -8542,6 +8546,8 @@ impl OuterLoop {
             // looked says nothing; `Moved::NoTurnYet` is what a pass that HAS looked says before a
             // prompt has gone in, and the two are not the same answer.
             moved: None,
+            // No press has been refused yet — register item 1139.
+            pressed: None,
             // ⚠ No wait has run out yet — see the field's own doc, and note that a wait which ENDS
             // leaves this empty too: the difference between the two is the event the pass raised.
             wanting: None,
@@ -9816,6 +9822,15 @@ impl OuterLoop {
     pub fn moved(&mut self) -> Option<Moved> {
         let reading = self.moved.take()?;
         self.told.moved(reading)
+    }
+
+    /// **WHAT THE MOMENT OF THIS PASS'S REFUSED PRESS LOOKED LIKE** — register item 1139, and
+    /// [`None`] on every pass whose delivery was not refused.
+    ///
+    /// ⚠ TAKEN, on [`facing`](Self::facing)'s rule, and NOT diffed: every refusal is its own
+    /// measurement, and the whole point is to read them side by side.
+    pub fn pressed(&mut self) -> Option<crate::deliver::PressMoment> {
+        self.pressed.take()
     }
 
     /// ⛔⛔⛔⛔⛔ **WHAT THIS PASS'S TURN CONTRACT WAS STILL WAITING FOR** —
@@ -11254,6 +11269,8 @@ impl OuterLoop {
         // ⚠⚠ AND THE FOURTH, on the same rule — register item 1037. What a pass saw move belongs
         // to the pass that saw it.
         self.moved = None;
+        // ⚠⚠ AND A REFUSED PRESS'S INSTANT, on the same rule — register item 1139.
+        self.pressed = None;
         // ⚠⚠ AND THE FIFTH, on the same rule — register item 598. What a pass's wait was still
         // waiting for belongs to the pass that waited, and a stale reading here would be the worst
         // one this slot can carry: a person reading *the agent is still Working* beside a pass on
@@ -15563,7 +15580,17 @@ impl OuterLoop {
             submitted_when: self.submit_lands_when(&facing),
             ..Delivery::new()
         };
-        let mut delivered = deliver(panes, run, self.driving.pane, text, &spec)?;
+        let (mut delivered, press) =
+            crate::deliver::deliver_measured(panes, run, self.driving.pane, text, &spec)?;
+        // ⛔⛔⛔⛔⛔ THE INSTANT OF A REFUSED PRESS IS KEPT FOR THIS PASS'S WALK LINE — register item
+        // 1139. Only a refusal keeps it: the question is what was different when the press did
+        // not take, and a landed press has nothing to explain.
+        if matches!(
+            delivered,
+            Delivered::Unsubmitted { .. } | Delivered::Unreported { .. }
+        ) {
+            self.pressed = press;
+        }
         // ⚠⚠⚠ **A SUBMIT THAT DID NOT BECOME A QUESTION IS SELECTED AND PRESSED AGAIN, WHERE THE
         // DOCUMENT SAYS SO** — owner's instruction, 2026-09-23. The pane is focused, the TITLE of
         // the question at the bottom of its screen is clicked, and the press is repeated under the
@@ -17584,6 +17611,7 @@ fn stands_alone(row: &str, marker: &str) -> bool {
 mod tests {
     use super::*;
     use crate::access::WorkspacePaneAccess;
+    use crate::deliver::deliver;
     use crate::testing::{PEER_READY, standin_agent, started, supervised};
     use sce_rust_runtime::helpers::io_processors::IoProcessorDescriptor;
     use sce_rust_runtime::scripting::i_script_engine::{NativeMethod, StateQueryCallback};

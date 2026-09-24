@@ -1781,6 +1781,44 @@ pub fn deliver(
     text: &str,
     spec: &Delivery,
 ) -> Result<Delivered, PaneError> {
+    deliver_into(panes, run, pane, text, spec, &mut None)
+}
+
+/// [`deliver`], and **WHAT THE MOMENT OF THE LAST PRESS LOOKED LIKE** — register item 1139.
+///
+/// The unasked refusals were measured to be TRANSIENT (2026-09-24, pane 2696 of run 448): the pane
+/// that had just refused was not stuck — nothing queued unread on its pty, a character sent a few
+/// minutes later appeared at once, and a plain Enter then asked the question. So what decides it
+/// happened at the instant the driver pressed, and nothing recorded that instant. This is that
+/// record; see [`PressMoment`] for what it holds and what it does not.
+///
+/// `None` for the moment where no press was made (a delivery that never showed its text, or one
+/// told not to submit).
+///
+/// # Errors
+///
+/// [`deliver`]'s.
+pub fn deliver_measured(
+    panes: &dyn PaneAccess,
+    run: &RunContext,
+    pane: PaneId,
+    text: &str,
+    spec: &Delivery,
+) -> Result<(Delivered, Option<PressMoment>), PaneError> {
+    let mut press = None;
+    let delivered = deliver_into(panes, run, pane, text, spec, &mut press)?;
+    Ok((delivered, press))
+}
+
+/// [`deliver`]'s body, writing the last press's [`PressMoment`] into `press`.
+fn deliver_into(
+    panes: &dyn PaneAccess,
+    run: &RunContext,
+    pane: PaneId,
+    text: &str,
+    spec: &Delivery,
+    press: &mut Option<PressMoment>,
+) -> Result<Delivered, PaneError> {
     let needle = spec.needle(text);
     let keys = KeyStroke::text(text);
     let mut written = 0_u64;
@@ -1807,6 +1845,9 @@ pub fn deliver(
         }
         attempts += 1;
         written += panes.inject(pane, &keys)?.bytes();
+        // The instant the text went in, and the screen's revision then — what the press is
+        // measured against (register item 1139).
+        let typed = Typed::now(panes, pane);
         let (seen, screen) = await_text(
             panes,
             run,
@@ -1860,7 +1901,17 @@ pub fn deliver(
                                 .map(|within| SubmittedWhen::Emptied { within })
                         })
                         .flatten();
-                    match submit(panes, run, pane, text, spec, &mut written, also)? {
+                    match submit(
+                        panes,
+                        run,
+                        pane,
+                        text,
+                        spec,
+                        &mut written,
+                        also,
+                        &typed,
+                        press,
+                    )? {
                         Seen::No => {
                             return Ok(Delivered::Unsubmitted {
                                 attempts,
@@ -1966,7 +2017,17 @@ pub fn deliver(
                     .submitted_when
                     .within()
                     .map(|within| SubmittedWhen::Released { within });
-                let landed = submit(panes, run, pane, text, spec, &mut written, also)?;
+                let landed = submit(
+                    panes,
+                    run,
+                    pane,
+                    text,
+                    spec,
+                    &mut written,
+                    also,
+                    &typed,
+                    press,
+                )?;
                 return Ok(match landed {
                     Seen::Yes => Delivered::Reported {
                         attempts,
@@ -2035,6 +2096,7 @@ pub fn deliver(
 /// # Errors
 ///
 /// [`PaneError`] from the injection itself — an unknown pane, or a key with no bytes.
+#[allow(clippy::too_many_arguments)]
 fn submit(
     panes: &dyn PaneAccess,
     run: &RunContext,
@@ -2043,6 +2105,8 @@ fn submit(
     spec: &Delivery,
     written: &mut u64,
     also: Option<SubmittedWhen>,
+    typed: &Typed,
+    press: &mut Option<PressMoment>,
 ) -> Result<Seen, PaneError> {
     let witness = Submission::arm(
         panes,
@@ -2052,8 +2116,96 @@ fn submit(
         text,
         spec.needle(text),
     );
+    // ⚠ NO EXTRA LOOK AT THE SUPERVISOR: the counter and state are the arming read's, taken a
+    // moment ago for the contract itself. Gates in this file count those reads, and a measurement
+    // that added its own would change what it measures.
+    let before = witness.before;
+    let repaints = screen_revision(panes, pane)
+        .zip(typed.revision)
+        .map(|(now, then)| now.saturating_sub(then));
+    let since_typed = typed.at.elapsed();
     *written += panes.inject(pane, &spec.then_press)?.bytes();
-    Ok(witness.await_landing(panes, run, pane))
+    let seen = witness.await_landing(panes, run, pane);
+    *press = Some(PressMoment {
+        since_typed,
+        repaints,
+        asked_before: before.map(|(asked, _)| asked),
+        state_at_press: before.map(|(_, state)| state),
+    });
+    Ok(seen)
+}
+
+/// When a delivery's text went in, and the screen's revision at that instant.
+struct Typed {
+    at: std::time::Instant,
+    revision: Option<u64>,
+}
+
+impl Typed {
+    fn now(panes: &dyn PaneAccess, pane: PaneId) -> Self {
+        Self {
+            at: std::time::Instant::now(),
+            revision: screen_revision(panes, pane),
+        }
+    }
+}
+
+/// The pane's screen revision, where this surface can say.
+fn screen_revision(panes: &dyn PaneAccess, pane: PaneId) -> Option<u64> {
+    panes.changes()?.pane_revision(pane)
+}
+
+/// ⛔⛔⛔⛔⛔ **WHAT THE MOMENT OF A PRESS LOOKED LIKE** — register item 1139, recorded by
+/// [`deliver_measured`] for every press it makes and published on the walk line of a refusal.
+///
+/// # Why it exists
+///
+/// The unasked refusals were measured TRANSIENT: the pane was not stuck minutes later, so the
+/// question is what was different at the instant of the press. Four candidates were named and none
+/// was measured — the Enter arriving while the paste was still being painted, the Enter landing in
+/// the middle of a render, the agent not yet at rest, or something else entirely. This carries the
+/// readings that separate the first three.
+///
+/// # ⚠ What it does not carry
+///
+/// * The pty input queue at the press. The driver reaches the pane through the daemon and has no
+///   descriptor on the pty; the daemon does, and exposing it is a wire change this record was kept
+///   clear of.
+/// * The question counter AFTER the press. Reading it would be one more look at the supervisor,
+///   and gates in this file count those looks; a refusal already says the counter did not move
+///   inside the contract's window, which is what that reading would have shown.
+///
+/// Both stated rather than hidden.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PressMoment {
+    /// From the text going in to the Enter going in.
+    pub since_typed: std::time::Duration,
+    /// How many times the screen's revision moved in that interval — a paste still being painted
+    /// moves it; a settled one does not. `None` where the surface cannot say.
+    pub repaints: Option<u64>,
+    /// The agent's question counter just before the press — the contract's own arming read.
+    pub asked_before: Option<u64>,
+    /// What the supervisor called the agent just before the press — the same read.
+    pub state_at_press: Option<sprag_detect::AgentState>,
+}
+
+impl PressMoment {
+    /// The clause a walk line carries for a refused press.
+    #[must_use]
+    pub fn noted(&self) -> String {
+        let count =
+            |value: Option<u64>| value.map_or_else(|| "unknown".to_owned(), |n| n.to_string());
+        let state = self
+            .state_at_press
+            .map_or_else(|| "unknown".to_owned(), |state| format!("{state:?}"));
+        format!(
+            "the press came {} ms after the text went in, with {} screen repaint(s) in between; \
+             just before it the peer was {state} with its question counter at {}",
+            self.since_typed.as_millis(),
+            count(self.repaints),
+            count(self.asked_before),
+        )
+    }
 }
 
 /// **FOCUS THE PANE, SELECT THE BOTTOM QUESTION'S TITLE, PRESS AGAIN** — the remedy a document
@@ -2096,7 +2248,18 @@ pub fn select_and_press(
     pointer.pane_focus(pane, true)?;
     pointer.pane_click(pane, title.row, title.column)?;
     let mut written = 0_u64;
-    let seen = submit(panes, run, pane, text, spec, &mut written, None)?;
+    let typed = Typed::now(panes, pane);
+    let seen = submit(
+        panes,
+        run,
+        pane,
+        text,
+        spec,
+        &mut written,
+        None,
+        &typed,
+        &mut None,
+    )?;
     let written = Written::of(written);
     Ok(Some(match seen {
         Seen::Yes => Delivered::Reported {
@@ -2388,6 +2551,9 @@ struct Submission {
     /// pane, or an observation naming no agent. That is not evidence about a keystroke, so the
     /// contract is never satisfied — see the kind's own doc.
     agent: Option<(String, u64)>,
+    /// The agent's question counter and state as the arming read found them — the press's
+    /// "before" (register item 1139). `None` where the contract read no observation.
+    before: Option<(u64, sprag_detect::AgentState)>,
     /// WHAT THIS DELIVERY IS ASKING, for [`SubmittedWhen::Took`] to compare the agent's own account
     /// against.
     ///
@@ -2520,6 +2686,9 @@ impl Submission {
                     .map(|agent| (agent, needle.to_owned()))
             })
             .flatten(),
+            // The arming read's question counter and state, kept for the press's own record
+            // (register item 1139) — the SAME read, so measuring the instant costs no extra look.
+            before: seen.as_ref().map(|seen| (seen.asked_seq, seen.state)),
             agent: seen.and_then(|seen| seen.agent.map(|agent| (agent, seen.seq))),
             // Only the contract that compares it keeps it: a delivery that asks nothing of the
             // agent's account has no business holding a copy of its own prompt.
@@ -6940,6 +7109,47 @@ mod tests {
             pane.events().is_empty(),
             "and nothing was sent: {:?}",
             pane.events()
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A REFUSED PRESS COMES BACK WITH ITS INSTANT** — register item 1139. A real peer on
+    /// a real pty that never reads the Enter (the same `dd` fixture the refusal gates above use):
+    /// the delivery is refused, and `deliver_measured` must hand back a [`PressMoment`] whose clock
+    /// actually ran. Without it the walk line has nothing to say about the one instant the refusal
+    /// was measured to live in.
+    #[test]
+    fn a_refused_press_is_measured_at_its_instant() {
+        const PROMPT: &str = "what is 2 plus 2?";
+        let (access, pane) = ready_peer(&takes_a_prompt_of(PROMPT.len(), Reacts::Nothing));
+        let watching = SubmittedWhen::Repaints {
+            within: Duration::from_millis(150),
+        };
+        let (delivered, press) = deliver_measured(
+            &access,
+            &RunContext::uncancellable(),
+            pane,
+            PROMPT,
+            &Delivery {
+                attempts: 1,
+                submitted_when: watching,
+                ..Delivery::new()
+            },
+        )
+        .expect("a peer that ignores a keystroke is not an error");
+        access.lifecycle().expect("lifecycle").close(pane);
+        assert!(
+            matches!(delivered, Delivered::Unsubmitted { .. }),
+            "THE PREMISE: this peer never reads the Enter. Got {delivered:?}",
+        );
+        let press = press.expect("a press was made, so its instant was recorded");
+        assert!(
+            press.since_typed > Duration::ZERO,
+            "the clock from the text to the press must have run: {press:?}",
+        );
+        assert!(
+            press.noted().contains("the press came"),
+            "and it must be sayable: {}",
+            press.noted(),
         );
     }
 }
