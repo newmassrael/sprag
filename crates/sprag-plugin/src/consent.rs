@@ -223,12 +223,100 @@ impl Consent {
 ///   caller when it has no home. [`covers`](Self::covers) is that home.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Consents {
-    /// The clauses, in the caller's own order. Never empty — see [`Consents::of`].
+    /// The clauses, in the caller's own order. May be empty only where an
+    /// [`escalation`](Self::escalation) stands beside them — see [`Consents::with_escalation`].
     ///
     /// ⚠ The ORDER is preserved and deliberately not USED: no clause outranks another, because a
     /// list whose first clause wins is a list where adding a rule silently disables an earlier
     /// one. Two clauses that disagree about a question are [`Refusal::Contradicted`], not a race.
     clauses: Vec<Consent>,
+    /// The document's RANKED answer to a permission dialog no clause answered — see
+    /// [`Escalation`]. `None` where the document authors none.
+    escalation: Option<Escalation>,
+}
+
+/// ⛔⛔⛔⛔⛔ **A PERMISSION DIALOG IS ANSWERED WITH THE OPTION THAT GRANTS THE MOST** — the owner's
+/// decision of 2026-09-24: *"선택지에서는 가장 권한을 높이는걸 자동으로 선택하면되고"*.
+///
+/// # Why a ranked list, when [`Consents`] refuses to rank
+///
+/// [`Consents::covers`] refuses any precedence the caller did not choose, and this is not that
+/// case: the owner CHOSE one, and it is a total order over option texts — the highest grant first.
+/// So it is a separate value the document authors (`may_escalate`), consulted only where no clause
+/// answered, and never used to break a tie BETWEEN clauses.
+///
+/// # How it answers
+///
+/// A question is a permission dialog when its asked lines carry one of `asked`. The ranks are tried
+/// highest first; each is matched against the options exactly, then as a substring, with the
+/// curly apostrophe `claude` paints (`don’t`) read as a straight one. The first rank that names
+/// exactly ONE option is the answer; a rank that names several is [`Refusal::Ambiguous`], because a
+/// guess between two grants is not the owner's order.
+///
+/// ⚠ Measured on the dialog that stopped wz run 446 for three hours: options `1. Yes` ·
+/// `2. Yes, and don’t ask again for: …` · `3. Yes, and switch to auto mode · …` · `4. No`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Escalation {
+    asked: Vec<String>,
+    ranks: Vec<String>,
+}
+
+impl Escalation {
+    /// The wire key the document authors this under.
+    pub const WIRE_KEY: &'static str = "may_escalate";
+    /// The field listing what marks a question as a permission dialog.
+    pub const ASKED_KEY: &'static str = "asked";
+    /// The field listing the options to grant, highest first.
+    pub const RANKS_KEY: &'static str = "ranks";
+
+    /// The escalation `asked` and `ranks` describe, or `None` when either is empty or holds an
+    /// empty needle — an empty needle is carried by every line and would answer every dialog.
+    #[must_use]
+    pub fn parse(asked: Vec<String>, ranks: Vec<String>) -> Option<Self> {
+        let usable = |list: &[String]| !list.is_empty() && list.iter().all(|it| !it.is_empty());
+        (usable(&asked) && usable(&ranks)).then_some(Self { asked, ranks })
+    }
+
+    /// The ONE option of `question` this escalation grants, or why it grants none.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::OtherQuestion`] when `question` is not a permission dialog,
+    /// [`Refusal::Ambiguous`] when the first rank that matches names several options, and
+    /// [`Refusal::NotOffered`] when no rank names any.
+    pub fn covers<'q>(&self, question: &'q Question) -> Result<&'q Choice, Refusal> {
+        if !self
+            .asked
+            .iter()
+            .any(|needle| question_carries(question, needle))
+        {
+            return Err(Refusal::OtherQuestion);
+        }
+        let plain = |text: &str| text.replace('\u{2019}', "'");
+        for rank in &self.ranks {
+            let rank = plain(rank);
+            let exact: Vec<&Choice> = question
+                .choices
+                .iter()
+                .filter(|choice| plain(&choice.label) == rank)
+                .collect();
+            let held = if exact.is_empty() {
+                question
+                    .choices
+                    .iter()
+                    .filter(|choice| plain(&choice.label).contains(&rank))
+                    .collect()
+            } else {
+                exact
+            };
+            match held[..] {
+                [only] => return Ok(only),
+                [] => {}
+                _ => return Err(Refusal::Ambiguous),
+            }
+        }
+        Err(Refusal::NotOffered)
+    }
 }
 
 impl Consents {
@@ -247,7 +335,17 @@ impl Consents {
     /// something, and a builder would push the check to whoever remembered.
     #[must_use]
     pub fn of(clauses: Vec<Consent>) -> Option<Self> {
-        (!clauses.is_empty()).then_some(Self { clauses })
+        Self::with_escalation(clauses, None)
+    }
+
+    /// The clauses and the document's ranked [`Escalation`], or `None` when there are neither — a
+    /// `Consents` in hand still authorises something, now by either road.
+    #[must_use]
+    pub fn with_escalation(clauses: Vec<Consent>, escalation: Option<Escalation>) -> Option<Self> {
+        (!clauses.is_empty() || escalation.is_some()).then_some(Self {
+            clauses,
+            escalation,
+        })
     }
 
     // ⚠ NO ACCESSOR FOR THE CLAUSES, and the absence is measured rather than an oversight. The
@@ -349,10 +447,24 @@ impl Consents {
                 Err(beyond_this_list) => return Err(beyond_this_list),
             }
         }
-        match (chosen, applicable) {
-            (Some(only), _) => Ok(only),
-            (None, true) => Err(Refusal::NotOffered),
-            (None, false) => Err(Refusal::OtherQuestion),
+        let unanswered = match (chosen, applicable) {
+            (Some(only), _) => return Ok(only),
+            (None, true) => Refusal::NotOffered,
+            (None, false) => Refusal::OtherQuestion,
+        };
+        // ⛔⛔⛔ AND ONLY THEN THE DOCUMENT'S RANKED ESCALATION — the owner's decision of 2026-09-24.
+        // Consulted where no clause answered (steps 1 and 5 above), never where clauses collided:
+        // a contradiction or an ambiguity has already returned, and a ranking the owner chose for
+        // PERMISSION DIALOGS is not a tie-break between a caller's own clauses.
+        match self
+            .escalation
+            .as_ref()
+            .map(|escalation| escalation.covers(question))
+        {
+            Some(Ok(choice)) => Ok(choice),
+            // A dialog the escalation is not about keeps the clauses' own answer.
+            Some(Err(Refusal::OtherQuestion)) | None => Err(unanswered),
+            Some(Err(why)) => Err(why),
         }
     }
 }
@@ -1741,5 +1853,100 @@ mod tests {
             "the label is what makes the record auditable, and the number is what was typed: \
              {said:?}",
         );
+    }
+
+    /// The dialog that stood wz run 446 for three hours (2026-09-24), with the options it showed.
+    fn run_446_dialog(options: &[&str]) -> Question {
+        Question {
+            asked: vec![
+                "Claude requested permissions to edit /home/coin/.cargo/…/Cargo.toml which is a \
+                 sensitive file."
+                    .to_owned(),
+                "Do you want to proceed?".to_owned(),
+            ],
+            choices: options
+                .iter()
+                .enumerate()
+                .map(|(at, label)| Choice {
+                    number: u32::try_from(at + 1).expect("few options"),
+                    label: (*label).to_owned(),
+                    selected: at == 0,
+                })
+                .collect(),
+        }
+    }
+
+    const RUN_446_OPTIONS: &[&str] = &[
+        "Yes",
+        "Yes, and don\u{2019}t ask again for: grep sed",
+        "Yes, and switch to auto mode · auto mode handles these prompts for you",
+        "No",
+    ];
+
+    fn the_owners_escalation() -> Escalation {
+        Escalation::parse(
+            vec!["Do you want to".to_owned()],
+            vec![
+                "switch to auto mode".to_owned(),
+                "ask again".to_owned(),
+                "Yes".to_owned(),
+            ],
+        )
+        .expect("a usable escalation")
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE OPTION THAT GRANTS THE MOST IS TAKEN, AND EACH RANK DOWN IS A FALLBACK** — the
+    /// owner's decision of 2026-09-24, on run 446's own dialog: auto mode first; without it the
+    /// curly-apostrophe `don’t ask again` (which `debt`'s `'do not ask again'` clause never matched);
+    /// without that the bare `Yes`. `No` is never taken.
+    #[test]
+    fn a_permission_dialog_is_answered_with_the_highest_grant_it_offers() {
+        let escalation = the_owners_escalation();
+        let all = run_446_dialog(RUN_446_OPTIONS);
+        assert_eq!(escalation.covers(&all).map(|c| c.number), Ok(3));
+        let no_auto = run_446_dialog(&[RUN_446_OPTIONS[0], RUN_446_OPTIONS[1], RUN_446_OPTIONS[3]]);
+        assert_eq!(escalation.covers(&no_auto).map(|c| c.number), Ok(2));
+        let plain = run_446_dialog(&["Yes", "No"]);
+        assert_eq!(escalation.covers(&plain).map(|c| c.number), Ok(1));
+    }
+
+    /// A question that is not a permission dialog is not the escalation's, whatever it offers.
+    #[test]
+    fn a_question_that_is_not_a_permission_dialog_is_not_escalated() {
+        let mut question = run_446_dialog(RUN_446_OPTIONS);
+        question.asked = vec!["Which letter?".to_owned()];
+        assert_eq!(
+            the_owners_escalation().covers(&question),
+            Err(Refusal::OtherQuestion)
+        );
+    }
+
+    /// ⚠ A caller's own clause still decides where it answers, and clauses that COLLIDE are still
+    /// refused — the ranking is for a dialog nothing else answered, never a tie-break.
+    #[test]
+    fn a_clause_that_answers_outranks_the_escalation_and_a_collision_is_still_refused() {
+        let question = run_446_dialog(RUN_446_OPTIONS);
+        let saying_no = Consents::with_escalation(
+            vec![
+                Consent::parse("Do you want to proceed".to_owned(), "No".to_owned())
+                    .expect("a clause"),
+            ],
+            Some(the_owners_escalation()),
+        )
+        .expect("consents");
+        assert_eq!(saying_no.covers(&question).map(|c| c.number), Ok(4));
+        let colliding = Consents::with_escalation(
+            vec![
+                Consent::parse("proceed".to_owned(), "No".to_owned()).expect("a clause"),
+                Consent::parse("proceed".to_owned(), "switch to auto".to_owned())
+                    .expect("a clause"),
+            ],
+            Some(the_owners_escalation()),
+        )
+        .expect("consents");
+        assert_eq!(colliding.covers(&question), Err(Refusal::Contradicted));
+        let escalation_only = Consents::with_escalation(Vec::new(), Some(the_owners_escalation()))
+            .expect("an escalation alone is a consent");
+        assert_eq!(escalation_only.covers(&question).map(|c| c.number), Ok(3));
     }
 }

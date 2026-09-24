@@ -4684,6 +4684,8 @@ mod tests {
         let access = crate::testing::supervised_asking(&workspace);
         let mut loops = AiLoop::new(engine(), pane, &brief_for(2), &standin_spec())
             .expect("a well-briefed loop over a live pane starts");
+        // The stand-in paints a real permission prompt; this gate is about one nothing answers.
+        loops.inner.declining_escalation();
         let progress = ProgressCell::default();
         let outcome = Driver::new(Guardrails {
             max_iterations: Some(40),
@@ -6072,6 +6074,8 @@ mod tests {
             &standin_spec(),
         )
         .expect("a well-briefed loop over a live pane starts");
+        // The stand-in paints a real permission prompt; this gate is about one nothing answers.
+        loops.inner.declining_escalation();
 
         let run = RunContext::uncancellable();
         let mut walked: Vec<String> = Vec::new();
@@ -6404,6 +6408,8 @@ mod tests {
                 &standin_spec(),
             )
             .expect("a well-briefed loop over a live pane starts");
+            // The stand-in paints a real permission prompt; this gate is about one nothing answers.
+            loops.inner.declining_escalation();
 
             let run = RunContext::uncancellable();
             let mut walked: Vec<String> = Vec::new();
@@ -7271,6 +7277,8 @@ mod tests {
             &standin_spec(),
         )
         .expect("a well-briefed loop over a live pane starts");
+        // The stand-in paints a real permission prompt; this gate is about one nothing answers.
+        loops.inner.declining_escalation();
         let progress = ProgressCell::default();
         let outcome = Driver::new(Guardrails {
             max_iterations: Some(4_000),
@@ -9131,6 +9139,9 @@ mod tests {
                 &standin_spec(),
             )
             .expect("a well-briefed loop over a live pane starts");
+            // This gate is about what the CLAUSES decide; the template's ranked escalation would
+            // answer the stand-in's permission prompt for every arm and measure nothing.
+            loops.inner.declining_escalation();
             let outcome = Driver::new(Guardrails {
                 max_iterations: Some(40),
                 max_cost: None,

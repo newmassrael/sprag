@@ -1530,6 +1530,25 @@
       every session start there and this cycle a no-op; it is still read every
       time, because nothing else says the mode held.
     -->
+    <!--
+      ⛔⛔⛔⛔⛔ AND A PERMISSION DIALOG THAT STILL APPEARS IS ANSWERED WITH THE
+      OPTION THAT GRANTS THE MOST — the owner's decision, 2026-09-24:
+      *"선택지에서는 가장 권한을 높이는걸 자동으로 선택하면되고"*.
+
+      `asked` says which questions are permission dialogs; `ranks` are the
+      options to take, highest grant first (the curly apostrophe `claude` paints
+      is read as a straight one). It is consulted only where `may_answer` did not
+      answer, and a rank that names two options refuses rather than guesses.
+      Measured on the dialog that stood wz run 446 for three hours: `1. Yes` ·
+      `2. Yes, and don't ask again for: …` · `3. Yes, and switch to auto mode` ·
+      `4. No` — this takes 3.
+    -->
+    <data id="may_escalate"
+          expr="{
+            asked: ['Do you want to'],
+            ranks: ['switch to auto mode', 'ask again', 'Yes']
+          }"/>
+
     <data id="permission_mode" expr="'auto'"/>
     <data id="permission_mode_agent" expr="'claude'"/>
     <data id="permission_mode_shows" expr="'auto mode on'"/>

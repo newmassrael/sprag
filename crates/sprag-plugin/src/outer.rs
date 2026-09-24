@@ -10344,7 +10344,19 @@ impl OuterLoop {
                 needles,
                 within: Self::bound_of(within.as_deref()),
                 expected: Self::expected_of(awaits.as_deref(), stills.as_deref()),
-                answering: Self::answers_of(answers.as_deref()),
+                // ⛔⛔⛔ AND THE DOCUMENT'S RANKED ESCALATION WITH THEM — the owner's decision of
+                // 2026-09-24. The act carries only `may_answer`'s clauses; the escalation is read off
+                // the same datamodel in the same pass, so the barrier holds both or neither.
+                answering: Self::answers_of(answers.as_deref()).map(|clauses| {
+                    crate::consent::Consents::with_escalation(
+                        clauses
+                            .map(|held| held.clauses().to_vec())
+                            .unwrap_or_default(),
+                        Self::escalation_in(&self.script, &self.session)
+                            .ok()
+                            .flatten(),
+                    )
+                }),
             }),
             _ => None,
         }
@@ -10619,7 +10631,8 @@ impl OuterLoop {
         };
         let items = match held {
             ScriptValue::Array(items) => items,
-            ScriptValue::Null | ScriptValue::Undefined => return Ok(None),
+            // No clauses — but the document's ranked escalation, read below, may still answer.
+            ScriptValue::Null | ScriptValue::Undefined => Vec::new(),
             _ => return Err(NotScreenable::Unreadable),
         };
         let mut clauses = Vec::with_capacity(items.len());
@@ -10641,7 +10654,45 @@ impl OuterLoop {
                 crate::consent::Consent::parse(asked, answer).ok_or(NotScreenable::Unreadable)?,
             );
         }
-        Ok(crate::consent::Consents::of(clauses))
+        Ok(crate::consent::Consents::with_escalation(
+            clauses,
+            Self::escalation_in(script, session)?,
+        ))
+    }
+
+    /// **THE DOCUMENT'S RANKED ANSWER TO A PERMISSION DIALOG** — `may_escalate`, read by the same
+    /// reader as `may_answer` so every road to a run's consents carries it. `None` where the document
+    /// names none; refused where it names one this driver cannot read, on `may_answer`'s terms.
+    fn escalation_in(
+        script: &Arc<dyn IScriptEngine>,
+        session: &str,
+    ) -> Result<Option<crate::consent::Escalation>, NotScreenable> {
+        use crate::consent::Escalation;
+        let fields = match script.get_variable(session, Escalation::WIRE_KEY) {
+            Ok(ScriptValue::Object(fields)) => fields,
+            Ok(ScriptValue::Null | ScriptValue::Undefined) => return Ok(None),
+            _ => return Err(NotScreenable::Unreadable),
+        };
+        let texts = |key: &str| -> Option<Vec<String>> {
+            let Some(ScriptValue::Array(items)) = fields.get(key) else {
+                return None;
+            };
+            items
+                .iter()
+                .map(|item| match item {
+                    ScriptValue::String(text) => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let (Some(asked), Some(ranks)) =
+            (texts(Escalation::ASKED_KEY), texts(Escalation::RANKS_KEY))
+        else {
+            return Err(NotScreenable::Unreadable);
+        };
+        Escalation::parse(asked, ranks)
+            .map(Some)
+            .ok_or(NotScreenable::Unreadable)
     }
 
     /// **THE AUTHOR'S STANDING INSTRUCTIONS, AS THE DATAMODEL HOLDS THEM NOW** — or [`None`] for a
@@ -14936,6 +14987,20 @@ impl OuterLoop {
     #[must_use]
     pub fn permission_mode(&self) -> Option<String> {
         Self::authored_text_in(&self.script, &self.session, PERMISSION_MODE_KEY)
+    }
+
+    /// For the gates about a dialog NOTHING answers: switch the template's ranked `may_escalate`
+    /// off, so a stand-in painting a real permission prompt still reaches the no-consent path those
+    /// gates measure. Written to the datamodel exactly as a document that authored none would be.
+    #[cfg(test)]
+    pub(crate) fn declining_escalation(&mut self) {
+        self.script
+            .set_variable(
+                &self.session,
+                crate::consent::Escalation::WIRE_KEY,
+                ScriptValue::Null,
+            )
+            .expect("the escalation is writable");
     }
 
     /// ⛔⛔⛔⛔⛔ **BRING THE AGENT INTO THE DOCUMENT'S PERMISSION MODE BEFORE A PROMPT IS TYPED** —
@@ -22899,8 +22964,14 @@ mod tests {
             )
             .expect("the document's own clause list is writable");
 
+        // ⚠ Since 2026-09-24 the template's seed carries its ranked `may_escalate` beside an empty
+        // clause list, so the control is that no CLAUSE is held yet, not that nothing is.
         assert!(
-            loops.driving.ready.may_answer().is_none(),
+            loops
+                .driving
+                .ready
+                .may_answer()
+                .is_none_or(|seed| seed.clauses().is_empty()),
             "⚠⚠⚠ THE CONTROL: the barrier must still be holding the SEED it was built with, which \
              is the template's own empty list — *this run answers nothing*. If it already held the \
              clause written above, the claim below would be satisfied by a value that never \
