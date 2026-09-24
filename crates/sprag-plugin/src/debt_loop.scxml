@@ -103,13 +103,22 @@
       change is a red test rather than a run that stops at 3am. ⚠ The needle
       quotes the HEAD of that option because the label wraps across two rows on a
       100-column pane, and the tail sits past the fold.
+
+      ⛔⛔⛔ THE COMMAND CLAUSE IS GONE, 2026-09-24 (owner: *"걷어내"*). It read
+      `{ asked: 'Bash command', answer: 'do not ask again' }` and matched NO
+      option of the current `claude`: that option now reads `Yes, and don’t ask
+      again for: …`, with a curly apostrophe, and a clause is compared letter for
+      letter (register item 1141). So the command dialog already stood — it is
+      what held a wz run for three hours. It is answered now by the template's
+      ranked `may_escalate` (highest grant first, apostrophes read alike), which
+      every kind inherits, so this document no longer needs a command clause of
+      its own. The "BOTH" argument above still holds; the second half simply
+      lives in the template.
     -->
     <data id="may_answer"
           expr="[
             { asked: 'Do you want to make this edit',
-              answer: 'switch to accept edits' },
-            { asked: 'Bash command',
-              answer: 'do not ask again' }
+              answer: 'switch to accept edits' }
           ]"/>
 
     <!--

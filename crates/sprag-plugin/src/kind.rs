@@ -1925,21 +1925,32 @@ mod tests {
             .consents()
             .expect("the kind's clause list must be readable")
             .expect("a debt run answers dialogs, so the list is not absent");
+        // ⚠⚠⚠ ONE CLAUSE SINCE 2026-09-24, AND THE OTHER HALF IS NOT LOST. A run allowed to edit
+        // but not to run commands still cannot test what it edited — but the command dialog is now
+        // answered by the TEMPLATE's ranked `may_escalate`, which every kind inherits (register item
+        // 1141), and `outer`'s
+        // `the_template_answers_the_command_dialog_the_debt_kind_no_longer_holds` is its gate. The
+        // command clause that stood here matched no option of the current `claude` (curly
+        // apostrophe), so keeping it would have been a clause that answers nothing.
         assert_eq!(
             held.clauses().len(),
-            2,
-            "⚠⚠⚠ BOTH CLAUSES OR NEITHER. A run allowed to edit but not to run commands cannot test \
-             what it edited, and a milestone this loop calls reached is one it has verified — so one \
-             consent is not half a working loop, it is a loop that stops at the other dialog. Got \
-             {held:?}",
+            1,
+            "the debt kind holds its edit clause and leaves commands to the template. Got {held:?}",
         );
-        for asked in ["Do you want to make this edit", "Bash command"] {
-            assert!(
-                held.clauses().iter().any(|clause| clause.asked() == asked),
-                "the clause about {asked:?} must be here, since the template no longer has it: \
-                 {held:?}",
-            );
-        }
+        assert!(
+            held.clauses()
+                .iter()
+                .any(|clause| clause.asked() == "Do you want to make this edit"),
+            "the edit clause must be here, since the template does not hold it: {held:?}",
+        );
+        assert!(
+            !held
+                .clauses()
+                .iter()
+                .any(|clause| clause.asked() == "Bash command"),
+            "the dead command clause must not come back: it matched no option of the current \
+             `claude` and the template answers that dialog now. {held:?}",
+        );
         // ⚠ NEITHER NEEDLE MAY BE `Yes`: both dialogs carry it on two options, and a needle that
         // reaches two authorises neither — measured, and the reason each clause names the text only
         // ONE option carries.

@@ -18445,6 +18445,45 @@ mod tests {
         );
     }
 
+    /// ⛔⛔⛔⛔⛔ **THE TEMPLATE ANSWERS THE COMMAND DIALOG THE DEBT KIND NO LONGER HOLDS A CLAUSE FOR**
+    /// — register item 1141. Read through the product's own consent reader off the real template,
+    /// against the dialog that stood wz run 446 for three hours: the highest grant it offers is taken,
+    /// and without auto mode on offer the curly-apostrophe `don’t ask again` still is.
+    #[test]
+    fn the_template_answers_the_command_dialog_the_debt_kind_no_longer_holds() {
+        let lua: Arc<dyn IScriptEngine> = Arc::new(sce_rust_lua::LuaEngine::new());
+        let (_workspace, pane) = quiet_pane();
+        let loops = bounded_at(lua, pane, Duration::from_millis(200)).expect("a loop");
+        let consents = OuterLoop::consents_in(&loops.script, &loops.session)
+            .expect("the template's consents read")
+            .expect("the template's escalation makes them present");
+        let dialog = |options: &[&str]| sprag_detect::Question {
+            asked: vec![
+                "Bash command".to_owned(),
+                "grep -n stats zenoh/Cargo.toml".to_owned(),
+                "Do you want to proceed?".to_owned(),
+            ],
+            choices: options
+                .iter()
+                .enumerate()
+                .map(|(at, label)| sprag_detect::Choice {
+                    number: u32::try_from(at + 1).expect("few options"),
+                    label: (*label).to_owned(),
+                    selected: at == 0,
+                })
+                .collect(),
+        };
+        let run_446 = dialog(&[
+            "Yes",
+            "Yes, and don\u{2019}t ask again for: grep",
+            "Yes, and switch to auto mode · auto mode handles these prompts for you",
+            "No",
+        ]);
+        assert_eq!(consents.covers(&run_446).map(|c| c.number), Ok(3));
+        let no_auto = dialog(&["Yes", "Yes, and don\u{2019}t ask again for: grep", "No"]);
+        assert_eq!(consents.covers(&no_auto).map(|c| c.number), Ok(2));
+    }
+
     /// ⛔⛔⛔⛔⛔ **THE TEMPLATE HOLDS EVERY RUN IN `auto`, AND SAYS HOW** — the owner's decision of
     /// 2026-09-24 (*"무조건 시작부터 auto mode여야해"*), read off the real document through the
     /// product's own reader, so what a run gets is what is asserted.
