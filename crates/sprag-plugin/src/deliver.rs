@@ -2926,10 +2926,67 @@ impl Submission {
                 Poll::NotYet => {}
             }
             if start.elapsed() >= within {
-                return Seen::No;
+                if self.queued_behind_another(panes, pane) {
+                    std::thread::sleep(POLL_INTERVAL);
+                    continue;
+                }
+                // ⚠ ONE LAST LOOK: the reading that ended the queue may be the one that shows the
+                // prompt asked, and it came after this poll's look at the evidence.
+                return match self.landed(panes, pane) {
+                    Poll::Landed(seen) => seen,
+                    Poll::Never | Poll::NotYet => Seen::No,
+                };
             }
             std::thread::sleep(POLL_INTERVAL);
         }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE PRESS WENT INTO A TURN SOMEBODY ELSE OPENED, SO THE PROMPT IS QUEUED AND NOT
+    /// REFUSED** — and [`await_landing`](Self::await_landing) waits past its window for it.
+    ///
+    /// # What it answers
+    ///
+    /// An agent that runs background tasks is woken by their completion notices, and each OPENS A
+    /// TURN of its own. Measured on watching-zenoh's run 458 (2026-09-25, transcript times UTC):
+    /// the agent ended a turn at 09:23:30.25, a task notification opened the next at 09:23:30.90,
+    /// and the driver — which had seen the first turn end — pressed its turn prompt at
+    /// 09:23:34.10. The press record read *"just before it the peer was Working with its question
+    /// counter at 6"*, and the transcript says what became of the keystroke: `queue-operation
+    /// enqueue`. `claude` holds a prompt submitted to a busy agent and asks it when that turn
+    /// ends, so the account comes — but after this contract's window. The delivery was refused as
+    /// never asked, the session was replaced, and the queued prompt died with it.
+    ///
+    /// # ⚠⚠ Why these three conditions, and what each keeps out
+    ///
+    /// * **The agent REPORTS `Working`** — its own statement that a turn is open. A scraped state
+    ///   says what the pane looks like, and a pane at rest has no turn to be queued behind.
+    /// * **It names a question, and this delivery's text is NOT in it.** That is the turn being
+    ///   somebody else's. A reported question that CONTAINS this text is item 223's dirty composer,
+    ///   which stays refused; and a peer that names nothing — `WorkingOnNothing` in the gate beside
+    ///   `hold_while_a_child_runs` — stays exactly as it was, so a loop still types at a working
+    ///   peer rather than going quiet.
+    /// * **It is the peer the press went to.**
+    ///
+    /// ⚠ The residue: the wait is bounded by the run and nothing else, because the turn it waits
+    /// out is real work of unbounded length and the prompt is right the moment it is asked.
+    fn queued_behind_another(&self, panes: &dyn PaneAccess, pane: PaneId) -> bool {
+        let (Some((addressed, _)), Some(asked)) = (self.agent.as_ref(), self.asked.as_deref())
+        else {
+            return false;
+        };
+        let ours = squeezed(asked);
+        panes
+            .supervision()
+            .and_then(|supervisor| supervisor.pane_agent_state(pane).seen())
+            .is_some_and(|seen| {
+                seen.state == sprag_detect::AgentState::Working
+                    && matches!(seen.authority, crate::access::Authority::Reported { .. })
+                    && seen.agent.as_deref() == Some(addressed.as_str())
+                    && seen
+                        .asked
+                        .as_deref()
+                        .is_some_and(|said| !squeezed(&unpasted(said)).contains(&ours))
+            })
     }
 }
 
@@ -4066,6 +4123,133 @@ mod tests {
                 reporter: crate::access::ReporterVoice::Speaking,
             }))
         }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AN AGENT WORKING A NOTIFICATION'S TURN, WHICH QUEUES A PRESS** — the double for
+    /// [`Submission::queued_behind_another`], staged as watching-zenoh's run 458 measured it.
+    ///
+    /// Before and after the press it reports `Working` on a task notification it was handed. The
+    /// prompt the press carried is queued, as `claude` queues it, and is asked only after
+    /// `queued_reads` more looks — when the notification's turn ends — at which point the agent
+    /// names it and its counters move.
+    struct Queued {
+        inner: Recorder,
+        said: String,
+        queued_reads: Mutex<u32>,
+    }
+
+    /// What a task notification's turn is asked — the text a queued prompt waits behind.
+    const NOTIFICATION: &str =
+        "<task-notification>\n<status>completed</status>\n</task-notification>";
+
+    impl PaneAccess for Queued {
+        fn pane_ids(&self) -> Vec<PaneId> {
+            self.inner.pane_ids()
+        }
+        fn pane_collapsed(&self, id: PaneId) -> Option<String> {
+            self.inner.pane_collapsed(id)
+        }
+        fn pane_rows(&self, id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+            self.inner.pane_rows(id)
+        }
+        fn pane_eof(&self, id: PaneId) -> Option<bool> {
+            self.inner.pane_eof(id)
+        }
+        fn pane_full_text(&self, id: PaneId) -> Option<String> {
+            self.inner.pane_full_text(id)
+        }
+        fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<Written, PaneError> {
+            self.inner.inject(id, keys)
+        }
+        fn supervision(&self) -> Option<&dyn crate::access::PaneSupervision> {
+            Some(self)
+        }
+        fn terminal_modes(&self) -> Option<&dyn PaneTerminalModes> {
+            Some(&self.inner)
+        }
+    }
+
+    impl crate::access::PaneSupervision for Queued {
+        fn pane_agent_state(&self, _id: PaneId) -> crate::access::Supervised {
+            // The queued prompt is asked once the notification's turn has had its looks.
+            let asked_ours = self.inner.submitted() && {
+                let mut left = self.queued_reads.lock().expect("the counter");
+                let dequeued = *left == 0;
+                *left = left.saturating_sub(1);
+                dequeued
+            };
+            crate::access::Supervised::Seen(Box::new(crate::access::AgentObservation {
+                state: sprag_detect::AgentState::Working,
+                holding: None,
+                composing: None,
+                agent: Some("claude".to_owned()),
+                authority: crate::access::Authority::Reported {
+                    source: "hook:claude".to_owned(),
+                },
+                // The notification was the sixth question; ours is the seventh.
+                seq: 6 + u64::from(asked_ours),
+                asked_seq: 6 + u64::from(asked_ours),
+                reports: 0,
+                asking: None,
+                asked: Some(if asked_ours {
+                    self.said.clone()
+                } else {
+                    NOTIFICATION.to_owned()
+                }),
+                said: None,
+                said_seq: 0,
+                noticed: None,
+                running: None,
+                transcript: None,
+                settling: crate::access::Settling::Nothing,
+                reporter: crate::access::ReporterVoice::Speaking,
+            }))
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A PROMPT PRESSED INTO SOMEBODY ELSE'S TURN IS WAITED FOR, NOT REFUSED** — the
+    /// gate for [`Submission::queued_behind_another`]. The window here is far shorter than the
+    /// notification's turn, which is the measured shape: without the wait the first arm answers
+    /// `Unsubmitted`, and the loop replaces a session whose agent is about to ask the prompt.
+    #[test]
+    fn a_prompt_queued_behind_a_notifications_turn_is_asked_when_that_turn_ends() {
+        const SENT: &str = "Continue toward the milestone this session was given.";
+
+        let queued = Queued {
+            inner: Recorder::showing(SENT),
+            said: SENT.to_owned(),
+            queued_reads: Mutex::new(40),
+        };
+        let delivered = deliver(
+            &queued,
+            &RunContext::uncancellable(),
+            PaneId(1),
+            SENT,
+            &asking_once(),
+        )
+        .expect("no error");
+        assert!(
+            !matches!(
+                delivered,
+                Delivered::Unsubmitted { .. } | Delivered::Unconfirmed { .. }
+            ),
+            "⛔ the press landed in a turn a task notification opened; claude queued the prompt and \
+             asked it when that turn ended, and the agent named it. Refusing it inside the window \
+             is what replaced run 458's session. Got {delivered:?}",
+        );
+
+        // ⚠⚠ ITEM 223 IS UNTOUCHED: an agent working on a question that CARRIES this text is the
+        // dirty composer, and it is refused as it always was — no wait for it.
+        let dirty = Recorder {
+            text: format!("> suggestion{SENT}"),
+            showing_before: "> suggestion".to_owned(),
+            ..Recorder::showing(SENT)
+        };
+        let appended = dirty.deliver_asking(SENT, Some(&format!("> suggestion{SENT}")));
+        assert!(
+            matches!(appended, Delivered::Unsubmitted { .. }),
+            "⚠⚠ a question this text is only PART of is still refused. Got {appended:?}",
+        );
     }
 
     /// One text injection, a grace too short to wait out, and the submit held to the agent's own
