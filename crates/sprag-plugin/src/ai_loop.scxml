@@ -1555,6 +1555,32 @@
     <data id="permission_mode_cycle" expr="'S-Tab'"/>
 
     <!--
+      ⛔⛔⛔⛔⛔ THE ONE LINE EVERY PROMPT CARRIES IN THE PERSON'S OWN VOICE, typed
+      after the prompt's text and before the press. Empty types nothing.
+
+      ⛔⛔⛔⛔ WHAT IT IS FOR, MEASURED. From `claude` 2.1.277 a long typed prompt
+      is folded into a paste and submitted wrapped as `<pasted_content …>`, and the
+      agent follows text inside that wrapper only where the person's own message
+      asks it to. Every prompt this loop sends is long enough to fold, so from that
+      release on every prompt was a paste with nothing around it — and was not
+      followed. watching-zenoh's run 462 (2026-09-26) delivered 421 turn prompts in
+      an hour; each was answered in a few dozen tokens, nothing was done, and the
+      agent's account said *"every brief arrived as pasted content only, with no
+      user text"*. Probed by hand the same night: the paste alone was answered
+      *"Your message contains only pasted text, with nothing you wrote outside it,
+      so I haven't acted on it"*; the same paste with one line typed after it was
+      obeyed, and the submit hook carried that line OUTSIDE the wrapper.
+
+      ⚠⚠ IT IS A PERSON'S SENTENCE, SO IT LIVES HERE. The driver never writes words
+      into a prompt; this is written by whoever owns the document, and a kind that
+      speaks another language says it in that one.
+
+      ⚠ It is short on purpose: it is typed after the composer has decided what the
+      paste was, and a line long enough to fold would be a second paste.
+    -->
+    <data id="own_words" expr="'Follow the instructions pasted above.'"/>
+
+    <!--
       ⚠⚠⚠ WHAT MAKES A DIALOG ONE THIS LOOP TURNS DOWN, and what it says instead.
 
       A `screen_rule` above QUOTES a dialog. This JUDGES one — and the difference

@@ -596,6 +596,31 @@ pub struct Delivery {
     /// [`then_press`](Self::then_press) submits nothing, so there is nothing for a contract to be
     /// about — and a caller who spells both has said something that cannot be true of any pane.
     pub submitted_when: SubmittedWhen,
+    /// ⛔⛔⛔⛔⛔ **A LINE TYPED IN THE CALLER'S OWN VOICE, AFTER THE TEXT AND BEFORE THE PRESS** —
+    /// `None` types nothing extra, which is this module's behaviour before it existed.
+    ///
+    /// # What it answers: a paste on its own is not a request
+    ///
+    /// `claude` from 2.1.277 folds a long typed text into a paste and submits it wrapped as
+    /// `<pasted_content id=…>…</pasted_content id=…>`, and the agent treats text inside that
+    /// wrapper as something the person did NOT write: it follows it only where the person's own
+    /// message asks it to. A delivery that is nothing BUT the paste therefore asks nothing. Measured
+    /// on watching-zenoh's run 462 (2026-09-26): 421 turn prompts landed, every one was answered in a
+    /// few dozen tokens, no work was done, and the agent's own account said *"every brief arrived as
+    /// pasted content only, with no user text"*. Probed by hand the same night on `claude` 2.1.282:
+    /// the paste alone was answered *"Your message contains only pasted text, with nothing you
+    /// wrote outside it, so I haven't acted on it"*; the same paste with one short line typed after
+    /// it was obeyed, and the submit hook reported that line OUTSIDE the wrapper.
+    ///
+    /// # ⚠⚠ Why it is typed separately and after the text shows
+    ///
+    /// Typed in the same burst it is part of the paste. [`deliver`] types it once the text is on
+    /// the screen, which is after the composer has decided what the paste is — a separate input,
+    /// which is what the probe measured.
+    ///
+    /// ⚠ The words are the CALLER'S. This module never writes words into a prompt; the loop takes
+    /// them from its document, where a person wrote them.
+    pub own_words: Option<String>,
 }
 
 impl Delivery {
@@ -613,6 +638,20 @@ impl Delivery {
             // it takes a line, and the rule that guessed would refuse every delivery to the peers
             // that show nothing. See `SubmittedWhen`.
             submitted_when: SubmittedWhen::Unchecked,
+            own_words: None,
+        }
+    }
+
+    /// The question this delivery asks as a whole: `text`, and the caller's own line after it.
+    ///
+    /// What [`SubmittedWhen::Took`] compares the agent's account against — the agent reports the
+    /// line it was typed, and a comparison against the text alone would refuse every delivery that
+    /// spoke. A space joins them because that is what was typed.
+    #[must_use]
+    pub fn question(&self, text: &str) -> String {
+        match self.own_words.as_deref() {
+            Some(own) if !own.is_empty() => format!("{text} {own}"),
+            _ => text.to_owned(),
         }
     }
 
@@ -1911,6 +1950,7 @@ fn deliver_into(
                         also,
                         &typed,
                         press,
+                        true,
                     )? {
                         Seen::No => {
                             return Ok(Delivered::Unsubmitted {
@@ -2027,6 +2067,7 @@ fn deliver_into(
                     also,
                     &typed,
                     press,
+                    true,
                 )?;
                 return Ok(match landed {
                     Seen::Yes => Delivered::Reported {
@@ -2107,13 +2148,26 @@ fn submit(
     also: Option<SubmittedWhen>,
     typed: &Typed,
     press: &mut Option<PressMoment>,
+    speak: bool,
 ) -> Result<Seen, PaneError> {
+    // ⛔⛔⛔⛔⛔ THE CALLER'S OWN LINE, typed now that the text is on the screen — see
+    // [`Delivery::own_words`]. `speak` is false only for a press repeated over text this delivery
+    // already spoke after, which must not say it twice.
+    if let Some(own) = spec
+        .own_words
+        .as_deref()
+        .filter(|own| speak && !own.is_empty())
+    {
+        *written += panes
+            .inject(pane, &KeyStroke::text(&format!(" {own}")))?
+            .bytes();
+    }
     let witness = Submission::arm(
         panes,
         pane,
         spec.submitted_when,
         also,
-        text,
+        &spec.question(text),
         spec.needle(text),
     );
     // ⚠ NO EXTRA LOOK AT THE SUPERVISOR: the counter and state are the arming read's, taken a
@@ -2249,6 +2303,7 @@ pub fn select_and_press(
     pointer.pane_click(pane, title.row, title.column)?;
     let mut written = 0_u64;
     let typed = Typed::now(panes, pane);
+    // ⚠ `false`: this press repeats one over text the delivery already spoke after.
     let seen = submit(
         panes,
         run,
@@ -2259,6 +2314,7 @@ pub fn select_and_press(
         None,
         &typed,
         &mut None,
+        false,
     )?;
     let written = Written::of(written);
     Ok(Some(match seen {
@@ -5450,6 +5506,67 @@ mod tests {
             matches!(unheard, Delivered::Unsubmitted { .. }),
             "⚠⚠ silence is not evidence: a peer that never names the question it took cannot \
              satisfy a contract about the question it took. Got {unheard:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE CALLER'S OWN LINE IS TYPED AFTER THE TEXT, BEFORE THE PRESS, AND IS PART OF
+    /// THE QUESTION** — the gate for [`Delivery::own_words`].
+    ///
+    /// The reported shape is the one the submit hook carried in the probe that measured it: the
+    /// paste in its envelope, then the line typed after it, outside. Without the line a folded
+    /// prompt asks the agent nothing (run 462); with it, the agent's account names text AND line,
+    /// so the contract must compare against both or refuse every delivery that spoke.
+    #[test]
+    fn a_callers_own_line_follows_the_text_and_is_part_of_what_was_asked() {
+        const SENT: &str = "Continue toward the milestone.\nDo the next thing that is verifiable.";
+        const OWN: &str = "Follow the instructions pasted above.";
+        let reported = format!(
+            "\n\n<pasted_content id=\"b7f8\">\n{SENT}\n</pasted_content id=\"b7f8\">\n\n {OWN}"
+        );
+
+        let double = Recorder::showing(SENT).reporting(Some(&reported));
+        let spec = Delivery {
+            own_words: Some(OWN.to_owned()),
+            ..asking_once()
+        };
+        let delivered = double.deliver_under(SENT, &spec);
+        assert!(
+            !matches!(
+                delivered,
+                Delivered::Unsubmitted { .. } | Delivered::Unconfirmed { .. }
+            ),
+            "⛔ the agent reported the paste and the line typed after it — the whole question this \
+             delivery asked. Got {delivered:?}, log {:?}",
+            double.log(),
+        );
+        let own_key: Vec<String> = KeyStroke::text(&format!(" {OWN}"))
+            .into_iter()
+            .map(|key| key.key)
+            .collect();
+        let log = double.log();
+        let at_own = log.iter().position(|keys| keys == &own_key);
+        let at_press = log
+            .iter()
+            .position(|keys| keys == &vec!["Enter".to_owned()]);
+        assert!(
+            matches!((at_own, at_press), (Some(own), Some(press)) if own < press),
+            "⛔⛔ the line goes in as its OWN input, after the text and before the press — typed in \
+             the text's burst it would be part of the paste. Log: {log:?}",
+        );
+        assert_eq!(
+            log.iter().filter(|keys| keys == &&own_key).count(),
+            1,
+            "⚠ and exactly once. Log: {log:?}",
+        );
+
+        // ⚠ The control: no own words, and nothing extra is typed — the module as it was.
+        let quiet = Recorder::showing(SENT).reporting(Some(SENT));
+        let _ = quiet.deliver_under(SENT, &asking_once());
+        assert_eq!(
+            (quiet.text_injections(), quiet.submits()),
+            (1, 1),
+            "⚠ a delivery with no own words types only its text. Log: {:?}",
+            quiet.log(),
         );
     }
 

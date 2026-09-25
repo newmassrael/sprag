@@ -809,6 +809,10 @@ pub const PERMISSION_MODE_AGENT_KEY: &str = "permission_mode_agent";
 /// **THE KEY THAT MOVES THE AGENT TO ITS NEXT MODE**, as the document spells it (`S-Tab` form).
 pub const PERMISSION_MODE_CYCLE_KEY: &str = "permission_mode_cycle";
 
+/// **THE LINE EVERY PROMPT CARRIES IN THE PERSON'S OWN VOICE**, as the document spells it — see
+/// [`OuterLoop::own_words`] and [`crate::deliver::Delivery::own_words`].
+pub const OWN_WORDS_KEY: &str = "own_words";
+
 /// How many presses of the cycle key a prompt may spend reaching its mode. `claude` 2.1.280 cycles
 /// through four modes, so two full turns is the bound past which the footer is not going to say it.
 const MODE_CYCLE_LIMIT: u32 = 8;
@@ -14989,6 +14993,15 @@ impl OuterLoop {
         Self::authored_text_in(&self.script, &self.session, PERMISSION_MODE_KEY)
     }
 
+    /// **THE LINE EVERY PROMPT CARRIES IN THE PERSON'S OWN VOICE** — the template's `own_words`,
+    /// typed after a prompt's text so an agent that folds the text into a paste still has a
+    /// request to follow (see [`crate::deliver::Delivery::own_words`]). `None` where the document
+    /// names none, which types nothing extra.
+    #[must_use]
+    pub fn own_words(&self) -> Option<String> {
+        Self::authored_text_in(&self.script, &self.session, OWN_WORDS_KEY)
+    }
+
     /// For the gates about a dialog NOTHING answers: switch the template's ranked `may_escalate`
     /// off, so a stand-in painting a real permission prompt still reaches the no-consent path those
     /// gates measure. Written to the datamodel exactly as a document that authored none would be.
@@ -15819,6 +15832,8 @@ impl OuterLoop {
             then_press: vec![crate::access::KeyStroke::named("Enter")],
             // ⚠ THE READING TAKEN ABOVE, not a second ask — see the method's own doc.
             submitted_when: self.submit_lands_when(&facing),
+            // ⛔⛔⛔⛔⛔ AND THE PERSON'S OWN LINE, or a folded prompt asks nothing — see the method.
+            own_words: self.own_words(),
             ..Delivery::new()
         };
         let (mut delivered, press) =
