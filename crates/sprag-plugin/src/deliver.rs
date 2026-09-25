@@ -2407,6 +2407,59 @@ fn squeezed(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// **THE QUESTION AN AGENT REPORTS, WITH ITS OWN PASTE ENVELOPE TAKEN OFF** — the text the
+/// delivery actually submitted, for [`SubmittedWhen::Took`] to compare.
+///
+/// # ⛔⛔⛔⛔⛔ Why the account road credited nothing from 2026-09-19 on
+///
+/// From `claude` 2.1.277 a pasted prompt reaches the model, and its submit hook, as
+/// `<pasted_content id="3b5b">\n{text}\n</pasted_content id="3b5b">`. `Took` compared that envelope
+/// with the bare text it had typed, so the agent's own account never matched again. MEASURED over
+/// this daemon's run records: the `account` road credited deliveries in 104 runs up to run 408
+/// (2026-09-19 13:39), and in NONE of the 45 runs after it, on the SAME build — so the change was
+/// the agent's and not this crate's. Over the watching-zenoh transcripts the loop's turn prompt
+/// arrived bare in every session up to 2.1.276 and wrapped from 2.1.277. The folded road kept
+/// working on [`SubmittedWhen::Released`]'s evidence; the PAINTED road had only
+/// [`SubmittedWhen::Emptied`] beside it, and every refusal it missed became a replaced session and,
+/// on the second, a failed run — three in a row there, while the agent had taken each prompt.
+///
+/// # ⚠⚠ What is taken off, and what is kept
+///
+/// Only a WHOLE envelope — an opening tag and a closing tag carrying the same id — and only the
+/// tags and the one line break each adds: the text between them is kept byte for byte. Anything
+/// else the agent reports stays where it was, so a composer that put this delivery beside text of
+/// its own still reports a longer question and is still refused: item 223's rule, unchanged. An
+/// opening tag with no matching close is left as it is, and refuses, because *a question this
+/// text is only part of* is what it would then be.
+fn unpasted(said: &str) -> std::borrow::Cow<'_, str> {
+    const OPEN: &str = "<pasted_content id=\"";
+    const CLOSE: &str = "</pasted_content id=\"";
+    if !said.contains(OPEN) {
+        return std::borrow::Cow::Borrowed(said);
+    }
+    let mut out = String::with_capacity(said.len());
+    let mut rest = said;
+    while let Some(at) = rest.find(OPEN) {
+        let after_open = &rest[at + OPEN.len()..];
+        let Some(id_end) = after_open.find("\">") else {
+            break;
+        };
+        let id = &after_open[..id_end];
+        let body = &after_open[id_end + 2..];
+        let closing = format!("{CLOSE}{id}\">");
+        let Some(body_end) = body.find(&closing) else {
+            break;
+        };
+        out.push_str(&rest[..at]);
+        let inner = &body[..body_end];
+        let inner = inner.strip_prefix('\n').unwrap_or(inner);
+        out.push_str(inner.strip_suffix('\n').unwrap_or(inner));
+        rest = &body[body_end + closing.len()..];
+    }
+    out.push_str(rest);
+    std::borrow::Cow::Owned(out)
+}
+
 /// Wait, bounded by `timeout` AND by the run's own deadline, for `needle` to appear on a pane whose
 /// screen is **no longer the one `before` recorded**.
 ///
@@ -2840,10 +2893,9 @@ impl Submission {
                             // part of.
                             seen.seq > *pressed_at
                                 && seen.agent.as_deref() == Some(addressed.as_str())
-                                && seen
-                                    .asked
-                                    .as_deref()
-                                    .is_some_and(|said| squeezed(said) == squeezed(asked))
+                                && seen.asked.as_deref().is_some_and(|said| {
+                                    squeezed(&unpasted(said)) == squeezed(asked)
+                                })
                         }),
                 )
             }
@@ -5214,6 +5266,48 @@ mod tests {
             matches!(unheard, Delivered::Unsubmitted { .. }),
             "⚠⚠ silence is not evidence: a peer that never names the question it took cannot \
              satisfy a contract about the question it took. Got {unheard:?}",
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AN AGENT THAT WRAPS WHAT IT WAS PASTED STILL NAMES THIS QUESTION** — the account
+    /// road's gate against `claude` 2.1.277's paste envelope (see [`unpasted`]).
+    ///
+    /// The reported shape is copied from a live transcript, blank lines and closing id included.
+    /// Before [`unpasted`] the first arm answered `Unsubmitted`, which is what three watching-zenoh
+    /// runs in a row died of while their agent had taken every prompt.
+    #[test]
+    fn a_prompt_the_agent_reports_inside_its_paste_envelope_is_the_one_that_was_sent() {
+        const SENT: &str = "Continue toward the milestone.\nDo the next thing that is verifiable.";
+        let wrapped =
+            format!("\n\n<pasted_content id=\"3b5b\">\n{SENT}\n</pasted_content id=\"3b5b\">\n");
+
+        let named = Recorder::showing(SENT).deliver_asking(SENT, Some(&wrapped));
+        assert!(
+            !matches!(
+                named,
+                Delivered::Unsubmitted { .. } | Delivered::Unconfirmed { .. }
+            ),
+            "⛔ the agent reported {wrapped:?}: the question it was sent, in the envelope it puts \
+             every paste in. A contract that reads the envelope as a different question refuses \
+             every delivery this agent takes. Got {named:?}",
+        );
+
+        // ⚠⚠ ITEM 223 STILL HOLDS: the envelope is taken off, the agent's other text is not.
+        let beside = format!("please also {wrapped}");
+        let longer = Recorder::showing(SENT).deliver_asking(SENT, Some(&beside));
+        assert!(
+            matches!(longer, Delivered::Unsubmitted { .. }),
+            "⚠⚠ a question this text is only PART of is still refused, envelope or not. Got \
+             {longer:?}",
+        );
+
+        // ⚠ An envelope whose close names ANOTHER id is not a whole envelope, so nothing is taken
+        // off and the tags stay part of the question — which is then not this one.
+        let torn = format!("<pasted_content id=\"3b5b\">\n{SENT}\n</pasted_content id=\"9999\">");
+        let unmatched = Recorder::showing(SENT).deliver_asking(SENT, Some(&torn));
+        assert!(
+            matches!(unmatched, Delivered::Unsubmitted { .. }),
+            "⚠ a torn envelope is refused rather than half-read. Got {unmatched:?}",
         );
     }
 
