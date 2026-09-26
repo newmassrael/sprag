@@ -2813,6 +2813,25 @@ mod tests {
         );
     }
 
+    /// **A CHECKER THAT OUTSINGS ITS OWN RETAINED HISTORY, THEN ANSWERS** — the script both gates
+    /// below drive their `Unaccountable` road with.
+    ///
+    /// ⚠⚠ THE LINE COUNT IS DERIVED FROM THE HISTORY IT HAS TO OVERRUN, NOT CHOSEN. What the road
+    /// needs is lines evicted before the read, and a judge's pane keeps
+    /// [`sprag_vt::DEFAULT_SCROLLBACK_LINES`] of them (it is spawned through the default path), so
+    /// four times that clears the history and the visible screen with room to spare. It was a
+    /// literal `seq 1 200000` — two hundred times the history — and that literal is what made both
+    /// gates a measurement of the machine: through an 80×24 pane it asked the emulator for 200,000
+    /// lines inside a 20 s bound, and on 2026-09-26, under load 15-28 with 8 GB swapped out, a live
+    /// pane took 52 s to consume 133,169 of them. Both gates then failed on every tree back to the
+    /// commit that wrote them, leaving by `Unfinished` instead — the road the arm above them owns.
+    fn a_checker_that_outsings_its_history() -> String {
+        format!(
+            "seq 1 {}; printf 'YES\\n'",
+            4 * sprag_vt::DEFAULT_SCROLLBACK_LINES
+        )
+    }
+
     /// 🎯🎯🎯🎯🎯 **AN ASKING LEAVES NO PANE BEHIND, ON EVERY ROAD OUT** — register item 679, and
     /// the question that item wrote down as UNMEASURED.
     ///
@@ -2856,6 +2875,7 @@ mod tests {
             )
         };
         let within = Duration::from_secs(20);
+        let outsings = a_checker_that_outsings_its_history();
 
         for (road, script, bound, expect) in [
             ("a verdict", "printf 'YES\\n'", within, Road::Answered),
@@ -2881,7 +2901,7 @@ mod tests {
             // this arm existed, which is what *every exit path* is worth without one.
             (
                 "a read nothing could account for",
-                "seq 1 200000; printf 'YES\\n'",
+                outsings.as_str(),
                 within,
                 Road::Unaccountable,
             ),
@@ -2997,6 +3017,7 @@ mod tests {
         assert_eq!((live(&stage), live(&wings)), (0, 0));
 
         let within = Duration::from_secs(20);
+        let outsings = a_checker_that_outsings_its_history();
         for (road, script, bound, expect) in [
             ("a verdict", "printf 'YES\\n'", within, Road::Answered),
             (
@@ -3013,7 +3034,7 @@ mod tests {
             ),
             (
                 "a read nothing could account for",
-                "seq 1 200000; printf 'YES\\n'",
+                outsings.as_str(),
                 within,
                 Road::Unaccountable,
             ),
