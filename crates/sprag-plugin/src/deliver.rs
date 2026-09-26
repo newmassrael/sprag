@@ -2463,6 +2463,35 @@ fn squeezed(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// How many `queued_command` attachments in the agent transcript at `path` carry `question` —
+/// `None` where the transcript cannot be read at all, which is *nothing could say* and never a
+/// count of zero.
+///
+/// The attachment is `claude`'s record of a prompt it handed to a turn already running (see
+/// [`Submission::attached_to_the_running_turn`]); its `prompt` is the text as submitted, paste
+/// envelope included, so it is compared the way [`SubmittedWhen::Took`] compares an account.
+///
+/// ⚠ Lines are filtered on the literal before parsing: a long session's transcript is megabytes,
+/// and only the few lines naming the attachment type need a JSON parse.
+fn queued_commands_carrying(path: &str, question: &str) -> Option<usize> {
+    let transcript = std::fs::read_to_string(path).ok()?;
+    let ours = squeezed(question);
+    Some(
+        transcript
+            .lines()
+            .filter(|line| line.contains("\"queued_command\""))
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|entry| {
+                let attachment = &entry["attachment"];
+                attachment["type"] == "queued_command"
+                    && attachment["prompt"]
+                        .as_str()
+                        .is_some_and(|prompt| squeezed(&unpasted(prompt)) == ours)
+            })
+            .count(),
+    )
+}
+
 /// **THE QUESTION AN AGENT REPORTS, WITH ITS OWN PASTE ENVELOPE TAKEN OFF** — the text the
 /// delivery actually submitted, for [`SubmittedWhen::Took`] to compare.
 ///
@@ -2667,6 +2696,10 @@ struct Submission {
     /// [`queued_behind_another`](Self::queued_behind_another) can tell a prompt that left the box
     /// from one jammed in it.
     needle: String,
+    /// The agent's transcript and how many `queued_command` attachments already carried this
+    /// question when the press went in — armed only for a press into a reported, running turn.
+    /// See [`attached_to_the_running_turn`](Self::attached_to_the_running_turn).
+    attached_before: Option<(String, usize)>,
     /// WHAT THIS DELIVERY IS ASKING, for [`SubmittedWhen::Took`] to compare the agent's own account
     /// against.
     ///
@@ -2803,6 +2836,21 @@ impl Submission {
             // (register item 1139) — the SAME read, so measuring the instant costs no extra look.
             before: seen.as_ref().map(|seen| (seen.asked_seq, seen.state)),
             needle: needle.to_owned(),
+            attached_before: either(wanted, also, |kind| {
+                matches!(kind, SubmittedWhen::Took { .. })
+            })
+            .then(|| {
+                seen.as_ref()
+                    .filter(|seen| {
+                        seen.state == sprag_detect::AgentState::Working
+                            && matches!(seen.authority, crate::access::Authority::Reported { .. })
+                    })
+                    .and_then(|seen| seen.transcript.clone())
+                    .and_then(|path| {
+                        queued_commands_carrying(&path, text).map(|count| (path, count))
+                    })
+            })
+            .flatten(),
             agent: seen.and_then(|seen| seen.agent.map(|agent| (agent, seen.seq))),
             // Only the contract that compares it keeps it: a delivery that asks nothing of the
             // agent's account has no business holding a copy of its own prompt.
@@ -2983,8 +3031,11 @@ impl Submission {
             }
             match self.landed(panes, pane) {
                 Poll::Landed(seen) => return seen,
-                Poll::Never => return Seen::No,
+                Poll::Never => return self.or_attached(),
                 Poll::NotYet => {}
+            }
+            if self.attached_to_the_running_turn() {
+                return Seen::Yes;
             }
             if start.elapsed() >= within {
                 if self.queued_behind_another(panes, pane) {
@@ -2995,11 +3046,53 @@ impl Submission {
                 // prompt asked, and it came after this poll's look at the evidence.
                 return match self.landed(panes, pane) {
                     Poll::Landed(seen) => seen,
-                    Poll::Never | Poll::NotYet => Seen::No,
+                    Poll::Never | Poll::NotYet => self.or_attached(),
                 };
             }
             std::thread::sleep(POLL_INTERVAL);
         }
+    }
+
+    /// [`Seen::No`], unless the agent's own record shows the prompt handed to its running turn.
+    fn or_attached(&self) -> Seen {
+        if self.attached_to_the_running_turn() {
+            Seen::Yes
+        } else {
+            Seen::No
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE AGENT'S OWN RECORD SAYS THIS PROMPT WAS HANDED TO THE TURN IT WAS RUNNING** —
+    /// a `queued_command` attachment carrying this question, recorded after the press.
+    ///
+    /// # What it answers, measured
+    ///
+    /// A prompt submitted while `claude` is working is not always asked as a turn of its own. On
+    /// watching-zenoh's run 467 (2026-09-26, transcript times UTC) a task notification opened a
+    /// turn at 09:39:17.16, the driver pressed its turn prompt at 09:39:21.32, and the transcript
+    /// records `queue-operation enqueue`, then — 1.4 s later — `queue-operation remove` and an
+    /// `attachment` of type `queued_command` whose `prompt` is this delivery's text and its own
+    /// line. The prompt was delivered INTO the running turn. No submit hook fires for that, so the
+    /// agent's question counter never moves and no account names it: every contract above answered
+    /// *never asked*, the session was replaced, and the run died on its second such press.
+    ///
+    /// # Why the transcript, and why a count
+    ///
+    /// It is the program's own record — the evidence this module has always preferred to a
+    /// rendering — and the observation carries its path, stated by the agent's hook. The
+    /// attachments are COUNTED at arming and again here, because a loop's turn prompt is the same
+    /// text every turn: an earlier turn's attachment must not stand in for this press.
+    ///
+    /// ⚠ Armed only where the press went into a turn the agent reported open, so a pane at rest
+    /// never costs a transcript read.
+    fn attached_to_the_running_turn(&self) -> bool {
+        let Some((path, before)) = self.attached_before.as_ref() else {
+            return false;
+        };
+        let Some(asked) = self.asked.as_deref() else {
+            return false;
+        };
+        queued_commands_carrying(path, asked).is_some_and(|now| now > *before)
     }
 
     /// ⛔⛔⛔⛔⛔ **THE PRESS WENT INTO A TURN SOMEBODY ELSE OPENED, SO THE PROMPT IS QUEUED AND NOT
@@ -4299,6 +4392,177 @@ mod tests {
     /// `Unsubmitted`, and the loop replaces a session whose agent is about to ask the prompt.
     #[test]
     fn a_prompt_queued_behind_a_notifications_turn_is_asked_when_that_turn_ends() {
+        a_prompt_queued_behind_a_notifications_turn_is_asked_when_that_turn_ends_inner();
+    }
+
+    /// ⛔⛔⛔⛔⛔ **AN AGENT THAT TAKES THE PRESS INTO THE TURN IT IS RUNNING** — the double for
+    /// [`Submission::attached_to_the_running_turn`], staged as run 467 measured it.
+    ///
+    /// It reports `Working` on a notification throughout, with a transcript path. The press is
+    /// never asked as a turn of its own — the question counter never moves and no account names it
+    /// — and instead `claude` writes a `queued_command` attachment carrying the prompt into the
+    /// transcript. The turn then ends (`Idle`) with the counter where the press found it.
+    struct Attached {
+        inner: Recorder,
+        transcript: std::path::PathBuf,
+        /// What the attachment carries — the whole question, paste envelope and own line included.
+        carried: String,
+        /// Whether the press writes the attachment at all: the control stages a press that is
+        /// swallowed with no record.
+        records: bool,
+        reads_after_press: Mutex<u32>,
+    }
+
+    impl PaneAccess for Attached {
+        fn pane_ids(&self) -> Vec<PaneId> {
+            self.inner.pane_ids()
+        }
+        fn pane_collapsed(&self, id: PaneId) -> Option<String> {
+            self.inner.pane_collapsed(id)
+        }
+        fn pane_rows(&self, id: PaneId) -> Option<Vec<crate::access::PaneRow>> {
+            self.inner.pane_rows(id)
+        }
+        fn pane_eof(&self, id: PaneId) -> Option<bool> {
+            self.inner.pane_eof(id)
+        }
+        fn pane_full_text(&self, id: PaneId) -> Option<String> {
+            self.inner.pane_full_text(id)
+        }
+        fn inject(&self, id: PaneId, keys: &[KeyStroke]) -> Result<Written, PaneError> {
+            if self.records && keys.iter().any(|key| key.key == "Enter") {
+                use std::io::Write as _;
+                let line = serde_json::json!({
+                    "type": "attachment",
+                    "attachment": {"type": "queued_command", "prompt": self.carried},
+                });
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&self.transcript)
+                    .expect("the transcript");
+                writeln!(file, "{line}").expect("append the attachment");
+            }
+            self.inner.inject(id, keys)
+        }
+        fn supervision(&self) -> Option<&dyn crate::access::PaneSupervision> {
+            Some(self)
+        }
+        fn terminal_modes(&self) -> Option<&dyn PaneTerminalModes> {
+            Some(&self.inner)
+        }
+    }
+
+    impl crate::access::PaneSupervision for Attached {
+        fn pane_agent_state(&self, _id: PaneId) -> crate::access::Supervised {
+            // The notification's turn runs a few looks past the press, then ends.
+            let working = !self.inner.submitted() || {
+                let mut left = self.reads_after_press.lock().expect("the counter");
+                let running = *left > 0;
+                *left = left.saturating_sub(1);
+                running
+            };
+            crate::access::Supervised::Seen(Box::new(crate::access::AgentObservation {
+                state: if working {
+                    sprag_detect::AgentState::Working
+                } else {
+                    sprag_detect::AgentState::Idle
+                },
+                holding: None,
+                composing: None,
+                agent: Some("claude".to_owned()),
+                authority: crate::access::Authority::Reported {
+                    source: "hook:claude".to_owned(),
+                },
+                // ⚠ The counter NEVER moves: nothing was asked as a turn of its own.
+                seq: 6,
+                asked_seq: 6,
+                reports: 0,
+                asking: None,
+                asked: Some(NOTIFICATION.to_owned()),
+                said: None,
+                said_seq: 0,
+                noticed: None,
+                running: None,
+                transcript: Some(self.transcript.to_string_lossy().into_owned()),
+                settling: crate::access::Settling::Nothing,
+                reporter: crate::access::ReporterVoice::Speaking,
+            }))
+        }
+    }
+
+    /// ⛔⛔⛔⛔⛔ **A PROMPT HANDED TO THE RUNNING TURN IS ASKED, ON THE AGENT'S OWN RECORD** — the gate
+    /// for [`Submission::attached_to_the_running_turn`]. Without it the first arm answers
+    /// `Unsubmitted`, which is how run 467 died.
+    #[test]
+    fn a_prompt_handed_to_the_running_turn_is_asked_on_the_agents_own_record() {
+        const SENT: &str = "Continue toward the milestone this session was given.";
+        const OWN: &str = "Follow the instructions pasted above.";
+        let carried = format!(
+            "<pasted_content id=\"7293\">\n{SENT}\n</pasted_content id=\"7293\">\n\n {OWN}"
+        );
+        let transcript = sprag_scratch::scratch_for("sprag-deliver-attached", "transcript.jsonl");
+        // ⚠ A PREVIOUS TURN'S ATTACHMENT IS ALREADY THERE, carrying the SAME text — the loop's turn
+        // prompt repeats — so only a count that grows is evidence about this press.
+        let earlier = serde_json::json!({
+            "type": "attachment",
+            "attachment": {"type": "queued_command", "prompt": carried},
+        });
+        std::fs::write(&transcript, format!("{earlier}\n")).expect("seed the transcript");
+
+        let spec = Delivery {
+            own_words: Some(OWN.to_owned()),
+            ..asking_once()
+        };
+        let attached = Attached {
+            inner: Recorder::showing(SENT),
+            transcript: transcript.clone(),
+            carried: carried.clone(),
+            records: true,
+            reads_after_press: Mutex::new(5),
+        };
+        let delivered = deliver(
+            &attached,
+            &RunContext::uncancellable(),
+            PaneId(1),
+            SENT,
+            &spec,
+        )
+        .expect("no error");
+
+        // ⚠ The control: the same press into the same running turn, and the agent records nothing.
+        let swallowed = Attached {
+            inner: Recorder::showing(SENT),
+            transcript: transcript.clone(),
+            carried,
+            records: false,
+            reads_after_press: Mutex::new(5),
+        };
+        let refused = deliver(
+            &swallowed,
+            &RunContext::uncancellable(),
+            PaneId(1),
+            SENT,
+            &spec,
+        )
+        .expect("no error");
+        let _ = std::fs::remove_file(&transcript);
+
+        assert!(
+            !matches!(
+                delivered,
+                Delivered::Unsubmitted { .. } | Delivered::Unconfirmed { .. }
+            ),
+            "⛔ the agent's transcript recorded this prompt as a `queued_command` handed to the turn \
+             it was running — it was asked. Got {delivered:?}",
+        );
+        assert!(
+            matches!(refused, Delivered::Unsubmitted { .. }),
+            "⚠ the control: no record, a counter that never moved and a turn that ended — nothing \
+             says it was asked, and an earlier turn's attachment must not stand in. Got {refused:?}",
+        );
+    }
+
+    fn a_prompt_queued_behind_a_notifications_turn_is_asked_when_that_turn_ends_inner() {
         const SENT: &str = "Continue toward the milestone this session was given.";
 
         for (behind, working_on) in [
