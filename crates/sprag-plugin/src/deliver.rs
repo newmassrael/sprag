@@ -2663,6 +2663,10 @@ struct Submission {
     /// The agent's question counter and state as the arming read found them — the press's
     /// "before" (register item 1139). `None` where the contract read no observation.
     before: Option<(u64, sprag_detect::AgentState)>,
+    /// What this delivery looks for on a screen ([`Delivery::needle`]) — kept so
+    /// [`queued_behind_another`](Self::queued_behind_another) can tell a prompt that left the box
+    /// from one jammed in it.
+    needle: String,
     /// WHAT THIS DELIVERY IS ASKING, for [`SubmittedWhen::Took`] to compare the agent's own account
     /// against.
     ///
@@ -2798,6 +2802,7 @@ impl Submission {
             // The arming read's question counter and state, kept for the press's own record
             // (register item 1139) — the SAME read, so measuring the instant costs no extra look.
             before: seen.as_ref().map(|seen| (seen.asked_seq, seen.state)),
+            needle: needle.to_owned(),
             agent: seen.and_then(|seen| seen.agent.map(|agent| (agent, seen.seq))),
             // Only the contract that compares it keeps it: a delivery that asks nothing of the
             // agent's account has no business holding a copy of its own prompt.
@@ -3012,25 +3017,45 @@ impl Submission {
     /// ends, so the account comes — but after this contract's window. The delivery was refused as
     /// never asked, the session was replaced, and the queued prompt died with it.
     ///
-    /// # ⚠⚠ Why these three conditions, and what each keeps out
+    /// # ⚠⚠ Why these conditions, and what each keeps out
     ///
-    /// * **The agent REPORTS `Working`** — its own statement that a turn is open. A scraped state
-    ///   says what the pane looks like, and a pane at rest has no turn to be queued behind.
-    /// * **It names a question, and this delivery's text is NOT in it.** That is the turn being
-    ///   somebody else's. A reported question that CONTAINS this text is item 223's dirty composer,
-    ///   which stays refused; and a peer that names nothing — `WorkingOnNothing` in the gate beside
-    ///   `hold_while_a_child_runs` — stays exactly as it was, so a loop still types at a working
-    ///   peer rather than going quiet.
+    /// * **The agent was WORKING when the press went in, by its own report** — the arming read's
+    ///   state. That is the press landing in an open turn, which is what queues it. A pane at rest
+    ///   takes the press as a question at once, and waits for nothing.
+    /// * **It still reports `Working`, and has been asked NOTHING since** — the question counter
+    ///   is where the press found it. That is the same turn still open, with this prompt still in
+    ///   the queue behind it. The moment the queue lets go the counter moves, this answers no, and
+    ///   the account decides as it always did.
     /// * **It is the peer the press went to.**
+    /// * **It names the question it is working on** — an agent in a turn always has one. A
+    ///   reading that names none is not a turn this press could be queued behind.
+    /// * **Its composer is NOT still showing this delivery's text.** A queued prompt leaves the
+    ///   box; a JAMMED one stays in it, and a jam is item 446's state — the Enter went out and the
+    ///   prompt is sitting there — which must be refused, not waited on. A composer nothing could
+    ///   read does not block the wait, since it says nothing either way.
+    ///
+    /// ⛔⛔⛔ THE TURN IS TOLD APART BY ITS COUNTER AND NEVER BY ITS TEXT. The first form of this
+    /// asked whether the reported question contained this delivery's text, and a loop's turn
+    /// prompt is THE SAME TEXT EVERY TURN: an agent still inside the previous turn prompt reported
+    /// a question equal to this one, read as *not somebody else's*, and was refused as unasked —
+    /// runs 465 and 466 (2026-09-26), each with the press recorded *"just before it the peer was
+    /// Working"*. The counter is the only reading that separates two identical questions.
+    ///
+    /// What stays out, measured by the gates beside it: item 223's dirty composer and a peer that
+    /// names nothing (`WorkingOnNothing` beside `hold_while_a_child_runs`) both report a NEW
+    /// question after the press, so the counter has moved and they are refused as before.
     ///
     /// ⚠ The residue: the wait is bounded by the run and nothing else, because the turn it waits
     /// out is real work of unbounded length and the prompt is right the moment it is asked.
     fn queued_behind_another(&self, panes: &dyn PaneAccess, pane: PaneId) -> bool {
-        let (Some((addressed, _)), Some(asked)) = (self.agent.as_ref(), self.asked.as_deref())
+        let (Some((addressed, _)), Some(_), Some((asked_at_press, state_at_press))) =
+            (self.agent.as_ref(), self.asked.as_deref(), self.before)
         else {
             return false;
         };
-        let ours = squeezed(asked);
+        if state_at_press != sprag_detect::AgentState::Working {
+            return false;
+        }
         panes
             .supervision()
             .and_then(|supervisor| supervisor.pane_agent_state(pane).seen())
@@ -3038,10 +3063,12 @@ impl Submission {
                 seen.state == sprag_detect::AgentState::Working
                     && matches!(seen.authority, crate::access::Authority::Reported { .. })
                     && seen.agent.as_deref() == Some(addressed.as_str())
-                    && seen
-                        .asked
+                    && seen.asked_seq == asked_at_press
+                    && seen.asked.is_some()
+                    && !seen
+                        .composing
                         .as_deref()
-                        .is_some_and(|said| !squeezed(&unpasted(said)).contains(&ours))
+                        .is_some_and(|box_| squeezed(box_).contains(&squeezed(&self.needle)))
             })
     }
 }
@@ -4191,6 +4218,9 @@ mod tests {
     struct Queued {
         inner: Recorder,
         said: String,
+        /// What the open turn the press lands in was asked — a notification, or the loop's own
+        /// previous turn prompt, which is the SAME text as the one being pressed.
+        working_on: String,
         queued_reads: Mutex<u32>,
     }
 
@@ -4250,7 +4280,7 @@ mod tests {
                 asked: Some(if asked_ours {
                     self.said.clone()
                 } else {
-                    NOTIFICATION.to_owned()
+                    self.working_on.clone()
                 }),
                 said: None,
                 said_seq: 0,
@@ -4271,28 +4301,37 @@ mod tests {
     fn a_prompt_queued_behind_a_notifications_turn_is_asked_when_that_turn_ends() {
         const SENT: &str = "Continue toward the milestone this session was given.";
 
-        let queued = Queued {
-            inner: Recorder::showing(SENT),
-            said: SENT.to_owned(),
-            queued_reads: Mutex::new(40),
-        };
-        let delivered = deliver(
-            &queued,
-            &RunContext::uncancellable(),
-            PaneId(1),
-            SENT,
-            &asking_once(),
-        )
-        .expect("no error");
-        assert!(
-            !matches!(
-                delivered,
-                Delivered::Unsubmitted { .. } | Delivered::Unconfirmed { .. }
-            ),
-            "⛔ the press landed in a turn a task notification opened; claude queued the prompt and \
-             asked it when that turn ended, and the agent named it. Refusing it inside the window \
-             is what replaced run 458's session. Got {delivered:?}",
-        );
+        for (behind, working_on) in [
+            ("a task notification's turn", NOTIFICATION),
+            // ⛔⛔⛔ THE SAME TEXT AS THE PRESS — the loop's own previous turn prompt, still open.
+            // A test of the text read this as *not somebody else's turn* and refused it (runs 465
+            // and 466); only the counter tells two identical questions apart.
+            ("the previous turn prompt, which is the same text", SENT),
+        ] {
+            let queued = Queued {
+                inner: Recorder::showing(SENT),
+                said: SENT.to_owned(),
+                working_on: working_on.to_owned(),
+                queued_reads: Mutex::new(40),
+            };
+            let delivered = deliver(
+                &queued,
+                &RunContext::uncancellable(),
+                PaneId(1),
+                SENT,
+                &asking_once(),
+            )
+            .expect("no error");
+            assert!(
+                !matches!(
+                    delivered,
+                    Delivered::Unsubmitted { .. } | Delivered::Unconfirmed { .. }
+                ),
+                "⛔ the press landed in {behind}; claude queued the prompt and asked it when that \
+                 turn ended, and the agent named it. Refusing it inside the window is what replaced \
+                 run 458's session. Got {delivered:?}",
+            );
+        }
 
         // ⚠⚠ ITEM 223 IS UNTOUCHED: an agent working on a question that CARRIES this text is the
         // dirty composer, and it is refused as it always was — no wait for it.
