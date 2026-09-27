@@ -4030,15 +4030,66 @@ fn cycle_until_shown(
     }
 }
 
-/// The last non-empty row of `pane`'s screen — where an agent paints its mode — or `None` where
-/// the screen cannot be read.
+/// Where an agent paints its mode on `pane`'s screen — see [`footer_below_the_composer`] — or `None`
+/// where the screen cannot be read.
 fn footer_of(panes: &dyn PaneAccess, pane: PaneId) -> Option<String> {
-    panes
+    let rows: Vec<String> = panes
         .pane_rows(pane)?
         .into_iter()
-        .rev()
         .map(|row| row.text)
-        .find(|text| !text.trim().is_empty())
+        .collect();
+    footer_below_the_composer(&rows)
+}
+
+/// ⛔⛔⛔⛔⛔ **EVERY ROW BELOW THE COMPOSER'S BOTTOM BORDER, JOINED** — the region an agent paints its
+/// mode in, and never just the last row of the screen.
+///
+/// # What it answers, measured
+///
+/// This read was *the last non-empty row*. `claude` paints its mode line directly under the
+/// composer's bottom rule, and while it has background agents it lists them BELOW that line:
+///
+/// ```text
+/// ──────────────────────
+///   ⏵⏵ auto mode on (shift+tab to cycle) · ← 10 agents · ↓ to manage
+///   ● main
+///   ◯ Plan  Grepping upstream tables.rs InterRegionFilter
+/// ```
+///
+/// (watching-zenoh's inner pane, 2026-09-27 10:21). The last row there is the sub-agent, so a pane
+/// that WAS in the mode read as not in it, and the mode cycle pressed its key eight times —
+/// stepping the agent OUT of the mode it held — then refused the prompt. Runs 463, 471 and 472
+/// ended on it; 472 did so at its first iteration, and the launcher then refused to relaunch a run
+/// that had moved nothing, which stopped the loop for four hours.
+///
+/// # Why the region and not a search for the mode word
+///
+/// The cycle compares successive readings to wait for a repaint, and a region is what changes when
+/// the mode line does. Taking every row after the LAST rule that spans the row keeps the reading to
+/// the footer, whatever the agent lists under it. A screen with no such rule — a dialog over the
+/// composer, a peer that draws none — falls back to the last non-empty row, which is what this read
+/// always was.
+fn footer_below_the_composer(rows: &[String]) -> Option<String> {
+    let is_rule = |text: &str| {
+        let trimmed = text.trim();
+        trimmed.chars().count() >= 8 && trimmed.chars().all(|ch| ch == '─')
+    };
+    let below: Vec<&str> = match rows.iter().rposition(|row| is_rule(row)) {
+        Some(rule) => rows[rule + 1..]
+            .iter()
+            .map(String::as_str)
+            .filter(|row| !row.trim().is_empty())
+            .collect(),
+        None => Vec::new(),
+    };
+    if below.is_empty() {
+        return rows
+            .iter()
+            .rev()
+            .find(|row| !row.trim().is_empty())
+            .cloned();
+    }
+    Some(below.join("\n"))
 }
 
 /// A key a document spells in the `send-keys` form — `S-Tab`, `C-c`, `M-x`, or a bare name — as
@@ -18591,6 +18642,52 @@ mod tests {
             pane.presses.get(),
             2,
             "accept edits → plan → auto is two presses"
+        );
+    }
+
+    /// ⛔⛔⛔⛔⛔ **THE MODE LINE IS READ UNDER THE COMPOSER, WHATEVER THE AGENT LISTS BELOW IT** — the
+    /// gate for [`footer_below_the_composer`], on the screen that ended runs 463, 471 and 472.
+    #[test]
+    fn the_mode_is_read_under_the_composer_even_with_sub_agents_listed_below_it() {
+        let rows = |tail: &[&str]| {
+            let mut rows: Vec<String> = vec![
+                "● the agent's reply".to_owned(),
+                "─".repeat(60),
+                "❯ ".to_owned(),
+                "─".repeat(60),
+            ];
+            rows.extend(tail.iter().map(|row| (*row).to_owned()));
+            rows.push(String::new());
+            rows
+        };
+        let listed = rows(&[
+            "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 10 agents · ↓ to manage",
+            "  ● main",
+            "  ◯ Plan  Grepping upstream tables.rs InterRegionFilter",
+        ]);
+        assert!(
+            footer_below_the_composer(&listed)
+                .is_some_and(|footer| footer.contains("auto mode on")),
+            "⛔ the agent IS in auto mode; its sub-agents are listed under the mode line, and reading \
+             only the last row pressed it out of the mode: {:?}",
+            footer_below_the_composer(&listed),
+        );
+        // ⚠ And a pane NOT in the mode still reads as not in it, sub-agents or no.
+        let other = rows(&["  ⏵⏵ accept edits on (shift+tab to cycle)", "  ● main"]);
+        assert!(
+            footer_below_the_composer(&other)
+                .is_some_and(|footer| !footer.contains("auto mode on")),
+            "⚠ a pane in another mode must not read as this one",
+        );
+        // ⚠ A screen with no composer rule keeps the old reading: the last non-empty row.
+        let bare = vec![
+            "first".to_owned(),
+            "⏵⏵ auto mode on".to_owned(),
+            String::new(),
+        ];
+        assert_eq!(
+            footer_below_the_composer(&bare).as_deref(),
+            Some("⏵⏵ auto mode on"),
         );
     }
 
