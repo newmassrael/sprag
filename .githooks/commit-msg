@@ -180,6 +180,15 @@ if non_english_lines=$(grep -nP '[^\x{0009}\x{000A}\x{000D}\x{0020}-\x{007E}\x{0
     fi
 fi
 
+# --- Rule 5: the names of this owner's own machines (private-names-gate.sh) ---
+# A message is published exactly as a diff is, so it is held against the same list. This gate speaks
+# for itself and does not join `errors` above: its refusal is about what the remote must never
+# carry, not about COMMIT_FORMAT.md. Both are reported before the hook exits, so a message that
+# breaks both is not fixed twice.
+. "$(dirname "${BASH_SOURCE[0]}")/private-names-gate.sh"
+names_refused=0
+private_names_gate_message "commit-msg" "$msg_file" || names_refused=1
+
 if [[ "${#errors[@]}" -gt 0 ]]; then
     echo "commit-msg: COMMIT_FORMAT.md violations:" >&2
     for err in "${errors[@]}"; do
@@ -187,6 +196,10 @@ if [[ "${#errors[@]}" -gt 0 ]]; then
     done
     echo "" >&2
     echo "See COMMIT_FORMAT.md for the full rule set." >&2
+    exit 1
+fi
+
+if [[ "$names_refused" -ne 0 ]]; then
     exit 1
 fi
 

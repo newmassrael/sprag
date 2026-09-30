@@ -43,6 +43,7 @@ cd "$repo_root"
 . "$repo_root/.githooks/doc-gate.sh"
 . "$repo_root/.githooks/content-gate.sh"
 . "$repo_root/.githooks/ident-gate.sh"
+. "$repo_root/.githooks/private-names-gate.sh"
 . "$repo_root/.githooks/hosted-read.sh"
 . "$repo_root/.githooks/loop-read.sh"
 . "$repo_root/.githooks/tree-drift.sh"
@@ -163,6 +164,7 @@ git_handed_no_refs() {
 # Walks `pushed_refs` like every other gate below, for the stdin reason the
 # block above states at length.
 ident_push_failed=0
+names_push_failed=0
 while read -r _iref ilocal _irref iremote; do
     [ -n "${ilocal:-}" ] || continue
     case "$ilocal" in
@@ -178,12 +180,22 @@ while read -r _iref ilocal _irref iremote; do
     esac
     [ -n "${iremote:-}" ] || ident_range="$ilocal"
     ident_gate_range "pre-push" "$ident_range" || ident_push_failed=1
+    # The same range, and the same walk: what a commit's message and diff carry is published with
+    # it, so a machine name that reached a commit through a hook-less clone, a cherry-pick or
+    # `--no-verify` is met here, at the last moment before it is public. A second copy of the ref
+    # walk above is what item 213 is about, so this shares it. See private-names-gate.sh.
+    private_names_gate_range "pre-push" "$ident_range" || names_push_failed=1
 done <<EOF
 $pushed_refs
 EOF
 if [ "$ident_push_failed" -ne 0 ]; then
     echo "pre-push: rewrite the offending commits before pushing — the remote is public" >&2
     echo "pre-push: and a push does not un-publish" >&2
+    exit 1
+fi
+if [ "$names_push_failed" -ne 0 ]; then
+    echo "pre-push: rewrite the offending commits before pushing — a machine name the owner keeps" >&2
+    echo "pre-push: private is in them, the remote is public, and a push does not un-publish" >&2
     exit 1
 fi
 

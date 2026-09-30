@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# A build wrapper that answers `--explain-registry` with THE REGISTRY STAGED IN THE SANDBOX, so
+# `private-names-gate.sh` has a host name to hold a commit against. A sandbox has no wrapper of its
+# own -- HOME is the sandbox -- so without this double that gate is NOT CHECKED in every case, which
+# is what the cases that are about something else rely on.
+#
+# The answer is a FILE in the sandbox, for the reason the `gh` double beside this one gives: the hook's
+# environment is fixed by the harness, and a case that had to thread a variable through it would be
+# staging the harness rather than the world. An ABSENT or EMPTY file answers no records at all and
+# exits 0, which is the "wrapper here, named nobody" state the gate must REFUSE rather than pass.
+#
+# Every call is logged, so a case can assert the gate ASKED the wrapper for its names instead of
+# holding a list of its own.
+#
+# TRACKED rather than written by the suite: register item 467.
+printf 'bx %s\n' "$*" >> "$DOUBLE_LOG"
+[ "${1:-}" = "--explain-registry" ] || exit 9
+[ -r ./bx-registry ] || exit 0
+cat ./bx-registry

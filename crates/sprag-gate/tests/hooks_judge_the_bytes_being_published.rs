@@ -2715,3 +2715,246 @@ fn a_push_says_how_long_this_clone_has_gone_without_reading_a_hosted_result() {
     push.write("gh-total-count", "1\n");
     push.done();
 }
+
+// ─── the names of this owner's own machines ─────────────────────────────────────────────────────
+//
+// `private-names-gate.sh` holds every commit, every message and every push against the hosts the
+// build wrapper knows, and lists none of them itself. A sandbox has no wrapper of its own (HOME is
+// the sandbox), so the gate answers NOT CHECKED in every case above and none of them is affected;
+// the cases below stand a tracked `bx` double where the hook looks for the real one.
+//
+// The gate's arms are driven by its own `--selftest`, which
+// `a_declared_selftest_is_one_this_suite_runs` executes. What that cannot show is that the three
+// real hooks reach it in the environment git gives them, which is this file's subject and the
+// reason a hook that passed its own selftest once refused every commit this suite makes.
+
+/// The one host the `bx` double answers for, unless a case stages another registry.
+const PRIVATE_HOST: &str = "sandbox-private-host";
+
+impl Sandbox {
+    /// Stand the tracked `bx` double where `private-names-gate.sh` looks for the build wrapper
+    /// (`$HOME/.claude/remote-build/bin/bx`, HOME being this sandbox), and stage what it answers for
+    /// `--explain-registry`. A link, never a written file: register item 467.
+    fn with_build_wrapper(&self, registry: &str) {
+        doubles().link(
+            "bx",
+            &self
+                .dir
+                .join(".claude")
+                .join("remote-build")
+                .join("bin")
+                .join("bx"),
+        );
+        self.write("bx-registry", registry);
+    }
+
+    /// Run `commit-msg` the way git does: with the path of the message as its one argument.
+    fn message_run(&self, message: &str) -> Output {
+        self.write("COMMIT_EDITMSG", message);
+        let mut command = self.hook_command("commit-msg");
+        command.arg(self.dir.join("COMMIT_EDITMSG"));
+        self.finish(command, "commit-msg", None)
+    }
+}
+
+#[test]
+fn a_commit_naming_a_machine_the_owner_keeps_private_is_refused() {
+    let sandbox = Sandbox::new("names-commit-refused");
+    sandbox.with_build_wrapper(&format!("alias {PRIVATE_HOST}\n"));
+    sandbox.write(
+        "notes.txt",
+        &format!("measured on {PRIVATE_HOST}, 8 cores\n"),
+    );
+    sandbox.git(&["add", "notes.txt"]);
+
+    let run = sandbox.run("pre-commit", None, None);
+    let told = said(&run);
+    assert!(
+        !run.status.success(),
+        "the staged file names a host the wrapper knows, and the remote is public: {told}",
+    );
+    assert!(
+        told.contains("keeps private")
+            && told.contains("notes.txt:1")
+            && told.contains(PRIVATE_HOST),
+        "the refusal must say what it refused, and WHERE, or nobody can fix it: {told}",
+    );
+    assert!(
+        sandbox.invocations().contains("bx --explain-registry"),
+        "the names must be ASKED of the wrapper, not read from a list the gate carries:\n{}",
+        sandbox.invocations(),
+    );
+    sandbox.done();
+}
+
+/// The control the arm above needs: with the wrapper present and the same registry, a commit that
+/// names nobody passes. Without it the refusal above is satisfied by a hook that refuses every
+/// commit the moment a wrapper exists.
+#[test]
+fn a_commit_naming_no_private_machine_passes_with_the_wrapper_present() {
+    let sandbox = Sandbox::new("names-commit-clean");
+    sandbox.with_build_wrapper(&format!("alias {PRIVATE_HOST}\n"));
+    sandbox.write("notes.md", "prose about an 8-core build machine\n");
+    sandbox.git(&["add", "notes.md"]);
+
+    let run = sandbox.run("pre-commit", None, None);
+    assert!(
+        run.status.success(),
+        "nothing private is staged, so this must pass: {}",
+        said(&run),
+    );
+    assert!(
+        sandbox.invocations().contains("bx --explain-registry"),
+        "and it passed because the wrapper was ASKED and found nothing, not because the gate \
+         never ran:\n{}",
+        sandbox.invocations(),
+    );
+    sandbox.done();
+}
+
+/// A clone without the wrapper has no names to protect, and the hook says so out loud. It is also
+/// the state every other case in this file runs in, so it is what keeps them unchanged.
+#[test]
+fn a_machine_without_the_build_wrapper_is_told_so_and_not_refused() {
+    let sandbox = Sandbox::new("names-no-wrapper");
+    sandbox.write("notes.txt", &format!("measured on {PRIVATE_HOST}\n"));
+    sandbox.git(&["add", "notes.txt"]);
+
+    let run = sandbox.run("pre-commit", None, None);
+    let told = said(&run);
+    assert!(
+        run.status.success(),
+        "there is no wrapper here to say which names are private, so nothing can be held against \
+         the commit: {told}",
+    );
+    assert!(
+        told.contains("NOT CHECKED"),
+        "stepping aside must be SAID: a gate that passes in silence is one nobody can tell from a \
+         gate that ran: {told}",
+    );
+    sandbox.done();
+}
+
+/// A wrapper that is here and names no host is a gate that could not read, which is not a gate that
+/// found nothing.
+#[test]
+fn a_wrapper_that_names_no_host_refuses_the_commit_rather_than_passing_it() {
+    let sandbox = Sandbox::new("names-empty-registry");
+    sandbox.with_build_wrapper("");
+    sandbox.write("notes.md", "prose only\n");
+    sandbox.git(&["add", "notes.md"]);
+
+    let run = sandbox.run("pre-commit", None, None);
+    let told = said(&run);
+    assert!(
+        !run.status.success(),
+        "the wrapper answered no host, so this commit cannot be checked, and an unchecked commit \
+         must not read as a clean one: {told}",
+    );
+    assert!(
+        told.contains("named no host"),
+        "and the refusal must name its own cause, so a person knows to look at the wrapper: {told}",
+    );
+    sandbox.done();
+}
+
+#[test]
+fn a_commit_message_naming_a_private_machine_is_refused() {
+    let sandbox = Sandbox::new("names-message-refused");
+    sandbox.with_build_wrapper(&format!("alias {PRIVATE_HOST}\n"));
+
+    let run = sandbox.message_run(&format!("fix(plugin): measured on {PRIVATE_HOST}\n"));
+    let told = said(&run);
+    assert!(
+        !run.status.success(),
+        "a message is published exactly as a diff is: {told}",
+    );
+    assert!(
+        told.contains("message:1") && told.contains(PRIVATE_HOST),
+        "the refusal must name the line: {told}",
+    );
+    sandbox.done();
+}
+
+#[test]
+fn a_commit_message_naming_no_private_machine_passes() {
+    let sandbox = Sandbox::new("names-message-clean");
+    sandbox.with_build_wrapper(&format!("alias {PRIVATE_HOST}\n"));
+
+    let run = sandbox.message_run("fix(plugin): the mode is read below the composer\n");
+    assert!(
+        run.status.success(),
+        "a well-formed message that names nobody must pass: {}",
+        said(&run),
+    );
+    sandbox.done();
+}
+
+/// A message that breaks BOTH rules is reported for both, so it is not fixed twice.
+#[test]
+fn a_message_that_breaks_the_format_and_names_a_host_is_told_about_both() {
+    let sandbox = Sandbox::new("names-message-both");
+    sandbox.with_build_wrapper(&format!("alias {PRIVATE_HOST}\n"));
+
+    let run = sandbox.message_run(&format!("not a conventional subject on {PRIVATE_HOST}\n"));
+    let told = said(&run);
+    assert!(!run.status.success(), "{told}");
+    assert!(
+        told.contains("COMMIT_FORMAT.md violations") && told.contains("keeps private"),
+        "the format refusal must not hide the names refusal, or the message is fixed twice: {told}",
+    );
+    sandbox.done();
+}
+
+#[test]
+fn a_push_carrying_a_private_machine_name_is_refused() {
+    let sandbox = Sandbox::new("names-push-refused");
+    sandbox.with_build_wrapper(&format!("alias {PRIVATE_HOST}\n"));
+    sandbox.write("crates/sprag-host/base.rs", FORMATTED);
+    sandbox.git(&["add", "crates/sprag-host/base.rs"]);
+    let base = sandbox.commit("base");
+
+    // A commit that never met the commit gate: `--no-verify`, an amend, a cherry-pick, a clone
+    // where the hooks were not installed.
+    sandbox.write("notes.txt", &format!("measured on {PRIVATE_HOST}\n"));
+    sandbox.git(&["add", "notes.txt"]);
+    let head = sandbox.commit("slipped past the commit gate");
+
+    let run = sandbox.run("pre-push", Some(&ref_line(&head, &base)), None);
+    let told = said(&run);
+    assert!(
+        !run.status.success(),
+        "this push publishes a host name, and the push gate is the last place to see it: {told}",
+    );
+    assert!(
+        told.contains(&head[..12]) && told.contains("notes.txt:1") && told.contains(PRIVATE_HOST),
+        "the refusal must name the commit, the file and the line the rewrite starts from: {told}",
+    );
+    sandbox.done();
+}
+
+#[test]
+fn a_push_carrying_no_private_machine_name_is_not_refused_by_the_names_gate() {
+    let sandbox = Sandbox::new("names-push-clean");
+    sandbox.with_build_wrapper(&format!("alias {PRIVATE_HOST}\n"));
+    sandbox.write("crates/sprag-host/base.rs", FORMATTED);
+    sandbox.git(&["add", "crates/sprag-host/base.rs"]);
+    let base = sandbox.commit("base");
+
+    sandbox.write("notes.md", "prose about an 8-core build machine\n");
+    sandbox.git(&["add", "notes.md"]);
+    let head = sandbox.commit("a clean change");
+
+    let run = sandbox.run("pre-push", Some(&ref_line(&head, &base)), None);
+    let told = said(&run);
+    assert!(
+        run.status.success(),
+        "nothing private is in this range, so the names gate must not refuse it: {told}",
+    );
+    assert!(
+        sandbox.invocations().contains("bx --explain-registry"),
+        "and it passed because the wrapper was ASKED, not because the gate never ran:\n{}",
+        sandbox.invocations(),
+    );
+    sandbox.done();
+}

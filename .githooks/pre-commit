@@ -72,6 +72,7 @@ cd "$repo_root"
 . "$repo_root/.githooks/rust-gates.sh"
 . "$repo_root/.githooks/content-gate.sh"
 . "$repo_root/.githooks/ident-gate.sh"
+. "$repo_root/.githooks/private-names-gate.sh"
 . "$repo_root/.githooks/tree-drift.sh"
 # ⛔ Register item 1036: whether a member's manifest has moved past `Cargo.lock`. A SHELL gate
 # because the tool that would run a test repairs the thing the test measures — its own file says
@@ -103,6 +104,12 @@ tree_drift_begin "pre-commit" "$repo_root"
 # identity gate is the only thing that separates its commits from a stray
 # environment's without a person reading every one. See ident-gate.sh.
 ident_gate_pending "pre-commit" || exit 1
+
+# The names of this owner's own machines, which the remote must never carry. Second, and ahead of
+# anything that costs, for the reason the identity gate above is first: the remote is public and a
+# push does not un-publish. The names are asked of the build wrapper and are listed nowhere in this
+# repository; a machine without the wrapper says so and steps aside. See private-names-gate.sh.
+private_names_gate_pending "pre-commit" || exit 1
 
 mnemosyne-cli validate-workspace
 
