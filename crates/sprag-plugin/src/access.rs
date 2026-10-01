@@ -4265,11 +4265,30 @@ mod tests {
         //
         // ⚠ `pane_stop_job` ends the pane's job, so it cannot sit in the list above. What is
         // asserted is the REFUSAL it no longer gives: a moved pane is not an unknown one.
-        let stopped = access.pane_stop_job(pane, Stop::Interrupt, Reach::UnderTheProgram);
+        //
+        // ⚠⚠⚠ THE REACH IS `TheProgramToo`, AND IT IS THE FIXTURE'S, NOT THE DOOR'S. Step 5 below
+        // needs the stop to LAND, and the narrow reach lands only where the pane's own program can
+        // survive the signal — which is a fact about the program and about the platform, not about
+        // which pool the pane is in. `/bin/sh -c cat` is a shell with a `cat` under it on Linux
+        // (dash), so the narrow stop landed; on macOS `/bin/sh` is a bash that EXECS the single
+        // command, the pane's program IS `cat`, and the host cannot read whether `cat` would die
+        // of the signal (`signal_ends` is Linux-only), so the narrow stop is refused as
+        // `CannotTellIfItWouldEnd` and nothing is sent — the safety property
+        // `stop_foreground_job`'s own gate asserts on both platforms. The hosted macOS job failed
+        // on exactly that, step 5 below, for every push for as long as this test existed. The wide
+        // reach sends the same `SIGINT` to the same group the narrow one did on Linux, so nothing
+        // this door's routing is checked by has changed.
+        let stopped = access.pane_stop_job(pane, Stop::Interrupt, Reach::TheProgramToo);
         assert!(
             !matches!(stopped, Err(PaneError::UnknownPane(_))),
             "⛔⛔⛔ `pane_stop_job` called a moved pane UNKNOWN — and a cancel is exactly when a \
              person is most likely to have rearranged the windows: {stopped:?}",
+        );
+        assert!(
+            stopped.is_ok(),
+            "⚠⚠⚠ the stop did not LAND on the moved pane, so step 5 below would be a claim about \
+             a child nothing ever signalled and not about whether the door follows the pane. The \
+             pane is known, so this is the host refusing it: {stopped:?}",
         );
 
         // ── 5. AND THE DOOR WHOSE `None` MEANS TWO THINGS, ASKED WHERE THEY COME APART ──
