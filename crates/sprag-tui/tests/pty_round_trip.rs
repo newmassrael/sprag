@@ -765,11 +765,38 @@ fn wait_bounded(
 fn wait_paced(
     within: Duration,
     what: &str,
+    observe: impl FnMut() -> Result<(), String>,
+    standing: impl Fn() -> String,
+    rest: impl FnMut(),
+) {
+    wait_paced_on(Instant::now, within, what, observe, standing, rest);
+}
+
+/// [`wait_paced`] on a clock the caller names — the seam a test needs to say HOW MANY LOOKS a wait
+/// got, which on the real clock is the machine's to decide and not the test's.
+///
+/// # ⛔⛔⛔ The number of looks inside a deadline is not a constant — register item 519
+///
+/// The deadline's sentence depends on it: one look cannot say whether anything was moving, two or
+/// more can. A test that drives a 120 ms wait on the real clock and expects the "still moving"
+/// sentence therefore expects the machine to wake it twice in 120 ms, and that is a fact about the
+/// runner. MEASURED 2026-10-02 on the hosted macOS job (run 36882379631, `28d2c7cc`): the condition
+/// that reports something new on every look was looked at ONCE (`the row read 1 char(s)`), because
+/// the first rest outlasted the whole window, and the clause that cannot tell one look from a stall
+/// called it STALLED. Passing the clock makes the count the test's own: a rest that advances it by
+/// a fixed step gives the same number of looks on every machine.
+///
+/// ⚠ Only the reading of time is injected. The pacing, the observation and the sentence are the same
+/// code the real waits run, so a test through here is a test of that code and not of a copy.
+fn wait_paced_on(
+    now: impl Fn() -> Instant,
+    within: Duration,
+    what: &str,
     mut observe: impl FnMut() -> Result<(), String>,
     standing: impl Fn() -> String,
     mut rest: impl FnMut(),
 ) {
-    let deadline = Instant::now() + within;
+    let deadline = now() + within;
     let mut last = "nothing was observed at all".to_owned();
     // ⛔⛔⛔⛔⛔ **WAS ANYTHING STILL ARRIVING** — register item 519, and the residue its own repair
     // wrote down rather than hid: *"이 절은 데드라인 «시점»의 페인을 말한다 … 다만 «언제»
@@ -783,17 +810,20 @@ fn wait_paced(
     //
     // ⚠ The count is of CHANGES rather than of looks, because a poll that reads the same state
     // twice is not evidence of movement. The first observation always differs from the placeholder
-    // above, so one change means *nothing moved after the first look*.
+    // above, so one change means *nothing moved after the first look* — PROVIDED more than one look
+    // was taken, which is why the looks are counted beside the changes: see [`arrival`].
+    let mut looks = 0usize;
     let mut changes = 0usize;
-    let mut changed_at = Instant::now();
-    while Instant::now() < deadline {
+    let mut changed_at = now();
+    while now() < deadline {
+        looks += 1;
         match observe() {
             Ok(()) => return,
             Err(state) => {
                 if state != last {
                     last = state;
                     changes += 1;
-                    changed_at = Instant::now();
+                    changed_at = now();
                 }
             }
         }
@@ -802,7 +832,7 @@ fn wait_paced(
     panic!(
         "timed out after {within:?} waiting for {what}\n  last observation: {last}{}\n  {}\n  {}",
         standing(),
-        arrival(changes, changed_at, deadline),
+        arrival(looks, changes, changed_at, deadline),
         how_loaded(),
     );
 }
@@ -816,10 +846,18 @@ fn wait_paced(
 ///
 /// ⚠ `changes` counts changes and not looks — see [`wait_bounded`], where the placeholder makes the
 /// first observation a change by construction, so `1` means *nothing moved after the first look*.
-fn arrival(changes: usize, changed_at: Instant, deadline: Instant) -> String {
-    match changes {
-        0 => "arrival: the condition was never even observed, so nothing here says whether anything was moving".to_owned(),
-        1 => "arrival: the observation never changed after the first look — whatever this was waiting for was STALLED, not slow".to_owned(),
+///
+/// ⛔⛔⛔ **BUT ONLY WHEN THERE WAS A SECOND LOOK.** One change out of one look is not "nothing moved
+/// after the first look" — there was no after. It is a wait that was starved of looks, and saying
+/// STALLED for it sends the next round to hunt a defect in a product that was never shown to have
+/// stopped. MEASURED 2026-10-02 on the hosted macOS job: a condition that reported something new on
+/// every look was looked at once inside 120 ms and was called STALLED. So the looks are passed in and
+/// the one-look case has its own sentence, which names what it does NOT say.
+fn arrival(looks: usize, changes: usize, changed_at: Instant, deadline: Instant) -> String {
+    match (looks, changes) {
+        (_, 0) => "arrival: the condition was never even observed, so nothing here says whether anything was moving".to_owned(),
+        (1, _) => "arrival: the condition was looked at only ONCE before the deadline, so nothing here says whether anything was moving — the wait was starved of looks, which is not a stall shown".to_owned(),
+        (_, 1) => "arrival: the observation never changed after the first look — whatever this was waiting for was STALLED, not slow".to_owned(),
         _ => {
             let quiet = deadline.saturating_duration_since(changed_at);
             format!(
@@ -1075,21 +1113,20 @@ fn the_deadline_says_what_it_wanted_and_what_was_standing_there() {
 ///
 /// ⚠⚠ **THE MOVING ARM IS THE CONTROL**, and it is not decoration: an implementation that always
 /// reported *STALLED* would pass the stalled arm, and that is the arm a first draft gets right.
+///
+/// ⛔⛔⛔ **AND THE THIRD ARM IS THE ONE THE HOSTED macOS JOB MADE.** These arms used to run on the
+/// real clock with `sleep` between looks and expected two or more looks inside 120 ms. On 2026-10-02
+/// the macOS runner gave the moving condition ONE (`the row read 1 char(s)`), so the clause called a
+/// wait it had barely watched STALLED and the moving arm failed — a fact about the runner, reached
+/// through a test that never fixed it. The looks are now the test's own: [`wait_paced_on`] runs on a
+/// clock that moves only when the wait rests, so a 20 ms rest gives six looks on any machine and a
+/// rest that outlasts the window gives one. The real-clock path is still driven, by
+/// `the_deadline_says_what_it_wanted_and_what_was_standing_there`, which asserts only that the
+/// clause is present — the one thing a real clock can promise.
 #[test]
 fn the_deadline_says_whether_anything_was_still_arriving() {
-    let stalled = std::panic::catch_unwind(|| {
-        wait_bounded(
-            Duration::from_millis(120),
-            "a condition whose observation never moves",
-            || Err("the row read \"nothing\"".to_owned()),
-            String::new,
-        );
-    })
-    .expect_err("a wait whose condition never holds must fail");
-    let stalled = stalled
-        .downcast_ref::<String>()
-        .expect("the panic carries its message")
-        .clone();
+    let stalled =
+        deadline_message_on_stepped_clock(POLL, || Err("the row read \"nothing\"".to_owned()));
     assert!(
         stalled.contains("STALLED"),
         "⛔ ITEM 519: an observation that never changed after the first look is a STALL, and saying \
@@ -1100,22 +1137,10 @@ fn the_deadline_says_whether_anything_was_still_arriving() {
     // ⚠ A condition that reports something NEW every look — the runner-is-slow shape, where bytes
     // keep arriving and simply do not finish arriving in time.
     let mut look = 0usize;
-    let moving = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        wait_bounded(
-            Duration::from_millis(120),
-            "a condition whose observation moves every look",
-            || {
-                look += 1;
-                Err(format!("the row read {look} char(s)"))
-            },
-            String::new,
-        );
-    }))
-    .expect_err("a wait whose condition never holds must fail");
-    let moving = moving
-        .downcast_ref::<String>()
-        .expect("the panic carries its message")
-        .clone();
+    let moving = deadline_message_on_stepped_clock(POLL, || {
+        look += 1;
+        Err(format!("the row read {look} char(s)"))
+    });
     assert!(
         !moving.contains("STALLED"),
         "⛔ ITEM 519: the observation changed on every look and the deadline still called it a \
@@ -1127,6 +1152,53 @@ fn the_deadline_says_whether_anything_was_still_arriving() {
         "⛔ ITEM 519: an observation that was still changing at the deadline has to SAY so, or the \
          reader cannot tell this from the stall and pays a reproduce cycle to find out: {moving}",
     );
+
+    // ⛔ A wait that got ONE look — its first rest outlasted the whole window. The same moving
+    // condition, so what differs from the arm above is only how often it was seen, and the clause
+    // must neither claim a stall nor claim movement it never saw.
+    let mut look = 0usize;
+    let starved = deadline_message_on_stepped_clock(Duration::from_secs(1), || {
+        look += 1;
+        Err(format!("the row read {look} char(s)"))
+    });
+    assert!(
+        starved.contains("ONCE"),
+        "⛔ ITEM 519: a wait that was looked at once has to SAY it was looked at once, or the \
+         reader cannot tell a starved wait from a shown stall: {starved}",
+    );
+    assert!(
+        !starved.contains("STALLED") && !starved.contains("still moving"),
+        "⛔ ITEM 519: one look shows neither a stall nor movement, and a sentence claiming either \
+         sends the next round after a defect, or a bound, that nothing here showed: {starved}",
+    );
+}
+
+/// Drive [`wait_paced_on`] to its deadline on a clock that moves only when the wait RESTS, by
+/// `rest_for` each time, and return the message it panics with.
+///
+/// A wait of 120 ms therefore gets `120 / rest_for` looks (a rest of a second gives one) whatever
+/// the machine is doing — the property the real clock cannot give; see [`wait_paced_on`].
+fn deadline_message_on_stepped_clock(
+    rest_for: Duration,
+    mut observe: impl FnMut() -> Result<(), String>,
+) -> String {
+    let start = Instant::now();
+    let elapsed = std::cell::Cell::new(Duration::ZERO);
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        wait_paced_on(
+            || start + elapsed.get(),
+            Duration::from_millis(120),
+            "the condition under test",
+            &mut observe,
+            String::new,
+            || elapsed.set(elapsed.get() + rest_for),
+        );
+    }))
+    .expect_err("a wait whose condition never holds must fail");
+    caught
+        .downcast_ref::<String>()
+        .expect("the panic carries its message")
+        .clone()
 }
 
 /// ⛔⛔⛔⛔⛔ **THE PANE CLAUSE SAYS WHICH SIDE IS BEHIND** — register item 519, and the fork two
