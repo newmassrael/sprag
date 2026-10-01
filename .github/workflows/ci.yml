@@ -47,6 +47,25 @@ on:
     branches: [main]
   pull_request:
 
+# Latest-only. A run in flight is never cancelled by a newer push, and the commits pushed while it
+# runs collapse to the LAST one, which runs next. GitHub keeps one running and at most one pending
+# run per group; a newer pending run replaces the older pending one, which ends `cancelled` having
+# started nothing. The group carries no sha, so a push cannot open a group of its own and the
+# pending slot stays singular.
+#
+# ⚠ What this costs, stated rather than hidden: a commit pushed while another run is pending gets
+# no hosted verdict of its own. Hosted CI checks out a sha and judges the TREE at it, so the run on
+# the last commit answers for everything under it — what is lost is attribution (which commit broke
+# a thing), not the verdict on what `main` holds now.
+#
+# ⚠⚠ The one check that does NOT subsume is a check of a CHANGE: `no_commit_moves_a_doc_onto_
+# another_item` judges ONE commit, the tip, so a commit that a collapsed push folded under the tip
+# is never put to it here. A range can be put to it with the `doc-attachment` binary of
+# `sprag-gate` (`git rev-list <range> | doc-attachment`); no hook runs that for a push.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
 

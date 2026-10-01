@@ -94,6 +94,14 @@ and two days of unread red"
 # `.github/workflows` declares no `concurrency:` group -- so the wait is the
 # hosting's and cannot be shortened from here. A watermark that assumes a
 # verdict is waiting is therefore wrong on an ORDINARY round, not a rare one.
+#
+# ⚠ SINCE 2026-10-01 `ci.yml` DOES DECLARE A GROUP, and the paragraph above is the
+# record of what was measured before it. The group is latest-only
+# (`cancel-in-progress: false`): one run in flight, at most one pending, and a newer
+# push replaces the pending run, which ends `cancelled` having started nothing. The
+# wait is still the hosting's. What changed is that a commit a collapsed push folded
+# under the tip now maps to a run that holds NO verdict: `hosted_read_runs_for`
+# counts it, so it is reported as `unread`, and there is nothing in it to read.
 HOSTED_READ_UNSETTLED_COST="a run that had not spoken when it was looked at is \
 not a run that was read, and the next --seen would bury it"
 
