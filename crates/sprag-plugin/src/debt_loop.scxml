@@ -1481,6 +1481,14 @@
       ⚠ AND `.git/logs/HEAD` IS ABSENT for the opposite reason: it is a perfect
       stall mark and worthless to a judge. That the two lists barely overlap is
       the item, not an oversight.
+
+      ⚠⚠ THE TENTH ENTRY, 2026-10-01: `.githooks/rust-gates.sh`, a single file.
+      Coverage stood at 80.00% (456 of 570) and the next commit took it to 79.96%.
+      The refusal's own remedy, a directory, would have crossed the ceiling above
+      (`crates/sprag-terminal/src` takes the list from 58.8% of the tree to
+      65.3%), so what was added is the shape `crates/sprag-mcp/src` already is:
+      one tracked file carrying many changed paths, 10 of the window's 114 not
+      covered. It holds 81.8% against 59.1% of the tree.
     -->
     <data id="check_opens"
           expr="[
@@ -1492,7 +1500,8 @@
             'crates/sprag-host/tests',
             'crates/sprag-rpc/src',
             'crates/sprag-mcp/src',
-            'crates/sprag-client/tests'
+            'crates/sprag-client/tests',
+            '.githooks/rust-gates.sh'
           ]"/>
 
     <!--
