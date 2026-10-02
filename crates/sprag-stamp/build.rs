@@ -94,22 +94,49 @@ fn git(args: &[&str]) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// The files whose change must regenerate the stamp: the git dir's `HEAD`, and the ref `HEAD`
-/// names when it is a symbolic one.
+/// The files whose change must regenerate the stamp: `HEAD`, and the ref `HEAD` names when it is a
+/// symbolic one.
 ///
 /// Resolved THROUGH git rather than assembled from `../../.git`, because that path is a FILE and
 /// not a directory inside a worktree, and this repository works in worktrees. A resolution that
 /// fails yields no watches at all, which pairs with the [`UNKNOWN`] stamp: nothing to say, nothing
 /// to watch for.
+///
+/// # ⛔⛔⛔ Each path is asked of git separately — register item 519
+///
+/// In a linked worktree `HEAD` is the WORKTREE's own file and a branch ref is the REPOSITORY's:
+/// `.git/worktrees/<name>/HEAD` beside `.git/refs/heads/<branch>`. This function used to ask git
+/// for the worktree's directory once and join both names onto it, which names a branch ref that
+/// does not exist — `.git/worktrees/<name>/refs/heads/<branch>` — in every worktree that has a
+/// branch checked out. MEASURED 2026-10-02: cargo treats a watched path that is missing as
+/// changed, so the stamp reran on every build, and `sprag-gate`'s freshness check counts a
+/// recorded input that is missing as edited, so a daemon built in such a worktree could never be
+/// vouched for and every suite that drives it refused to start. Only a detached HEAD, which names
+/// no ref, worked — which is why the pre-commit worktrees (detached) never showed it.
+///
+/// `--git-path` is git's own answer to "where does this file live", and it knows which of the two
+/// directories each name belongs to.
 fn watched() -> Vec<PathBuf> {
-    let Some(dir) = git(&["rev-parse", "--absolute-git-dir"]).map(PathBuf::from) else {
+    let Some(head) = git(&["rev-parse", "--git-path", "HEAD"]).map(PathBuf::from) else {
         return Vec::new();
     };
-    let mut paths = vec![dir.join("HEAD")];
+    // `--git-path` answers relative to the cwd git ran in, which is this package's directory, not
+    // the process cwd cargo watches from, so the answer is made absolute against that directory.
+    let anchored = |path: PathBuf| {
+        if path.is_absolute() {
+            path
+        } else {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(path)
+        }
+    };
+    let mut paths = vec![anchored(head)];
     // ⚠ A DETACHED HEAD names no ref, and that is not a failure: `HEAD` itself then holds the
     // commit and the one watch above is complete.
-    if let Some(reference) = git(&["symbolic-ref", "--quiet", "HEAD"]) {
-        paths.push(dir.join(reference));
+    if let Some(path) = git(&["symbolic-ref", "--quiet", "HEAD"])
+        .and_then(|reference| git(&["rev-parse", "--git-path", &reference]))
+        .map(PathBuf::from)
+    {
+        paths.push(anchored(path));
     }
     paths
 }
