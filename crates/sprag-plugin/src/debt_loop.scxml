@@ -1482,13 +1482,38 @@
       stall mark and worthless to a judge. That the two lists barely overlap is
       the item, not an oversight.
 
-      ⚠⚠ THE TENTH ENTRY, 2026-10-01: `.githooks/rust-gates.sh`, a single file.
-      Coverage stood at 80.00% (456 of 570) and the next commit took it to 79.96%.
-      The refusal's own remedy, a directory, would have crossed the ceiling above
-      (`crates/sprag-terminal/src` takes the list from 58.8% of the tree to
-      65.3%), so what was added is the shape `crates/sprag-mcp/src` already is:
-      one tracked file carrying many changed paths, 10 of the window's 114 not
-      covered. It holds 81.8% against 59.1% of the tree.
+      ⚠⚠ THE TENTH ENTRY, 2026-10-01, WAS WRONG AND IS REMOVED 2026-10-02:
+      `.githooks/rust-gates.sh`, a single file. It was added when coverage stood
+      at 80.00% (456 of 570) and the next commit took it to 79.96%, on the
+      claim that it "holds 81.8% against 59.1% of the tree". It held NOTHING.
+      Both jaws of the gate that reads this list decide whether a path is inside
+      an entry by `path.starts_with("<entry>/")`, which matches a DIRECTORY and
+      can never match a file, so the entry covered 0 of the window's paths and
+      0 of the tree's files. The figures in that entry were worked out by hand
+      under a definition the gate does not use, and the commit it was added in
+      passed because it also touched a path under an entry that does count.
+      `crates/sprag-mcp/src`, which the entry cited as its shape, is a
+      DIRECTORY that happens to hold one tracked file; that is the shape the
+      vocabulary has, an entry is a directory, and a bare file is not in it.
+
+      ⚠⚠ THE ELEVENTH ENTRY, 2026-10-02: `crates/sprag-stamp`, a directory of
+      three files. Measured against the gate's own definition on the window of
+      567 paths: the nine directories alone hold 454 (80.07%, 58% of the 386
+      tracked files), one path under the floor's edge, so a commit that lands a
+      single path outside the list reads 79%. Adding this directory holds 457
+      (80.6%) against 59% of the tree. It is the only directory whose addition
+      stays under the ceiling above: `crates/sprag-gui/src` takes the list to
+      67%, `crates/sprag-terminal/src` to 65%, `.githooks` to 62%. It is also
+      where a round lands when it repairs how a binary names its own build.
+
+      ⚠ WHAT THIS LEAVES, STATED RATHER THAN HIDDEN: the floor sits on the
+      window's edge with a margin of a few paths, and the ceiling sits two
+      points above the list, so the pincer has no slack on either side. That is
+      the situation the paragraph above describes, a document whose work has no
+      stable shape under this list, and it is a finding to carry rather than a
+      threshold to move. The next commit that lands several paths outside the
+      list will read under the floor again, and the remedy then is the same
+      measurement made first, never a name that has not been priced.
     -->
     <data id="check_opens"
           expr="[
@@ -1501,7 +1526,7 @@
             'crates/sprag-rpc/src',
             'crates/sprag-mcp/src',
             'crates/sprag-client/tests',
-            '.githooks/rust-gates.sh'
+            'crates/sprag-stamp'
           ]"/>
 
     <!--
