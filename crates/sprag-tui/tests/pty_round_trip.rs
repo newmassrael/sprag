@@ -4095,13 +4095,41 @@ impl Tui {
     /// this pty: a real one reshapes its own screen when its window changes, and one that did not
     /// would start disagreeing with the client about where a cell is the moment the sizes diverged.
     fn resize(&mut self, cols: u16, rows: u16) {
+        self.resize_between(cols, rows, || {});
+    }
+
+    /// [`Tui::resize`] with a hook run BETWEEN its two steps — the seam a test needs to hold open
+    /// the one window in which this harness could misread the client, instead of waiting for a
+    /// slow machine to open it.
+    ///
+    /// # ⛔⛔⛔ Why the two steps are one atomic act, and in this order — register item 519
+    ///
+    /// A client answers `SIGWINCH` with ONE full repaint at the new size (`Clear::Yes`) and then
+    /// waits for its next input, so there is no later frame that could put right a frame the
+    /// reader consumed at the wrong size. MEASURED 2026-10-02 on the hosted macOS job (run
+    /// 36901193533, `80ac2a5b`), where `a_clear_that_moved_no_rectangle_still_redraws_the_panes`
+    /// timed out after 45 s with the frame DISPLACED and its observation never changing: the old
+    /// order told the pty first and the emulator second, a loaded 3-core runner descheduled this
+    /// thread between the two, and the client's whole repaint for the new size was read into an
+    /// emulator still holding the old one. A 400 ms gap between the steps reproduces the same
+    /// screen on Linux, row for row — status line on rows 21 and 22 of a 30-row screen, the pane's
+    /// text nowhere on it.
+    ///
+    /// Two things make that unreachable, and each is enough alone:
+    ///
+    /// * **The emulator is resized FIRST**, which is what a real terminal does: its window changes
+    ///   and only then does the kernel's `winsize` follow. Until the pty is told, the client has
+    ///   nothing to answer, so no frame sized for the new window can arrive early.
+    /// * **The reader cannot apply bytes between the steps**: the screen lock is held across both.
+    ///   Whatever the client wrote before the pty was told is applied after the emulator has
+    ///   resized, exactly as it would be on a real terminal that was resized under it.
+    fn resize_between(&mut self, cols: u16, rows: u16, between: impl FnOnce()) {
+        let mut emulator = self.screen.lock().expect("the screen mutex");
+        emulator.resize(cols, rows);
+        between();
         self.master
             .resize(cols, rows, 0, 0)
             .expect("resize the pty");
-        self.screen
-            .lock()
-            .expect("the screen mutex")
-            .resize(cols, rows);
     }
 
     /// The input modes the client put this terminal into — what it asked of a terminal it borrowed.
@@ -8573,6 +8601,37 @@ const PINNED_SMALL: (u16, u16) = (40, 10);
 /// drag, no clear, and a test that asserted the screen was fine because nothing had happened to it.
 #[test]
 fn a_clear_that_moved_no_rectangle_still_redraws_the_panes() {
+    a_pinned_window_under_a_terminal_that_grows(|| {});
+}
+
+/// **THE HARNESS'S OWN RESIZE, DRIVEN THROUGH THE WINDOW IT USED TO LEAVE OPEN** — register item
+/// 519, and the gate for [`Tui::resize_between`].
+///
+/// The scenario above on a machine that always deschedules the test thread between the two steps of
+/// a resize: the hook holds the gap open for 400 ms, far longer than a client needs to answer
+/// `SIGWINCH` with its one full repaint. Under the old order (pty first, emulator second) that
+/// repaint was read into an emulator still at the old size and the pane's text never reached the
+/// screen; this test failed there with the hosted macOS job's own picture. Under the current order
+/// nothing can answer early, so the same gap is harmless.
+///
+/// ⚠ The gap is a hook rather than a sleep inside `resize` because a sleep belongs to a machine and
+/// a hook belongs to the test: the first would have to be taken out of every other resize in this
+/// file, and the second changes nothing for them.
+///
+/// REVERT-PROOF: put `self.master.resize(...)` back before `emulator.resize(...)` in
+/// [`Tui::resize_between`] and this fails with the displaced frame; take the lock out and it still
+/// fails, because the reader applies the client's repaint inside the gap.
+#[test]
+fn a_resize_that_is_descheduled_halfway_is_not_misread() {
+    a_pinned_window_under_a_terminal_that_grows(|| {
+        std::thread::sleep(Duration::from_millis(400));
+    });
+}
+
+/// The scenario both tests above share: a PINNED window, a client whose terminal grows past it, and
+/// the question of whether the pane survives the clear. `between` runs between the two steps of that
+/// resize (see [`Tui::resize_between`]); the first test passes nothing, the second a long gap.
+fn a_pinned_window_under_a_terminal_that_grows(between: impl FnOnce()) {
     let config = ConfigHome::new("[options]\nwindow-size = \"manual\"\n");
     let (_daemon, sock) = spawn_daemon_with_config(&["cat"], Some(config.as_str()));
     let mut conn = observe(&sock);
@@ -8618,7 +8677,7 @@ fn a_clear_that_moved_no_rectangle_still_redraws_the_panes() {
 
     // The terminal GROWS past the pinned window. The client re-reports, the daemon ignores it, the
     // tiling is the same tiling over the same window — and the client clears before repainting.
-    tui.resize(100, 30);
+    tui.resize_between(100, 30, between);
 
     wait_for("the pane to survive a clear that moved nothing", || {
         painted(&tui, "hello")
