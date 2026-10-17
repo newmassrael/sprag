@@ -2851,7 +2851,7 @@ mod tests {
     ///
     /// # ⚠⚠⚠ The hypothesis this gate exists to settle
     ///
-    /// `.claude/remote-build.toml` has carried this for rounds: a `sprag-plugin --lib` run at
+    /// `bx.toml` has carried this for rounds: a `sprag-plugin --lib` run at
     /// thirty threads fails with `Exhausted(Duration)`, `iterations: 1`, `Bytes(0)` — a DIFFERENT
     /// member of the class each time, and each one green when run alone. The suspicion written
     /// beside it was [`ReadyWhen::Prints`]' arming baseline, and it was explicitly filed as *a
@@ -2899,7 +2899,7 @@ mod tests {
         .run(&mut orch, &access, &crate::run::RunContext::uncancellable());
 
         // ⚠⚠⚠ THE RECORDED SIGNATURE, ASSERTED. If these three ever stop describing this state,
-        // the note in `remote-build.toml` is about something else and this gate must be re-read.
+        // the note in `bx.toml` is about something else and this gate must be re-read.
         assert_eq!(
             outcome.state,
             OutcomeState::Exhausted(Ceiling::Duration),

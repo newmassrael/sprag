@@ -16,7 +16,7 @@
 # sampler is the cause and `measure-peak` needs a cheaper one; if it reports 59, the command itself
 # has a coverage hole and the sampler is exonerated.
 set -u
-decl=".claude/remote-build.toml"
+decl="bx.toml"
 [ -f "$decl" ] || { echo "run me from the workspace root; no $decl here" >&2; exit 2; }
 cmd=$(sed -n 's/^verify = "\(.*\)"$/\1/p' "$decl")
 [ -n "$cmd" ] || { echo "no [commands] verify parsed" >&2; exit 2; }

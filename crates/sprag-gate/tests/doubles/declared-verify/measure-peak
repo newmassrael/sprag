@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# HOW `[peak_measured]` IS TAKEN — the instrument, tracked, so a re-measurement is a command rather
-# than a paragraph somebody follows.
+# HOW `[ext.sprag.peak_measured]` IS TAKEN — the instrument, tracked, so a re-measurement is a
+# command rather than a paragraph somebody follows.
 #
 # `a_fleet_ceiling_is_a_measurement_with_a_date` refuses a `*_cmd` that no longer matches
 # `[commands]`, and its message says to measure again. What it does NOT do — cannot do — is take the
-# measurement. That was prose until register item 623: the method lived in a comment in
-# `.claude/remote-build.toml` and every re-measurement was somebody reading it and improvising.
+# measurement. That was prose until register item 623: the method lived in a comment in the
+# declaration (`bx.toml`) and every re-measurement was somebody reading it and improvising.
 #
 # ⚠⚠ TWO THINGS THE COMMENT INSISTS ON, and both are here rather than remembered:
 #   * a COLD `CARGO_TARGET_DIR` — a warm one skips the compilation whose peak is the answer;
@@ -91,7 +91,7 @@ case "$method" in
 esac
 
 name="${1:?name a key from [commands], e.g. verify}"
-decl=".claude/remote-build.toml"
+decl="bx.toml"
 [ -f "$decl" ] || { echo "run me from the workspace root; no $decl here" >&2; exit 2; }
 
 cmd=$(sed -n "s/^${name} = \"\(.*\)\"$/\1/p" "$decl")
@@ -153,8 +153,8 @@ wait "$job"
 rc=$?
 
 echo "MEASURED_COMMAND=$name"
-# ⚠ THE PROVENANCE TRAVELS WITH THE NUMBER — item 1008. `[peak_measured]` and `[routed]` record a
-# platform per reading and `every_reading_names_a_platform_the_instrument_can_measure_on` checks it
+# ⚠ THE PROVENANCE TRAVELS WITH THE NUMBER — item 1008. `[ext.sprag.peak_measured]` and
+# `[ext.sprag.routed]` record a platform per reading and `every_reading_names_a_platform_the_instrument_can_measure_on` checks it
 # against `--platforms` above, so these two lines are what a person copies into the declaration.
 echo "MEASURED_PLATFORM=$platform"
 echo "MEASURED_METHOD=$method"

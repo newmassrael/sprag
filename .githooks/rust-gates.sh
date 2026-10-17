@@ -33,7 +33,7 @@
 
 # ⚠⚠ THE INNER QUOTES ARE SINGLE, AND THAT IS A GATE'S REQUIREMENT RATHER THAN A STYLE.
 # `a_fleet_ceiling_is_a_measurement_with_a_date` walks `.githooks/` for `"${BX}"` call sites and
-# composes each one's argv from the assignments in the SAME file, reading `.claude/remote-build.toml`
+# composes each one's argv from the assignments in the SAME file, reading `bx.toml`
 # as TOML basic strings — a `"` inside a value TRUNCATES it there. So the command handed to the
 # wrapper carries no double quote, and the two spellings can be the same string. `'-D warnings'` and
 # `"-D warnings"` are the same word to sh; the outer quoting is double instead, which is safe here
@@ -92,22 +92,34 @@ hook_suite_stamp_path() {
     printf '%s\n' "$git_dir/sprag-hook-suite-passed"
 }
 
+# The declaration every reader below takes its rows from: `bx.toml` at the root of the tree being
+# judged (`repo_root` when the caller set it, the checkout git answers for otherwise). Spelled once,
+# so the three readers cannot disagree about which file they read — register item 213. The rows
+# themselves live under `[ext.sprag.routed]` and `[ext.sprag.peak_measured]`, which bx neither reads
+# nor checks; each reader below takes its key with a line-anchored `sed`, so the table a key sits
+# in does not change what it reads.
+rust_gates_declaration() {
+    local root
+    root="${repo_root:-$(git rev-parse --show-toplevel 2>/dev/null || printf '.')}"
+    printf '%s\n' "$root/bx.toml"
+}
+
 # ⛔⛔⛔⛔⛔ THIS LANE CARRIES ITS OWN RAM BOUND, DERIVED FROM ITS OWN READING — register item 932.
 #
-# The wrapper divides a host's free RAM by `peak_gb_per_task` from `.claude/remote-build.toml`, and
+# The wrapper divides a host's free RAM by `peak_gb_per_task` from `bx.toml`, and
 # that scalar is derived from `[commands]` — two commands, neither of them this one. Measured with
 # this repository's own instrument (`measure-peak precommit`, cold target directory): this lane
 # peaks at **9,260,688 kB, 8.83 GiB**, so a host handed the workspace scalar is given ELEVEN tasks
 # of a job that wants nine each.
 #
 # ⚠⚠ RAISING THE SCALAR IS NOT THE FIX AND THAT WAS MEASURED TOO: it would divide the same RAM into
-# two for every command, including `build`. So the reading lives in `[routed]`, where it cannot
-# reach the scalar, and the bound is applied HERE — which also covers the branch below where there
-# is no wrapper at all and nothing has ever bounded this lane.
+# two for every command, including `build`. So the reading lives in `[ext.sprag.routed]`, where it
+# cannot reach the scalar, and the bound is applied HERE — which also covers the branch below where
+# there is no wrapper at all and nothing has ever bounded this lane.
 #
 # ⛔⛔⛔⛔⛔ THE FILE IS TESTED BEFORE IT IS READ, AND `set -euo pipefail` IS WHY. `sprag-gate` links
 # these hooks into a THROWAWAY repository and drives them (register item 467), and that repository
-# has no `.claude/remote-build.toml`. A first draft read it anyway, with `sed … 2>/dev/null | head`:
+# has no `bx.toml`. A first draft read it anyway, with `sed … 2>/dev/null | head`:
 # `sed` exits 2 on a file that is not there, `pipefail` makes the PIPELINE fail, the assignment
 # carries that status, and `set -e` kills the hook **at that line** with nothing said.
 #
@@ -142,14 +154,13 @@ hook_suite_stamp_path() {
 # this hook's one routed command into two, and copying this block would have been that defect
 # arriving by the shortest road available.
 #
-#   $1  the reading, in kB, as `[routed]` recorded it — empty where there is none
+#   $1  the reading, in kB, as `[ext.sprag.routed]` recorded it — empty where there is none
 #   $2  the platform that reading was taken on — empty where the row does not say
-#   $3  the lane's name in `[routed]`, which is also the argument to `measure-peak`
+#   $3  the lane's name in `[ext.sprag.routed]`, which is also the argument to `measure-peak`
 rust_gates_bound_from() {
     local routed_kb="$1" routed_platform="$2" lane="$3"
-    local host_platform free_kb routed_jobs meminfo routed_decl root
-    root="${repo_root:-$(git rev-parse --show-toplevel 2>/dev/null || printf '.')}"
-    routed_decl="$root/.claude/remote-build.toml"
+    local host_platform free_kb routed_jobs meminfo routed_decl
+    routed_decl=$(rust_gates_declaration)
     host_platform=$(uname -s 2>/dev/null || printf 'unknown')
     meminfo="${RUST_GATES_MEMINFO:-/proc/meminfo}"
     free_kb=$(awk '/^MemAvailable:/{print $2}' "$meminfo" 2>/dev/null || true)
@@ -166,7 +177,7 @@ rust_gates_bound_from() {
         return 0
     fi
     if [ -z "$free_kb" ]; then
-        echo "rust-gates: ⚠ cannot read this host's free memory from $meminfo — the reading in [routed] is fine and it is the HOST that cannot be measured, so this hook divides by nothing (register item 1009)" >&2
+        echo "rust-gates: ⚠ cannot read this host's free memory from $meminfo — the reading in [ext.sprag.routed] is fine and it is the HOST that cannot be measured, so this hook divides by nothing (register item 1009)" >&2
         rust_gates_say_what_spends_instead "$lane" unbound "$host_platform" "$routed_decl"
         return 0
     fi
@@ -175,7 +186,7 @@ rust_gates_bound_from() {
     CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$routed_jobs}"
     RUST_TEST_THREADS="${RUST_TEST_THREADS:-$routed_jobs}"
     export CARGO_BUILD_JOBS RUST_TEST_THREADS
-    echo "rust-gates: the $lane lane peaks at $((routed_kb / 1024))MB/task (declared in [routed], measured on $host_platform); ${free_kb}kB free -> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS" >&2
+    echo "rust-gates: the $lane lane peaks at $((routed_kb / 1024))MB/task (declared in [ext.sprag.routed], measured on $host_platform); ${free_kb}kB free -> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS" >&2
     rust_gates_say_what_spends_instead "$lane" bound "$host_platform" "$routed_decl"
 }
 
@@ -207,9 +218,9 @@ rust_gates_wrapper_present() {
 # third time — and this time by item 1009's own repair.
 #
 # ⚠⚠ **AND IT IS THE PLATFORM QUESTION, WHICH IS WHY THIS IS ITEM 1010 RATHER THAN A TYPO.** The
-# scalar is derived from `[peak_measured]`, whose `platform` field item 1008 added — and MEASURED:
-# `grep -c peak_measured ~/.claude/remote-build/bin/bx` answers **0**, so the wrapper never reads
-# that table and cannot know whose platform the number describes. Item 932's rule says a row nobody
+# scalar is derived from `[ext.sprag.peak_measured]`, whose `platform` field item 1008 added — and
+# MEASURED: `grep -c peak_measured ~/.claude/remote-build/bin/bx` answers **0**, so the wrapper
+# never reads that table and cannot know whose platform the number describes. Item 932's rule says a row nobody
 # divides by is a number in a file; this hook is the only reader this repository can give it.
 #
 # ⚠ TWO DIRECTIONS, and the wrapper's own source is what separates them — `bin/bx`:
@@ -224,7 +235,7 @@ rust_gates_wrapper_present() {
 # repository cannot reach it — the fleet half of item 1010 is its owner's. What changes is that the
 # sentence is true and names the platform the spent number came from.
 #
-#   $1  the lane's name in `[routed]`
+#   $1  the lane's name in `[ext.sprag.routed]`
 #   $2  `bound` if this hook exported a budget for it, `unbound` otherwise
 #   $3  this host's platform, as `uname -s` answered it
 #   $4  the declaration to read the wrapper's divisor out of
@@ -244,10 +255,11 @@ rust_gates_say_what_spends_instead() {
         # ⛔ `[0-9][0-9]*` AND NOT `[0-9]\+` — item 1006: `\+` is a GNU extension and BSD reads it as
         # a literal `+`, which is how a correct declaration came back empty on macOS.
         peak_gb=$(sed -n 's/^peak_gb_per_task = \([0-9][0-9]*\).*/\1/p' "$routed_decl" | head -1)
-        # ⚠ `[peak_measured] platform` — the TABLE's one platform, the way `date` and `host` are one
-        # for it. A bare `^platform = ` is unambiguous because `[routed]` spells its own per-lane
-        # fields `<name>_platform`; `a_declaration_names_one_platform_for_the_wrappers_divisor`
-        # holds that there is exactly one such line, so this stays a reading rather than a guess.
+        # ⚠ `[ext.sprag.peak_measured] platform` — the TABLE's one platform, the way `date` and
+        # `host` are one for it. A bare `^platform = ` is unambiguous because `[ext.sprag.routed]`
+        # spells its own per-lane fields `<name>_platform`;
+        # `a_declaration_names_one_platform_for_the_wrappers_divisor` holds that there is exactly
+        # one such line, so this stays a reading rather than a guess.
         measured_platform=$(sed -n 's/^platform = "\([^"]*\)".*/\1/p' "$routed_decl" | head -1)
     fi
     if [ -z "$peak_gb" ]; then
@@ -259,9 +271,9 @@ rust_gates_say_what_spends_instead() {
     # and the BOUND arm needs them exactly as much as the unbound one does — the wrapper replaces
     # a bound of this hook's own the moment it ships the lane, so a foreign scalar reaches a remote
     # host whether or not this hook managed to divide here.
-    local whose="measured on ${measured_platform:-a platform [peak_measured] does not name}, this host is $host_platform"
+    local whose="measured on ${measured_platform:-a platform [ext.sprag.peak_measured] does not name}, this host is $host_platform"
     if [ -n "$measured_platform" ] && [ "$measured_platform" != "$host_platform" ]; then
-        whose="⚠ measured on $measured_platform and this host is $host_platform — the wrapper never reads [peak_measured], so nothing over there can tell"
+        whose="⚠ measured on $measured_platform and this host is $host_platform — the wrapper never reads [ext.sprag.peak_measured], so nothing over there can tell"
     fi
     if [ "$state" = bound ]; then
         echo "rust-gates: the wrapper honours that bound when it runs the $lane lane here, and replaces it with peak_gb_per_task = ${peak_gb}GB/task ($whose) when it ships the lane to a build machine (bin/bx:2786 sets it unconditionally; register item 1010)" >&2
@@ -280,11 +292,10 @@ rust_gates_say_what_spends_instead() {
 # MENTION a reading while dividing by something else. A single reader taking `${lane}_kb` would put
 # no such text in this file and the gate would be right to refuse it.
 
-# `[routed] precommit` — clippy and the rustdoc gate, which compile the index checkout.
+# `[ext.sprag.routed] precommit` — clippy and the rustdoc gate, which compile the index checkout.
 rust_gates_bound_lint_lane() {
-    local kb="" platform="" routed_decl root
-    root="${repo_root:-$(git rev-parse --show-toplevel 2>/dev/null || printf '.')}"
-    routed_decl="$root/.claude/remote-build.toml"
+    local kb="" platform="" routed_decl
+    routed_decl=$(rust_gates_declaration)
     if [ -f "$routed_decl" ]; then
         # ⛔ `[0-9][0-9]*` AND NOT `[0-9]\+` -- register item 1006. `\+` is a GNU
         # extension to a basic regular expression; BSD reads it as a LITERAL `+`,
@@ -300,11 +311,11 @@ rust_gates_bound_lint_lane() {
     rust_gates_bound_from "$kb" "$platform" "precommit"
 }
 
-# `[routed] ratchets` — the tests whose input is the tree, which still run in the working tree.
+# `[ext.sprag.routed] ratchets` — the tests whose input is the tree, which still run in the working
+# tree.
 rust_gates_bound_ratchet_lane() {
-    local kb="" platform="" routed_decl root
-    root="${repo_root:-$(git rev-parse --show-toplevel 2>/dev/null || printf '.')}"
-    routed_decl="$root/.claude/remote-build.toml"
+    local kb="" platform="" routed_decl
+    routed_decl=$(rust_gates_declaration)
     if [ -f "$routed_decl" ]; then
         # ⛔ The same basic-regex rule as its twin above — item 1006.
         kb=$(sed -n 's/^ratchets_kb = \([0-9][0-9]*\).*/\1/p' "$routed_decl" | head -1)
@@ -407,9 +418,9 @@ rust_gates_run() {
     #
     # ⚠⚠ IT IS STILL A SECOND WRAPPER CALL WITH A ROW OF ITS OWN, and rejoining it to the lane
     # above would be a regression rather than tidying. The two peaks differ SEVENFOLD — 9,260,688 kB
-    # against 1,267,736 kB — and one `[routed]` row would bound the tests by the doc gate's peak:
-    # 2 jobs where its own reading allows 17. That is the *too HIGH* failure `.claude/remote-build.
-    # toml` names beside the swap storm, and it is the reason that file argued for per-command rows
+    # against 1,267,736 kB — and one `[ext.sprag.routed]` row would bound the tests by the doc
+    # gate's peak: 2 jobs where its own reading allows 17. That is the *too HIGH* failure `bx.toml`
+    # names beside the swap storm, and it is the reason that file argued for per-command rows
     # in the first place. Same subject now; still two commands, because they cost different things.
     echo "rust-gates: the ratchet lane, on the INDEX as well — register item 1014 ..." >&2
     (

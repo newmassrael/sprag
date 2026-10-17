@@ -2,9 +2,9 @@
 //! item 1009.
 //!
 //! `.githooks/rust-gates.sh` bounds its own lanes: it divides this host's free memory by that
-//! lane's `[routed]` reading and hands the quotient down as `CARGO_BUILD_JOBS`. Three separate
-//! things can stop that, and until 2026-09-10 all three printed *no usable `precommit_kb` in
-//! <file>*.
+//! lane's `[ext.sprag.routed]` reading and hands the quotient down as `CARGO_BUILD_JOBS`. Three
+//! separate things can stop that, and until 2026-09-10 all three printed *no usable `precommit_kb`
+//! in <file>*.
 //!
 //! ⚠ **THERE ARE TWO LANES SINCE ITEM 1011**, and every arm here is driven against both — see
 //! [`LANES`] for why that is item 213 rather than thoroughness.
@@ -35,9 +35,9 @@
 //! is false whenever the wrapper is in the chain** — which is every commit not run under `env -u
 //! BX`. `bx --local` with nothing exported answered `peak 2GB/task -> RUST_TEST_THREADS=10` and the
 //! command saw 10. The lane is bounded, by the workspace scalar `peak_gb_per_task` — derived from
-//! `[peak_measured]`, whose `platform` the wrapper never reads (`grep -c peak_measured bin/bx`
-//! answers **0**). So the arms announced the absence of exactly what was happening, and the number
-//! being spent was one platform's, which is the half of item 1010 this repository owns.
+//! `[ext.sprag.peak_measured]`, whose `platform` the wrapper never reads (`grep -c peak_measured
+//! bin/bx` answers **0**). So the arms announced the absence of exactly what was happening, and the
+//! number being spent was one platform's, which is the half of item 1010 this repository owns.
 //!
 //! ⚠ [`no_arm_calls_a_lane_unbounded_while_the_wrapper_is_there_to_bound_it`] and its siblings hold
 //! the repair. The word is not banished — [`without_a_wrapper_an_unbounded_lane_is_still_called_
@@ -57,6 +57,9 @@ use sprag_gate::sources::workspace_root;
 /// The library under test. Sourced rather than executed: its dispatch refuses a bare run on
 /// purpose (register item 819), and the subject here is one function inside it.
 const LIBRARY: &str = ".githooks/rust-gates.sh";
+
+/// The declaration the library reads its rows from, at the root of the tree it is handed.
+const DECL: &str = "bx.toml";
 
 /// The sentence that must only ever be said about a declaration that really says nothing.
 const BLAMES_THE_FILE: &str = "no usable reading";
@@ -156,8 +159,8 @@ fn drive_with(tree: &Path, meminfo: &Path, reader: &str, wrapper: Option<&Path>)
 /// declaration inside this crate's own directory.
 fn tree_declaring(tag: &str, decl: &str) -> PathBuf {
     let tree = sprag_scratch::scratch_for("sprag-lane-bound", tag);
-    std::fs::create_dir_all(tree.join(".claude")).expect("a staging tree for the hook");
-    std::fs::write(tree.join(".claude/remote-build.toml"), decl).expect("a declaration to read");
+    std::fs::create_dir_all(&tree).expect("a staging tree for the hook");
+    std::fs::write(tree.join(DECL), decl).expect("a declaration to read");
     tree
 }
 
@@ -178,7 +181,7 @@ fn a_reading_from_this_platform_bounds_the_lane_by_the_free_memory_it_measured()
         let tree = tree_declaring(
             &format!("control-{key}"),
             &format!(
-                "[routed]\n{key}_kb = 5000000\n{key}_platform = \"{}\"\n",
+                "[ext.sprag.routed]\n{key}_kb = 5000000\n{key}_platform = \"{}\"\n",
                 host_platform(),
             ),
         );
@@ -221,7 +224,7 @@ fn a_host_that_cannot_be_measured_says_so_instead_of_blaming_the_declaration() {
         let tree = tree_declaring(
             &format!("no-meminfo-{key}"),
             &format!(
-                "[routed]\n{key}_kb = 5000000\n{key}_platform = \"{}\"\n",
+                "[ext.sprag.routed]\n{key}_kb = 5000000\n{key}_platform = \"{}\"\n",
                 host_platform(),
             ),
         );
@@ -261,7 +264,7 @@ fn a_reading_from_another_platform_does_not_bound_this_host_and_says_which() {
     for (reader, key) in LANES {
         let tree = tree_declaring(
             &format!("foreign-{key}"),
-            &format!("[routed]\n{key}_kb = 5000000\n{key}_platform = \"Plan9\"\n"),
+            &format!("[ext.sprag.routed]\n{key}_kb = 5000000\n{key}_platform = \"Plan9\"\n"),
         );
         let meminfo = tree.join("meminfo");
         std::fs::write(&meminfo, "MemAvailable:   20000000 kB\n").expect("a staged MemAvailable");
@@ -298,7 +301,7 @@ fn a_reading_from_another_platform_does_not_bound_this_host_and_says_which() {
 #[test]
 fn a_declaration_that_really_says_nothing_about_this_lane_is_still_told_so() {
     for (reader, key) in LANES {
-        let tree = tree_declaring(&format!("silent-{key}"), "[routed]\n");
+        let tree = tree_declaring(&format!("silent-{key}"), "[ext.sprag.routed]\n");
         let meminfo = tree.join("meminfo");
         std::fs::write(&meminfo, "MemAvailable:   20000000 kB\n").expect("a staged MemAvailable");
 
@@ -307,9 +310,9 @@ fn a_declaration_that_really_says_nothing_about_this_lane_is_still_told_so() {
 
         assert!(
             bound.said.contains(BLAMES_THE_FILE),
-            "⚠ ITEM 932's own case is gone: a `[routed]` table with no `{key}_kb` has to be \
-             reported as exactly that by `{reader}`, or the lane running unbounded is a silence \
-             again.\nsaid:\n{}",
+            "⚠ ITEM 932's own case is gone: a `[ext.sprag.routed]` table with no `{key}_kb` has \
+             to be reported as exactly that by `{reader}`, or the lane running unbounded is a \
+             silence again.\nsaid:\n{}",
             bound.said,
         );
         assert!(
@@ -339,17 +342,19 @@ const STAGED_PEAK_GB: &str = "7";
 /// is a gate saying nothing while looking like it says everything.
 const SPENDS_PHRASE: &str = "peak_gb_per_task = 7GB/task";
 
-/// A staged declaration: the rows `[routed]` carries, and the scalar the wrapper would divide by.
+/// A staged declaration: the rows `[ext.sprag.routed]` carries, and the scalar the wrapper would
+/// divide by.
 ///
-/// ⚠ `peak_gb_per_task` is a TOP-LEVEL key and `platform` belongs to `[peak_measured]` — the same
-/// shape as the real file, because the hook reads both with line-anchored `sed` and a fixture that
-/// nested them differently would be testing a parser this repository does not have.
+/// ⚠ `peak_gb_per_task` is a TOP-LEVEL key and `platform` belongs to `[ext.sprag.peak_measured]` —
+/// the same shape as the real file, because the hook reads both with line-anchored `sed` and a
+/// fixture that nested them differently would be testing a parser this repository does not have.
 fn decl_offering(lane_rows: &str, measured_platform: &str) -> String {
     format!(
-        "peak_gb_per_task = {STAGED_PEAK_GB}\n\
-         [peak_measured]\n\
+        "schema = 1\n\
+         peak_gb_per_task = {STAGED_PEAK_GB}\n\
+         [ext.sprag.peak_measured]\n\
          platform = \"{measured_platform}\"\n\
-         [routed]\n{lane_rows}",
+         [ext.sprag.routed]\n{lane_rows}",
     )
 }
 
@@ -480,8 +485,8 @@ fn without_a_wrapper_an_unbounded_lane_is_still_called_unbounded() {
 /// ⛔⛔⛔⛔⛔ **THE SCALAR THE WRAPPER WILL SPEND NAMES THE PLATFORM IT WAS MEASURED ON** — item 1010,
 /// and this is the half of the fleet question this repository owns.
 ///
-/// `peak_gb_per_task` is derived from `[peak_measured]`, which is `VmHWM` out of procfs (item 1008)
-/// — one platform's memory behaviour. **Measured 2026-09-11**: `grep -c peak_measured
+/// `peak_gb_per_task` is derived from `[ext.sprag.peak_measured]`, which is `VmHWM` out of procfs
+/// (item 1008) — one platform's memory behaviour. **Measured 2026-09-11**: `grep -c peak_measured
 /// ~/.claude/remote-build/bin/bx` answers **0**, so the wrapper cannot know whose. Item 932's rule
 /// is that a row nobody divides by is a number in a file; this hook is the only reader this
 /// repository can give the field item 1008 recorded.
@@ -497,7 +502,7 @@ fn the_scalar_the_wrapper_will_spend_names_the_platform_it_was_measured_on() {
     let wrapper = staged_wrapper();
     let here = host_platform();
     for (reader, key) in LANES {
-        // (what makes this branch the one taken, the rows `[routed]` carries)
+        // (what makes this branch the one taken, the rows `[ext.sprag.routed]` carries)
         let branches: [(&str, String); 2] = [
             ("unbound", String::new()),
             (
@@ -520,9 +525,10 @@ fn the_scalar_the_wrapper_will_spend_names_the_platform_it_was_measured_on() {
             assert!(
                 bound.said.contains("Plan9"),
                 "⛔ ITEM 1010: `{reader}` told the operator what the wrapper will spend on the \
-                 {key} lane and not which platform that figure describes. `[peak_measured] \
-                 platform` is there to be read — the wrapper never reads it, so a sentence that \
-                 omits it leaves the field with no reader at all.\nbranch: {branch}\nsaid:\n{}",
+                 {key} lane and not which platform that figure describes. \
+                 `[ext.sprag.peak_measured] platform` is there to be read — the wrapper never \
+                 reads it, so a sentence that omits it leaves the field with no reader at \
+                 all.\nbranch: {branch}\nsaid:\n{}",
                 bound.said,
             );
             assert!(
@@ -585,12 +591,13 @@ fn a_bound_this_hook_set_says_the_wrapper_replaces_it_on_a_build_machine() {
 /// ⚠⚠ **THE DECLARATION NAMES EXACTLY ONE PLATFORM FOR THE WRAPPER'S DIVISOR.**
 ///
 /// The hook reads it with a line-anchored `sed` for `^platform = `, which is unambiguous only while
-/// `[peak_measured]` is the one table spelling the key bare — `[routed]` spells its own per-lane
-/// fields `<name>_platform`. A second bare `platform` arriving in any table would make that reading
-/// a guess whose answer depends on file order, and nothing else in the tree would notice.
+/// `[ext.sprag.peak_measured]` is the one table spelling the key bare — `[ext.sprag.routed]` spells
+/// its own per-lane fields `<name>_platform`. A second bare `platform` arriving in any table would
+/// make that reading a guess whose answer depends on file order, and nothing else in the tree would
+/// notice.
 #[test]
 fn a_declaration_names_one_platform_for_the_wrappers_divisor() {
-    let text = std::fs::read_to_string(workspace_root().join(".claude/remote-build.toml"))
+    let text = std::fs::read_to_string(workspace_root().join(DECL))
         .expect("this repository's declaration");
     let bare: Vec<&str> = text
         .lines()
@@ -599,7 +606,7 @@ fn a_declaration_names_one_platform_for_the_wrappers_divisor() {
     assert_eq!(
         bare.len(),
         1,
-        "⛔ ITEM 1010: `.claude/remote-build.toml` has {} line(s) starting `platform = ` and \
+        "⛔ ITEM 1010: `{DECL}` has {} line(s) starting `platform = ` and \
          `rust_gates_say_what_spends_instead` takes the FIRST. With more than one the hook names \
          whichever the file happens to list first, which is a guess wearing a reading's clothes; \
          with none it can name no platform at all.\nlines: {bare:?}",

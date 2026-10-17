@@ -833,7 +833,7 @@ pub enum Reached {
     /// first look for longer than a peer takes to print its banner; the marker is then in
     /// [`Prints`](ReadyWhen::Prints)' baseline, the barrier can never clear, and the run waits out
     /// its whole clock. What it reported was `Exhausted(Duration)` with `Bytes(0)` and not one word
-    /// about a barrier — a signature that sat in `.claude/remote-build.toml` for rounds as a
+    /// about a barrier — a signature that sat in `bx.toml` for rounds as a
     /// hypothesis nobody had instrumented. A run that says what it was still waiting for is the
     /// instrument, and it is the product's to say rather than a note in a file.
     RunEnded(PaneError),
@@ -2718,7 +2718,7 @@ mod tests {
     /// deschedules the gap between a fixture's `spawn` and the driver's first look for longer than
     /// the peer takes to print its banner, and the run then waits out its whole clock having typed
     /// nothing (`Exhausted(Duration)`, `Bytes(0)`). That signature has been in
-    /// `.claude/remote-build.toml` for rounds as a HYPOTHESIS nobody had instrumented. This is the
+    /// `bx.toml` for rounds as a HYPOTHESIS nobody had instrumented. This is the
     /// instrument, and the product is where the answer belongs.
     ///
     /// ⚠ **THE FACT, NOT THE INTENT.** It says the marker is on the screen and which question would

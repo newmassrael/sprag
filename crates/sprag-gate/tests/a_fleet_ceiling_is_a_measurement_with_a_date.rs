@@ -28,10 +28,10 @@
 //!
 //! # ⚠⚠ Where the numbers come from, and why they are kilobytes
 //!
-//! `[peak_measured]` records the peak resident size of the LARGEST SINGLE PROCESS the command
-//! creates, which is exactly the quantity the formula divides free RAM by. Kilobytes rather than a
-//! rounded GB so the file holds what the instrument said and this gate does the arithmetic; a
-//! rounded figure in the file would be a number nobody could check against a re-run.
+//! `[ext.sprag.peak_measured]` records the peak resident size of the LARGEST SINGLE PROCESS the
+//! command creates, which is exactly the quantity the formula divides free RAM by. Kilobytes rather
+//! than a rounded GB so the file holds what the instrument said and this gate does the arithmetic;
+//! a rounded figure in the file would be a number nobody could check against a re-run.
 //!
 //! ⚠⚠⚠⚠ **AND `/usr/bin/time -v` IS NOT THE INSTRUMENT, THOUGH IT LOOKS LIKE IT.** Its `Maximum
 //! resident set size` is `ru_maxrss` of `RUSAGE_CHILDREN`, documented as the largest single
@@ -58,11 +58,11 @@
 //! repository is that hook lane — 360 runs. Re-measured with this repository's instrument, the lane
 //! peaks at **9,260,688 kB**, four times the figure it was being budgeted by.
 //!
-//! ⇒ So there is a second population and a second table. `[routed]` holds what this repository
-//! HANDS OVER, measured to the same standard, and
+//! ⇒ So there is a second population and a second table. `[ext.sprag.routed]` holds what this
+//! repository HANDS OVER, measured to the same standard, and
 //! [`every_command_this_repository_hands_the_wrapper_is_one_it_measured`] holds that every
 //! `"${BX}"` call site in `.githooks/` is in it AND bounds itself from its reading. Those readings
-//! stay OUT of `[peak_measured]` on purpose: folding 8.83 GiB in would derive
+//! stay OUT of `[ext.sprag.peak_measured]` on purpose: folding 8.83 GiB in would derive
 //! `peak_gb_per_task = 9` and divide the same host into two tasks for `build` as well, whose own
 //! reading is 1,204,328 kB — the "too HIGH" failure named below, self-inflicted.
 
@@ -84,7 +84,14 @@ use sprag_gate::shell::{self, Word};
 use sprag_gate::sources::workspace_root;
 
 /// The declaration `bx` reads to decide where this repository's work goes.
-const DECL: &str = ".claude/remote-build.toml";
+const DECL: &str = "bx.toml";
+
+/// The table holding the readings `peak_gb_per_task` is derived from. Under `[ext.sprag]`, the
+/// part of `bx.toml` bx leaves to this repository's own tools and neither reads nor checks.
+const PEAK_MEASURED: &str = "ext.sprag.peak_measured";
+
+/// The table holding what this repository's own hooks hand the wrapper, each with its reading.
+const ROUTED: &str = "ext.sprag.routed";
 
 /// One whole gigabyte, as `free -g` and therefore `bx` count them.
 ///
@@ -110,7 +117,7 @@ fn the_ram_ceiling_is_declared_as_a_whole_number_of_gigabytes() {
         panic!(
             "⚠ `{DECL}` declares no `peak_gb_per_task`, so `bx` places this repository's work by \
              cores alone and one task's RAM is a fact the tool does not have — register item 456. \
-             Measure it and record it under `[peak_measured]`.",
+             Measure it and record it under `[ext.sprag.peak_measured]`.",
         )
     });
 
@@ -140,7 +147,7 @@ fn the_ram_ceiling_is_declared_as_a_whole_number_of_gigabytes() {
 fn every_command_the_declaration_sends_carries_its_own_measurement() {
     let decl = read_decl();
     let commands = decl.table("commands");
-    let measured = decl.table("peak_measured");
+    let measured = decl.table(PEAK_MEASURED);
 
     assert!(
         !commands.is_empty(),
@@ -149,14 +156,16 @@ fn every_command_the_declaration_sends_carries_its_own_measurement() {
     );
 
     for (name, text) in &commands {
-        let recorded = measured.get(&format!("{name}_cmd")).unwrap_or_else(|| panic!(
-            "⚠ `[commands] {name}` has no `{name}_cmd` under `[peak_measured]`: this declaration \
-             sends a command whose RAM cost nobody measured. Run it on a build machine with a COLD \
-             `CARGO_TARGET_DIR` — a warm one skips the work whose peak is the answer — while \
-             sampling `VmHWM` in `/proc` for every process under it, and record the largest, its \
-             command line and the date. ⚠ NOT `/usr/bin/time -v`: this file's own header says why \
-             its answer cannot be told from an artefact.",
-        ));
+        let recorded = measured.get(&format!("{name}_cmd")).unwrap_or_else(|| {
+            panic!(
+                "⚠ `[commands] {name}` has no `{name}_cmd` under `[ext.sprag.peak_measured]`: this \
+                 declaration sends a command whose RAM cost nobody measured. Run it on a build \
+                 machine with a COLD `CARGO_TARGET_DIR` — a warm one skips the work whose peak is \
+                 the answer — while sampling `VmHWM` in `/proc` for every process under it, and \
+                 record the largest, its command line and the date. ⚠ NOT `/usr/bin/time -v`: \
+                 this file's own header says why its answer cannot be told from an artefact.",
+            )
+        });
         assert_eq!(
             recorded, text,
             "\n⚠⚠⚠ `[commands] {name}` HAS CHANGED SINCE IT WAS MEASURED, so the ceiling above it \
@@ -165,8 +174,8 @@ fn every_command_the_declaration_sends_carries_its_own_measurement() {
         );
         assert!(
             measured.contains_key(&format!("{name}_kb")),
-            "⚠ `[peak_measured] {name}_cmd` is recorded but `{name}_kb` is not, so the command was \
-             named and its number was not.",
+            "⚠ `[ext.sprag.peak_measured] {name}_cmd` is recorded but `{name}_kb` is not, so the \
+             command was named and its number was not.",
         );
     }
 
@@ -174,9 +183,9 @@ fn every_command_the_declaration_sends_carries_its_own_measurement() {
         if let Some(name) = key.strip_suffix("_cmd") {
             assert!(
                 commands.contains_key(name),
-                "⚠ `[peak_measured] {key}` measures `{name}`, which `[commands]` no longer sends. \
-                 A record for a command that is gone reads exactly like a current one; drop it, or \
-                 restore the command it belongs to.",
+                "⚠ `[ext.sprag.peak_measured] {key}` measures `{name}`, which `[commands]` no \
+                 longer sends. A record for a command that is gone reads exactly like a current \
+                 one; drop it, or restore the command it belongs to.",
             );
         }
     }
@@ -199,14 +208,14 @@ fn every_command_the_declaration_sends_carries_its_own_measurement() {
 #[test]
 fn the_ceiling_is_the_next_whole_gigabyte_above_the_worst_measurement() {
     let decl = read_decl();
-    let measured = decl.table("peak_measured");
+    let measured = decl.table(PEAK_MEASURED);
 
     let mut readings: Vec<(String, u64)> = measured
         .iter()
         .filter_map(|(k, v)| {
             let name = k.strip_suffix("_kb")?;
             let kb = v.parse::<u64>().unwrap_or_else(|_| {
-                panic!("⚠ `[peak_measured] {k} = {v}` is not a plain number of kilobytes")
+                panic!("⚠ `[ext.sprag.peak_measured] {k} = {v}` is not a plain number of kilobytes")
             });
             Some((name.to_string(), kb))
         })
@@ -215,8 +224,9 @@ fn the_ceiling_is_the_next_whole_gigabyte_above_the_worst_measurement() {
 
     let (worst_name, worst_kb) = readings.first().cloned().unwrap_or_else(|| {
         panic!(
-            "⚠ `[peak_measured]` records no `*_kb` reading at all, so there is nothing to derive \
-                a ceiling from and this gate would pass on an empty file — register item 441."
+            "⚠ `[ext.sprag.peak_measured]` records no `*_kb` reading at all, so there is \
+                nothing to derive a ceiling from and this gate would pass on an empty file — \
+                register item 441."
         )
     });
 
@@ -244,11 +254,11 @@ fn the_ceiling_is_the_next_whole_gigabyte_above_the_worst_measurement() {
 #[test]
 fn the_measurement_says_when_and_where_it_was_taken() {
     let decl = read_decl();
-    let measured = decl.table("peak_measured");
+    let measured = decl.table(PEAK_MEASURED);
 
     let date = measured.get("date").unwrap_or_else(|| {
         panic!(
-            "⚠ `[peak_measured]` carries no `date`, so nothing tells the \
+            "⚠ `[ext.sprag.peak_measured]` carries no `date`, so nothing tells the \
                                    next reader whether the ceiling is current."
         )
     });
@@ -259,17 +269,18 @@ fn the_measurement_says_when_and_where_it_was_taken() {
             && iso[1].len() == 2
             && iso[2].len() == 2
             && date.bytes().all(|b| b.is_ascii_digit() || b == b'-'),
-        "⚠ `[peak_measured] date = {date}` is not an ISO `YYYY-MM-DD` date.",
+        "⚠ `[ext.sprag.peak_measured] date = {date}` is not an ISO `YYYY-MM-DD` date.",
     );
 
     for field in ["host", "worst"] {
         let value = measured.get(field).unwrap_or_else(|| panic!(
-            "⚠ `[peak_measured]` carries no `{field}`. A number with no account of what produced \
-             it cannot be re-measured, only re-guessed.",
+            "⚠ `[ext.sprag.peak_measured]` carries no `{field}`. A number with no account of what \
+             produced it cannot be re-measured, only re-guessed.",
         ));
         assert!(
             value.len() > 8,
-            "⚠ `[peak_measured] {field} = {value}` says too little to point a re-measurement at.",
+            "⚠ `[ext.sprag.peak_measured] {field} = {value}` says too little to point a \
+             re-measurement at.",
         );
     }
 }
@@ -306,32 +317,33 @@ fn every_reading_names_a_platform_the_instrument_can_measure_on() {
     let decl = read_decl();
     let mut judged = 0;
 
-    // `[peak_measured]` carries ONE platform for the table, exactly as it carries one `date` and
-    // one `host`: both of its rows were taken in the same session on the same machine.
+    // `[ext.sprag.peak_measured]` carries ONE platform for the table, exactly as it carries one
+    // `date` and one `host`: both of its rows were taken in the same session on the same machine.
     judged += judge_platform(
-        &decl.table("peak_measured"),
-        "peak_measured",
+        &decl.table(PEAK_MEASURED),
+        PEAK_MEASURED,
         "platform",
         &admitted,
     );
 
-    // `[routed]` records per command — `precommit_date`, `precommit_host` — so the platform is per
-    // command too. The population is every recorded READING, which is what a `_kb` row is.
-    let routed = decl.table("routed");
+    // `[ext.sprag.routed]` records per command — `precommit_date`, `precommit_host` — so the
+    // platform is per command too. The population is every recorded READING, which is what a `_kb`
+    // row is.
+    let routed = decl.table(ROUTED);
     let readings: Vec<String> = routed
         .keys()
         .filter_map(|key| key.strip_suffix("_kb"))
         .map(str::to_owned)
         .collect();
     for name in readings {
-        judged += judge_platform(&routed, "routed", &format!("{name}_platform"), &admitted);
+        judged += judge_platform(&routed, ROUTED, &format!("{name}_platform"), &admitted);
     }
 
     assert!(
         judged > 1,
-        "⚠ this clause judged {judged} field(s). It reads `[peak_measured]` and every `_kb` row of \
-         `[routed]`, so a count this low means the tables it walks have moved and it is now \
-         guarding less than it says — register item 441.",
+        "⚠ this clause judged {judged} field(s). It reads `[ext.sprag.peak_measured]` and every \
+         `_kb` row of `[ext.sprag.routed]`, so a count this low means the tables it walks have \
+         moved and it is now guarding less than it says — register item 441.",
     );
 }
 
@@ -366,10 +378,10 @@ fn the_instrument_refuses_where_its_method_is_not_there() {
     // stage a declaration inside this crate's own directory. `scratch_for` also mints the per-run
     // name with the pid where the reaper reads it (item 795).
     let stage = sprag_scratch::scratch_for("sprag-measure-peak-preflight", "");
-    std::fs::create_dir_all(stage.join(".claude")).expect("a staging directory for the instrument");
+    std::fs::create_dir_all(&stage).expect("a staging directory for the instrument");
     std::fs::write(
-        stage.join(".claude/remote-build.toml"),
-        "[commands]\nverify = \"true\"\n",
+        stage.join(DECL),
+        "schema = 1\n[commands]\nverify = \"true\"\n",
     )
     .expect("a declaration for the instrument to read");
 
@@ -430,10 +442,10 @@ fn the_instrument_refuses_where_its_method_is_not_there() {
 fn a_report_with_no_peak_in_it_is_never_green() {
     // ⚠ Item 794 again, and the reason is the same one the case above gives.
     let stage = sprag_scratch::scratch_for("sprag-measure-peak-short", "");
-    std::fs::create_dir_all(stage.join(".claude")).expect("a staging directory for the instrument");
+    std::fs::create_dir_all(&stage).expect("a staging directory for the instrument");
     std::fs::write(
-        stage.join(".claude/remote-build.toml"),
-        "[commands]\nverify = \"true\"\n",
+        stage.join(DECL),
+        "schema = 1\n[commands]\nverify = \"true\"\n",
     )
     .expect("a declaration for the instrument to read");
 
@@ -450,8 +462,8 @@ fn a_report_with_no_peak_in_it_is_never_green() {
     assert!(
         stdout.contains("PEAK_KB=") || !out.status.success(),
         "⛔ ITEM 1008: the instrument reported a run with no `PEAK_KB` in it and exited 0. An \
-         absent peak is NOT MEASURED — a reader copying this into `[peak_measured]` has nothing to \
-         copy and no reason to look for one.\nstdout:\n{stdout}\nstderr:\n{stderr}",
+         absent peak is NOT MEASURED — a reader copying this into `[ext.sprag.peak_measured]` has \
+         nothing to copy and no reason to look for one.\nstdout:\n{stdout}\nstderr:\n{stderr}",
     );
 }
 
@@ -461,9 +473,9 @@ fn a_report_with_no_peak_in_it_is_never_green() {
 /// The gates above are about `[commands]`, which is what this DECLARATION sends. They are not
 /// about what the wrapper RUNS. Measured 2026-09-06 from the wrapper's own logs: it has been given
 /// **2,514 distinct commands** for this repository across 10,029 runs, and **2,600** of those runs
-/// printed the divisor derived from the two rows in `[peak_measured]`. Nothing said so, because
-/// `bx` budgets by exactly one key from this file — `peak_gb_per_task` — and never reads either
-/// table.
+/// printed the divisor derived from the two rows in `[ext.sprag.peak_measured]`. Nothing said so,
+/// because `bx` budgets by exactly one key from this file — `peak_gb_per_task` — and never reads
+/// either table.
 ///
 /// ⛔⛔ **THAT SENTENCE USED TO SAY «READS EXACTLY ONE KEY» AND ITEM 1009 REFUTED IT**: `bx
 /// --explain-declaration` names TEN extractors, six of them filled here. One of the ten BUDGETS,
@@ -473,8 +485,8 @@ fn a_report_with_no_peak_in_it_is_never_green() {
 /// is read by nobody but this repository.
 ///
 /// So the population here is the one thing this repository controls: its own `"${BX}"` call sites.
-/// Item 1011 made that two, and rule 5's question has a plain answer — a site is one `[routed]` row
-/// away, and a row is one `measure-peak` run away.
+/// Item 1011 made that two, and rule 5's question has a plain answer — a site is one
+/// `[ext.sprag.routed]` row away, and a row is one `measure-peak` run away.
 ///
 /// ⚠⚠ **AND THE READING HAS TO BE USED, NOT MERELY RECORDED.** A row nobody divides by is a number
 /// in a file. The bound is applied at the call site because that is the only place that covers the
@@ -488,7 +500,7 @@ fn a_report_with_no_peak_in_it_is_never_green() {
 #[test]
 fn every_command_this_repository_hands_the_wrapper_is_one_it_measured() {
     let decl = read_decl();
-    let routed = decl.table("routed");
+    let routed = decl.table(ROUTED);
     let sites = wrapper_call_sites();
 
     assert!(
@@ -496,7 +508,7 @@ fn every_command_this_repository_hands_the_wrapper_is_one_it_measured() {
         "⚠ no `\"${{BX}}\"` call site was found under `{HOOKS}`. This clause reads them to know \
          what must have been measured, so finding none would make it vacuously green — register \
          item 441. If the hooks genuinely stopped routing anything, delete this clause and the \
-         `[routed]` table together and say so in the register.",
+         `[ext.sprag.routed]` table together and say so in the register.",
     );
 
     for (site, command) in &sites {
@@ -506,38 +518,42 @@ fn every_command_this_repository_hands_the_wrapper_is_one_it_measured() {
             .map(|(key, _)| key.clone())
             .unwrap_or_else(|| {
                 panic!(
-                    "⛔ ITEM 932: `{site}` hands the wrapper a command that `[routed]` does not \
-                 declare, so `bx` will budget it by `peak_gb_per_task` — a figure derived from \
-                 `[commands]`, which this command is not in. Measure it and record it:\n    bash \
-                 crates/sprag-gate/tests/doubles/declared-verify/measure-peak <name>\nThe command \
+                    "⛔ ITEM 932: `{site}` hands the wrapper a command that `[ext.sprag.routed]` \
+                 does not declare, so `bx` will budget it by `peak_gb_per_task` — a figure derived \
+                 from `[commands]`, which this command is not in. Measure it and record \
+                 it:\n    bash crates/sprag-gate/tests/doubles/declared-verify/measure-peak \
+                 <name>\nThe command \
                  as this hook composes it:\n{command}",
                 )
             });
 
         let recorded = routed.get(&format!("{name}_cmd")).unwrap_or_else(|| panic!(
-            "⚠ `[routed] {name}` has no `{name}_cmd`: the command is declared and the text it was \
-             MEASURED as is not, so nothing can say the reading still describes it.",
+            "⚠ `[ext.sprag.routed] {name}` has no `{name}_cmd`: the command is declared and the \
+             text it was MEASURED as is not, so nothing can say the reading still describes it.",
         ));
         assert_eq!(
             recorded, command,
-            "\n⚠⚠⚠ `[routed] {name}` HAS CHANGED SINCE IT WAS MEASURED.\n  measured: {recorded}\n  \
-             now:      {command}\nMeasure it again and update `{name}_kb` and `{name}_cmd` \
-             together.",
+            "\n⚠⚠⚠ `[ext.sprag.routed] {name}` HAS CHANGED SINCE IT WAS MEASURED.\n  \
+             measured: {recorded}\n  now:      {command}\nMeasure it again and update \
+             `{name}_kb` and `{name}_cmd` together.",
         );
 
         let kb: u64 = routed
             .get(&format!("{name}_kb"))
             .and_then(|raw| raw.parse().ok())
-            .unwrap_or_else(|| panic!(
-                "⚠ `[routed] {name}_cmd` is recorded and `{name}_kb` is not, so the command was \
-                 named and its cost was not. `{site}` divides free RAM by that figure.",
-            ));
+            .unwrap_or_else(|| {
+                panic!(
+                    "⚠ `[ext.sprag.routed] {name}_cmd` is recorded and `{name}_kb` is not, so \
+                     the command was named and its cost was not. `{site}` divides free RAM by \
+                     that figure.",
+                )
+            });
         assert!(
             kb > KB_PER_GIB / 4,
-            "⚠ `[routed] {name}_kb = {kb}` is under a quarter of a gigabyte, which no compilation \
-             in this workspace has ever measured. A reading that low would hand the call site a \
-             parallelism budget larger than the machine, which is the failure the reading exists \
-             to prevent.",
+            "⚠ `[ext.sprag.routed] {name}_kb = {kb}` is under a quarter of a gigabyte, which no \
+             compilation in this workspace has ever measured. A reading that low would hand the \
+             call site a parallelism budget larger than the machine, which is the failure the \
+             reading exists to prevent.",
         );
 
         let hook = std::fs::read_to_string(workspace_root().join(site.split(':').next().unwrap()))
@@ -583,9 +599,9 @@ fn every_command_this_repository_hands_the_wrapper_is_one_it_measured() {
             "⛔ ITEM 1010: `{site}` hands the wrapper a command and its hook never EXTRACTS \
              `peak_gb_per_task` from `{DECL}`. That scalar is what bounds the lane whenever this \
              hook declines to — measured 2026-09-11 at `peak 2GB/task -> RUST_TEST_THREADS=10` — \
-             and it is derived from `[peak_measured]`, a table the wrapper does not read. A hook \
-             that cannot name the figure being spent can only report the lane as unbounded, which \
-             is the false sentence item 1010 was opened for.",
+             and it is derived from `[ext.sprag.peak_measured]`, a table the wrapper does not \
+             read. A hook that cannot name the figure being spent can only report the lane as \
+             unbounded, which is the false sentence item 1010 was opened for.",
         );
     }
 }
@@ -622,7 +638,8 @@ fn a_host_that_clears_the_ram_floor_can_run_one_task() {
 ///
 /// ⚠ A hand-written reader of a small TOML subset, because this crate takes no dependencies on
 /// purpose — see its manifest. It understands exactly what this file uses: comments, `key = value`
-/// with a quoted or bare value, and `[table]` headers. Anything richer arriving in the file shows
+/// with a quoted or bare value, and `[table]` headers, a dotted one (`[ext.sprag.routed]`) kept
+/// whole as the table's name. Anything richer arriving in the file shows
 /// up as a MISSING key and therefore as a red, which is the direction a partial parser is allowed
 /// to be wrong in.
 struct Decl {
@@ -706,7 +723,8 @@ fn read_decl() -> Decl {
 // Asking the instrument — register item 1008
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// The tracked instrument every figure in `[peak_measured]` and `[routed]` was taken with.
+/// The tracked instrument every figure in `[ext.sprag.peak_measured]` and `[ext.sprag.routed]` was
+/// taken with.
 ///
 /// ⚠ Reached through [`sprag_gate::doubles`] rather than by joining a path, so a missing file or a
 /// checkout that dropped the execute bit is reported as the staging failure it is — register item
@@ -866,11 +884,11 @@ fn wrapper_call_sites() -> Vec<(String, String)> {
 ///   2. *skip lines starting `[` or `if [`* — `[ -n "${BX:-}" ] && "${BX}" --explain-declaration`
 ///      walked straight through it, because that line both tests AND invokes.
 ///   3. *count it when what comes before is `&&`, `||`, `;`, `then`, `else`, `do`, `(` or `{`* —
-///      register item 1085. **Measured 2026-09-13** by giving the ratchet lane an argv `[routed]`
-///      does not hold: with no prefix, red; and green, all three, for `env -u GIT_INDEX_FILE
-///      "${BX}" …` (a lead the list did not name), `[ -x "${BX}" ] && "${BX}" …` (only the FIRST
-///      occurrence on a line was ever asked about) and `"$BX" …` (a spelling the scan never
-///      looked for).
+///      register item 1085. **Measured 2026-09-13** by giving the ratchet lane an argv
+///      `[ext.sprag.routed]` does not hold: with no prefix, red; and green, all three, for `env -u
+///      GIT_INDEX_FILE "${BX}" …` (a lead the list did not name), `[ -x "${BX}" ] && "${BX}" …`
+///      (only the FIRST occurrence on a line was ever asked about) and `"$BX" …` (a spelling the
+///      scan never looked for).
 ///
 /// The first two were caught by mutation and the third was not, and all three are one mistake: a
 /// description of what a call LOOKS like, whose default is *not a call*. So the default is the

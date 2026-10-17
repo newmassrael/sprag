@@ -4,7 +4,7 @@
 //!
 //! # ⛔⛔⛔ The comment above it claimed the opposite of what it did
 //!
-//! `.claude/remote-build.toml` introduces its `verify` with *"THE SAME FOUR GATES THIS PROJECT RUNS
+//! `bx.toml` introduces its `verify` with *"THE SAME FOUR GATES THIS PROJECT RUNS
 //! LOCALLY, in one command **so a remote run cannot pass a subset**"*. The command under that
 //! sentence was four clauses joined by `&&`, none of them carrying `--no-fail-fast` — a subset in
 //! two independent ways:
@@ -37,7 +37,7 @@ use std::path::PathBuf;
 
 /// The declaration under test — the same file `a_fleet_ceiling_is_a_measurement_with_a_date` reads,
 /// which is what makes an edit to it something two gates notice.
-const DECL: &str = ".claude/remote-build.toml";
+const DECL: &str = "bx.toml";
 
 /// The tree whose declaration is under test — through the one door, register item 809.
 ///

@@ -1,8 +1,10 @@
+schema = 1
+
 # What sprag needs from a build machine — REQUIREMENTS, never a machine name.
 #
-# The `remote-build` skill picks the machine from `~/.claude/remote-build/hosts.toml` at run time
-# and asks it what it has. Naming a machine here would go stale the day another one arrives, and a
-# stale list reads exactly like a correct one.
+# bx picks the machine from its own fleet registry (`bx-paths.sh registry` prints where that is) at
+# run time and asks it what it has. Naming a machine here would go stale the day another one
+# arrives, and a stale list reads exactly like a correct one.
 #
 # ⚠⚠ THE REMOTE TREE IS A READ-ONLY VERIFICATION COPY. Commits, ledger writes and pushes happen
 # locally; anything edited over there is erased by the next rsync.
@@ -12,17 +14,21 @@
 # without anyone deciding to.
 send = "tracked"
 
-# ⚠⚠ `target` IS A SYMLINK HERE (`target -> ~/.buildcache/sprag`), so rsync would plant a BROKEN
-# link on the remote and cargo would build through it into nowhere. Excluded by path, not by luck.
-# `sweep.timestamp` is `cargo sweep --stamp`'s transient marker; it is consumed by `--file`, but a
-# run interrupted between the two leaves one behind and it must not travel.
-exclude = ["/target", "/sweep.timestamp"]
+# ⚠ NO `exclude` KEY, AND bx NEVER READ THE ONE THIS FILE USED TO CARRY. Until the move to
+# `bx.toml` it said `exclude = ["/target", "/sweep.timestamp"]`; bx extracted no such key (its own
+# `--explain-declaration` lists none), so the line kept nothing home. What does is `send` above:
+# only tracked files travel, and both paths are untracked. Still true of them, and the reason they
+# must never become tracked: `target` IS A SYMLINK HERE (`target -> ~/.buildcache/sprag`), so a
+# copy would plant a BROKEN link on the remote and cargo would build through it into nowhere; and
+# `sweep.timestamp` is `cargo sweep --stamp`'s transient marker, which a run interrupted between
+# `--stamp` and `--file` leaves behind.
 
 # The executables the commands below actually invoke. `mnemosyne-cli` is deliberately NOT here: it
 # is a COMMIT-time gate (`.githooks/pre-commit`), and committing is local by rule.
 #
-# `shellcheck` IS HERE because `[routed] ratchets` runs `cargo test -p sprag-gate`, whose
-# `no_shell_script_escapes_the_static_checker` runs it over every shell script — register item 1086.
+# `shellcheck` IS HERE because `[ext.sprag.routed] ratchets` runs `cargo test -p sprag-gate`,
+# whose `no_shell_script_escapes_the_static_checker` runs it over every shell script — register
+# item 1086.
 # bx asks each host whether it RUNS every name below before sending anything, so a host without it is
 # refused by name instead of reddening the lane. This list cannot say WHICH version: the gate itself
 # refuses any but `crates/sprag-gate/tools/shellcheck.pin`'s, and its refusal names the installer.
@@ -44,8 +50,8 @@ min_free_gb = 20
 # What ONE task of this repository peaks at. bx divides a host's free RAM by this to get the
 # parallelism budget, so it is the RAM half of a formula that ran on cores alone until 2026-08-20.
 #
-# ⚠⚠ IT IS A MEASUREMENT AND IT IS DERIVED, NOT TYPED. `[peak_measured]` at the foot of this file
-# holds the readings; the gate `a_fleet_ceiling_is_a_measurement_with_a_date` recomputes this
+# ⚠⚠ IT IS A MEASUREMENT AND IT IS DERIVED, NOT TYPED. `[ext.sprag.peak_measured]` at the foot of
+# this file holds the readings; the gate `a_fleet_ceiling_is_a_measurement_with_a_date` recomputes this
 # integer from them and refuses a value that does not follow. BOTH directions of wrong are real:
 # too LOW packs a host past its RAM — the swap storm of 2026-08-19, load 29 with 82% of the CPU
 # idle — and too HIGH divides free RAM by a number nobody measured and refuses hosts that could
@@ -60,7 +66,7 @@ peak_gb_per_task = 2
 #
 # `[commands]` is what this DECLARATION sends. It is not what the wrapper RUNS. The wrapper divides
 # a host's free RAM by `peak_gb_per_task` for whatever argv it was given, and it never reads
-# `[commands]` or `[peak_measured]` at all. ⚠ Asked of the program rather than remembered:
+# `[commands]` or `[ext.sprag.peak_measured]` at all. ⚠ Asked of the program rather than remembered:
 # `grep -n 'commands' bin/bx` answers FOUR lines — three comments and one refusal message
 # (`die "unknown flag $1 (commands go after --)"`), and not one of them is a read of the table.
 # `grep -n 'peak_measured\|_kb' bin/bx` answers none at all. So the ceiling derived from two rows
@@ -86,21 +92,21 @@ peak_gb_per_task = 2
 # and refuses to spend another platform's peak — and the fleet half is the wrapper's owner's.
 #
 # ⛔⛔⛔⛔⛔ AND DECLINING TO DIVIDE DOES NOT LEAVE THE LANE UNBOUNDED — register item 1010, measured
-# 2026-09-11 and it is why `[peak_measured] platform` below finally has a reader.
+# 2026-09-11 and it is why `[ext.sprag.peak_measured] platform` below finally has a reader.
 #
 #     bx --local -- bash -c 'echo "SAW ${RUST_TEST_THREADS:-unset}"'   # nothing exported
 #     -> bx: local: 25 free core(s) of 32, 21GB available, peak 2GB/task -> RUST_TEST_THREADS=10
 #     -> SAW 10
 #
 # What item 1009's arms hand back is not an unbounded lane; it is a lane bounded by `peak_gb_per_
-# task` — the scalar `[routed]` exists to keep this hook AWAY from, since the lint lane peaks at
-# 8.83 GiB and that scalar hands out eleven tasks of it. The arms said *running UNBOUNDED*, which
+# task` — the scalar `[ext.sprag.routed]` exists to keep this hook AWAY from, since the lint lane
+# peaks at 8.83 GiB and that scalar hands out eleven tasks of it. The arms said *running UNBOUNDED*, which
 # denied the thing that was happening. They now name the figure that gets spent and the platform it
 # came from, and `a_lane_bound_that_cannot_be_taken_names_its_own_cause` holds every arm to it.
 #
 # ⚠⚠ THE SCALAR IS ONE PLATFORM'S AND THE WRAPPER CANNOT KNOW WHICH: it is derived from
-# `[peak_measured]`, and `grep -c peak_measured ~/.claude/remote-build/bin/bx` answers **0**
-# (measured the same day). So the `platform` field item 1008 recorded there was, by item 932's own
+# `[ext.sprag.peak_measured]`, and `grep -c peak_measured ~/.claude/remote-build/bin/bx` answers
+# **0** (measured the same day). So the `platform` field item 1008 recorded there was, by item 932's own
 # rule, a number in a file — this hook is the only reader either repository can give it.
 #
 # ⚠ AND A BOUND THIS REPOSITORY DOES SET ONLY TRAVELS ONE WAY. `bin/bx` local (1749) takes
@@ -115,8 +121,8 @@ peak_gb_per_task = 2
 #     grep -hc 'peak 2GB/task' target/bx-logs/*.log | paste -sd+ | bc   ->  2600 budgeted by it
 # Two rows measured, 2,514 commands budgeted.
 #
-# ⛔ AND THE SENTENCE THIS FILE USED TO REST ON WAS FALSE. `[peak_measured]` below excludes a 6.5GB
-# rustdoc reading because *"that is the COMMIT HOOK's doc gate and is not a command this file
+# ⛔ AND THE SENTENCE THIS FILE USED TO REST ON WAS FALSE. `[ext.sprag.peak_measured]` below
+# excludes a 6.5GB rustdoc reading because *"that is the COMMIT HOOK's doc gate and is not a command this file
 # sends"*. True of the file, false of the fleet: `grep -l 'document-private-items'
 # target/bx-logs/*.log | wc -l` answers **767**, and the single most frequent command the wrapper
 # has ever been given for this repository is this hook lane — 360 runs. The exclusion was correct
@@ -127,7 +133,10 @@ peak_gb_per_task = 2
 # than better. `every_command_this_repository_hands_the_wrapper_is_one_it_measured` holds that no
 # `"${BX}"` call site in `.githooks/` sends a command that is not here AND that the site divides by
 # its reading, which is what keeps a row from being a number nobody uses.
-[routed]
+#
+# ⚠ `[ext.sprag.*]` is this repository's own, the place `bx.toml` leaves for a project's tools: bx
+# neither reads nor checks it. Its readers are this repository's hooks and gates.
+[ext.sprag.routed]
 # `.githooks/pre-commit`'s lint lane, exactly as the hook composes it from `$lint_and_doc`.
 # ⚠ The inner quotes are SINGLE and that is this table's doing: the gate's reader takes TOML basic
 # strings and a `"` inside a value truncates it, so the hook was changed to spell the same word in a
@@ -143,17 +152,17 @@ peak_gb_per_task = 2
 # 6.5GB rustdoc reading into a scalar.
 precommit = "cargo clippy --workspace --all-targets -- -D warnings && RUSTDOCFLAGS='-D warnings' CARGO_TARGET_DIR=target/doc-gate cargo doc --workspace --no-deps --document-private-items"
 
-# ⛔⛔⛔⛔⛔ ITS READING LIVES HERE AND NOT IN `[peak_measured]`, AND THE ARITHMETIC IS WHY.
+# ⛔⛔⛔⛔⛔ ITS READING LIVES HERE AND NOT IN `[ext.sprag.peak_measured]`, AND THE ARITHMETIC IS WHY.
 #
-# Taken with this repository's own instrument, which is the same one `[peak_measured]` is taken
-# with and whose sampler walks the run's ANCESTRY rather than matching a program name — the reason
+# Taken with this repository's own instrument, which is the same one `[ext.sprag.peak_measured]` is
+# taken with and whose sampler walks the run's ANCESTRY rather than matching a program name — the reason
 # that matters is two paragraphs down:
 #
 #     bash crates/sprag-gate/tests/doubles/declared-verify/measure-peak precommit
 #     -> RUN_STATUS=0  PEAK_KB=9260688  PEAK_WORST=rustdoc --crate-type bin --crate-name sprag_gui
 #
 # **8.83 GiB.** `the_ceiling_is_the_next_whole_gigabyte_above_the_worst_measurement` derives the
-# scalar as `floor(worst) + 1`, so folding this into `[peak_measured]` would set
+# scalar as `floor(worst) + 1`, so folding this into `[ext.sprag.peak_measured]` would set
 # `peak_gb_per_task = 9` — and `bx:1738` divides free RAM by it for EVERY command. Measured against
 # today's host: 22 GB free gives 11 tasks at the declared 2 and **2** at 9. `build`'s own reading is
 # 1,204,328 kB, so the row that made this repository honest would run `build` five times less
@@ -246,8 +255,8 @@ precommit_platform = "Linux"
 # measurement of the cache's state on the day, and the first cache miss would run this lane at
 # ~100× the parallelism its own work allows.
 #
-# ⚠ CORROBORATED RATHER THAN TRUSTED ALONE: `[peak_measured] build_kb` is 1204328 for `cargo test
-# --workspace --no-run`, taken on another machine in 2026-08 — 5% away from this, with a peak in the
+# ⚠ CORROBORATED RATHER THAN TRUSTED ALONE: `[ext.sprag.peak_measured] build_kb` is 1204328 for
+# `cargo test --workspace --no-run`, taken on another machine in 2026-08 — 5% away from this, with a peak in the
 # same family (`rustc --crate-name sce_build`). Two instruments, two hosts, two dates, one answer.
 ratchets = "cargo test -p sprag-gate && cargo test -p sprag-rpc --test pins && cargo test -p sprag-tui --test gpu_free && cargo test -p sprag-client --test gpu_free"
 ratchets_cmd = "cargo test -p sprag-gate && cargo test -p sprag-rpc --test pins && cargo test -p sprag-tui --test gpu_free && cargo test -p sprag-client --test gpu_free"
@@ -422,7 +431,7 @@ verify = "rc=0 ; cargo test --workspace --exclude sprag-gui --no-fail-fast > /tm
 # calls `setsid` and outlives its parent — which sprag's own daemons do on purpose — can leave the
 # tracked set. Every peak recorded here is a compiler, so nothing observed was lost this way; a
 # reading whose `worst` is a sprag binary should be taken again with that in mind.
-[peak_measured]
+[ext.sprag.peak_measured]
 date = "2026-08-23"
 # ⛔⛔ ONE PLATFORM FOR THE TABLE, the way `date` and `host` are one for it: both rows below were
 # taken in the same session on the same machine. Item 1008's reason is at `precommit_platform`.

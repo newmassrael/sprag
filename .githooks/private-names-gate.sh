@@ -2,7 +2,7 @@
 # .githooks/private-names-gate.sh -- which names of this owner's own machines may reach a PUBLIC
 # remote.
 #
-# WHY THIS EXISTS. `.claude/remote-build.toml` says in its first line that it holds REQUIREMENTS and
+# WHY THIS EXISTS. `bx.toml` says in its opening comment that it holds REQUIREMENTS and
 # "never a machine name", and says again beside the measurement rows that the machines are named in
 # the owner's own notes and not there. Nothing enforced either sentence. A machine name went into
 # that file in 2026-08 and another was about to in 2026-09, the second one caught by a person
