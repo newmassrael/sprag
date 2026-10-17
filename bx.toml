@@ -79,13 +79,14 @@ peak_gb_per_task = 2
 #
 #     bx --explain-declaration     # every extractor, INCLUDING the ones that found nothing
 #
-# Ten keys, six of them filled here: `send`, `needs`, `packages`, `writes`, `pin_host`,
-# `peak_gb_per_task`, `min_ram_gb`, `min_free_gb`, `target_cap_gb`, `workspace_dir`. The true half
+# Eleven keys, seven of them filled here: `schema`, `send`, `needs`, `packages`, `modules`, `writes`,
+# `peak_gb_per_task`, `min_ram_gb`, `min_free_gb`, `target_cap_gb`, `workspace_dir` (`pin_host`, which
+# named a machine, left the format on 2026-10-17 and is now refused). The true half
 # of the old sentence is that exactly one of them BUDGETS; the false half mattered, because a
 # repository reading it would conclude that a requirement written here is a requirement nobody
 # reads.
 #
-# ⇒ ⚠⚠ AND THE ANSWER CARRIES ITEM 1009's OWN LIMIT: **not one of those ten is a platform.** So a
+# ⇒ ⚠⚠ AND THE ANSWER CARRIES ITEM 1009's OWN LIMIT: **not one of those eleven is a platform.** So a
 # `platform = "…"` host requirement written here would be a key the wrapper does not extract, and
 # `--explain-declaration` is where that shows. The half of 1009 this repository can pay is at its
 # OWN call sites — `.githooks/rust-gates.sh` now reads `precommit_platform` beside `precommit_kb`
