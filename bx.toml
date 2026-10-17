@@ -443,7 +443,7 @@ date = "2026-08-23"
 # LINE IN THE FILE, so a second bare `platform` key arriving in any table would make that reading a
 # guess: `a_declaration_names_one_platform_for_the_wrappers_divisor` refuses one.
 platform = "Linux"
-host = "pc2, a 32-core build machine, rustc stable, via bx"
+host = "a 32-core, 125 GB build machine, rustc stable, via bx"
 worst = "rustc --crate-name sce_build, in the first cargo test clause of verify"
 # ⚠ THE `build` ROW WAS RE-TAKEN 2026-09-30, when `build` gained `cargo build --workspace --bins`, and
 # it is NOT from the session or machine that `date`, `host` and `worst` above describe, nor from the
