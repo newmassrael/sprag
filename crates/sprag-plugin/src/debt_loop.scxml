@@ -1506,14 +1506,29 @@
       67%, `crates/sprag-terminal/src` to 65%, `.githooks` to 62%. It is also
       where a round lands when it repairs how a binary names its own build.
 
-      ⚠ WHAT THIS LEAVES, STATED RATHER THAN HIDDEN: the floor sits on the
-      window's edge with a margin of a few paths, and the ceiling sits two
-      points above the list, so the pincer has no slack on either side. That is
-      the situation the paragraph above describes, a document whose work has no
-      stable shape under this list, and it is a finding to carry rather than a
-      threshold to move. The next commit that lands several paths outside the
-      list will read under the floor again, and the remedy then is the same
-      measurement made first, never a name that has not been priced.
+      ⚠ WHAT THAT LEFT: the floor sat on the window's edge with a margin of a
+      few paths and the ceiling two points above the list, so the pincer had no
+      slack on either side, and the next commit landing several paths outside
+      the list would read under the floor again.
+
+      ⚠⚠ IT DID, 2026-10-18, AND THE LIST WAS RE-PRICED RATHER THAN WIDENED. A
+      commit moving where the hooks find the build wrapper read 79.86% (444 of
+      556), one path under the floor. `.githooks` was the largest uncovered
+      directory (41 of the window's paths, 13 tracked files), and added alone it
+      takes the list to 62.95% of the tree, over the ceiling. Measured with the
+      gate's own definitions, entry by entry: `crates/sprag-client/tests` held
+      0 of the window's paths and 5 tracked files, and `crates/sprag-host/tests`
+      10 paths for 11 files. Dropping those two and adding `.githooks` holds
+      475 of 556 (85.43%) against 227 of 386 files (58.81%): thirty paths above
+      the floor and four files under the ceiling, where the list before had
+      neither. A round in the dropped directories still reaches its checker,
+      because a round's own changed files are the first tier of the question
+      and this list is the fallback for a round that moved nothing.
+
+      ⚠ WHAT THIS LEAVES: four files of slack under the ceiling is still small,
+      and it is the ceiling that moves first as the listed directories grow.
+      The remedy when it reads red is the same measurement made first, never a
+      name that has not been priced.
     -->
     <data id="check_opens"
           expr="[
@@ -1522,11 +1537,10 @@
             'crates/sprag-host/src',
             'crates/sprag-gate/tests',
             'crates/sprag-tui/tests',
-            'crates/sprag-host/tests',
             'crates/sprag-rpc/src',
             'crates/sprag-mcp/src',
-            'crates/sprag-client/tests',
-            'crates/sprag-stamp'
+            'crates/sprag-stamp',
+            '.githooks'
           ]"/>
 
     <!--

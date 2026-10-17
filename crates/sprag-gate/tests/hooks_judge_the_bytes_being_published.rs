@@ -2733,18 +2733,10 @@ const PRIVATE_HOST: &str = "sandbox-private-host";
 
 impl Sandbox {
     /// Stand the tracked `bx` double where `private-names-gate.sh` looks for the build wrapper
-    /// (`$HOME/.claude/remote-build/bin/bx`, HOME being this sandbox), and stage what it answers for
+    /// (`$HOME/.local/bin/bx`, HOME being this sandbox), and stage what it answers for
     /// `--explain-registry`. A link, never a written file: register item 467.
     fn with_build_wrapper(&self, registry: &str) {
-        doubles().link(
-            "bx",
-            &self
-                .dir
-                .join(".claude")
-                .join("remote-build")
-                .join("bin")
-                .join("bx"),
-        );
+        doubles().link("bx", &self.dir.join(".local").join("bin").join("bx"));
         self.write("bx-registry", registry);
     }
 

@@ -219,7 +219,7 @@ rust_gates_wrapper_present() {
 #
 # ⚠⚠ **AND IT IS THE PLATFORM QUESTION, WHICH IS WHY THIS IS ITEM 1010 RATHER THAN A TYPO.** The
 # scalar is derived from `[ext.sprag.peak_measured]`, whose `platform` field item 1008 added — and
-# MEASURED: `grep -c peak_measured ~/.claude/remote-build/bin/bx` answers **0**, so the wrapper
+# MEASURED: `grep -c peak_measured ~/.local/bin/bx` answers **0**, so the wrapper
 # never reads that table and cannot know whose platform the number describes. Item 932's rule says a row nobody
 # divides by is a number in a file; this hook is the only reader this repository can give it.
 #

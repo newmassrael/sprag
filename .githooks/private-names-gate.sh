@@ -52,8 +52,8 @@
 #                                     nothing, and this is the state a broken wrapper is in.
 #   wrapper here, names answered      judged.
 #
-# The wrapper is looked for under $SPRAG_REMOTE_BUILD_HOME, or $HOME/.claude/remote-build when that
-# is unset. It is deliberately NOT found through the BX environment variable: a test sandbox
+# The wrapper is looked for under $SPRAG_REMOTE_BUILD_HOME, or $HOME/.local when that is unset
+# (`bin/bx` under it: where bx's own installer puts the command). It is deliberately NOT found through the BX environment variable: a test sandbox
 # inherits that variable and replaces HOME, and keying on it made the sandbox look like a machine
 # with a wrapper and no registry, which refuses every commit it makes (the failure ident-gate.sh's
 # users paid for once already: seventeen tests, twenty-one pushes).
@@ -73,7 +73,7 @@
 # assignment, and ShellCheck applies a directive that stands before the file's first command to the
 # whole file (no_shell_script_escapes_the_static_checker refuses exactly that).
 private_names_home() {
-    printf '%s\n' "${SPRAG_REMOTE_BUILD_HOME:-${HOME:-}/.claude/remote-build}"
+    printf '%s\n' "${SPRAG_REMOTE_BUILD_HOME:-${HOME:-}/.local}"
 }
 
 # The one awk program every arm runs. Input is either a git diff (`mode=diff`), a git log carrying

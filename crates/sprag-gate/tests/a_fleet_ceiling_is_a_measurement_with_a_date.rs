@@ -481,7 +481,7 @@ fn a_report_with_no_peak_in_it_is_never_green() {
 /// --explain-declaration` names TEN extractors, six of them filled here. One of the ten BUDGETS,
 /// which is the true half, and the false half mattered — it read as *a requirement written here is
 /// a requirement nobody reads*. ⚠ Re-measured 2026-09-11 for item 1010: `grep -c peak_measured
-/// ~/.claude/remote-build/bin/bx` still answers **0**, so the table that DERIVES the budgeted key
+/// ~/.local/bin/bx` still answers **0**, so the table that DERIVES the budgeted key
 /// is read by nobody but this repository.
 ///
 /// So the population here is the one thing this repository controls: its own `"${BX}"` call sites.

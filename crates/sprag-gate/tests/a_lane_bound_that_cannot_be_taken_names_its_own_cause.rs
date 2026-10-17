@@ -487,7 +487,7 @@ fn without_a_wrapper_an_unbounded_lane_is_still_called_unbounded() {
 ///
 /// `peak_gb_per_task` is derived from `[ext.sprag.peak_measured]`, which is `VmHWM` out of procfs
 /// (item 1008) — one platform's memory behaviour. **Measured 2026-09-11**: `grep -c peak_measured
-/// ~/.claude/remote-build/bin/bx` answers **0**, so the wrapper cannot know whose. Item 932's rule
+/// ~/.local/bin/bx` answers **0**, so the wrapper cannot know whose. Item 932's rule
 /// is that a row nobody divides by is a number in a file; this hook is the only reader this
 /// repository can give the field item 1008 recorded.
 ///

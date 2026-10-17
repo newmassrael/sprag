@@ -106,7 +106,7 @@ peak_gb_per_task = 2
 # came from, and `a_lane_bound_that_cannot_be_taken_names_its_own_cause` holds every arm to it.
 #
 # ⚠⚠ THE SCALAR IS ONE PLATFORM'S AND THE WRAPPER CANNOT KNOW WHICH: it is derived from
-# `[ext.sprag.peak_measured]`, and `grep -c peak_measured ~/.claude/remote-build/bin/bx` answers
+# `[ext.sprag.peak_measured]`, and `grep -c peak_measured ~/.local/bin/bx` answers
 # **0** (measured the same day). So the `platform` field item 1008 recorded there was, by item 932's own
 # rule, a number in a file — this hook is the only reader either repository can give it.
 #
