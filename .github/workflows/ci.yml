@@ -365,6 +365,39 @@ jobs:
           mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
           xvfb-run -a ./target/release/sprag-smoke
 
+  msrv-linux:
+    name: declared minimum (linux)
+    runs-on: ubuntu-latest
+    # THE ONE CLAIM NO OTHER JOB CHECKS: `rust-version` in Cargo.toml. Every job above builds on the
+    # latest stable, so the number said 1.88.0 from the first commit (2026-06-17) until 2026-10-17
+    # while the tree had long outgrown it — 1.88.0 and 1.94.1 both refused `if let` guards in
+    # sprag-host, measured that day. A minimum nobody builds is a guess written as a fact, and a
+    # consumer pinning an older toolchain is told it works.
+    #
+    # The version is READ from Cargo.toml rather than written here a second time, so raising it is
+    # one edit and this job follows. The whole workspace, GUI included: the claim is the workspace's.
+    # Only `libfontconfig-dev` is needed to COMPILE (the pixel job's other packages are loaded at
+    # run time). `check`, not `build`: the claim is that the compiler accepts the tree.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig-dev
+
+      - name: The declared toolchain
+        run: |
+          msrv="$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)"
+          test -n "$msrv" || { echo "no rust-version in Cargo.toml" >&2; exit 1; }
+          rustup toolchain install "$msrv" --profile minimal --no-self-update
+          echo "MSRV=$msrv" >> "$GITHUB_ENV"
+          rustc "+$msrv" --version
+
+      - name: The workspace compiles on it
+        run: cargo "+$MSRV" check --workspace --all-targets --locked
+
   headless-macos:
     name: headless (macos)
     runs-on: macos-latest
