@@ -21,7 +21,7 @@
 //! A wire gate can only ask *does the spelling this writer uses TODAY work* — and it does, which is
 //! why the split shipped green. The claim here is about tomorrow: that a rename cannot leave a
 //! writer behind. That is a claim about the TEXT, so the instrument is a scan, and it lives beside
-//! [`payload::indirect`](crate::payload::indirect) for that function's reason — the sites are
+//! [`payload::indirect`] for that function's reason — the sites are
 //! DISCOVERED rather than listed, so one that appears is announced by the gate that pins the rest.
 
 use std::collections::BTreeSet;

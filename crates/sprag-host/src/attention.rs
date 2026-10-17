@@ -153,7 +153,6 @@ impl AttentionRouter {
     /// A send that fails means the router thread is gone (the daemon is shutting down), and it is
     /// dropped rather than logged: a message nobody could have been shown, during teardown, is not
     /// news.
-    #[must_use]
     pub fn signal(&self) -> Box<dyn Fn(PaneId, Attention) + Send> {
         // The clone happens HERE, once per pane, so the hook below owns its own `Sender` and takes no
         // lock of ours when a child asks for a person. See the field for why that ordering matters.

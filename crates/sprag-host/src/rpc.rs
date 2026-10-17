@@ -460,7 +460,6 @@ pub fn windows_of(
 /// session: `break_pane` / `join_pane` move one between WINDOWS of a session and nothing moves one
 /// between sessions, so the answer this closure bakes cannot go stale. The `crate::notify` module
 /// docs record that dependency, because it is the reason the grain is the session.
-#[must_use]
 pub fn bump_on_dirty(revision: &Arc<SceneRevision>) -> Box<dyn Fn() + Send> {
     let revision = Arc::clone(revision);
     Box::new(move || {
@@ -524,7 +523,6 @@ pub fn spawn_reaper(
 /// Wrap the shared death-`signal` ([`spawn_reaper`]) as a fresh per-pane `on_exit` box — the
 /// ONE conversion every spawn site (boot, mux, plugin) uses, so the `Arc` → `Box` shape is not
 /// re-spelled three times.
-#[must_use]
 pub fn pane_exit_hook(signal: &Arc<dyn Fn() + Send + Sync>) -> Box<dyn Fn() + Send> {
     let signal = Arc::clone(signal);
     Box::new(move || signal())
@@ -538,7 +536,6 @@ pub fn pane_exit_hook(signal: &Arc<dyn Fn() + Send + Sync>) -> Box<dyn Fn() + Se
 /// `Fn` every pane shares; this one is MINTED per pane
 /// ([`AttentionRouter::signal`](crate::attention::AttentionRouter::signal)) so each hook owns its own
 /// channel sender and the PTY reader thread running it takes no lock of ours.
-#[must_use]
 pub fn pane_attention_hook(
     router: &Arc<crate::attention::AttentionRouter>,
 ) -> Box<dyn Fn(sprag_terminal::PaneId, sprag_terminal::Attention) + Send> {

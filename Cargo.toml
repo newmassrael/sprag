@@ -69,7 +69,12 @@ members = [
 [workspace.package]
 version = "0.0.1"
 edition = "2024"
-rust-version = "1.88.0"
+# The oldest compiler this workspace builds on, MEASURED (2026-10-17), not chosen: 1.88.0 sat here
+# from the first commit and was never checked, and the tree had outgrown it (`if let` match guards
+# in sprag-host need 1.95; 1.88.0 and 1.94.1 both refuse them). 1.95.0 is also where
+# `AtomicU64::try_update` arrives, which replaces the `fetch_update` that 1.99 deprecates.
+# Check it with: `cargo +1.95.0 check --workspace --all-targets`.
+rust-version = "1.95.0"
 license = "MIT OR Apache-2.0"
 authors = ["newmassrael <newmassrael@gmail.com>"]
 repository = "https://github.com/newmassrael/sprag"

@@ -595,7 +595,7 @@ fn peer_settling_over(
                 // it always did. `checked_sub` floors the count, so grace cannot wrap back to
                 // *for ever* the moment it runs out.
                 if walk_past
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
+                    .try_update(Ordering::AcqRel, Ordering::Acquire, |left| {
                         left.checked_sub(1)
                     })
                     .is_ok()
@@ -3549,7 +3549,7 @@ impl DialogBetweenTheReads {
                 // `raise_after(n)` still answer *working*, every read after them sees the dialog.
                 // `checked_sub` so the count cannot wrap and grant grace for ever once it runs out.
                 let spent_grace = grace
-                    .fetch_update(
+                    .try_update(
                         std::sync::atomic::Ordering::AcqRel,
                         std::sync::atomic::Ordering::Acquire,
                         |left| left.checked_sub(1),
